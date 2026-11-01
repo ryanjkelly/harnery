@@ -22,6 +22,7 @@ import {
   pinnedBinName,
   portableHookCommands,
   readAdmissionConfig,
+  readAutoUpdateConfig,
   resolveBinName,
   sessionFinalizationConfig,
   stripJsonComments,
@@ -753,6 +754,113 @@ describe("readAdmissionConfig", () => {
       });
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("readAutoUpdateConfig", () => {
+  test("null without an autoUpdate section", () => {
+    const root = makeRoot("{}");
+    try {
+      expect(readAutoUpdateConfig(root)).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("null when the project has no config file", () => {
+    const root = makeRoot();
+    try {
+      expect(readAutoUpdateConfig(root)).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("defaults fill an enabled section", () => {
+    const root = makeRoot(JSON.stringify({ autoUpdate: { enabled: true } }));
+    try {
+      expect(readAutoUpdateConfig(root)).toEqual({
+        enabled: true,
+        checkMinutes: 15,
+        steps: [],
+        dailySteps: [],
+        watch: [],
+        timeoutMinutes: 20,
+        cleanup: true,
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("enabled is true only for exactly true", () => {
+    const root = makeRoot(JSON.stringify({ autoUpdate: { enabled: "yes" } }));
+    try {
+      expect(readAutoUpdateConfig(root)?.enabled).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("drops malformed steps and watch entries, clamps numbers", () => {
+    const root = makeRoot(`{
+      // comments are allowed
+      "autoUpdate": {
+        "enabled": true,
+        "steps": [["bin/pull", "--quiet"], [], ["ok", ""], "bin/x", [1], ["bin/sync"]],
+        "dailySteps": [["bin/doctor"], null],
+        "watch": ["~/.tool/hooks.json", "", 3, "$HOME/x"],
+        "checkMinutes": 0,
+        "timeoutMinutes": 9999,
+        "cleanup": false
+      }
+    }`);
+    try {
+      expect(readAutoUpdateConfig(root)).toEqual({
+        enabled: true,
+        checkMinutes: 1,
+        steps: [["bin/pull", "--quiet"], ["bin/sync"]],
+        dailySteps: [["bin/doctor"]],
+        watch: ["~/.tool/hooks.json", "$HOME/x"],
+        timeoutMinutes: 240,
+        cleanup: false,
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("upper clamp on checkMinutes and fallback for non-numbers", () => {
+    const root = makeRoot(
+      JSON.stringify({ autoUpdate: { enabled: true, checkMinutes: 5000, timeoutMinutes: "x" } }),
+    );
+    try {
+      const cfg = readAutoUpdateConfig(root);
+      expect(cfg?.checkMinutes).toBe(1440);
+      expect(cfg?.timeoutMinutes).toBe(20);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("ignores a user-global autoUpdate section", () => {
+    const root = makeRoot("{}");
+    const xdg = mkdtempSync(join(tmpdir(), "harnery-autoupdate-xdg-"));
+    const prev = process.env.XDG_CONFIG_HOME;
+    process.env.XDG_CONFIG_HOME = xdg;
+    try {
+      mkdirSync(join(xdg, "harnery"), { recursive: true });
+      writeFileSync(
+        join(xdg, "harnery", "config.jsonc"),
+        JSON.stringify({ autoUpdate: { enabled: true } }),
+      );
+      expect(readAutoUpdateConfig(root)).toBeNull();
+    } finally {
+      if (prev === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = prev;
+      rmSync(root, { recursive: true, force: true });
+      rmSync(xdg, { recursive: true, force: true });
     }
   });
 });

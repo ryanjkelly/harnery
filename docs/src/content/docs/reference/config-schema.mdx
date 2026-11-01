@@ -46,6 +46,7 @@ The config reader (`src/core/config.ts`) merges the two files and owns `binName`
 | `files`        | object  | see below        | Web file-viewer path policy (additive deny/allow globs) |
 | `web`          | object  | see below        | Standalone Next.js dashboard |
 | `computer`     | object  | see below        | Opt-in desktop control (`computer.enabled`) |
+| `autoUpdate`   | object  | see below        | Activity-fired project self-update (`autoUpdate.enabled`) |
 | `backup`       | object  | see below        | restic-backed snapshots |
 | `sync`         | object  | see below        | rclone-backed cross-machine sync |
 
@@ -449,6 +450,31 @@ Precedence is `--port`, then `HARNERY_WEB_PORT`, then this config value, then `4
 
 Project config only: a user-global `computer` section is ignored, because enabling desktop control is a decision for each project. Malformed values fall back to the defaults one by one. See [`harn computer`](/cli/computer/) and [decision record 0228](/decisions/0228-computer-use-through-a-pinned-desktop-driver/).
 
+## `autoUpdate`
+
+| Field            | Type       | Default | Description |
+| ---------------- | ---------- | ------- | ----------- |
+| `enabled`        | bool       | `false` | Turns on the activity-fired update check. Anything other than `true` leaves it off |
+| `steps`          | string[][] | `[]`    | Argv arrays run in order from the project root when the upstream branch moved, a watched path changed, or the last run failed. The first failure stops the run |
+| `dailySteps`     | string[][] | `[]`    | Argv arrays run at most once every 24 hours even when the checkout is current |
+| `watch`          | string[]   | `[]`    | Paths outside Git whose change forces a run. `~/` and `$VAR` expand; relative paths resolve from the project root; a directory is fingerprinted shallowly |
+| `checkMinutes`   | integer    | `15`    | Minimum minutes between remote checks, clamped to 1..1440 |
+| `timeoutMinutes` | integer    | `20`    | Per-step timeout, clamped to 1..240 |
+| `cleanup`        | bool       | `true`  | After a successful run, remove expired working artifacts at most once a day |
+
+Prompts, session starts, and host CLI commands call a tick that stats one
+throttle stamp. When the stamp is older than `checkMinutes`, a detached run
+compares HEAD with the upstream branch through `git ls-remote` (no fetch) and
+fingerprints the watched paths; the steps run only when something changed.
+Steps run with `HARNERY_AUTOUPDATE_CHILD=1`. A step's output line starting with
+`harnery-notice:` is shown once to each agent session on its next prompt, and
+exit code 75 marks a run that needs a person instead of a failure.
+
+Project config only: a user-global `autoUpdate` section is ignored. Malformed
+step entries and watch paths are dropped one by one. See
+[`harn autoupdate`](/cli/autoupdate/) and
+[decision record 0229](/decisions/0229-activity-fired-self-update/).
+
 ## `backup`
 
 | Field          | Type    | Default                                       | Description |
@@ -502,6 +528,7 @@ vars and CLI flags override other config values per invocation:
 | `files` | `deny_globs`, `allow_overrides` | (none) | read by the web layer, not the core reader |
 | `agents` | `requireGitFinalization`, `finalizationRoots` | `HARNERY_AGENTS_REQUIRE_GIT_FINALIZATION` | `finalizationRoots` is project-only and has no env override |
 | `computer` | `enabled`, `idle_seconds`, `wait_seconds` | (none) | project file only; `computer call --wait` overrides `wait_seconds` |
+| `autoUpdate` | `enabled`, `steps`, `dailySteps`, `watch`, `checkMinutes`, `timeoutMinutes`, `cleanup` | `HARNERY_AUTOUPDATE_CHILD=1` skips the tick | project file only |
 
 Full precedence for a `sync` remote, highest first: `HARNERY_SYNC_REMOTE` env → project `sync.remote` → user-global `sync.remote` → `~/.config/harnery/sync.json`.
 

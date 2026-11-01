@@ -15,8 +15,8 @@
  * (Commander pattern).
  */
 
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 import {
@@ -25,6 +25,7 @@ import {
   loadAllLazyCommands,
   registerLazyCommandBundles,
 } from "./lazy-commands.ts";
+import { coordEnv } from "./lib/env.ts";
 
 export {
   type LazyCommandBundle,
@@ -348,8 +349,73 @@ export function createHarneryProgram(opts: HarneryContextOpts = {}): Command {
     bundle.commands.every((command) => !skip.has(commandName(command.command))),
   );
   registerLazyCommandBundles(program, bundles);
+  program.hook("preAction", async (_root, actionCommand) => {
+    await triggerAutoUpdate(actionCommand, opts.context);
+  });
 
   return program;
+}
+
+let autoUpdateTriggered = false;
+
+/** Top-level command name below the program for a Commander action command. */
+function topLevelCommandName(command: Command): string {
+  let current = command;
+  while (current.parent?.parent) current = current.parent;
+  return current.name();
+}
+
+/** Nearest enclosing directory carrying `.harnery/`, without spawning Git. */
+function cheapCoordRoot(context: HarneryProgramContext | undefined): string | null {
+  const override = coordEnv("COORD_ROOT_OVERRIDE");
+  if (override) return override;
+  if (context?.resolveCoordRoot) return context.resolveCoordRoot();
+  const starts = [process.env.CLAUDE_PROJECT_DIR, process.cwd()].filter(
+    (dir): dir is string => typeof dir === "string" && dir.length > 0,
+  );
+  for (const start of starts) {
+    let dir = resolve(start);
+    while (true) {
+      if (existsSync(join(dir, ".harnery"))) return dir;
+      const parent = dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  }
+  return null;
+}
+
+/**
+ * Host CLI activity fires the project self-update check (ADR 0229) once per
+ * process. A project without an `autoUpdate` section pays a directory walk
+ * and one small file read; the engine module loads only when the section is
+ * present. Never throws and never delays the command beyond the tick's stat.
+ */
+async function triggerAutoUpdate(
+  actionCommand: Command,
+  context: HarneryProgramContext | undefined,
+): Promise<void> {
+  if (autoUpdateTriggered) return;
+  autoUpdateTriggered = true;
+  try {
+    if (coordEnv("AUTOUPDATE_CHILD") === "1") return;
+    if (topLevelCommandName(actionCommand) === "autoupdate") return;
+    const root = cheapCoordRoot(context);
+    if (!root) return;
+    let text: string;
+    try {
+      text = readFileSync(join(root, ".harnery", "config.jsonc"), "utf8");
+    } catch {
+      return;
+    }
+    if (!text.includes('"autoUpdate"')) return;
+    const { readAutoUpdateConfig } = await import("./core/config.ts");
+    if (readAutoUpdateConfig(root)?.enabled !== true) return;
+    const { autoUpdateTick } = await import("./core/autoupdate/index.ts");
+    autoUpdateTick(root);
+  } catch {
+    // Self-update is best effort; the user's command always runs.
+  }
 }
 
 interface CommandBundleContext {
@@ -558,6 +624,16 @@ function harneryCommandBundles({
       `Opt-in desktop control through a pinned desktop driver: \`computer status\`, \`install\`, \`up\`, \`call <tool> [json]\` under a desktop lease shared by every agent on the machine. Start with \`${binName} computer status\`.`,
       async (program) =>
         (await import("./commands/computer.ts")).registerComputerCommand(program, emit, binName),
+    ),
+    lazy(
+      "autoupdate",
+      `Activity-fired project self-update: \`autoupdate status\`, \`check\`, \`run\`. Configure steps under \`autoUpdate\` in .harnery/config.jsonc; start with \`${binName} autoupdate status\`.`,
+      async (program) =>
+        (await import("./commands/autoupdate.ts")).registerAutoUpdateCommand(
+          program,
+          emit,
+          binName,
+        ),
     ),
     lazy(
       "browse-session",

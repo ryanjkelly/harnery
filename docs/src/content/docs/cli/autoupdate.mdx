@@ -1,0 +1,100 @@
+---
+title: harn autoupdate
+description: Keep a checkout and its managed tools current without a scheduler. Agent activity fires a throttled check, and the project's own update steps run only when something changed.
+sidebar:
+  order: 49
+---
+
+```
+harn autoupdate status [--json]
+harn autoupdate check [--json]
+harn autoupdate run [--force] [--background] [--json]
+```
+
+`harn autoupdate` keeps a checkout current while people and agents are working
+in it. Every prompt, every session start, and every command of a host CLI built
+on `createHarneryProgram` calls a tick whose usual cost is one file stat. When
+the throttle window has passed, the tick starts a detached background run. That
+run asks the remote for the upstream branch's commit with `git ls-remote` (no
+fetch), checks whether HEAD already contains it, and fingerprints the watched
+paths outside Git. It runs the project's steps only when the branch moved, a
+watched path changed, daily steps are due, or the last run failed. The design
+is in [decision record 0229](/decisions/0229-activity-fired-self-update/).
+
+## Enabling it
+
+The feature is inert until a project opts in:
+
+```jsonc
+// .harnery/config.jsonc
+{
+  "autoUpdate": {
+    "enabled": true,
+    "steps": [["bin/git-pull-all"]],
+    "dailySteps": [["bin/doctor", "--quiet"]],
+    "watch": ["~/.local/share/mytool/version", ".tool-versions"],
+    "checkMinutes": 15,
+    "timeoutMinutes": 20,
+    "cleanup": true
+  }
+}
+```
+
+Only the project file counts; a user-global value never turns it on. The steps
+belong to the project: use the same safe pull or sync command people already
+run by hand. Harnery never fetches, resets, or discards changes on its own.
+Field details are in the [config reference](/reference/config-schema/#autoupdate).
+
+## Step protocol
+
+Each step is an argv array (no shell) run from the project root with
+`HARNERY_AUTOUPDATE_CHILD=1` in its environment, so a step that calls the host
+CLI does not trigger another check.
+
+- A line on stdout or stderr that starts with `harnery-notice:` becomes a
+  notice for the agents in this checkout. Each agent session sees it once, on
+  its next prompt or session start, as a line starting with `Auto-update:`.
+- Exit code 0 means success. The next step runs.
+- Exit code 75 means the step did what it could but a person has to act, for
+  example to sign in again or resolve a conflict. The run stops, the outcome is
+  recorded as blocked, and it is not retried as a failure.
+- Any other exit code, or running past `timeoutMinutes`, is a failure. The run
+  stops and the next attempt waits at least an hour.
+
+```bash
+#!/bin/sh
+# Example step: pull safely, then tell agents when they must act.
+if ! my-safe-pull; then
+  echo "harnery-notice: The pull stopped on a conflict in $(pwd); resolve it before editing."
+  exit 75
+fi
+```
+
+Harnery adds its own notices too. When a run moves HEAD and the change touched
+agent instruction files or hook settings, agents are told to reread them,
+because a running session keeps what it loaded at start.
+
+## autoupdate status
+
+Shows whether the feature is on, when the last check ran, the last run's
+outcome and steps, and the notices still waiting for delivery.
+
+## autoupdate check
+
+Reports what the next run would do (`current`, `behind`, `drift`, `daily`,
+`retry`, `no-upstream`, or `offline`) without running any step.
+
+## autoupdate run
+
+Runs the check and, when needed, the steps in the foreground, printing each
+step's result. A run that finds another run in progress exits without doing
+anything. `--force` runs the steps even when the checkout is current.
+`--background` writes output only to the log; the activity tick uses it. With
+`cleanup` on, a successful run also removes expired working
+artifacts, at most once a day.
+
+## Files
+
+Everything lives under `.harnery/private/autoupdate/`: the throttle stamp
+`checked-at`, the run state and notice queue `state.json`, the lock
+`run.lock`, and the background run log `autoupdate.log`.

@@ -334,6 +334,63 @@
         }
       }
     },
+    "autoUpdate": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Activity-fired project self-update (ADR 0229). Project config only; inert unless enabled is true. Prompts, session starts, and host CLI commands check a throttle stamp; when it is stale a detached child compares HEAD with the upstream branch (git ls-remote, no fetch), fingerprints the watched paths, and runs the steps only when something changed. Step protocol: each step runs from the project root with HARNERY_AUTOUPDATE_CHILD=1; a stdout or stderr line starting `harnery-notice:` becomes a notice shown once to every agent session in this checkout on its next prompt; exit code 75 means the step did what it could but needs a person, which is reported and not retried as a failure; any other non-zero exit stops the run and retries after a backoff.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Turn self-update on for this project. Anything other than true leaves it off."
+        },
+        "steps": {
+          "type": "array",
+          "default": [],
+          "description": "Commands run in order when the upstream branch moved, a watched path changed, or the last run failed. Each entry is an argv array (no shell). The first failure stops the run. The host owns these commands: Harnery never fetches, resets, or discards changes itself.",
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "minLength": 1 }
+          }
+        },
+        "dailySteps": {
+          "type": "array",
+          "default": [],
+          "description": "Commands run at most once every 24 hours even when the checkout is current, for example a health check. Same argv form and protocol as steps.",
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "minLength": 1 }
+          }
+        },
+        "watch": {
+          "type": "array",
+          "default": [],
+          "description": "Paths outside Git whose change forces a run, such as managed tools or generated hook settings. `~/` and `$VAR` expand; relative paths resolve from the project root. A directory is fingerprinted shallowly (its own mtime plus each direct child's mtime and size).",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "checkMinutes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1440,
+          "default": 15,
+          "description": "Minimum minutes between remote checks. Out-of-range values are clamped."
+        },
+        "timeoutMinutes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 240,
+          "default": 20,
+          "description": "Per-step timeout in minutes. A step that runs longer is stopped and counted as a failure. Out-of-range values are clamped."
+        },
+        "cleanup": {
+          "type": "boolean",
+          "default": true,
+          "description": "After a successful run, remove expired working artifacts (`artifacts clean --yes`) at most once a day."
+        }
+      }
+    },
     "files": {
       "type": "object",
       "additionalProperties": false,

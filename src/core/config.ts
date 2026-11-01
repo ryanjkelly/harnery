@@ -11,7 +11,8 @@
  * `coord` (heartbeat freshness), `logs` (structured-log storage budgets),
  * `artifacts` (working-file retention),
  * `backup` (restic repo/password/prune policy), `sync` (rclone
- * remote/prefix), `computer` (opt-in desktop control), and `web` (dashboard port) sections. The `files` deny/override section
+ * remote/prefix), `computer` (opt-in desktop control), `autoUpdate` (activity-fired
+ * project self-update), and `web` (dashboard port) sections. The `files` deny/override section
  * is parsed separately by `web/lib/files.ts`.
  *
  * Env vars and CLI flags override any config value per invocation (each accessor
@@ -24,6 +25,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { coordEnv } from "../lib/env.ts";
 import { DEFAULT_WEB_PORT } from "../lib/local-file-url.ts";
+import { AUTOUPDATE_DEFAULTS, type AutoUpdateConfig } from "./autoupdate/types.ts";
 import { resolveEventLedgerRotateActiveBytesV3 } from "./events/v3/rotation-config.ts";
 import {
   type PromptContextConfig,
@@ -227,6 +229,19 @@ interface HarneryConfig {
    * `enabled` is true. Project config only; read via `readComputerConfig()`.
    */
   computer?: { enabled?: boolean; idle_seconds?: number; wait_seconds?: number };
+  /**
+   * Activity-fired project self-update (ADR 0229). Inert unless `enabled` is
+   * true. Project config only; read via `readAutoUpdateConfig()`.
+   */
+  autoUpdate?: {
+    enabled?: boolean;
+    checkMinutes?: number;
+    steps?: unknown;
+    dailySteps?: unknown;
+    watch?: unknown;
+    timeoutMinutes?: number;
+    cleanup?: boolean;
+  };
   [k: string]: unknown;
 }
 
@@ -770,6 +785,77 @@ export function readComputerConfig(coordRoot?: string | null): ComputerProjectCo
     enabled: record.enabled === true,
     ...(idle !== undefined ? { idle_seconds: idle } : {}),
     ...(waitOk ? { wait_seconds: wait } : {}),
+  };
+}
+
+// Project-only parse cache keyed by the file's stat signature. Hooks call the
+// auto-update reader on every prompt, so an unchanged file costs one stat.
+let projectCache: { path: string; signature: string; cfg: HarneryConfig } | null = null;
+
+function readProjectConfigCached(root: string): HarneryConfig {
+  const p = join(root, ".harnery", "config.jsonc");
+  const signature = statSignature(p);
+  if (signature === null) return {};
+  if (projectCache && projectCache.path === p && projectCache.signature === signature) {
+    return projectCache.cfg;
+  }
+  const cfg = parseConfigFile(p);
+  projectCache = { path: p, signature, cfg };
+  return cfg;
+}
+
+function clampInteger(value: unknown, min: number, max: number, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+/** Keep each argv that is a non-empty array of non-empty strings; drop the rest. */
+function argvList(value: unknown): string[][] {
+  if (!Array.isArray(value)) return [];
+  const out: string[][] = [];
+  for (const entry of value) {
+    if (!Array.isArray(entry) || entry.length === 0) continue;
+    if (!entry.every((part) => typeof part === "string" && part.length > 0)) continue;
+    out.push([...(entry as string[])]);
+  }
+  return out;
+}
+
+/**
+ * Project self-update settings from `.harnery/config.jsonc` (ADR 0229):
+ *
+ * ```jsonc
+ * "autoUpdate": {
+ *   "enabled": true,
+ *   "steps": [["bin/pull-all"]],
+ *   "dailySteps": [["bin/doctor", "--quiet"]],
+ *   "watch": ["~/.local/share/example/hooks.json"],
+ *   "checkMinutes": 15,
+ *   "timeoutMinutes": 20,
+ *   "cleanup": true
+ * }
+ * ```
+ *
+ * Project config only: running commands on activity is a per-project
+ * decision, so a user-global value never turns it on. Null when the project
+ * has no `autoUpdate` section. Malformed values are dropped one by one;
+ * `enabled` is true only when the project sets it to exactly `true`.
+ */
+export function readAutoUpdateConfig(coordRoot: string): AutoUpdateConfig | null {
+  const raw = readProjectConfigCached(coordRoot).autoUpdate;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const record = raw as Record<string, unknown>;
+  const watch = Array.isArray(record.watch)
+    ? record.watch.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
+    : [];
+  return {
+    enabled: record.enabled === true,
+    checkMinutes: clampInteger(record.checkMinutes, 1, 1440, AUTOUPDATE_DEFAULTS.checkMinutes),
+    steps: argvList(record.steps),
+    dailySteps: argvList(record.dailySteps),
+    watch,
+    timeoutMinutes: clampInteger(record.timeoutMinutes, 1, 240, AUTOUPDATE_DEFAULTS.timeoutMinutes),
+    cleanup: record.cleanup !== false,
   };
 }
 

@@ -1,0 +1,86 @@
+---
+title: "0229: Activity-fired self-update"
+description: "ADR: agent activity (a prompt, a session start, a host CLI command) fires a throttled check that keeps a checkout and its managed tools current. The hot path is one stat; a detached child runs the host's own update steps only when the upstream branch, a watched path, or a daily check calls for it."
+---
+
+**Status:** accepted (2026-11-01) · **Scope:** product tier (`core/autoupdate`, `commands/autoupdate`, the prompt and session-start hooks, the `createHarneryProgram` pre-action hook)
+
+## Context
+
+Agents working in a shared checkout drift behind its upstream branch, and
+behind the tools and generated settings the project manages outside Git,
+unless someone remembers to refresh. A stale checkout runs old instructions,
+old hooks, and old commands, and nothing tells the agent so.
+
+A scheduler is the obvious answer, but it runs when nobody is working and
+sleeps when they are. Each operating system needs its own setup (launchd,
+systemd timers, Task Scheduler), and a failed scheduled run is invisible until
+someone goes looking for its log.
+
+## Decision
+
+Activity fires the update. Every prompt, every session start, and every host
+CLI command built on `createHarneryProgram` calls `autoUpdateTick`. The feature
+is inert until a project sets `autoUpdate.enabled: true` in its own
+`.harnery/config.jsonc`; a user-global value never turns it on.
+
+- **One-stat hot path.** The tick reads the mtime of a throttle stamp under
+  `.harnery/private/autoupdate/`. When the stamp is younger than
+  `checkMinutes` (default 15), it returns. Otherwise it touches the stamp and
+  launches a detached `autoupdate run --background` child, so no hook or
+  command waits for the work. A project without an `autoUpdate` section never
+  loads the engine.
+- **Three levels of early exit.** (1) The stamp is fresh: done. (2) In the
+  child, `git ls-remote` reads the upstream branch's commit and a local
+  ancestry test checks whether HEAD already contains it. Nothing is fetched at
+  this stage. A shallow fingerprint of the watched paths outside Git and the
+  daily-step clock are checked at the same time. If all three are current:
+  done. (3) Only then does the child run the host's steps.
+- **The host owns the steps.** `steps` and `dailySteps` are argv arrays run
+  from the project root, typically the host's own safe pull and sync command.
+  Harnery never fetches, resets, or discards changes itself. The first failing
+  step stops the run.
+- **Notice protocol.** A step reports to agents by printing a line that starts
+  with `harnery-notice:`. Exit code 75 means the step did what it could but a
+  person must act (sign in again, resolve a conflict); that outcome is
+  reported and not retried as a failure. Notices are queued in the
+  auto-update state and delivered through the prompt and session-start hooks,
+  once per agent session, as lines that start with `Auto-update:`.
+- **Automatic notices.** When HEAD moves during a run, the engine compares the
+  old and new commits. A change to agent instruction files or to hook settings
+  produces a notice telling agents to reread them, because a running session
+  keeps whatever it loaded at start.
+- **Failure backoff and a lock.** A failed run is retried no sooner than an
+  hour later. A lock file keeps two children from running at once; a tick
+  that finds a live run returns without launching another.
+- **Daily cleanup.** With `cleanup` on (the default), a successful run removes
+  expired working artifacts at most once a day. Unexpired artifacts are never
+  touched.
+- **Manual control.** `autoupdate status` shows the last run and pending
+  notices, `check` reports what the next run would do without running steps,
+  and `run` runs it in the foreground.
+
+## Alternatives
+
+- **Operating-system schedulers** (launchd, systemd timers, Task Scheduler).
+  Rejected: one setup per platform, runs while nobody is working, and failures
+  stay out of sight of the agents who would act on them.
+- **A fetch on every prompt.** Rejected for its cost: a network round trip and
+  object transfer on each turn, multiplied by every agent in the checkout.
+  `ls-remote` returns one line, and the stamp limits even that to once per
+  `checkMinutes`.
+- **Only a manual refresh command or skill.** Kept as the fallback for a
+  project that leaves `autoUpdate` off, and for an agent that wants to update
+  now. It depends on someone remembering, which is the problem this solves.
+
+## Consequences
+
+- A checkout with agent activity stays within `checkMinutes` of its upstream
+  without any per-machine setup.
+- An idle checkout is not updated. The first prompt after a quiet period
+  triggers the check, and that agent learns of any change on a later prompt.
+- Update safety is only as good as the host's steps. A step that discards
+  local work would do so on activity; hosts must give it the same guards they
+  give a manual pull.
+- Projects that never configure `autoUpdate` pay one config read per hook and
+  see one more lazy command.

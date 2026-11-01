@@ -108,6 +108,7 @@ import {
   parsePayload,
 } from "./adapter/parse.ts";
 import { hookTimeoutFor } from "./adapter/wiring.ts";
+import { autoUpdateHookContext } from "./autoupdate-cue.ts";
 import { scheduleBackupSnapshot } from "./backup-schedule.ts";
 import {
   captureImages,
@@ -1316,6 +1317,13 @@ async function handleSessionStarted(run: HookRun): Promise<void> {
   } catch (err) {
     logError(coordRoot, err, { phase: "backup-schedule" });
   }
+  // Project self-update (ADR 0229) fires on activity. The tick costs one stat
+  // when fresh and otherwise launches a detached child; queued notices for
+  // this session ride the same context as the backup cue.
+  const autoUpdateCue = await autoUpdateHookContext(coordRoot, owner.instance_id, {
+    deliver: coordEnv("WORKFLOW_CHILD") !== "1",
+    onError: (err, phase) => logError(coordRoot, err, { phase }),
+  });
   // Storage maintenance can walk large stores. It runs in a detached worker so
   // session start emits its context without waiting for it; an adapter that
   // stops a slow hook would otherwise drop that context entirely.
@@ -1344,7 +1352,7 @@ async function handleSessionStarted(run: HookRun): Promise<void> {
       data,
       adapter,
       recovery?.briefing ?? "",
-      backupCue,
+      [backupCue, autoUpdateCue].filter(Boolean).join("\n\n"),
     );
     if (injected && recovery) {
       completeRecoveryInjection(coordRoot, owner.instance_id, sessionId, recovery);
@@ -1473,6 +1481,11 @@ async function handleTurnStarted(run: HookRun): Promise<void> {
       logError(coordRoot, err, { phase: "prompt-context-user-prompt" });
     }
   }
+  // Project self-update (ADR 0229): see handleSessionStarted.
+  const autoUpdateCue = await autoUpdateHookContext(coordRoot, owner.instance_id, {
+    deliver: coordEnv("WORKFLOW_CHILD") !== "1",
+    onError: (err, phase) => logError(coordRoot, err, { phase }),
+  });
   try {
     const injected = await emitUserPromptSubmitSystemMessage(
       coordRoot,
@@ -1482,6 +1495,7 @@ async function handleTurnStarted(run: HookRun): Promise<void> {
       payload?.cwd,
       recovery?.briefing ?? "",
       hostPromptContext,
+      autoUpdateCue,
     );
     if (injected && recovery) {
       completeRecoveryInjection(coordRoot, owner.instance_id, sessionId, recovery);
@@ -2443,6 +2457,7 @@ async function emitUserPromptSubmitSystemMessage(
   workspaceCwd?: string,
   recoveryBriefing = "",
   hostPromptContext = "",
+  autoUpdateCue = "",
 ): Promise<boolean> {
   // Workflow children get no prompt-time coordination context, matching
   // SessionStart. The turn ritual is not enforced for them, the naming nudge
@@ -2470,6 +2485,9 @@ async function emitUserPromptSubmitSystemMessage(
   }
   if (hostPromptContext) {
     additionalContext = [additionalContext, hostPromptContext].filter(Boolean).join("\n\n");
+  }
+  if (autoUpdateCue) {
+    additionalContext = [additionalContext, autoUpdateCue].filter(Boolean).join("\n\n");
   }
   if (!additionalContext) return false;
 
