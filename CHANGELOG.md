@@ -1,5 +1,102 @@
 # Changelog
 
+## 0.47.0
+
+### Minor Changes
+
+- 522f448: New opt-in project self-update, fired by agent activity instead of a
+  scheduler. With `"autoUpdate": { "enabled": true, "steps": [...] }` in
+  `.harnery/config.jsonc`, every prompt, session start, and host CLI command
+  built on `createHarneryProgram` calls a tick whose hot path is one stat of a
+  throttle stamp. When the stamp is older than `checkMinutes` (default 15), a
+  detached run compares HEAD with the upstream branch through `git ls-remote`
+  (no fetch), fingerprints the configured `watch` paths, and runs the project's
+  own `steps` only when the branch moved, a watched path changed, or the last
+  run failed. `dailySteps` run at most once a day. A step's `harnery-notice:`
+  output lines reach each agent session once, through the prompt and
+  session-start hooks, as `Auto-update:` lines; exit code 75 marks a run that
+  needs a person. Harnery also adds a notice when an update changed agent
+  instructions or hook settings. New `autoupdate status|check|run` command, new
+  config keys under `autoUpdate`, and `readAutoUpdateConfig()` in `core/config`.
+  Projects without the section are unchanged.
+- 955b7c6: Claude Code children that Harnery spawns (`agent()` in `run` workflows and the
+  `harnery/lib/headless` claude-code backend) now load no MCP servers and no
+  claude.ai connectors by default. They pass `--strict-mcp-config` with an empty
+  `--mcp-config` and set `ENABLE_CLAUDEAI_MCP_SERVERS=false`, which keeps about
+  130 unused connector tool schemas out of every turn. Project settings, hooks,
+  and `CLAUDE.md` still load. A stage that needs a connector opts in with
+  `agent(prompt, { mcp: "inherit" })`, or names exactly the servers it needs with
+  `mcp: { mcpServers: {...} }`; `runHeadless` accepts the same `mcp` field. The
+  new `ClaudeMcpMode`, `claudeMcpLaunch`, `CLAUDE_NO_MCP_ARGS`, and
+  `CLAUDE_NO_CONNECTORS_ENV` are exported from `harnery/lib/headless`.
+- fc87618: New opt-in `computer` command drives a Windows desktop (native or from WSL2)
+  through one pinned, checksum-verified desktop driver, called through its CLI.
+  It stays inert until a project sets `"computer": { "enabled": true }` in
+  `.harnery/config.jsonc`. `computer install` previews the pinned download and
+  applies it with `--yes`; `status`, `up`, `down`, `doctor`, `tools`, and
+  `describe <tool>` manage and inspect the driver; `call <tool> [json]` runs one
+  tool call. Each call takes a desktop lease shared by every agent on the
+  machine, so a second agent waits (bounded) and then exits 3 naming the holder.
+  `computer lease status|acquire|release` manage it directly. A call without
+  `session` uses the agent's name, and inline base64 screenshots are redacted
+  from the output unless `--keep-screenshot` is passed. With computer use
+  enabled, `init` also renders a `harn-computer` skill and one pointer line in
+  the instructions block; other projects' rendered output is unchanged. New
+  config keys: `computer.enabled`, `computer.idle_seconds`, and
+  `computer.wait_seconds`, read by `readComputerConfig()`.
+- a917a83: `HarneryProgramContext.headerPolicy(host, name, value)` lets a host CLI check
+  each `-H` header `fetch` was given before any request is sent. A refusal stops
+  the run with the host's message and a nonzero exit. The new
+  `FetchHeaderDecision` type is exported from `harnery/commander`.
+- d3beb3c: `grep` now clips printed lines at 500 characters by default instead of 300.
+  On the context bench's v2 tune split, a 300-character clip cut a line that
+  held an answer, and 500 kept every claim the unclipped search found while
+  still roughly halving the output. `--max-columns <n>` and `--max-columns 0`
+  work as before.
+- 2015671: `grep` now bounds its output. A search shows at most 50 result rows unless
+  `--limit <n>` or `--all` is given, and clips each line to 300 characters
+  (`--max-columns <n>`, `0` for no clipping). When rows are left out, a count
+  pass supplies the totals and the last line states the matches and files left
+  out and the `--page <n>` that continues. Pages are cut from one sorted order,
+  so consecutive pages never repeat or skip a row and both engines select the
+  same rows. The `--json` envelope adds `limit`, `page`, `available_matches`,
+  `available_files`, `omitted_matches`, `omitted_files`, and `next_page`, plus
+  `clipped` on a clipped row.
+- 8681297: `grep` no longer bounds result rows by default; `--all` is removed. Every
+  default tried from 50 to 300 rows dropped evidence that an unbounded search
+  found, so a search shows every row unless `--limit <n>` sets a page size.
+  Paging, the count pass, and the "left out" line with the `--page` that
+  continues are unchanged. `--page` now needs `--limit`. Lines are still clipped
+  to 300 characters by default (`--max-columns`).
+- 5699e05: Add the project-only `hooks.portableCommands` setting. When it is `true`, `harn init` writes `agent-hook <event> --adapter <adapter>` from `PATH` as every adapter hook command on every OS, adds the same command as each Codex `commandWindows`, and `init --check`, `harn doctor` and the session-start drift nudge treat that form as current everywhere. A project that commits its adapter settings and is cloned on Windows, Linux, WSL and macOS keeps one committed form. Projects without the setting are unchanged.
+- aa83037: Per-prompt context now carries only news. The peer table reprints when a live
+  peer arrives, leaves, changes lifecycle, or changes its claims, not when its
+  activity changes; peers with no recent heartbeat are counted in `+N more`
+  instead of listed, and unnamed sessions show their full instance id. The
+  Stop-enforced turn-ritual reminder appears on a session's first prompt, after a
+  compaction, and after a bounced turn. `agents status` prints a compact box
+  (task, lifecycle, files, peers, time) with diagnostic rows only when they
+  report a problem; `--full` prints every row.
+- 988ee79: `fetchWithJar` and `harn fetch` now follow redirects in the client for every
+  `redirect: "follow"` request, with or without a cookie jar. A cross-origin hop
+  keeps only `User-Agent`, `Accept`, `Accept-Language`, and `Range` from the
+  caller's headers, and a cross-origin 307 or 308 on a request other than GET or
+  HEAD throws instead of resending the body. Same-origin hops are unchanged. The
+  `clientRedirects` fetch option and `HarneryProgramContext.clientRedirects` hook
+  are removed because client-side following is now always on.
+
+### Patch Changes
+
+- 1e515de: `docs lint` now lists error violations before warnings in its report. In a
+  repository with thousands of advisory warnings, the error that fails the run
+  used to sit deep inside the list, past where a truncated or skimmed output ends.
+- 49bc50a: `docs lint` and `docs metadata sync` now name the accepted values when they
+  reject a document's `status`, a `relations` key, or an `access` field. For
+  example, a plan with `status: active` reports "use one of: proposed,
+  in-progress, shipped, abandoned", so the fix needs no trip to the validator.
+- 26beb83: Run the source CLI and adapter hooks on native Windows without Bash. Add Node launchers, support Windows process creation tokens, handle unsupported directory fsync separately from mandatory file flushes, and interpret state permissions through the platform's inherited ACLs. Keep POSIX permission and directory flush checks on Unix. Start the dashboard without shell-specific port expansion, launch its semantic reader through the active runtime, hide background subprocess windows, and build with native filesystem paths and cleanup.
+- 0c858ca: Launch bundled coordination helpers through their native JavaScript entrypoints on Windows. Preserve argument boundaries, stdin, and nonzero guard exits for task declarations, claims, canonical events, recovery commands, and hook journal effects. Keep background helper windows hidden.
+
 ## 0.46.1
 
 ### Patch Changes
