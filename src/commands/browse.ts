@@ -133,6 +133,7 @@ import {
   saveBaseline,
 } from "../lib/browser/visual-diff.ts";
 import {
+  cookiesForDomain,
   harvestDomain,
   harvestWindowsChromeCookies,
   keepWindowsChromeSession,
@@ -151,7 +152,7 @@ import {
   recordLoginSync,
   syncLoginCookies,
 } from "../lib/browser/windows-login-sync.ts";
-import { applyExtraCookies, CookieJar, mergeCookies } from "../lib/cookies/index.ts";
+import { applyExtraCookies, type Cookie, CookieJar, mergeCookies } from "../lib/cookies/index.ts";
 import { commandPaceGate } from "../lib/pace/index.ts";
 
 /**
@@ -486,7 +487,9 @@ export function registerBrowseCommand(
       "Open the URL in the installed Google Chrome with nothing attached (no DevTools protocol, no " +
         "Playwright) so a person can sign in; under WSL this is the Windows host's Chrome on a dedicated " +
         "sign-in profile. Sign in, then close the window or create the --login-close-file; later browse " +
-        "and browse-session runs reuse the cookies. Under WSL the profile can also stay in use as an " +
+        "and browse-session runs reuse the cookies, and the site's own cookies are copied into the " +
+        "cookie store so fetch is signed in too (HARNERY_BROWSER_LOGIN_SYNC=off skips the copy outside " +
+        "WSL). Under WSL the profile can also stay in use as an " +
         "ordinary browser: each headless browse copies the target site's cookies from it when it changed " +
         "and is closed, and an open profile is left alone (see --sync-login). Sites cannot tell this " +
         "window from the person's own browser.",
@@ -1121,7 +1124,9 @@ async function runBrowse(
       await runWindowsPlainLogin(url, opts.store ?? DEFAULT_STORE, loginCloseFile, emit);
       return;
     }
-    await runPlainLogin(url, opts.profile ?? DEFAULT_PROFILE, loginCloseFile, plainUa, emit);
+    const profileDir = opts.profile ?? DEFAULT_PROFILE;
+    await runPlainLogin(url, profileDir, loginCloseFile, plainUa, emit);
+    if (jar) await copyPlainLoginCookies(url, profileDir, jar.path);
     return;
   }
 
@@ -3524,6 +3529,147 @@ async function runPlainLogin(
     await Promise.race([exited, new Promise((r) => setTimeout(r, 5000))]);
   }
   emit.log(`[--login] Chrome closed; cookies persisted in ${profileDir}.`, "info");
+}
+
+/** A cookie as Playwright's `BrowserContext.cookies()` returns it. */
+type ProfileCookie = Parameters<typeof cookiesForDomain>[0][number];
+
+export interface PlainLoginCookieDeps {
+  /** Read every cookie in `profileDir`; Chrome must no longer be open on it. */
+  readProfileCookies: (profileDir: string) => Promise<ProfileCookie[]>;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+export type PlainLoginCookieResult =
+  | { status: "off" }
+  | {
+      status: "copied" | "none";
+      domain: string;
+      cookies: number;
+      sessionCookies: number;
+      /** Cookie names copied, sorted. Never values. */
+      names: string[];
+    }
+  | { status: "failed"; domain: string; error: string };
+
+/**
+ * After a plain `--login` window closes outside WSL, copy the sign-in site's
+ * cookies from the profile into the cookie store, so `fetch` and other
+ * cookie-store readers are signed in too, not only runs that open the
+ * profile. Only cookies for the URL's registrable domain are copied, the
+ * same scope the WSL sign-in uses. A read can race the closing Chrome
+ * releasing its profile, so a failed read is retried once. Never throws;
+ * `HARNERY_BROWSER_LOGIN_SYNC=off` turns the copy off.
+ */
+export async function syncPlainLoginCookies(input: {
+  url: string;
+  profileDir: string;
+  storePath: string;
+  deps: PlainLoginCookieDeps;
+  env?: NodeJS.ProcessEnv;
+  retryDelayMs?: number;
+}): Promise<PlainLoginCookieResult> {
+  const env = input.env ?? process.env;
+  if ((env.HARNERY_BROWSER_LOGIN_SYNC ?? "").toLowerCase() === "off") return { status: "off" };
+  let domain = "";
+  try {
+    domain = harvestDomain(input.url);
+    const sleep = input.deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+    let raw: ProfileCookie[];
+    try {
+      raw = await input.deps.readProfileCookies(input.profileDir);
+    } catch {
+      await sleep(input.retryDelayMs ?? 2000);
+      raw = await input.deps.readProfileCookies(input.profileDir);
+    }
+    const cookies = cookiesForDomain(raw, domain);
+    const names = [...new Set(cookies.map((cookie) => cookie.name))].sort();
+    const sessionCookies = cookies.filter((cookie) => cookie.expires <= 0).length;
+    if (cookies.length > 0) {
+      const jar = new CookieJar({ path: input.storePath, source: "harn-browse" });
+      jar.save(mergeCookies(jar.load(), cookies));
+    }
+    return {
+      status: cookies.length > 0 ? "copied" : "none",
+      domain,
+      cookies: cookies.length,
+      sessionCookies,
+      names,
+    };
+  } catch (err) {
+    return { status: "failed", domain, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * Read a closed profile's cookies with the installed Google Chrome that wrote
+ * them, headless. The last session is restored so browser-session cookies a
+ * stopped window left on disk are kept. Playwright's default
+ * `--password-store=basic` and `--use-mock-keychain` are dropped so Chrome
+ * decrypts the cookie database with the same key store the sign-in used.
+ */
+async function readPlainProfileCookies(profileDir: string): Promise<Cookie[]> {
+  const executablePath = installedChromePath();
+  const context = await chromium.launchPersistentContext(profileDir, {
+    headless: true,
+    ...(executablePath ? { executablePath } : {}),
+    args: ["--restore-last-session"],
+    ignoreDefaultArgs: ["--password-store=basic", "--use-mock-keychain"],
+    timeout: 30_000,
+  });
+  try {
+    return await context.cookies();
+  } finally {
+    await context.close().catch(() => {});
+  }
+}
+
+/** Run the post-sign-in copy and report it; a failure is a warning only. */
+async function copyPlainLoginCookies(
+  url: string,
+  profileDir: string,
+  storePath: string,
+): Promise<void> {
+  const result = await syncPlainLoginCookies({
+    url,
+    profileDir,
+    storePath,
+    deps: { readProfileCookies: readPlainProfileCookies },
+  });
+  if (result.status === "off") {
+    emit.log(
+      "[--login] HARNERY_BROWSER_LOGIN_SYNC=off: the sign-in stays in the profile only; the cookie store was not updated.",
+      "info",
+    );
+    return;
+  }
+  if (result.status === "failed") {
+    emit.log(
+      `[--login] Could not copy ${result.domain || "the site's"} cookies from ${profileDir} into ${storePath}; the sign-in is kept in the profile, but \`${browseBinName} fetch\` stays signed out until a headless \`${browseBinName} browse ${url}\` run copies them. ${result.error}`,
+      "warn",
+    );
+    return;
+  }
+  if (result.status === "none") {
+    emit.log(
+      `[--login] No ${result.domain} cookies were found in the profile; the sign-in may not have completed.`,
+      "warn",
+    );
+  } else {
+    emit.log(
+      `[--login] Copied ${result.cookies} ${result.domain} cookies (${result.sessionCookies} browser-session) into ${storePath}: ${result.names.join(", ")}.`,
+      "info",
+    );
+  }
+  emit.data({
+    login: {
+      domain: result.domain,
+      store: storePath,
+      cookies: result.cookies,
+      sessionCookies: result.sessionCookies,
+      names: result.names,
+    },
+  });
 }
 
 /**

@@ -60,7 +60,7 @@ signals are outside the identity override. See [ADR 0186](/decisions/0186-consis
 
 | Flag | Description |
 | --- | --- |
-| `--login` | Open the URL in the installed Google Chrome with nothing attached so a person can sign in; under WSL, the Windows host's Chrome. Close the window or create the `--login-close-file` when done; later `browse` and `browse-session` runs reuse the cookies. Under WSL the sign-in profile can also stay in use as an ordinary browser; see [Signing in under WSL](#signing-in-under-wsl). |
+| `--login` | Open the URL in the installed Google Chrome with nothing attached so a person can sign in; under WSL, the Windows host's Chrome. Close the window or create the `--login-close-file` when done; later `browse` and `browse-session` runs reuse the cookies, and the sign-in site's cookies are copied into the cookie store so [`fetch`](/cli/fetch/) is signed in too (see [Signing in](#signing-in-with-plain-chrome)). Under WSL the sign-in profile can also stay in use as an ordinary browser; see [Signing in under WSL](#signing-in-under-wsl). |
 | `--sync-login` | WSL only: copy the URL's site cookies from the Windows sign-in profile into the cookie store now, then exit without loading the page. Refuses while Chrome is open on that profile. Prints `{"loginSync":{"domain","store","status","cookies","merged","sessionCookies","names"}}`. |
 | `--attached` | With `--login`: open an automation-controlled Chrome that this process and `--control-file` can drive. Sites can detect it and may disable the account, so use it only for agent-driven headed sessions on sites you own, never to sign in to a third-party account. |
 | `--login-close-file <path>` | With `--login`, keep the process open until another process creates this signal file, then remove it and close cleanly. |
@@ -140,6 +140,12 @@ harn browse --login --attached \
 Harnery never presents as desktop Linux. Web application firewalls commonly deny an `X11; Linux` user agent outright (Sunbelt Network's Cloudflare rule answered 200 the moment the browser said Windows), and headless builds announce `HeadlessChrome`. Every page load uses a normal Chrome user agent for the host the operator sits at, at the real Chrome major, persisted machine-locally so all surfaces reuse the one that works.
 
 Some sign-in verification steps detect the DevTools protocol itself, not just launch flags; X fails with "Something went wrong" at its verification gate under any Playwright-driven window. That is why `harn browse --login <url>` spawns the installed Google Chrome directly on the shared profile with nothing attached, you sign in as in any browser, and once the window closes every later `browse` or `browse-session` run opens that profile already signed in.
+
+### Signing in with plain Chrome
+
+[`harn fetch`](/cli/fetch/) never opens the profile; it reads only the cookie store (`--store`, default `~/.cache/harnery/cookies.json`). So on Windows, macOS, and Linux (outside WSL), when the `--login` window closes (or you press Enter, or create the close file), Harnery reopens the profile headless with the same installed Google Chrome, reads its cookies for the sign-in site's registrable domain (`example.com` for `https://www.example.com/login`, including subdomains), and merges them into the cookie store. Cookies for other domains, such as an identity provider used during sign-in, are not copied. Chrome decrypts its own cookie database here, using the operating system's key store as the sign-in window did. The headless read restores the last session, so browser-session cookies a stopped window left on disk are kept; Chrome itself deletes them when a window closes normally unless the profile is set to continue where it left off. The run logs the count and cookie names, never values, and prints `{"login":{"domain","store","cookies","sessionCookies","names"}}` on stdout.
+
+The copy is best effort: if the profile cannot be read (for example, Chrome is still shutting down after one retry), the sign-in still succeeds and stays in the profile, and a warning says so. A later headless `harn browse <url>` run copies the profile's cookies into the store when it closes. `--no-cookies` skips the copy, and `HARNERY_BROWSER_LOGIN_SYNC=off` turns it off. Under WSL the Windows sign-in profile is copied as described next.
 
 ### Signing in under WSL
 
