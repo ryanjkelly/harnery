@@ -55,9 +55,11 @@ and an unknown build counts as "restart needed", which would loop if acted on.
   `ensureSupervisorRunning` (run by `web up` and by workflow admission)
   compare a live local daemon's recorded identity with the current one and
   replace it when they differ. A record with no identity predates this
-  change, so it is replaced once; its replacement records one. A record from
-  another package root is left alone, so two installations that share a
-  project do not take turns replacing each other's daemon.
+  change: that daemon is never replaced while it runs. It is left alone until
+  it exits on its own (idle exit, a stop command), and the next launcher call
+  then starts a current one normally. A record from another package root is
+  left alone too, so two installations that share a project do not take
+  turns replacing each other's daemon.
 - **A replacement is a request of its own, never a signal.** For the
   semantic reader and the supervisor, the launcher writes a `replace.json`
   naming the daemon generation (its status nonce) it targets. The daemon
@@ -68,11 +70,12 @@ and an unknown build counts as "restart needed", which would loop if acted on.
   never used either, because for the semantic reader it also means "paused"
   and for the supervisor an operator stop issued during the handover could
   not be told apart from the launcher's.
-- **Daemons from before this change** understand only the stop request. For
-  them the launcher writes a stop request carrying its own `replacement_id`,
-  waits, and withdraws it only if it is still its own. If an operator wrote a
-  stop over it, the stop stands and nothing is started. The replacement is
-  then started with the old daemon's recorded settings (`calls_per_hour`, or
+- **The launcher never touches a stop or pause.** It does not write, rewrite,
+  or remove the operator's stop request. A stale daemon with a stop or pause
+  already pending is left to stop. If the daemon exits without a successor
+  appearing, the launcher checks for a stop or pause again after its last
+  status read and starts nothing when one exists; otherwise it starts the
+  successor with the old daemon's recorded settings (`calls_per_hour`, or
   `interval_ms`, `idle_exit_ms` and `keep_alive`).
 - **Automatic starts never clear a stop.** Launcher and relaunch starts pass
   `--keep-pause` (semantic) or `--honor-stop` (supervisor): a daemon started
@@ -85,8 +88,11 @@ and an unknown build counts as "restart needed", which would loop if acted on.
   replacement takes over the pid file, and the old daemon, which now checks
   every five seconds whether it was superseded, closes its socket and exits.
   The new daemon connects only after the old process has exited, waiting at
-  most 75 seconds, which covers a pre-change daemon that notices only at its
-  minute tick.
+  most 75 seconds. If the old process is still alive at the end of the wait,
+  the new daemon hands the pid file back, gives up the reservation, logs once,
+  and exits without connecting; the next launcher call tries again. A daemon
+  that sees its own code change keeps its pid file and launches its successor
+  through the same handover, so the two never connect at once.
 - **Operator stops win.** A daemon stopped by its stop command never
   relaunches itself, whatever the code did.
 
@@ -104,6 +110,15 @@ and an unknown build counts as "restart needed", which would loop if acted on.
   are what a pull or an upgrade changes.
 - **Only report it.** Status already said "restart needed" for two of these
   services, and the problem still needed a person to notice and act.
+- **Imitate an operator stop for pre-change daemons.** A daemon from before
+  this change understands only the operator's stop request, so the launcher
+  could write one, wait, and withdraw it. Rejected: the launcher cannot tell
+  its own request from an operator's stop or pause written over it or already
+  pending (on Windows a stop sends no signal, so the daemon can still be
+  running with one in place), and withdrawing it at the end of a bounded
+  wait leaves a daemon that is mid-call never seeing it at all. Each attempt
+  to repair that lost or overrode an operator's decision. Such daemons are
+  instead left running until they exit on their own.
 - **Exit and rely on the launchers alone.** That works for the relay, whose
   launcher runs at every agent turn. The semantic reader and the supervisor
   are started when the dashboard starts, so they would stay down until it was
@@ -126,10 +141,10 @@ and an unknown build counts as "restart needed", which would loop if acted on.
   next launcher call starts the daemon.
 - A semantic reader inside a long model call can take longer than the
   launcher's ten-second wait. The launcher then reports it as still running,
-  and the reader relaunches itself when the call ends. A reader from before
-  this change cannot relaunch itself: the launcher withdraws its stop
-  request, the reader keeps running on the old code, and the next launcher
-  call tries again.
+  and the reader relaunches itself when the call ends.
+- A daemon started before this change keeps running its old code until it
+  exits on its own or someone stops it. Restart it once with its stop and
+  start commands to pick up the new code sooner.
 - Signalling a stale daemon to stop it at once was rejected. It would be
   faster, but on Windows the signal kills the process mid-call and skips its
   lease release and shutdown record.

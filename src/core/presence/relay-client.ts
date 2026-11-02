@@ -303,6 +303,51 @@ function launchRelayDaemon(coordRoot: string): boolean {
   }
 }
 
+export type RelayHandoverOutcome = "connect" | "superseded" | "gave_up";
+
+/**
+ * Take the pid file for `record` and give up the launch reservation. When a
+ * live daemon held the pid file, wait for it to exit before connecting. If it
+ * outlives the wait, hand the pid file back to it, log once, and report
+ * `gave_up`: the caller must exit without connecting, and the next launcher
+ * call tries again. Two daemons never hold sockets at once.
+ */
+export async function takeOverRelayPidFile(
+  coordRoot: string,
+  record: RelayPidRecord,
+  options: {
+    isAlive?: (pid: number) => boolean;
+    wait?: (milliseconds: number) => Promise<void>;
+    timeoutMs?: number;
+    nowMs?: () => number;
+  } = {},
+): Promise<RelayHandoverOutcome> {
+  const isAlive = options.isAlive ?? pidAlive;
+  const previous = readRelayPidRecord(coordRoot);
+  atomicWriteJson(pidFilePath(coordRoot), record);
+  releaseRelayLaunchReservation(coordRoot);
+  const ownsPidFile = () => readRelayPidRecord(coordRoot)?.pid === record.pid;
+  if (!previous || previous.pid === record.pid || !isAlive(previous.pid)) return "connect";
+  const released = await awaitPreviousRelayExit({
+    previousPid: previous.pid,
+    stillOwner: ownsPidFile,
+    isAlive,
+    ...(options.wait ? { wait: options.wait } : {}),
+    ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+    ...(options.nowMs ? { nowMs: options.nowMs } : {}),
+  });
+  if (released) return "connect";
+  if (!ownsPidFile()) return "superseded";
+  // The previous daemon is still alive (stalled, or too old to notice):
+  // give its pid file back rather than connect beside it.
+  atomicWriteJson(pidFilePath(coordRoot), previous);
+  appendPresenceRelayDiagnostic(coordRoot, "relay.lifecycle", {
+    phase: "handover_timeout",
+    message: `previous daemon pid ${previous.pid} did not exit; not connecting`,
+  });
+  return "gave_up";
+}
+
 export type RelayTickDecision = "continue" | "superseded" | "code_changed" | "idle_exit";
 
 /**
@@ -360,33 +405,17 @@ export async function runRelayDaemon(
     return 2;
   }
 
-  // Take (or take over) the pid file. A superseded daemon notices and exits.
-  const previous = readRelayPidRecord(coordRoot);
-  const myRecord: RelayPidRecord = {
+  // Take (or take over) the pid file. A superseded daemon notices and exits;
+  // this one connects only after it has gone.
+  const handover = await takeOverRelayPidFile(coordRoot, {
     pid: process.pid,
     url,
     started_at: new Date().toISOString(),
     code: codeWatch.initial,
-  };
-  atomicWriteJson(pidFilePath(coordRoot), myRecord);
-  releaseRelayLaunchReservation(coordRoot);
-  const ownsPidFile = () => readRelayPidRecord(coordRoot)?.pid === process.pid;
-  if (previous && previous.pid !== process.pid && pidAlive(previous.pid)) {
-    // Connect only once the daemon being replaced has closed its socket.
-    const released = await awaitPreviousRelayExit({
-      previousPid: previous.pid,
-      stillOwner: ownsPidFile,
-    });
-    if (!ownsPidFile()) {
-      await closeProcessLoggers();
-      return 0;
-    }
-    if (!released) {
-      appendPresenceRelayDiagnostic(coordRoot, "relay.lifecycle", {
-        phase: "handover_timeout",
-        message: `previous daemon pid ${previous.pid} did not exit; connecting anyway`,
-      });
-    }
+  });
+  if (handover !== "connect") {
+    await closeProcessLoggers();
+    return 0;
   }
 
   const creds = await deriveRoomCredentials({
@@ -579,13 +608,9 @@ export async function runRelayDaemon(
       } catch {
         /* ignore */
       }
-      try {
-        rmSync(pidFilePath(coordRoot), { force: true });
-      } catch {
-        /* ignore */
-      }
-      // The pid file is gone, so the successor connects at once; the
-      // reservation keeps a racing hook from starting a second one.
+      // Keep the pid file: the successor takes it over and connects only
+      // once this process has exited, and the launch reservation keeps a
+      // racing hook from starting a second one.
       ensureRelayDaemon(coordRoot);
       void closeProcessLoggers().finally(() => process.exit(0));
       return;

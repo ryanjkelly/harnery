@@ -202,9 +202,9 @@ export function shortCodeIdentity(id: string | null | undefined): string {
  * Should a launcher replace a live daemon whose record carries `recorded`?
  *
  * - The current identity is unknown: no (never restart on a guess).
- * - The record has no identity at all: yes, once. The daemon predates
- *   identity recording, so it cannot be shown to run the current code; its
- *   replacement records one.
+ * - The record has no identity at all: no. The daemon predates identity
+ *   recording and cannot be asked to hand over; it is left running and
+ *   replaced normally once it exits on its own (ADR 0232).
  * - The record names another package root: no. A second installation calling
  *   the launcher must not take turns replacing the first one's daemon.
  * - The recorded identity is unknown, or equal: no.
@@ -215,7 +215,6 @@ export function codeIdentityReplacementNeeded(
   current: CodeIdentityRecord,
 ): boolean {
   if (current.id === null) return false;
-  if (recorded === undefined) return true;
   if (!recorded || typeof recorded !== "object") return false;
   const record = recorded as Partial<CodeIdentityRecord>;
   if (typeof record.root !== "string" || resolve(record.root) !== resolve(current.root)) {
@@ -308,7 +307,8 @@ export function codeChangeMessage(change: CodeIdentityChange): string {
  * asks it to hand over through a file of its own, never through the
  * operator's stop request (which may mean "paused") and never through a
  * signal (which on Windows terminates the process outright). The request
- * names the daemon generation it targets, so a successor ignores it.
+ * names the daemon generation it targets, so a successor ignores it. A
+ * daemon from before these requests is never replaced while it runs.
  */
 
 interface ReplacementRequestFile {
@@ -354,41 +354,4 @@ export function clearReplacementRequest(path: string, keepNonce?: string): void 
   } catch {
     // A request left behind targets a generation that no longer exists.
   }
-}
-
-/**
- * Daemons from before replacement requests understand only the durable stop
- * request. The launcher writes one carrying its own `replacement_id`, so it
- * can later tell its request from an operator's stop written over it.
- */
-export function writeStopForReplacement(path: string): string {
-  const replacementId = randomUUID();
-  writePrivateJsonAtomic(path, {
-    requested_at: new Date().toISOString(),
-    requested_by_pid: process.pid,
-    replacement_id: replacementId,
-  });
-  return replacementId;
-}
-
-/**
- * Withdraw the launcher's own stop request. `operator` means someone wrote a
- * stop over it, which must be honored; `missing` means it is already gone.
- */
-export function withdrawStopForReplacement(
-  path: string,
-  replacementId: string,
-): "withdrawn" | "operator" | "missing" {
-  const value = readJsonObject(path);
-  if (value === null) {
-    try {
-      statSync(path);
-      return "operator";
-    } catch {
-      return "missing";
-    }
-  }
-  if (value.replacement_id !== replacementId) return "operator";
-  rmSync(path, { force: true });
-  return "withdrawn";
 }

@@ -24,9 +24,7 @@ import {
   currentCodeIdentity,
   replacementRequestedFor,
   watchCodeIdentity,
-  withdrawStopForReplacement,
   writeReplacementRequest,
-  writeStopForReplacement,
 } from "../code-identity.ts";
 import { resolveBinName } from "../config.ts";
 import { pressureHistoryFromSupervisor } from "../diagnostics/advice.ts";
@@ -191,10 +189,12 @@ export async function spawnSupervisor(
 
 /**
  * Start the supervisor unless one is running. A running local supervisor that
- * loaded older code than this installation is replaced (ADR 0232) with the
+ * recorded older code than this installation is replaced (ADR 0232) with the
  * same interval, idle exit, and keep-alive settings. The replacement goes
- * through a request of its own, so a `supervisor stop` issued during the
- * handover always wins.
+ * through a request of its own, so a `supervisor stop` issued before or
+ * during the handover always wins; the launcher never writes or removes the
+ * stop request. A supervisor from before code identities is left running
+ * until it exits on its own.
  */
 export async function ensureSupervisorRunning(
   coordRoot: string,
@@ -214,6 +214,8 @@ export async function ensureSupervisorRunning(
   if (status.running) {
     const record = status.record;
     const local = record?.host === hostname();
+    // No recorded identity (a supervisor from before them), the same code, an
+    // unknown identity, or another host: leave it running.
     if (
       !record ||
       !local ||
@@ -221,37 +223,31 @@ export async function ensureSupervisorRunning(
     ) {
       return { state: "running", status };
     }
+    // A pending stop request means it is already on its way out; on Windows
+    // the stop sends no signal, so it may still be running for a cycle.
+    if (existsSync(stopPath)) return { state: "running", status };
+    // It finishes its cycle, exits, and relaunches itself; the launcher only
+    // waits for the successor.
     const deadline = Date.now() + dependencies.replacementTimeoutMs;
-    if (record.code !== undefined) {
-      // This supervisor understands replacement requests: it finishes its
-      // cycle, exits, and relaunches itself; the launcher only waits.
-      writeReplacementRequest(supervisorReplacePath(coordRoot), record.nonce);
-      while (Date.now() < deadline) {
-        const after = dependencies.readStatus(coordRoot);
-        if (after.running && after.record && after.record.nonce !== record.nonce) {
-          return { state: "replaced", status: after };
-        }
-        if (after.liveness === "stopped" && existsSync(stopPath)) return stoppedByRequest(after);
-        await dependencies.wait(100);
-      }
-      const final = dependencies.readStatus(coordRoot);
-      if (final.liveness !== "stopped") return { state: "running", status: final };
-      if (existsSync(stopPath)) return stoppedByRequest(final);
-      // It exited without a successor appearing; start one here.
-    } else {
-      // A supervisor from before replacement requests honors only the stop
-      // request. Ours carries an id, so a stop written over it wins.
-      const replacementId = writeStopForReplacement(stopPath);
-      let after = dependencies.readStatus(coordRoot);
-      while (after.liveness !== "stopped" && Date.now() < deadline) {
-        await dependencies.wait(100);
-        after = dependencies.readStatus(coordRoot);
-      }
-      if (withdrawStopForReplacement(stopPath, replacementId) === "operator") {
-        return stoppedByRequest(after);
-      }
-      if (after.liveness !== "stopped") return { state: "running", status: after };
+    writeReplacementRequest(supervisorReplacePath(coordRoot), record.nonce);
+    let after = dependencies.readStatus(coordRoot);
+    while (
+      after.liveness !== "stopped" &&
+      after.record?.nonce === record.nonce &&
+      Date.now() < deadline
+    ) {
+      await dependencies.wait(100);
+      after = dependencies.readStatus(coordRoot);
     }
+    if (after.liveness !== "stopped") {
+      return {
+        state: after.running && after.record?.nonce !== record.nonce ? "replaced" : "running",
+        status: after,
+      };
+    }
+    // It exited without a successor appearing; start one below, unless a
+    // stop request arrived at any point up to now.
+    if (existsSync(stopPath)) return stoppedByRequest(after);
     replacing = record;
   }
   try {

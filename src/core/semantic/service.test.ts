@@ -882,9 +882,9 @@ describe("semantic service code changes", () => {
     expect(existsSync(semanticReplacePath(root))).toBe(false);
   });
 
-  test("a pause written during a legacy replacement survives it (F1)", async () => {
+  test("a pause written during the handover survives it (F1)", async () => {
     const root = fixture();
-    let current = liveStatus(undefined);
+    let current = liveStatus(oldCode);
     let starts = 0;
     const result = await ensureSemanticServiceRunning(root, {
       readStatus: () => current,
@@ -906,6 +906,56 @@ describe("semantic service code changes", () => {
     expect(existsSync(semanticPaths(root).stop)).toBe(true);
   });
 
+  test("a pause arriving at the handover deadline is kept and nothing starts (F6)", async () => {
+    const root = fixture();
+    let reads = 0;
+    let starts = 0;
+    const result = await ensureSemanticServiceRunning(root, {
+      readStatus: () => {
+        reads += 1;
+        if (reads === 1) return liveStatus(oldCode);
+        // The deadline has passed by the next read: the reader stopped and
+        // the operator paused at that moment.
+        if (!existsSync(semanticPaths(root).stop)) requestSemanticServiceStop(root);
+        return stoppedStatus;
+      },
+      start: async () => {
+        starts += 1;
+        return stoppedStatus;
+      },
+      isActive: () => true,
+      currentCode: () => newCode,
+      wait: async () => {},
+      replacementTimeoutMs: 0,
+    });
+    expect(result.state).toBe("paused");
+    expect(starts).toBe(0);
+    expect(
+      JSON.parse(readFileSync(semanticPaths(root).stop, "utf8")).replacement_id,
+    ).toBeUndefined();
+  });
+
+  test("a live reader from before code identities is never replaced or touched (F9)", async () => {
+    const root = fixture();
+    let starts = 0;
+    const result = await ensureSemanticServiceRunning(root, {
+      readStatus: () => liveStatus(undefined),
+      start: async () => {
+        starts += 1;
+        return stoppedStatus;
+      },
+      isActive: () => true,
+      currentCode: () => newCode,
+      wait: async () => {},
+      replacementTimeoutMs: 5_000,
+    });
+    expect(result.state).toBe("running");
+    expect(starts).toBe(0);
+    // No stop request to withdraw too early, no replacement request.
+    expect(existsSync(semanticPaths(root).stop)).toBe(false);
+    expect(existsSync(semanticReplacePath(root))).toBe(false);
+  });
+
   test("an automatic start keeps a pause written before the daemon ran (F1)", async () => {
     const root = fixture();
     requestSemanticServiceStop(root);
@@ -924,9 +974,9 @@ describe("semantic service code changes", () => {
     acquireSemanticServiceLease(root)();
   });
 
-  test("a legacy replacement carries the reader's call ceiling (F4)", async () => {
+  test("a reader that hands over without a successor is restarted with its call ceiling (F4)", async () => {
     const root = fixture();
-    let current = liveStatus(undefined, { calls_per_hour: 12 });
+    let current = liveStatus(oldCode, { calls_per_hour: 12 });
     const starts: unknown[] = [];
     const result = await ensureSemanticServiceRunning(root, {
       readStatus: () => current,
@@ -943,7 +993,7 @@ describe("semantic service code changes", () => {
     });
     expect(result.state).toBe("replaced");
     expect(starts).toEqual([{ keepPause: true, callsPerHour: 12 }]);
-    // The launcher withdrew its own stop request, so nothing reads as paused.
+    // The launcher never writes the pause file.
     expect(existsSync(semanticPaths(root).stop)).toBe(false);
   });
 

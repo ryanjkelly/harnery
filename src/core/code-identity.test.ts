@@ -13,9 +13,7 @@ import {
   replacementRequestedFor,
   shortCodeIdentity,
   watchCodeIdentity,
-  withdrawStopForReplacement,
   writeReplacementRequest,
-  writeStopForReplacement,
 } from "./code-identity.ts";
 
 const roots: string[] = [];
@@ -164,8 +162,8 @@ describe("codeIdentityReplacementNeeded", () => {
     expect(codeIdentityReplacementNeeded({ id: `1.0.0@${A}`, root: "/pkg" }, current)).toBe(true);
   });
 
-  test("replaces a daemon that predates identity recording", () => {
-    expect(codeIdentityReplacementNeeded(undefined, current)).toBe(true);
+  test("never replaces a live daemon that predates identity recording", () => {
+    expect(codeIdentityReplacementNeeded(undefined, current)).toBe(false);
   });
 
   test("never replaces on an unknown identity or another installation", () => {
@@ -262,17 +260,5 @@ describe("replacement requests", () => {
     expect(existsSync(path)).toBe(true);
     clearReplacementRequest(path);
     expect(existsSync(path)).toBe(false);
-  });
-
-  test("a launcher withdraws only its own stop request", () => {
-    const path = join(packageRoot(), "stop.json");
-    const id = writeStopForReplacement(path);
-    expect(withdrawStopForReplacement(path, id)).toBe("withdrawn");
-    expect(existsSync(path)).toBe(false);
-    expect(withdrawStopForReplacement(path, id)).toBe("missing");
-    const mine = writeStopForReplacement(path);
-    writeFileSync(path, JSON.stringify({ requested_at: "later", requested_by_pid: 1 }));
-    expect(withdrawStopForReplacement(path, mine)).toBe("operator");
-    expect(existsSync(path)).toBe(true);
   });
 });

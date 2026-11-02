@@ -1135,26 +1135,45 @@ describe("supervisor code changes", () => {
     expect(starts).toBe(0);
   });
 
-  test("a stop issued during a legacy replacement wins (F2)", async () => {
+  test("a stop already pending on a stale supervisor is honored, not overwritten (F7)", async () => {
     const root = tempRoot();
-    let current = liveStatus(undefined);
+    // On Windows a stop sends no signal, so the supervisor still runs a cycle.
+    requestSupervisorStop(root);
+    const before = readFileSync(supervisorPaths(root).stop, "utf8");
     let starts = 0;
     const result = await ensureSupervisorRunning(root, {
-      readStatus: () => current,
+      readStatus: () => liveStatus(oldCode),
       start: async () => {
         starts += 1;
-        return current;
+        return liveStatus(newCode);
       },
       currentCode: () => newCode,
-      wait: async () => {
-        requestSupervisorStop(root);
-        current = stoppedStatus();
-      },
+      wait: async () => {},
       replacementTimeoutMs: 5_000,
     });
-    expect(result.state).toBe("unavailable");
+    expect(result.state).toBe("running");
     expect(starts).toBe(0);
-    expect(existsSync(supervisorPaths(root).stop)).toBe(true);
+    expect(readFileSync(supervisorPaths(root).stop, "utf8")).toBe(before);
+    expect(existsSync(supervisorReplacePath(root))).toBe(false);
+  });
+
+  test("a live supervisor from before code identities is never replaced or touched (F9)", async () => {
+    const root = tempRoot();
+    let starts = 0;
+    const result = await ensureSupervisorRunning(root, {
+      readStatus: () => liveStatus(undefined),
+      start: async () => {
+        starts += 1;
+        return liveStatus(newCode);
+      },
+      currentCode: () => newCode,
+      wait: async () => {},
+      replacementTimeoutMs: 5_000,
+    });
+    expect(result.state).toBe("running");
+    expect(starts).toBe(0);
+    expect(existsSync(supervisorPaths(root).stop)).toBe(false);
+    expect(existsSync(supervisorReplacePath(root))).toBe(false);
   });
 
   test("a stop issued while a supervisor hands over wins (F2)", async () => {
@@ -1227,9 +1246,9 @@ describe("supervisor code changes", () => {
     expect(existsSync(supervisorReplacePath(root))).toBe(false);
   });
 
-  test("a legacy replacement carries the supervisor's settings (F4)", async () => {
+  test("a supervisor that hands over without a successor is restarted with its settings (F4)", async () => {
     const root = tempRoot();
-    let current = liveStatus(undefined, {
+    let current = liveStatus(oldCode, {
       interval_ms: 750,
       idle_exit_ms: 60_000,
       keep_alive: true,
@@ -1251,7 +1270,7 @@ describe("supervisor code changes", () => {
     expect(starts).toEqual([
       { intervalMs: 750, idleExitMs: 60_000, keepAlive: true, honorStop: true },
     ]);
-    // The launcher withdrew its own stop request before starting.
+    // The launcher never writes the stop request.
     expect(existsSync(supervisorPaths(root).stop)).toBe(false);
   });
 });

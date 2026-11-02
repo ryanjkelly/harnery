@@ -28,9 +28,7 @@ import {
   currentCodeIdentity,
   replacementRequestedFor,
   watchCodeIdentity,
-  withdrawStopForReplacement,
   writeReplacementRequest,
-  writeStopForReplacement,
 } from "../code-identity.ts";
 import {
   type ReadLedgerV3SinceResult,
@@ -241,9 +239,11 @@ export async function spawnSemanticService(
  *
  * Dashboard hosts call this before launching their web process. A failed
  * semantic launch is reported as data instead of throwing so the read-only
- * dashboard remains available. A live daemon on this host that loaded older
- * code than this installation is replaced (ADR 0232): it is asked to hand over
- * after its current model call, never signalled, and a pause always wins.
+ * dashboard remains available. A live daemon on this host that recorded
+ * older code than this installation is replaced (ADR 0232): it is asked to
+ * hand over after its current model call, never signalled, and a pause always
+ * wins. A daemon from before code identities is left running until it exits
+ * on its own. The launcher never writes or removes the pause file.
  */
 export async function ensureSemanticServiceRunning(
   coordRootRaw: string,
@@ -265,6 +265,8 @@ export async function ensureSemanticServiceRunning(
   if (status.running) {
     const record = status.record;
     const local = record?.host === hostname();
+    // No recorded identity (a reader from before them), the same code, an
+    // unknown identity, or another host: leave it running.
     if (
       !record ||
       !local ||
@@ -274,41 +276,27 @@ export async function ensureSemanticServiceRunning(
     }
     // A reader the operator paused is already stopping; never replace it.
     if (dependencies.isPaused(coordRoot)) return { state: "paused", status };
+    // The reader finishes its model call, exits, and relaunches itself, so
+    // the launcher only waits for the successor.
     const deadline = Date.now() + dependencies.replacementTimeoutMs;
-    if (record.code !== undefined) {
-      // This daemon understands replacement requests: it finishes its model
-      // call, exits, and relaunches itself, so the launcher only waits.
-      writeReplacementRequest(semanticReplacePath(coordRoot), record.nonce);
-      while (Date.now() < deadline) {
-        const after = dependencies.readStatus(coordRoot);
-        if (after.running && after.record && after.record.nonce !== record.nonce) {
-          return { state: "replaced", status: after };
-        }
-        if (!after.running && dependencies.isPaused(coordRoot)) {
-          return { state: "paused", status: after };
-        }
-        await dependencies.wait(100);
-      }
-      const final = dependencies.readStatus(coordRoot);
-      // Still finishing its model call: it relaunches itself when it exits.
-      if (final.running) return { state: "running", status: final };
-      // It exited without a successor appearing; start one here.
-    }
-    // A reader from before replacement requests honors only the stop request.
-    const stopPath = semanticPaths(coordRoot).stop;
-    const replacementId = writeStopForReplacement(stopPath);
+    writeReplacementRequest(semanticReplacePath(coordRoot), record.nonce);
     let after = dependencies.readStatus(coordRoot);
-    while (after.running && Date.now() < deadline) {
+    while (after.running && after.record?.nonce === record.nonce && Date.now() < deadline) {
       await dependencies.wait(100);
       after = dependencies.readStatus(coordRoot);
     }
-    // An operator stop written over ours is a pause and must survive.
-    if (withdrawStopForReplacement(stopPath, replacementId) === "operator") {
-      return { state: "paused", status: after };
+    if (after.running) {
+      // A successor appeared, or the reader is still inside its model call
+      // and relaunches itself when it ends.
+      return {
+        state: after.record?.nonce === record.nonce ? "running" : "replaced",
+        status: after,
+      };
     }
-    if (after.running) return { state: "running", status: after };
+    // It exited without a successor appearing; start one below, unless a
+    // pause landed at any point up to now (checked again below).
+    replacing = record;
   }
-  if (status.running) replacing = status.record;
   // Recheck right before starting: a pause may have landed meanwhile.
   if (dependencies.isPaused(coordRoot)) {
     return { state: "paused", status: dependencies.readStatus(coordRoot) };

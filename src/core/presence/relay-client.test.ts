@@ -15,6 +15,7 @@ import {
   relayTickDecision,
   releaseRelayLaunchReservation,
   reserveRelayLaunch,
+  takeOverRelayPidFile,
 } from "./relay-client.ts";
 import { computeSenderId, deriveRoomCredentials, encryptPayload } from "./relay-protocol.ts";
 
@@ -259,10 +260,9 @@ describe("relay daemon code changes", () => {
     expect(ensure()).toEqual({ result: "replaced", launches: 1 });
     // The new daemon releases the reservation once it owns the pid file.
     releaseRelayLaunchReservation(root);
-    // A daemon from before identity recording is replaced once.
+    // A live daemon from before identity recording is left running.
     writePid(pidRecord());
-    expect(ensure()).toEqual({ result: "replaced", launches: 1 });
-    releaseRelayLaunchReservation(root);
+    expect(ensure()).toEqual({ result: "running", launches: 0 });
     writePid({ ...pidRecord(), code: current });
     expect(ensure()).toEqual({ result: "running", launches: 0 });
     // An unknown recorded identity or another installation never restarts.
@@ -293,6 +293,45 @@ describe("relay daemon code changes", () => {
     expect(existsSync(reservationPath())).toBe(false);
     expect(reserveRelayLaunch(root)).toBe(true);
     expect(reserveRelayLaunch(root)).toBe(false);
+  });
+
+  test("a successor never connects while the daemon it replaces is still alive (F8)", async () => {
+    const previous = { ...pidRecord(), pid: 4242, code: { id: "1.0.0@old", root: "/pkg" } };
+    const mine = { ...pidRecord(), code: current };
+    const pidPath = join(root, ".harnery", "presence", "relay-daemon.json");
+
+    // The previous daemon outlives the wait: hand its pid file back, drop the
+    // reservation, and do not connect.
+    writePid(previous);
+    expect(reserveRelayLaunch(root)).toBe(true);
+    let nowMs = 0;
+    expect(
+      await takeOverRelayPidFile(root, mine, {
+        isAlive: (pid) => pid === 4242,
+        wait: async (ms) => {
+          nowMs += ms;
+        },
+        nowMs: () => nowMs,
+        timeoutMs: 1_000,
+      }),
+    ).toBe("gave_up");
+    expect(JSON.parse(readFileSync(pidPath, "utf8")).pid).toBe(4242);
+    expect(existsSync(reservationPath())).toBe(false);
+
+    // Once the previous daemon exits, the successor keeps the pid file and connects.
+    let alive = true;
+    expect(
+      await takeOverRelayPidFile(root, mine, {
+        isAlive: (pid) => pid === 4242 && alive,
+        wait: async () => {
+          alive = false;
+        },
+      }),
+    ).toBe("connect");
+    expect(JSON.parse(readFileSync(pidPath, "utf8")).pid).toBe(process.pid);
+
+    // No previous owner: connect at once.
+    expect(await takeOverRelayPidFile(root, mine, { isAlive: () => false })).toBe("connect");
   });
 
   test("a replacement waits for the daemon it replaces to exit before connecting (F5)", async () => {
