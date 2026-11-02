@@ -86,7 +86,7 @@ export function renderInstructionsBlock(
   // Opt-in surface: the default block stays byte-identical unless the project
   // enabled computer use and the skill is actually installed.
   const computerPointer = skills.computer
-    ? `\n\n**Desktop control.** This project enables \`${b} computer\` for driving native desktop apps and real browsers as a last resort. The \`harn-computer\` skill has the loop and the approval step, and the desktop is one shared resource held by one agent at a time.`
+    ? `\n\n**Desktop control.** This project enables \`${b} computer\` for driving native desktop apps and real browsers. It is the default whenever work needs a visible window: showing the person a page, using their real browser, or operating a desktop app. APIs, CLIs and headless browser tools still come first for reading and checking data. The \`harn-computer\` skill has the loop and the approval step, and the desktop is one shared resource held by one agent at a time.`
     : "";
   // Render the journal categories from the canonical enum so this prose can
   // never drift from what `journal add` actually accepts (the "note, plan…" list
@@ -536,9 +536,14 @@ say that first; it is the most useful sentence in the reply.`;
 
 function computerBody(b: string): string {
   return `\`${b} computer\` drives this machine's desktop through two pinned desktop drivers.
-It is the last resort: use a vendor API, a CLI, or the browser tools first.
-Reach for it only for a native desktop app, or a page that needs a real
-browser you cannot drive any other way.
+Read and check data with a vendor API, a CLI, or the headless browser tools
+(\`${b} fetch\`, headless \`${b} browse\`) first. When the work needs a
+visible window, \`${b} computer\` is the default: showing the person a page,
+using their real browser and its signed-in session, or operating a native
+desktop app. Open an automation-controlled window (\`${b} browse --headed\`,
+\`${b} browse --login --attached\`) only for what Playwright alone gives you
+in a window, such as a scripted batch with assertions, a HAR capture, or
+viewport emulation.
 
 ## Setup check
 
@@ -741,7 +746,7 @@ export const SKILLS: SkillTemplate[] = [
       buildOwnedSkill({
         name: "harn-computer",
         description:
-          "Drive a native desktop app or a real browser through the project's two pinned desktop drivers (agent-desktop snapshots and refs; cua tools, screenshots and isolated browser), as a last resort after APIs, CLIs, and browser tools. Covers the setup check, which driver to pick, asking the person for approval, each driver's read / act / read back loop, safety rules, and the shared desktop lease.",
+          "Drive a native desktop app or a real browser through the project's two pinned desktop drivers (agent-desktop snapshots and refs; cua tools, screenshots and isolated browser), as the default whenever work needs a visible window (a page shown to the person, their real browser, a desktop app); APIs, CLIs and headless browser tools come first for reading and checking data. Covers the setup check, which driver to pick, asking the person for approval, each driver's read / act / read back loop, safety rules, and the shared desktop lease.",
         binName,
         body: computerBody(binName),
       }),
