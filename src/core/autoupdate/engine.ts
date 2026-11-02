@@ -22,7 +22,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, extname, join, resolve, win32 } from "node:path";
-import { fileURLToPath } from "node:url";
+import { harnCliEntry } from "../cli-entry.ts";
 import { readAutoUpdateConfig, resolveBinName } from "../config.ts";
 import { fingerprint } from "./fingerprint.ts";
 import {
@@ -128,12 +128,7 @@ function resolveDeps(deps: AutoUpdateDeps): Resolved {
 // ------------------------------------------------------------------ helpers
 
 /** The CLI entry the detached runner executes with `process.execPath`. */
-export function harnCliEntry(): string {
-  const ext = extname(fileURLToPath(import.meta.url)) || ".js";
-  const entry = fileURLToPath(new URL(`../../cli${ext}`, import.meta.url));
-  if (existsSync(entry)) return entry;
-  return fileURLToPath(new URL("../../../bin/harn.mjs", import.meta.url));
-}
+export { harnCliEntry };
 
 /** Set the throttle stamp's mtime (creating it), which is all the tick reads. */
 export function setStamp(coordRoot: string, atMs: number): void {

@@ -23,6 +23,7 @@ import {
   type ServiceProcessDependencies,
   serviceStartRefusal,
 } from "../agents/state/service-process.ts";
+import { harnCliEntry } from "../cli-entry.ts";
 import { resolveBinName } from "../config.ts";
 import { installedHarneryBuild } from "../events/v3/runtime-build.ts";
 import { type NormalizedPolicy, normalizePolicy, type PolicyIsolation } from "../policy/index.ts";
@@ -240,14 +241,15 @@ export async function spawnGovernorService(coordRootRaw: string): Promise<Govern
   const sharedLogs = coordEnv("SHARED_LOGS") !== "0";
   const logFd = sharedLogs ? undefined : openSync(serviceLogPath(coordRoot), "a", stateFileMode());
   if (logFd !== undefined) chmodSync(serviceLogPath(coordRoot), stateFileMode());
-  const harnBin = new URL("../../../bin/harn", import.meta.url).pathname;
-  if (!existsSync(harnBin)) {
+  const entry = harnCliEntry();
+  if (!existsSync(entry)) {
     if (logFd !== undefined) closeSync(logFd);
-    throw new Error(`cannot find harn executable at ${harnBin}`);
+    throw new Error(`cannot find harn executable at ${entry}`);
   }
   let spawnError: Error | undefined;
-  const child = spawn(harnBin, ["governor", "service", "daemon"], {
+  const child = spawn(process.execPath, [entry, "governor", "service", "daemon"], {
     cwd: coordRoot,
+    windowsHide: true,
     detached: true,
     stdio: logFd === undefined ? ["ignore", "ignore", "ignore"] : ["ignore", logFd, logFd],
     env: {

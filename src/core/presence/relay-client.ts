@@ -37,6 +37,7 @@ import {
 import { join } from "node:path";
 import { coordEnv } from "../../lib/env.ts";
 import { resolveMachineLabel } from "../../lib/machine.ts";
+import { harnCliEntry } from "../cli-entry.ts";
 import { presenceRelayUrl } from "../config.ts";
 import { eventV3ActiveWatchPath } from "../events/v3/reader.ts";
 import { closeProcessLoggers, legacyLogFields, processLogger } from "../storage/logger.ts";
@@ -125,19 +126,26 @@ export function ensureRelayDaemon(coordRoot: string): void {
     const rec = readPidRecord(coordRoot);
     if (rec && rec.url === url && pidAlive(rec.pid)) return;
 
-    // Resolve the harn bin at the package root (works from src/ under Bun and
-    // dist/ under Node — both sit two levels below the root).
-    const harnBin = new URL("../../../bin/harn", import.meta.url).pathname;
-    if (!existsSync(harnBin)) return;
+    // The runtime itself runs the CLI entry, so the daemon starts on Windows
+    // too (see cli-entry.ts).
+    const entry = harnCliEntry();
+    if (!existsSync(entry)) return;
 
     mkdirSync(presenceDir(coordRoot), { recursive: true });
     const sharedLogs = coordEnv("SHARED_LOGS") !== "0";
     const log = sharedLogs ? undefined : openSync(logFilePath(coordRoot), "a");
-    const child = spawn(harnBin, ["presence", "relay-daemon"], {
+    const child = spawn(process.execPath, [entry, "presence", "relay-daemon"], {
+      windowsHide: true,
       cwd: coordRoot,
       detached: true,
       stdio: log === undefined ? ["ignore", "ignore", "ignore"] : ["ignore", log, log],
-      env: { ...process.env, HARNERY_OUTPUT_SESSION_TEE: "0" },
+      // Pin the daemon to this project: an inherited CLAUDE_PROJECT_DIR (or
+      // similar) may name another one, whose config has no relay.
+      env: {
+        ...process.env,
+        HARNERY_COORD_ROOT_OVERRIDE: coordRoot,
+        HARNERY_OUTPUT_SESSION_TEE: "0",
+      },
     });
     if (log !== undefined) closeSync(log);
     child.unref();
