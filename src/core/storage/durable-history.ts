@@ -13,6 +13,7 @@ import {
   readSync,
   realpathSync,
   renameSync,
+  rmdirSync,
   rmSync,
   statSync,
   writeSync,
@@ -544,6 +545,12 @@ function claimLease(lease: string, parent: DirectoryIdentity, owner: LeaseOwner)
     const claimed = captureDirectoryIdentity(claim);
     writeOwner(join(claim, "owner.json"), owner);
     syncDirectory(claimed);
+    // POSIX rename replaces an empty lease directory and refuses a regular
+    // file; Windows does the opposite (it never replaces a directory and does
+    // replace a file). Remove an empty lease with rmdir, which succeeds only
+    // while it is empty, and fail closed on a lease that is not a directory.
+    removeEmptyLease(lease);
+    if (leaseHasWrongType(lease)) return false;
     renameSync(claim, lease);
   } catch {
     return false;
@@ -623,13 +630,60 @@ function recoverStaleLease(lease: string, staleMs: number): boolean {
   }
 }
 
+/**
+ * Windows refuses to rename a directory while a file inside it is open, so a
+ * release fails with EPERM while a waiting writer reads `owner.json`. Retry
+ * those sharing errors briefly, and surface a release that still fails rather
+ * than leak a lease no one may recover.
+ */
 function releaseOwnedLease(lease: string, owner: LeaseOwner): void {
-  try {
-    const current = JSON.parse(completeJsonl(join(lease, "owner.json"))) as LeaseOwner;
+  const deadline = Date.now() + LEASE_RELEASE_RETRY_MS;
+  while (true) {
+    let current: LeaseOwner;
+    try {
+      current = JSON.parse(completeJsonl(join(lease, "owner.json"))) as LeaseOwner;
+    } catch {
+      // A missing or replaced lease does not belong to this operation.
+      return;
+    }
     if (current.owner_id !== owner.owner_id) return;
-    retireLease(lease, owner.owner_id);
+    try {
+      retireLease(lease, owner.owner_id);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") return;
+      if (!isWindowsSharingError(code) || Date.now() >= deadline) throw error;
+      Atomics.wait(leaseSleepCell, 0, 0, 1);
+    }
+  }
+}
+
+const LEASE_RELEASE_RETRY_MS = 5_000;
+const leaseSleepCell = new Int32Array(new SharedArrayBuffer(4));
+
+function isWindowsSharingError(code: string | undefined): boolean {
+  return (
+    process.platform === "win32" && (code === "EPERM" || code === "EACCES" || code === "EBUSY")
+  );
+}
+
+function removeEmptyLease(lease: string): void {
+  try {
+    const stat = lstatSync(lease);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) return;
+    rmdirSync(lease);
   } catch {
-    // A missing or replaced lease does not belong to this operation.
+    // Missing, or not empty: a held lease always has an owner record.
+  }
+}
+
+function leaseHasWrongType(lease: string): boolean {
+  try {
+    const stat = lstatSync(lease);
+    return stat.isSymbolicLink() || !stat.isDirectory();
+  } catch {
+    return false;
   }
 }
 

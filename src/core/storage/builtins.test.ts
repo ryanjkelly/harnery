@@ -5,6 +5,9 @@ import { join, resolve } from "node:path";
 import { harneryStorageFamilies } from "./builtins.ts";
 import { createStorageCatalog } from "./catalog.ts";
 
+/** Resolved paths are native (backslashes on Windows); compare with POSIX fragments. */
+const slash = (p: string): string => p.replaceAll("\\", "/");
+
 describe("source-owned storage descriptors", () => {
   const root = resolve("/tmp/harnery-storage-builtins");
   const catalog = createStorageCatalog({ coord_root: root, project_root: root });
@@ -44,11 +47,15 @@ describe("source-owned storage descriptors", () => {
   test("keeps V3 canonical authority separate from support storage", () => {
     const canonical = catalog.require("event-v3-canonical-active");
     const support = catalog.require("event-v3-support-active");
-    expect(canonical.resolved_roots.some((root) => root.path.endsWith("/ledgers/v3"))).toBeFalse();
     expect(
-      canonical.resolved_roots.every((root) => !root.path.includes("/diagnostics")),
+      canonical.resolved_roots.some((root) => slash(root.path).endsWith("/ledgers/v3")),
+    ).toBeFalse();
+    expect(
+      canonical.resolved_roots.every((root) => !slash(root.path).includes("/diagnostics")),
     ).toBeTrue();
-    expect(support.resolved_roots.some((root) => root.path.includes("/diagnostics"))).toBeTrue();
+    expect(
+      support.resolved_roots.some((root) => slash(root.path).includes("/diagnostics")),
+    ).toBeTrue();
     expect(
       catalog
         .familiesForPath(join(root, ".harnery", "ledgers", "v3", "control-state-witness.json"))
@@ -76,7 +83,7 @@ describe("source-owned storage descriptors", () => {
   test("declares owner-protocol and managed-content link handling", () => {
     const support = catalog.require("event-v3-support-active");
     const appendLease = support.resolved_roots.find((candidate) =>
-      candidate.path.endsWith("/ledgers/v3/append-lease"),
+      slash(candidate.path).endsWith("/ledgers/v3/append-lease"),
     );
     expect(appendLease).toMatchObject({ kind: "directory", match: "exact" });
     expect(
