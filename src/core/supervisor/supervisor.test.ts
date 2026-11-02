@@ -1114,6 +1114,31 @@ describe("supervisor code changes", () => {
     return root;
   }
 
+  test("ensure never restarts an explicitly stopped supervisor, and starts others honoring stops (F1)", async () => {
+    const root = tempRoot();
+    const starts: unknown[] = [];
+    const ensure = () =>
+      ensureSupervisorRunning(root, {
+        readStatus: () => stoppedStatus(),
+        start: async (_root, options) => {
+          starts.push(options);
+          return liveStatus(newCode);
+        },
+        currentCode: () => newCode,
+        wait: async () => {},
+        replacementTimeoutMs: 0,
+      });
+    // An ordinary stopped service with no stop request starts, honoring stops.
+    expect((await ensure()).state).toBe("started");
+    expect(starts).toEqual([{ honorStop: true }]);
+    // After `supervisor stop`, web up and workflow admission leave it stopped.
+    requestSupervisorStop(root);
+    const stopped = await ensure();
+    expect(stopped.state).toBe("unavailable");
+    expect(starts).toHaveLength(1);
+    expect(existsSync(supervisorPaths(root).stop)).toBe(true);
+  });
+
   test("ensure leaves current and foreign supervisors alone", async () => {
     const root = tempRoot();
     let starts = 0;

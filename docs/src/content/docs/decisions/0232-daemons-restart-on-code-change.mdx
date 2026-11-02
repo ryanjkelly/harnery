@@ -77,24 +77,35 @@ and an unknown build counts as "restart needed", which would loop if acted on.
   status read and starts nothing when one exists; otherwise it starts the
   successor with the old daemon's recorded settings (`calls_per_hour`, or
   `interval_ms`, `idle_exit_ms` and `keep_alive`).
-- **Automatic starts never clear a stop.** Launcher and relaunch starts pass
-  `--keep-pause` (semantic) or `--honor-stop` (supervisor): a daemon started
-  that way never deletes a stop or pause. It checks before taking its lease
-  and again after, and exits (releasing the lease) when one exists; one that
-  lands later stops its loop as usual. Only an explicit `start` clears a stop
-  or pause. A pause written at any point during a replacement therefore
-  survives it.
+- **Automatic starts never clear a stop.** Every automatic start passes
+  `--keep-pause` (semantic) or `--honor-stop` (supervisor): a replacement, a
+  relaunch, and an ordinary start of a stopped daemon by `web up` or workflow
+  admission alike. A daemon started that way never deletes a stop or pause.
+  It checks before taking its lease and again after, and exits (releasing
+  the lease) when one exists; one that lands later stops its loop as usual.
+  A launcher that finds a stopped daemon with a stop request pending reports
+  it as stopped and starts nothing. Only the explicit `start` command clears
+  a stop or pause, so a daemon an operator stopped stays stopped.
 - **One relay at a time.** Starting a relay daemon first takes a launch
   reservation (`relay-launch.json`, created atomically, expiring after 20
-  seconds), so concurrent hooks start one process between them. A launcher
-  rereads the pid file after taking the reservation and launches nothing if
-  the owner changed since it decided. A replacement takes over the pid file
-  marked `handover`, and the old daemon, which now checks every five seconds
-  whether it was superseded, closes its socket and exits. Until the handover
-  ends, the new daemon keeps renewing the reservation, and no launcher or
-  successor supersedes a pid file marked `handover`, so a third daemon can
-  never wait on the successor alone while the original owner still holds its
-  socket. The new daemon connects only after the old process has exited,
+  seconds), so concurrent hooks start one process between them. The
+  reservation carries a token that the launched daemon inherits; only the
+  holder of that token renews or releases it. An expired reservation is
+  reclaimed by renaming that exact file to a name unique to the reclaimer
+  and checking it is still the expired content that was read; a fresh one
+  renamed by mistake is put back. A reservation is never deleted on the
+  strength of an earlier read. A launcher rereads the pid file after taking
+  the reservation and launches nothing if the owner changed since it
+  decided. A replacement takes over the pid file marked `handover`, naming
+  the predecessor (pid and start time) that still holds the socket, and the
+  old daemon, which now checks every five seconds whether it was superseded,
+  closes its socket and exits. Until the handover ends, the new daemon keeps
+  renewing the reservation, and no launcher or successor supersedes a live
+  pid file marked `handover`, so a third daemon can never wait on the
+  successor alone while the original owner still holds its socket. If the
+  successor dies mid-handover, the next one treats the recorded predecessor
+  as the owner and waits for it. The new daemon connects only after the old
+  process has exited,
   waiting at most 75 seconds, then marks the pid file `connected` and
   releases the reservation. If the old process is still alive at the end of
   the wait,

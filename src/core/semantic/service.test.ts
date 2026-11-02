@@ -836,6 +836,29 @@ describe("semantic service code changes", () => {
   }
   const stoppedStatus: SemanticServiceStatus = { running: false, stale: false, pending_count: 0 };
 
+  test("ensure starts a stopped reader only with keepPause and never a paused one (F1)", async () => {
+    const root = fixture();
+    const starts: unknown[] = [];
+    const ensure = () =>
+      ensureSemanticServiceRunning(root, {
+        readStatus: () => stoppedStatus,
+        start: async (_root, options) => {
+          starts.push(options);
+          return liveStatus(newCode);
+        },
+        isActive: () => true,
+        currentCode: () => newCode,
+        wait: async () => {},
+        replacementTimeoutMs: 0,
+      });
+    expect((await ensure()).state).toBe("started");
+    expect(starts).toEqual([{ keepPause: true }]);
+    requestSemanticServiceStop(root);
+    expect((await ensure()).state).toBe("paused");
+    expect(starts).toHaveLength(1);
+    expect(existsSync(semanticPaths(root).stop)).toBe(true);
+  });
+
   test("ensure leaves current, foreign, other-install, and unknown-identity readers alone", async () => {
     const root = fixture();
     let starts = 0;

@@ -251,8 +251,13 @@ export async function ensureSupervisorRunning(
     // stop request arrived at any point up to now.
     if (existsSync(stopPath)) return stoppedByRequest(after);
     replacing = record;
+  } else if (existsSync(stopPath)) {
+    // An explicitly stopped supervisor stays stopped until an explicit start.
+    return stoppedSupervisor(status);
   }
   try {
+    // Every automatic start honors a stop request; only `supervisor start`
+    // clears one.
     const started = await dependencies.start(
       coordRoot,
       replacing
@@ -262,12 +267,14 @@ export async function ensureSupervisorRunning(
             keepAlive: replacing.keep_alive,
             honorStop: true,
           }
-        : {},
+        : { honorStop: true },
     );
     return { state: replacing ? "replaced" : "started", status: started };
   } catch (error) {
     const after = dependencies.readStatus(coordRoot);
-    if (replacing && existsSync(stopPath)) return stoppedByRequest(after);
+    if (existsSync(stopPath)) {
+      return replacing ? stoppedByRequest(after) : stoppedSupervisor(after);
+    }
     if (replacing && after.running) return { state: "replaced", status: after };
     return {
       state: "unavailable",
@@ -275,6 +282,14 @@ export async function ensureSupervisorRunning(
       error: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+function stoppedSupervisor(status: SupervisorStatus): EnsureSupervisorResult {
+  return {
+    state: "unavailable",
+    status,
+    error: `local supervisor was stopped by a stop request; run \`${resolveBinName()} supervisor start\` to start it again`,
+  };
 }
 
 function stoppedByRequest(status: SupervisorStatus): EnsureSupervisorResult {

@@ -25,6 +25,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   closeSync,
   existsSync,
@@ -96,6 +97,13 @@ export interface RelayPidRecord {
    * has not connected; `connected` after. Absent on older daemons.
    */
   state?: "handover" | "connected";
+  /** While `handover`: the daemon this one is waiting for, which may hold the socket. */
+  predecessor?: RelayPredecessor;
+}
+
+export interface RelayPredecessor {
+  pid: number;
+  started_at: string;
 }
 
 export function readRelayPidRecord(coordRoot: string): RelayPidRecord | null {
@@ -144,7 +152,8 @@ export interface EnsureRelayDaemonDependencies {
   relayUrl: (coordRoot: string) => string | null;
   isAlive: (pid: number) => boolean;
   currentCode: () => CodeIdentityRecord;
-  launch: (coordRoot: string) => boolean;
+  /** Start a daemon that inherits the launch reservation `token`. */
+  launch: (coordRoot: string, token: string) => boolean;
   nowMs: () => number;
   /** Test hook: runs between reading the owner and taking the reservation. */
   beforeReserve?: () => void;
@@ -161,39 +170,106 @@ function launchReservationPath(coordRoot: string): string {
   return join(presenceDir(coordRoot), "relay-launch.json");
 }
 
+interface RelayLaunchReservation {
+  token: string;
+  pid: number;
+  created_at: string;
+  expires_at: string;
+}
+
+function reservationBody(token: string, nowMs: number): string {
+  const body: RelayLaunchReservation = {
+    token,
+    pid: process.pid,
+    created_at: new Date(nowMs).toISOString(),
+    expires_at: new Date(nowMs + RELAY_LAUNCH_RESERVATION_MS).toISOString(),
+  };
+  return JSON.stringify(body);
+}
+
+/** Create the file with `body` only if nothing is there. */
+function createExclusive(path: string, body: string): boolean {
+  try {
+    const fd = openSync(path, "wx");
+    try {
+      writeFileSync(fd, body);
+    } finally {
+      closeSync(fd);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function reservationToken(raw: string | null): string | undefined {
+  if (raw === null) return undefined;
+  try {
+    const token = (JSON.parse(raw) as Partial<RelayLaunchReservation>).token;
+    return typeof token === "string" ? token : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Remove the reservation only when its content passes `accept`. The file is
+ * first renamed to a name unique to this call, so only one process can hold
+ * that exact file; when it turns out to be someone else's, it is put back
+ * (unless a newer one already took its place). A reservation is never
+ * removed on the strength of an earlier read.
+ */
+function removeReservationIf(path: string, accept: (raw: string | null) => boolean): boolean {
+  const claimed = `${path}.claim.${process.pid}.${randomUUID()}`;
+  try {
+    renameSync(path, claimed);
+  } catch {
+    return false;
+  }
+  let raw: string | null = null;
+  try {
+    raw = readFileSync(claimed, "utf8");
+  } catch {
+    // Judged as unreadable below.
+  }
+  const removed = accept(raw);
+  if (!removed && raw !== null) createExclusive(path, raw);
+  try {
+    rmSync(claimed, { force: true });
+  } catch {
+    /* a stray claim file is inert */
+  }
+  return removed;
+}
+
 /**
  * Atomically reserve the right to launch a relay daemon, so concurrent hooks
- * start one process between them. The daemon releases the reservation once
- * it owns the pid file; an expired reservation (a launch that died early) is
- * taken over.
+ * start one process between them. Returns the reservation's token, which the
+ * launched daemon carries so it alone can renew and release it, or null when
+ * another launch holds it. An expired reservation (a launch that died early)
+ * is reclaimed atomically: only the exact expired file that was read is ever
+ * removed.
  */
-export function reserveRelayLaunch(coordRoot: string, nowMs = Date.now()): boolean {
+export function reserveRelayLaunch(
+  coordRoot: string,
+  nowMs = Date.now(),
+  hooks: { beforeReclaim?: () => void } = {},
+): string | null {
   const path = launchReservationPath(coordRoot);
   mkdirSync(presenceDir(coordRoot), { recursive: true });
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  const token = randomUUID();
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (createExclusive(path, reservationBody(token, nowMs))) return token;
+    if (!existsSync(path)) continue;
+    let raw: string;
     try {
-      const fd = openSync(path, "wx");
-      try {
-        writeFileSync(
-          fd,
-          JSON.stringify({
-            pid: process.pid,
-            created_at: new Date(nowMs).toISOString(),
-            expires_at: new Date(nowMs + RELAY_LAUNCH_RESERVATION_MS).toISOString(),
-          }),
-        );
-      } finally {
-        closeSync(fd);
-      }
-      return true;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") return false;
+      raw = readFileSync(path, "utf8");
+    } catch {
+      continue;
     }
     let expiresAt = Number.NaN;
     try {
-      expiresAt = Date.parse(
-        (JSON.parse(readFileSync(path, "utf8")) as { expires_at?: string }).expires_at ?? "",
-      );
+      expiresAt = Date.parse((JSON.parse(raw) as { expires_at?: string }).expires_at ?? "");
     } catch {
       // An unreadable reservation is judged by its age instead.
       try {
@@ -202,18 +278,38 @@ export function reserveRelayLaunch(coordRoot: string, nowMs = Date.now()): boole
         continue;
       }
     }
-    if (Number.isFinite(expiresAt) && expiresAt > nowMs) return false;
-    rmSync(path, { force: true });
+    if (Number.isFinite(expiresAt) && expiresAt > nowMs) return null;
+    hooks.beforeReclaim?.();
+    removeReservationIf(path, (current) => current === raw);
   }
-  return false;
+  return null;
 }
 
-export function releaseRelayLaunchReservation(coordRoot: string): void {
+/** Release the reservation, but only if it is still the one `token` names. */
+export function releaseRelayLaunchReservation(coordRoot: string, token: string | undefined): void {
+  if (!token) return;
+  removeReservationIf(launchReservationPath(coordRoot), (raw) => reservationToken(raw) === token);
+}
+
+/** Extend the reservation `token` names while its handover is still running. */
+export function refreshRelayLaunchReservation(
+  coordRoot: string,
+  token: string | undefined,
+  nowMs = Date.now(),
+): void {
+  if (!token) return;
+  const path = launchReservationPath(coordRoot);
   try {
-    rmSync(launchReservationPath(coordRoot), { force: true });
+    if (reservationToken(readFileSync(path, "utf8")) !== token) return;
+    atomicWriteJson(path, JSON.parse(reservationBody(token, nowMs)));
   } catch {
-    /* it expires on its own */
+    /* the pid file's handover state still refuses a second replacement */
   }
+}
+
+/** The reservation a launcher handed to this daemon, if any. */
+function inheritedReservationToken(): string | undefined {
+  return coordEnv("RELAY_RESERVATION_TOKEN") || undefined;
 }
 
 /**
@@ -249,16 +345,17 @@ export function ensureRelayDaemon(
     const stale = live && codeIdentityReplacementNeeded(rec.code, deps.currentCode());
     if (live && !stale) return "running";
     deps.beforeReserve?.();
-    if (!reserveRelayLaunch(coordRoot, deps.nowMs())) return "pending";
+    const token = reserveRelayLaunch(coordRoot, deps.nowMs());
+    if (!token) return "pending";
     // Revalidate under the reservation: another launcher may have started a
     // daemon since the owner was read, and this decision was made on that
     // stale snapshot.
     if (!samePidOwner(rec, readRelayPidRecord(coordRoot))) {
-      releaseRelayLaunchReservation(coordRoot);
+      releaseRelayLaunchReservation(coordRoot, token);
       return "pending";
     }
-    if (!deps.launch(coordRoot)) {
-      releaseRelayLaunchReservation(coordRoot);
+    if (!deps.launch(coordRoot, token)) {
+      releaseRelayLaunchReservation(coordRoot, token);
       return "unavailable";
     }
     return stale ? "replaced" : "started";
@@ -291,7 +388,7 @@ export async function awaitPreviousRelayExit(input: {
   return input.stillOwner();
 }
 
-function launchRelayDaemon(coordRoot: string): boolean {
+function launchRelayDaemon(coordRoot: string, token: string): boolean {
   try {
     // The runtime itself runs the CLI entry, so the daemon starts on Windows
     // too (see cli-entry.ts).
@@ -312,6 +409,8 @@ function launchRelayDaemon(coordRoot: string): boolean {
         ...process.env,
         HARNERY_COORD_ROOT_OVERRIDE: coordRoot,
         HARNERY_OUTPUT_SESSION_TEE: "0",
+        // The daemon alone renews and releases the reservation it was launched under.
+        HARNERY_RELAY_RESERVATION_TOKEN: token,
       },
     });
     if (log !== undefined) closeSync(log);
@@ -341,32 +440,41 @@ export async function takeOverRelayPidFile(
     wait?: (milliseconds: number) => Promise<void>;
     timeoutMs?: number;
     nowMs?: () => number;
+    /** The launch reservation this daemon was started under. */
+    reservationToken?: string;
   } = {},
 ): Promise<RelayHandoverOutcome> {
   const isAlive = options.isAlive ?? pidAlive;
   const now = options.nowMs ?? Date.now;
+  const token = options.reservationToken ?? inheritedReservationToken();
   const previous = readRelayPidRecord(coordRoot);
   const ownsPidFile = () => readRelayPidRecord(coordRoot)?.pid === record.pid;
-  const previousLive = previous !== null && previous.pid !== record.pid && isAlive(previous.pid);
-  if (!previousLive) {
+  const owner = relaySocketOwner(previous, record.pid, isAlive);
+  if (owner === null) {
     atomicWriteJson(pidFilePath(coordRoot), { ...record, state: "connected" });
-    releaseRelayLaunchReservation(coordRoot);
+    releaseRelayLaunchReservation(coordRoot, token);
     return "connect";
   }
   // Another successor is mid-handover: leave it to finish (its own
   // predecessor may still hold a socket), and do not connect.
-  if (previous.state === "handover") return "busy";
-  // Mark the pid file as mid-handover and keep the launch reservation alive
-  // until the handover ends, so no other launcher starts a second one.
-  atomicWriteJson(pidFilePath(coordRoot), { ...record, state: "handover" });
+  if (owner === "busy") return "busy";
+  // Mark the pid file as mid-handover, naming the daemon that still holds the
+  // socket, and keep the launch reservation alive until the handover ends.
+  // If this daemon dies while waiting, the next successor reads the
+  // predecessor from here and waits for it too.
+  atomicWriteJson(pidFilePath(coordRoot), {
+    ...record,
+    state: "handover",
+    predecessor: owner,
+  });
   const baseWait =
     options.wait ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
   const released = await awaitPreviousRelayExit({
-    previousPid: previous.pid,
+    previousPid: owner.pid,
     stillOwner: ownsPidFile,
     isAlive,
     wait: async (ms) => {
-      refreshRelayLaunchReservation(coordRoot, now());
+      refreshRelayLaunchReservation(coordRoot, token, now());
       await baseWait(ms);
     },
     ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
@@ -378,36 +486,45 @@ export async function takeOverRelayPidFile(
       return "connect";
     }
     if (!ownsPidFile()) return "superseded";
-    // The previous daemon is still alive (stalled, or too old to notice):
-    // give its pid file back rather than connect beside it.
-    atomicWriteJson(pidFilePath(coordRoot), previous);
+    // The daemon holding the socket is still alive (stalled, or too old to
+    // notice): give the pid file back rather than connect beside it.
+    if (previous) atomicWriteJson(pidFilePath(coordRoot), previous);
     appendPresenceRelayDiagnostic(coordRoot, "relay.lifecycle", {
       phase: "handover_timeout",
-      message: `previous daemon pid ${previous.pid} did not exit; not connecting`,
+      message: `previous daemon pid ${owner.pid} did not exit; not connecting`,
     });
     return "gave_up";
   } finally {
-    releaseRelayLaunchReservation(coordRoot);
+    releaseRelayLaunchReservation(coordRoot, token);
   }
+}
+
+/**
+ * Who may still hold this machine's relay socket, judged from the pid file:
+ * a live connected (or older, stateless) owner; for a live successor still
+ * handing over, `busy`; for a successor that died mid-handover, the
+ * predecessor it was waiting for, while that one lives. Null when nobody does.
+ */
+export function relaySocketOwner(
+  previous: RelayPidRecord | null,
+  selfPid: number,
+  isAlive: (pid: number) => boolean,
+): RelayPredecessor | "busy" | null {
+  if (!previous || previous.pid === selfPid) return null;
+  if (isAlive(previous.pid)) {
+    return previous.state === "handover"
+      ? "busy"
+      : { pid: previous.pid, started_at: previous.started_at };
+  }
+  const predecessor = previous.state === "handover" ? previous.predecessor : undefined;
+  if (predecessor && predecessor.pid !== selfPid && isAlive(predecessor.pid)) return predecessor;
+  return null;
 }
 
 /** Same daemon generation: the same pid started at the same moment, or both absent. */
 function samePidOwner(a: RelayPidRecord | null, b: RelayPidRecord | null): boolean {
   if (a === null || b === null) return a === b;
   return a.pid === b.pid && a.started_at === b.started_at;
-}
-
-/** Extend a launch reservation held by a successor that is still handing over. */
-export function refreshRelayLaunchReservation(coordRoot: string, nowMs = Date.now()): void {
-  try {
-    atomicWriteJson(launchReservationPath(coordRoot), {
-      pid: process.pid,
-      created_at: new Date(nowMs).toISOString(),
-      expires_at: new Date(nowMs + RELAY_LAUNCH_RESERVATION_MS).toISOString(),
-    });
-  } catch {
-    /* the pid file's handover state still refuses a second replacement */
-  }
 }
 
 export type RelayTickDecision = "continue" | "superseded" | "code_changed" | "idle_exit";
