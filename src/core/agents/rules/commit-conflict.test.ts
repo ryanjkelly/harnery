@@ -3,6 +3,12 @@ import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initializeV3Fixture, seedV3Session } from "../../../../tests/helpers/event-v3-runtime.ts";
+import {
+  recordLiveDelegatedChildSessionV3,
+  recordLiveHookSignalV3,
+  resolveLiveEventLedgerRouteV3,
+} from "../../events/v3/live-routing.ts";
+import { recordLiveClaimChangeV3 } from "../live-authority-v3.ts";
 import { readLiveCoordinationRow } from "../state/live-coordination-view.ts";
 import { evaluateCommit } from "./commit-conflict.ts";
 
@@ -88,6 +94,45 @@ describe("evaluateCommit on canonical V3 authority", () => {
     expect(holderAttempt.conflicts[0]?.instance_id).toBe("self");
   });
 
+  test("a resolved committer's own session groups the subagents that carry it", () => {
+    seedV3Session(root, "self", { name: "Maya", sessionId: "sid-parent" });
+    seedV3Child(root, { parent: "self", parentSession: "sid-parent", child: "child" });
+    recordLiveClaimChangeV3({
+      coordRoot: root,
+      owner: "child",
+      nativeSessionId: "sid-parent",
+      adapter: "codex",
+      operation: "acquired",
+      path: "docs/shared.md",
+      access: "write",
+    });
+    recordLiveClaimChangeV3({
+      coordRoot: root,
+      owner: "child",
+      nativeSessionId: "sid-parent",
+      adapter: "codex",
+      operation: "acquired",
+      path: "docs/child-only.md",
+      access: "write",
+    });
+    expect(readLiveCoordinationRow(root, "child")?.session_id).toBe(
+      readLiveCoordinationRow(root, "self")?.session_id,
+    );
+    seedV3Session(root, "peer", {
+      name: "Adelaide",
+      sessionId: "sid-peer",
+      claims: ["docs/peer.md", "docs/peer-only.md"],
+    });
+    // The hook passes no session; the committer's row supplies it.
+    expect(
+      evaluateCommit(root, { instance_id: "self", staged_paths: ["docs/shared.md"] }),
+    ).toMatchObject({ allow: true, rule: "commit.pass", conflicts: [] });
+    // A different session still blocks.
+    expect(
+      evaluateCommit(root, { instance_id: "self", staged_paths: ["docs/peer.md"] }),
+    ).toMatchObject({ allow: false, rule: "commit.conflict" });
+  });
+
   test("the self-attribution suppression remains explicit", () => {
     seedV3Session(root, "self", { name: "Maya", adapter: "claude-code" });
     seedV3Session(root, "peer", {
@@ -129,6 +174,35 @@ describe("evaluateCommit on canonical V3 authority", () => {
     });
   });
 });
+
+/** Register `child` as a delegated subagent of the already-started `parent`. */
+function seedV3Child(
+  coordRoot: string,
+  ids: { parent: string; parentSession: string; child: string },
+): void {
+  const route = resolveLiveEventLedgerRouteV3(coordRoot);
+  if (route.state !== "v3") throw new Error("expected V3 route");
+  const payload = { session_id: ids.parentSession, agent_id: ids.child, raw: {} };
+  const start = recordLiveHookSignalV3({
+    coordRoot,
+    route,
+    eventName: "sub-agent-start",
+    payload,
+    adapter: "codex",
+    instanceId: ids.parent,
+  });
+  if (start.state !== "recorded" || start.event.event_type !== "agent.started") {
+    throw new Error(`fixture_child_start:${start.state}`);
+  }
+  const child = recordLiveDelegatedChildSessionV3({
+    coordRoot,
+    route,
+    parentEvent: start.event,
+    payload: { ...payload, turn_id: "child-turn" },
+    adapter: "codex",
+  });
+  if (child.state !== "recorded") throw new Error(`fixture_child_session:${child.state}`);
+}
 
 function commitVerdict(stagedPaths: string[]) {
   return evaluateCommit(root, {

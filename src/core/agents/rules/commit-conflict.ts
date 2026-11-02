@@ -97,7 +97,6 @@ export function evaluateCommit(coordRoot: string, req: CommitVerdictRequest): Co
       ? passed
       : (resolveOwner({ payload: null, coordRoot })?.instance_id ?? "__unattributed__");
   const passedSession = req.session_id?.trim();
-  const mySession = passed && passedSession ? passedSession : me;
 
   if (req.staged_paths.length === 0) {
     return {
@@ -112,6 +111,15 @@ export function evaluateCommit(coordRoot: string, req: CommitVerdictRequest): Co
   }
 
   const peers = readActivePeers(coordRoot);
+  // A resolved committer's group key is its own row's session id, the value
+  // its subagents' rows carry as theirs. Falling back to the instance id alone
+  // never matched a subagent row, so a parent committing its subagent's work
+  // was blocked by its own team.
+  const mySession =
+    passed && passedSession
+      ? passedSession
+      : (peers.find((peer) => peer.instance_id === me)?.session_id ?? me);
+  const myGroup = new Set(me === "__unattributed__" ? [] : [me, mySession]);
   const cutoffMs = Date.now() - coordFreshnessSeconds(coordRoot) * 1000;
   const stagedSet = new Set(req.staged_paths);
   const gitlinkSet = new Set(req.staged_gitlinks ?? []);
@@ -120,7 +128,7 @@ export function evaluateCommit(coordRoot: string, req: CommitVerdictRequest): Co
   for (const peer of peers) {
     if (peer.instance_id === me) continue;
     const peerSession = peer.session_id ?? peer.instance_id;
-    if (mySession !== "__unattributed__" && peerSession === mySession) continue; // same group
+    if (myGroup.has(peerSession)) continue; // same group
     const ts = peer.last_heartbeat ? Date.parse(peer.last_heartbeat) : 0;
     if (!Number.isFinite(ts) || ts < cutoffMs) continue; // stale
     const files = peer.files_touched ?? [];
