@@ -95,9 +95,11 @@ describe("durable goal governor", () => {
     expect(record.projection.work_ids).toEqual(["leaf", "root"]);
     expect(record.projection.ready_work).toEqual(["leaf"]);
     expect(record.projection.specialists).toEqual(["implementer"]);
-    expect(
-      statSync(join(root, ".harnery", "governors", "goal-fixture", "intent.json")).mode & 0o777,
-    ).toBe(0o600);
+    // Windows reports synthesized mode bits (0o666) and guards files with NTFS ACLs instead.
+    if (process.platform !== "win32")
+      expect(
+        statSync(join(root, ".harnery", "governors", "goal-fixture", "intent.json")).mode & 0o777,
+      ).toBe(0o600);
     expect(() =>
       createGovernor({
         coordRoot: root,
@@ -623,11 +625,21 @@ describe("durable goal governor", () => {
     const unreviewedPlan = readGovernorPlan(root, "goal-replan-review", planId);
     expect(unreviewedPlan.status).toBe("proposed");
     expect(unreviewedPlan.review).toBeUndefined();
-    expect(
-      statSync(
-        join(root, ".harnery", "governors", "goal-replan-review", "plans", planId, "proposal.json"),
-      ).mode & 0o777,
-    ).toBe(0o600);
+    // Windows reports synthesized mode bits (0o666) and guards files with NTFS ACLs instead.
+    if (process.platform !== "win32")
+      expect(
+        statSync(
+          join(
+            root,
+            ".harnery",
+            "governors",
+            "goal-replan-review",
+            "plans",
+            planId,
+            "proposal.json",
+          ),
+        ).mode & 0o777,
+      ).toBe(0o600);
 
     // Simulate a process loss after the first deterministic work intent was
     // materialized but before plan.applied reached the audit log.

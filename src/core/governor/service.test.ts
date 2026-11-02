@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { hostname } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { processStartToken } from "../agents/state/proc-start.ts";
 import { installedHarneryBuild } from "../events/v3/runtime-build.ts";
@@ -32,7 +32,10 @@ afterEach(async () => {
 });
 
 function fixture(options: { accept?: boolean; goalId?: string; workId?: string } = {}) {
-  const root = mkdtempSync(join("/tmp", "harnery-governor-service-"));
+  // "/tmp" is drive-relative on Windows, where the service resolves it to an absolute path.
+  const root = mkdtempSync(
+    join(process.platform === "win32" ? tmpdir() : "/tmp", "harnery-governor-service-"),
+  );
   roots.push(root);
   const workflow = join(root, "passing.mjs");
   writeFileSync(
@@ -295,9 +298,11 @@ describe("governor background service", () => {
       policy: { name: "frozen-service-policy", network: "ask" },
     });
     expect(readGovernorServiceConfig(root)).toEqual(config);
-    expect(statSync(join(root, ".harnery", "governor-service", "config.json")).mode & 0o777).toBe(
-      0o600,
-    );
+    // Windows reports synthesized mode bits (0o666) and guards files with NTFS ACLs instead.
+    if (process.platform !== "win32")
+      expect(statSync(join(root, ".harnery", "governor-service", "config.json")).mode & 0o777).toBe(
+        0o600,
+      );
     expect(() => configureGovernorService({ coordRoot: root, goalIds: ["missing-goal"] })).toThrow(
       "does not exist",
     );

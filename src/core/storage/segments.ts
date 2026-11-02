@@ -6,6 +6,7 @@ import {
   constants as fsConstants,
   fstatSync,
   fsyncSync,
+  ftruncateSync,
   lstatSync,
   mkdirSync,
   openSync,
@@ -708,10 +709,13 @@ function writeNewFile(path: string, content: Buffer): void {
 function truncateRegularFile(path: string): void {
   const parent = captureDirectoryIdentity(dirname(path));
   rejectExistingSymlink(path);
-  const fd = openSync(path, fsConstants.O_WRONLY | fsConstants.O_TRUNC | noFollowFlag());
+  // Windows rejects O_TRUNC without O_CREAT (EINVAL), so open the existing file and truncate the
+  // descriptor instead. Checking identity first also means a swapped path is never emptied.
+  const fd = openSync(path, fsConstants.O_WRONLY | noFollowFlag());
   try {
-    fdatasyncSync(fd);
     assertOpenFileIdentity(path, fd, parent);
+    ftruncateSync(fd, 0);
+    fdatasyncSync(fd);
   } finally {
     closeSync(fd);
   }
