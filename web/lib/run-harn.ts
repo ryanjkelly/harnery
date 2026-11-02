@@ -2,13 +2,15 @@
  * Runs this project's harn CLI from a server component or route, so the
  * dashboard and the CLI share one implementation of each report.
  *
- * The runtime runs `bin/harn.mjs` directly: `bin/harn` is a POSIX shell
- * script that Windows cannot start without a shell.
+ * `harnCommand` picks the launcher: `bin/harn` is a POSIX shell script that
+ * Windows cannot start without a shell, so Windows runs `bin/harn.mjs`.
  */
 
 import { spawn } from "node:child_process";
-import path from "node:path";
 import { coordRoot } from "./coord-reader";
+import { harnChildEnv, harnCommand } from "./harn-command";
+
+export { harnChildEnv };
 
 export interface HarnResult {
   ok: boolean;
@@ -20,24 +22,11 @@ export interface HarnResult {
   timedOut: boolean;
 }
 
-/**
- * The dashboard server's environment for a child harn. NODE_OPTIONS is
- * dropped: the server runs with `--import=./server-preload.mjs`, relative to
- * web/, which a child started in the project root cannot find.
- */
-export function harnChildEnv(
-  root: string,
-  source: NodeJS.ProcessEnv = process.env,
-): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...source, HARNERY_COORD_ROOT_OVERRIDE: root };
-  delete env.NODE_OPTIONS;
-  return env;
-}
-
 export function runHarn(args: string[], opts: { timeoutMs?: number } = {}): Promise<HarnResult> {
   const root = coordRoot();
+  const harn = harnCommand(root, args);
   return new Promise((resolve) => {
-    const proc = spawn(process.execPath, [path.join(root, "harnery", "bin", "harn.mjs"), ...args], {
+    const proc = spawn(harn.command, harn.args, {
       cwd: root,
       env: harnChildEnv(root),
       windowsHide: true,

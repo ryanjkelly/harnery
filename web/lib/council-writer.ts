@@ -5,8 +5,8 @@
  */
 
 import { spawn } from "node:child_process";
-import path from "node:path";
 import { coordRoot } from "./coord-reader";
+import { harnChildEnv, harnCommand } from "./harn-command";
 
 export interface HelperResult {
   ok: boolean;
@@ -15,19 +15,14 @@ export interface HelperResult {
   exit_code: number | null;
 }
 
-function helperPath(): string {
-  // harnery/web/lib/council-writer.ts → harnery/web/ → harnery/ → harnery/bin/
-  return path.join(coordRoot(), "harnery", "bin", "agent-coord");
-}
-
 async function runHelper(args: string[]): Promise<HelperResult> {
   const root = coordRoot();
-  const native = process.platform === "win32";
+  const helper = harnCommand(root, args, { executable: "agent-coord" });
   return new Promise((resolve) => {
-    const proc = spawn(native ? process.execPath : helperPath(), native ? [`${helperPath()}.mjs`, ...args] : args, {
+    const proc = spawn(helper.command, helper.args, {
       cwd: root,
       windowsHide: true,
-      env: { ...process.env, HARNERY_COORD_ROOT_OVERRIDE: root },
+      env: harnChildEnv(root),
     });
     let stdout = "";
     let stderr = "";
@@ -113,13 +108,12 @@ export interface CreateCouncilOpts {
 
 async function runHarn(args: string[]): Promise<HelperResult> {
   const root = coordRoot();
-  const harnBin = path.join(root, "harnery", "bin", "harn");
-  const native = process.platform === "win32";
+  const harn = harnCommand(root, args);
   return new Promise((resolve) => {
-    const proc = spawn(native ? process.execPath : harnBin, native ? [`${harnBin}.mjs`, ...args] : args, {
+    const proc = spawn(harn.command, harn.args, {
       cwd: root,
       windowsHide: true,
-      env: { ...process.env, HARNERY_COORD_ROOT_OVERRIDE: root },
+      env: harnChildEnv(root),
     });
     let stdout = "";
     let stderr = "";

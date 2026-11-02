@@ -5,8 +5,8 @@
  */
 
 import { spawn } from "node:child_process";
-import path from "node:path";
 import { coordRoot } from "./coord-reader";
+import { harnChildEnv, harnCommand } from "./harn-command";
 
 export interface HelperResult {
   ok: boolean;
@@ -34,11 +34,12 @@ export function isVerdict(v: string): v is ReviewVerdict {
 
 async function runHarn(args: string[]): Promise<HelperResult> {
   const root = coordRoot();
-  const harnBin = path.join(root, "harnery", "bin", "harn");
+  const harn = harnCommand(root, args);
   return new Promise((resolve) => {
-    const proc = spawn(harnBin, args, {
+    const proc = spawn(harn.command, harn.args, {
       cwd: root,
-      env: { ...process.env, HARNERY_COORD_ROOT_OVERRIDE: root },
+      env: harnChildEnv(root),
+      windowsHide: true,
     });
     let stdout = "";
     let stderr = "";

@@ -1,6 +1,13 @@
 #!/usr/bin/env bun
 /**
- * Guard: every child process started from `src/` passes `windowsHide`.
+ * Guard: every child process started from `src/`, or from the dashboard's
+ * server code in `web/lib/`, `web/app/` and `web/components/`, passes
+ * `windowsHide`.
+ *
+ * The dashboard server (`harn web up`) is itself a background process with no
+ * console, so the same rule applies to it. `web/scripts/` is not scanned:
+ * those are developer tools run by hand from a terminal that already has a
+ * console. Test files and `node_modules`/`.next*` build output are skipped.
  *
  * On Windows, a process with no console of its own (a detached background
  * worker, a hook runner, a scheduled sync) that starts a console program
@@ -45,13 +52,18 @@ const BUN_FUNCTIONS = ["spawn", "spawnSync"] as const;
 
 export const WAIVER_TOKEN = "windows-hide-allow:";
 
+/** Directories scanned, relative to the repository root. */
+export const SCANNED_ROOTS = ["src", "web/lib", "web/app", "web/components"] as const;
+
 export function scanWindowsHide(root: string): WindowsHideViolation[] {
-  const sourceRoot = join(root, "src");
-  if (!existsSync(sourceRoot)) return [];
   const violations: WindowsHideViolation[] = [];
-  for (const absolute of walk(sourceRoot)) {
-    const file = relative(root, absolute).split("\\").join("/");
-    violations.push(...scanWindowsHideSource(file, readFileSync(absolute, "utf8")));
+  for (const scanned of SCANNED_ROOTS) {
+    const sourceRoot = join(root, ...scanned.split("/"));
+    if (!existsSync(sourceRoot)) continue;
+    for (const absolute of walk(sourceRoot)) {
+      const file = relative(root, absolute).split("\\").join("/");
+      violations.push(...scanWindowsHideSource(file, readFileSync(absolute, "utf8")));
+    }
   }
   return violations.sort(
     (left, right) => left.file.localeCompare(right.file) || left.line - right.line,
@@ -359,7 +371,7 @@ function walk(root: string): string[] {
     const path = join(root, name);
     const stat = statSync(path);
     if (stat.isDirectory()) {
-      if (name === "node_modules") continue;
+      if (name === "node_modules" || name.startsWith(".next")) continue;
       files.push(...walk(path));
     } else if (
       stat.isFile() &&
@@ -378,7 +390,9 @@ if (import.meta.main) {
   const root = process.argv[2] ?? process.cwd();
   const violations = scanWindowsHide(root);
   if (violations.length === 0) {
-    console.log("windows-hide: clean, every child process in src/ passes windowsHide.");
+    console.log(
+      `windows-hide: clean, every child process in ${SCANNED_ROOTS.join(", ")} passes windowsHide.`,
+    );
     process.exit(0);
   }
   console.error(`windows-hide: ${violations.length} child process call(s) without windowsHide:`);

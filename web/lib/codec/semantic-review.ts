@@ -1,5 +1,4 @@
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -9,6 +8,7 @@ import type {
   SemanticReviewSubmissionV1,
 } from "harnery/core/semantic";
 import { coordRoot } from "../coord-reader";
+import { harnChildEnv, harnCommand } from "../harn-command";
 
 interface SemanticReviewCommandResult {
   ok: boolean;
@@ -48,24 +48,20 @@ export async function submitCodecSemanticReview(
   }
 }
 
-function harnBinary(root: string): string {
-  const embedded = path.join(root, "harnery", "bin", "harn");
-  if (existsSync(embedded)) return embedded;
-  return path.join(root, "bin", "harn");
-}
-
 export function runSemanticReviewCommand(
   args: string[],
   options: { root?: string; timeoutMs?: number; maxBuffer?: number } = {},
 ): Promise<SemanticReviewCommandResult> {
   const root = options.root ?? coordRoot();
+  const harn = harnCommand(root, args);
   return new Promise((resolve) => {
     const child = execFile(
-      harnBinary(root),
-      args,
+      harn.command,
+      harn.args,
       {
         cwd: root,
-        env: { ...globalThis.process.env, HARNERY_COORD_ROOT_OVERRIDE: root },
+        env: harnChildEnv(root, globalThis.process.env),
+        windowsHide: true,
         encoding: "utf8",
         timeout: options.timeoutMs ?? 30_000,
         maxBuffer: options.maxBuffer ?? 4 * 1024 * 1024,

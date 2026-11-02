@@ -1,7 +1,5 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
 import { promisify } from "node:util";
 import { createStorageCatalog } from "../../src/core/storage/catalog";
 import type {
@@ -16,6 +14,7 @@ import type {
 import { HARNERY_STORAGE_INVENTORY_SCHEMA } from "../../src/core/storage/contract";
 import { storageHealth } from "../../src/core/storage/health";
 import { coordRoot } from "./coord-reader";
+import { harnChildEnv, harnCommand, harneryBinPath } from "./harn-command";
 import { readStorageSnapshot, writeStorageSnapshot } from "./storage-snapshot-cache";
 
 const execFile = promisify(execFileCallback);
@@ -250,10 +249,14 @@ function projectStorageFootprint(
 }
 
 async function readInventoryFromCli(root: string): Promise<HarneryStorageInventoryReport> {
-  const bin = harnBin(root);
-  const { stdout } = await execFile(bin, ["storage", "inventory", "--json"], {
+  if (!harneryBinPath(root)) {
+    throw new Error("could not locate the Harnery CLI for storage inventory");
+  }
+  const harn = harnCommand(root, ["storage", "inventory", "--json"]);
+  const { stdout } = await execFile(harn.command, harn.args, {
     cwd: root,
-    env: { ...process.env, HARNERY_COORD_ROOT_OVERRIDE: root },
+    env: harnChildEnv(root),
+    windowsHide: true,
     encoding: "utf8",
     maxBuffer: 16 * 1024 * 1024,
     // The walk is metadata-only but a large `.harnery` (1M files measured
@@ -271,13 +274,6 @@ async function readInventoryFromCli(root: string): Promise<HarneryStorageInvento
     throw new Error("storage inventory emitted an unsupported schema");
   }
   return parsed;
-}
-
-function harnBin(root: string): string {
-  const candidates = [join(root, "harnery", "bin", "harn"), join(root, "bin", "harn")];
-  const bin = candidates.find((candidate) => existsSync(candidate));
-  if (!bin) throw new Error("could not locate the Harnery CLI for storage inventory");
-  return bin;
 }
 
 function isStorageInventoryReport(value: unknown): value is HarneryStorageInventoryReport {

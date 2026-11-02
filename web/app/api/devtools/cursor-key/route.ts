@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
-import path from "node:path";
 import { NextResponse } from "next/server";
 import { coordRoot } from "@/lib/coord-reader";
+import { harnChildEnv, harnCommand } from "@/lib/harn-command";
 
 /**
  * Write-side for the Cursor API key. Shells the host CLI
@@ -10,16 +10,14 @@ import { coordRoot } from "@/lib/coord-reader";
  * POST { key } stores it; DELETE clears it.
  */
 
-function binPath(): string {
-  return path.join(coordRoot(), "harnery", "bin", "harn");
-}
-
 function runHarn(args: string[], stdin?: string): Promise<{ ok: boolean; stderr: string }> {
   const root = coordRoot();
+  const harn = harnCommand(root, args);
   return new Promise((resolve) => {
-    const proc = spawn(binPath(), args, {
+    const proc = spawn(harn.command, harn.args, {
       cwd: root,
-      env: { ...process.env, HARNERY_COORD_ROOT_OVERRIDE: root },
+      env: harnChildEnv(root),
+      windowsHide: true,
     });
     let stderr = "";
     proc.stderr.on("data", (c) => {

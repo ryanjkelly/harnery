@@ -22,6 +22,7 @@ import {
   serializeJournal,
 } from "harnery/core/journal";
 import { coordRoot } from "./coord-reader";
+import { harnChildEnv, harnCommand } from "./harn-command";
 
 export { JOURNAL_CATEGORIES, type JournalCategory };
 
@@ -32,18 +33,14 @@ interface HelperResult {
   exit_code: number | null;
 }
 
-function helperPath(): string {
-  return path.join(coordRoot(), "harnery", "bin", "agent-coord");
-}
-
 function runHelper(args: string[]): Promise<HelperResult> {
   const root = coordRoot();
-  const native = process.platform === "win32";
+  const helper = harnCommand(root, args, { executable: "agent-coord" });
   return new Promise((resolve) => {
-    const proc = spawn(native ? process.execPath : helperPath(), native ? [`${helperPath()}.mjs`, ...args] : args, {
+    const proc = spawn(helper.command, helper.args, {
       cwd: root,
       windowsHide: true,
-      env: { ...process.env, HARNERY_COORD_ROOT_OVERRIDE: root },
+      env: harnChildEnv(root),
     });
     let stdout = "";
     let stderr = "";

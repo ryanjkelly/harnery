@@ -1,13 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import { join } from "node:path";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { scanWindowsHide, scanWindowsHideSource } from "../../scripts/check-windows-hide.ts";
 
 // On Windows, a background process with no console that starts a console
 // program without `windowsHide: true` opens a new terminal window per child.
-// This test is the CI backstop that keeps every child process in src/ hidden;
-// the same scan runs standalone via `bun run check:windows-hide`.
+// This test is the CI backstop that keeps every child process in src/ and the
+// dashboard's server code in web/ hidden; the same scan runs standalone via
+// `bun run check:windows-hide`.
 describe("windowsHide guard", () => {
-  test("every child process call in src/ passes windowsHide or carries a waiver", () => {
+  test("every child process call in src/ and web/ passes windowsHide or carries a waiver", () => {
     const violations = scanWindowsHide(join(import.meta.dir, "..", ".."));
     if (violations.length > 0) {
       const report = violations.map((v) => `  ${v.file}:${v.line} (${v.call})`).join("\n");
@@ -18,6 +21,37 @@ describe("windowsHide guard", () => {
       );
     }
     expect(violations).toEqual([]);
+  });
+
+  test("scans src/ and web/lib, web/app, web/components but not web/scripts, tests or build output", () => {
+    const root = mkdtempSync(join(tmpdir(), "windows-hide-roots-"));
+    const unhidden = 'import { spawn } from "node:child_process";\nspawn("git", []);\n';
+    const files = [
+      "src/core/a.ts",
+      "web/lib/b.ts",
+      "web/app/api/c/route.ts",
+      "web/components/D.tsx",
+      "web/scripts/dev-tool.ts",
+      "web/lib/b.test.ts",
+      "web/lib/node_modules/pkg/index.ts",
+      "web/app/.next/server/chunk.ts",
+      "web/middleware.ts",
+    ];
+    try {
+      for (const file of files) {
+        const absolute = join(root, ...file.split("/"));
+        mkdirSync(dirname(absolute), { recursive: true });
+        writeFileSync(absolute, unhidden);
+      }
+      expect(scanWindowsHide(root).map((v) => v.file)).toEqual([
+        "src/core/a.ts",
+        "web/app/api/c/route.ts",
+        "web/components/D.tsx",
+        "web/lib/b.ts",
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   const scan = (source: string) =>

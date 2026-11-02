@@ -15,6 +15,8 @@ function commandRoot(source: string): string {
   roots.push(root);
   mkdirSync(path.join(root, "bin"));
   writeFileSync(path.join(root, "bin/harn"), `#!/usr/bin/env node\n${source}\n`, { mode: 0o755 });
+  // Windows cannot start the extensionless wrapper and runs its `.mjs` twin.
+  writeFileSync(path.join(root, "bin/harn.mjs"), `${source}\n`);
   return root;
 }
 

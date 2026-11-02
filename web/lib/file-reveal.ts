@@ -97,6 +97,7 @@ export async function revealInNativeFileManager(rawPath: string): Promise<Reveal
         execFile("wslpath", ["-w", absoluteFile], {
           encoding: "utf8",
           timeout: 5_000,
+          windowsHide: true,
         }),
         execFile(
           "wslpath",
@@ -104,6 +105,7 @@ export async function revealInNativeFileManager(rawPath: string): Promise<Reveal
           {
             encoding: "utf8",
             timeout: 5_000,
+            windowsHide: true,
           },
         ),
       ]);

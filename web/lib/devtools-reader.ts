@@ -8,8 +8,8 @@
  */
 
 import { spawn } from "node:child_process";
-import path from "node:path";
 import { coordRoot } from "./coord-reader";
+import { harnChildEnv, harnCommand } from "./harn-command";
 
 export interface QuotaWindow {
   window: string;
@@ -65,11 +65,6 @@ export interface DevtoolsReport {
   error?: string;
 }
 
-function binPath(): string {
-  // harnery/web/lib/devtools-reader.ts → coordRoot/harnery/bin/harn
-  return path.join(coordRoot(), "harnery", "bin", "harn");
-}
-
 /**
  * Run `harn devtools --format json` and return the parsed report. Never throws:
  * on any failure it returns a report with `ok: false` and an `error` string so
@@ -78,10 +73,12 @@ function binPath(): string {
 export async function readDevtoolsReport(): Promise<DevtoolsReport> {
   const args = ["devtools", "--format", "json"];
   const root = coordRoot();
+  const harn = harnCommand(root, args);
   return new Promise((resolve) => {
-    const proc = spawn(binPath(), args, {
+    const proc = spawn(harn.command, harn.args, {
       cwd: root,
-      env: { ...process.env, HARNERY_COORD_ROOT_OVERRIDE: root },
+      env: harnChildEnv(root),
+      windowsHide: true,
     });
     let stdout = "";
     let stderr = "";
