@@ -663,11 +663,14 @@ lists them.
 - Never ask the person to sign in to an outside account (Google, a vendor, a
   bank) inside a driver-owned isolated browser: sites flag it as automation,
   show bot checks, and may lock the account. When the task needs the person's
-  signed-in session, ask whether you may attach to their running browser
-  (\`strategy: {"kind": "existing_profile"}\`), which already carries it, and
-  attach only on a yes. If they say no and a sign-in is still needed, they sign
-  in through \`${b} browse --login\` (a plain browser with nothing attached) and
-  you continue with the headless tools.
+  signed-in session, ask whether you may work in their running browser, and
+  only on a yes drive its window the way a screen reader does: agent-desktop
+  refs, or cua element tokens from \`get_window_state\` on that window. That
+  route attaches nothing, so sites see the person's own browser. Open a new
+  tab rather than taking over theirs, and if a page needs a sign-in, the person
+  signs in there. cua's \`browser_prepare\` with
+  \`strategy: {"kind": "existing_profile"}\` needs a driver-level grant that
+  covers every agent on the machine, so do not ask for it to save a step.
 - Never type a password, username, or one-time code into a sign-in page
   yourself.
 - An approval to use the desktop is not approval to communicate. Never click
