@@ -583,7 +583,9 @@ viewport emulation, and never on an outside account.
   filters) when the site allows. Open it in their browser only when they
   ask to open or see it now.
 - A state no link can reproduce as a picture of just that part, checked
-  before sending, with a sentence saying what it shows.
+  before sending, with a sentence saying what it shows. Some chat apps show
+  a local picture only as a link (Claude Desktop's Code tab does; the Codex
+  app shows it inline), so the sentence must carry the point on its own.
 - Work they will continue as a link to the prepared state in their own
   browser, where they are already signed in; a desktop window only when no
   link can do it and they agreed to take it over.
