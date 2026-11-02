@@ -78,7 +78,7 @@ export function managedRgPath(): string {
 
 function isExecutable(p: string): boolean {
   try {
-    const r = spawnSync(p, ["--version"], { stdio: "ignore" });
+    const r = spawnSync(p, ["--version"], { windowsHide: true, stdio: "ignore" });
     return r.status === 0;
   } catch {
     return false;
@@ -165,7 +165,11 @@ export async function installRg(log?: (line: string) => void): Promise<string> {
 
 function extractTar(tarball: string, cwd: string): Promise<void> {
   return new Promise((resolveP, reject) => {
-    const proc = spawn("tar", ["xzf", tarball], { cwd, stdio: ["ignore", "ignore", "pipe"] });
+    const proc = spawn("tar", ["xzf", tarball], {
+      windowsHide: true,
+      cwd,
+      stdio: ["ignore", "ignore", "pipe"],
+    });
     let stderr = "";
     proc.stderr.setEncoding("utf8");
     proc.stderr.on("data", (c: string) => {

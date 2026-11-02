@@ -370,7 +370,7 @@ function checkRipgrep(): Check {
 }
 
 function whichVersion(bin: string, args: string[] = ["--version"]): { ok: boolean; out: string } {
-  const r = spawnSync(bin, args, { encoding: "utf-8" });
+  const r = spawnSync(bin, args, { windowsHide: true, encoding: "utf-8" });
   if (r.status !== 0) return { ok: false, out: "" };
   const out = (r.stdout || r.stderr).trim().split("\n")[0];
   return { ok: true, out };

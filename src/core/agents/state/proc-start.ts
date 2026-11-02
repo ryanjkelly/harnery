@@ -145,6 +145,7 @@ export function psStartToken(
 
 function defaultPsRun(pid: number): { status: number | null; stdout: string } {
   const out = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+    windowsHide: true,
     encoding: "utf8",
     timeout: 2000,
     env: { ...process.env, ...PS_ENV_PINS },

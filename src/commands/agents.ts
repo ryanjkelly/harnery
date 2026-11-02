@@ -4638,6 +4638,7 @@ function runAdapterProbe(
     }
     if (!got) {
       const out = spawnSync("ps", ["-o", "ppid=,comm=", "-p", String(walkPid)], {
+        windowsHide: true,
         encoding: "utf8",
       });
       const parsed = out.status === 0 ? parsePsChainLine(out.stdout) : null;

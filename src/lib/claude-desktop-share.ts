@@ -141,7 +141,10 @@ export function findPlaceholders(paths: string[]): Set<string> {
     else if (existsSync(join(dirname(p), `.${p.slice(dirname(p).length + 1)}.icloud`))) out.add(p);
   }
   if (process.platform !== "darwin" || present.length === 0) return out;
-  const r = spawnSync("/usr/bin/stat", ["-f", "%Xf %N", ...present], { encoding: "utf8" });
+  const r = spawnSync("/usr/bin/stat", ["-f", "%Xf %N", ...present], {
+    windowsHide: true,
+    encoding: "utf8",
+  });
   for (const line of (r.stdout ?? "").split("\n")) {
     const sp = line.indexOf(" ");
     if (sp < 0) continue;
@@ -156,7 +159,11 @@ export function requestDownload(paths: string[]): void {
   if (process.platform !== "darwin") return;
   for (const p of paths) {
     try {
-      spawn("/usr/bin/brctl", ["download", p], { stdio: "ignore", detached: true }).unref();
+      spawn("/usr/bin/brctl", ["download", p], {
+        windowsHide: true,
+        stdio: "ignore",
+        detached: true,
+      }).unref();
     } catch {
       // Not an iCloud folder or brctl missing; the next pass retries.
     }

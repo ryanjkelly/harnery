@@ -262,7 +262,11 @@ function searchInRepo(
       : (["grep", buildCallersGrepArgs(symbol, opts, extraExcludeDirs)] as const);
 
   return new Promise((resolveP, reject) => {
-    const proc = spawn(bin, args, { cwd: repo.cwd, stdio: ["ignore", "pipe", "pipe"] });
+    const proc = spawn(bin, args, {
+      windowsHide: true,
+      cwd: repo.cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
     const callers: Caller[] = [];
     let buffer = "";
     let stderr = "";

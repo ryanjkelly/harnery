@@ -500,6 +500,7 @@ function coordRoot(context: HarneryProgramContext | undefined): string {
 
 function repositoryBuild(root: string): string {
   const result = spawnSync("git", ["-C", root, "rev-parse", "HEAD"], {
+    windowsHide: true,
     encoding: "utf8",
     timeout: 5000,
   });

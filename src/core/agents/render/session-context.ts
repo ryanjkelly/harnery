@@ -392,6 +392,7 @@ function preCommitInvokesGuard(repoDir: string): boolean {
 /** Resolve a repo's effective git-hooks directory (absolute), or null. */
 function gitHooksDir(repoDir: string): string | null {
   const r = spawnSync("git", ["-C", repoDir, "rev-parse", "--git-path", "hooks"], {
+    windowsHide: true,
     encoding: "utf8",
   });
   if (r.status !== 0) return null;
@@ -418,9 +419,11 @@ function extractFirstSubmodule(gitmodulesPath: string): string | null {
  */
 function isLinkedWorktree(coordRoot: string): boolean {
   const dir = spawnSync("git", ["-C", coordRoot, "rev-parse", "--git-dir"], {
+    windowsHide: true,
     encoding: "utf8",
   });
   const common = spawnSync("git", ["-C", coordRoot, "rev-parse", "--git-common-dir"], {
+    windowsHide: true,
     encoding: "utf8",
   });
   if (dir.status !== 0 || common.status !== 0) return false;

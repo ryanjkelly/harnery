@@ -390,6 +390,7 @@ export function registerQaRunCommand(
           ...(opts.queueCapacity !== undefined ? ["--queue-capacity", opts.queueCapacity] : []),
         ];
         const child = spawn(process.execPath, childArgv, {
+          windowsHide: true,
           detached: true,
           stdio: ["ignore", logFd, logFd],
         });
@@ -466,10 +467,12 @@ export function registerQaRunCommand(
       if (job.tested_revision === undefined) {
         try {
           const head = execFileSync("git", ["rev-parse", "HEAD"], {
+            windowsHide: true,
             encoding: "utf8",
             stdio: ["ignore", "pipe", "ignore"],
           }).trim();
           const porcelain = execFileSync("git", ["status", "--porcelain"], {
+            windowsHide: true,
             encoding: "utf8",
             stdio: ["ignore", "pipe", "ignore"],
           });

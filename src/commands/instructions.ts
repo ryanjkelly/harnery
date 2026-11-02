@@ -128,6 +128,10 @@ function totals(components: ReturnType<typeof enrichComponent>[]) {
 }
 
 function gitHead(root: string): string | null {
-  const result = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" });
+  const result = spawnSync("git", ["rev-parse", "HEAD"], {
+    windowsHide: true,
+    cwd: root,
+    encoding: "utf8",
+  });
   return result.status === 0 ? result.stdout.trim() : null;
 }

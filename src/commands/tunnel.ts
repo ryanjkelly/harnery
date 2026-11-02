@@ -459,7 +459,7 @@ async function waitForReady(
 }
 
 function tailscaleDnsName(): string {
-  const r = spawnSync("tailscale", ["status", "--json"], { encoding: "utf-8" });
+  const r = spawnSync("tailscale", ["status", "--json"], { windowsHide: true, encoding: "utf-8" });
   if (r.status !== 0) {
     emit.error({
       code: "tunnel_tailscale_status_failed",
@@ -1184,7 +1184,7 @@ function logs(opts: LogsOpts): void {
     process.exit(1);
   }
   const args = opts.follow ? ["-f", path] : [path];
-  const r = spawnSync("tail", args, { stdio: "inherit" });
+  const r = spawnSync("tail", args, { windowsHide: true, stdio: "inherit" });
   if (r.status !== null && r.status !== 0) process.exit(r.status);
 }
 

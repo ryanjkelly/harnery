@@ -278,6 +278,6 @@ export function ancestry(pid: number, maxHops = 32): number[] {
 }
 
 function run(command: string, args: string[]): string {
-  const result = spawnSync(command, args, { encoding: "utf8", timeout: 10_000 });
+  const result = spawnSync(command, args, { windowsHide: true, encoding: "utf8", timeout: 10_000 });
   return result.status === 0 || result.stdout ? (result.stdout ?? "") : "";
 }

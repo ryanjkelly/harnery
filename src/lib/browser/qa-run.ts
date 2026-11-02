@@ -211,6 +211,7 @@ export const defaultQaRunExec: QaRunExec = (argv, options) =>
     // available fallback there.
     const groupKill = process.platform !== "win32";
     const child = spawn(command, args, {
+      windowsHide: true,
       env: options.env,
       stdio: ["ignore", "pipe", "pipe"],
       ...(groupKill ? { detached: true } : {}),

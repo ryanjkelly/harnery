@@ -2327,7 +2327,10 @@ function findAdapterAnchorPid(adapter?: Adapter): number | undefined {
       // no /proc (macOS/BSD) — fall through to ps
     }
     if (!hop) {
-      const out = spawnSync("ps", ["-o", "ppid=,comm=", "-p", String(pid)], { encoding: "utf8" });
+      const out = spawnSync("ps", ["-o", "ppid=,comm=", "-p", String(pid)], {
+        windowsHide: true,
+        encoding: "utf8",
+      });
       if (out.status === 0) hop = parsePsChainLine(out.stdout);
     }
     if (!hop) break;

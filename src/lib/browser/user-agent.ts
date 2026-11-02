@@ -45,7 +45,11 @@ export function parseChromeMajor(versionOutput: string): number | undefined {
 /** Ask an installed Chrome binary for its major version. */
 export function chromeMajorFromExecutable(executable: string): number | undefined {
   try {
-    const res = spawnSync(executable, ["--version"], { encoding: "utf8", timeout: 5000 });
+    const res = spawnSync(executable, ["--version"], {
+      windowsHide: true,
+      encoding: "utf8",
+      timeout: 5000,
+    });
     return parseChromeMajor(`${res.stdout ?? ""}${res.stderr ?? ""}`);
   } catch {
     return undefined;

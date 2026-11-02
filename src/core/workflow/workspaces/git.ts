@@ -94,6 +94,7 @@ function runGit(
   stdio?: Array<"ignore" | "pipe" | number>,
 ): GitResult {
   const result = spawnSync("git", [...args], {
+    windowsHide: true,
     cwd,
     encoding: "utf8",
     env: isolatedGitEnvironment(),

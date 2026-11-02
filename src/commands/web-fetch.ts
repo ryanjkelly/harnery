@@ -56,7 +56,7 @@ function webCacheRoot(ref: string): string {
 
 /** bun if available (preferred), else npm. Both support `<runner> install` and `<runner> run <script>`. */
 export function webRunner(spawn: typeof spawnSync = spawnSync): "bun" | "npm" {
-  const r = spawn("bun", ["--version"], { stdio: "ignore" });
+  const r = spawn("bun", ["--version"], { windowsHide: true, stdio: "ignore" });
   return r.status === 0 ? "bun" : "npm";
 }
 
@@ -94,6 +94,7 @@ export function lazyFetchWebRoot(
   mkdirSync(path.dirname(cacheRoot), { recursive: true });
 
   const clone = spawn("git", ["clone", "--depth", "1", "--branch", ref, repoUrl, cacheRoot], {
+    windowsHide: true,
     stdio: "inherit",
   });
   if (clone.status !== 0) {
@@ -112,7 +113,7 @@ export function lazyFetchWebRoot(
   for (const dir of [cacheRoot, webDir]) {
     const where = dir === webDir ? "web/" : "the harnery root";
     emit.log(`harn web · installing dashboard deps (${runner} install in ${where})`, "info");
-    const install = spawn(runner, ["install"], { cwd: dir, stdio: "inherit" });
+    const install = spawn(runner, ["install"], { windowsHide: true, cwd: dir, stdio: "inherit" });
     if (install.status !== 0) {
       emit.error({
         code: "web_fetch_failed",

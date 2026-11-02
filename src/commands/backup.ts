@@ -277,6 +277,7 @@ function runRestic(args: string[], opts: RunOpts = {}): { exitCode: number; stdo
   const pwFile = opts.passwordFile ?? defaultPasswordFile();
   const wantInherit = opts.stdio === "inherit";
   const r = spawnSync("restic", [...args, ...(opts.passThrough ?? [])], {
+    windowsHide: true,
     env: {
       ...process.env,
       RESTIC_REPOSITORY: repo,
@@ -292,7 +293,7 @@ function runRestic(args: string[], opts: RunOpts = {}): { exitCode: number; stdo
 }
 
 function checkRestic(emit: EmitContext): boolean {
-  const r = spawnSync("restic", ["version"], { encoding: "utf-8" });
+  const r = spawnSync("restic", ["version"], { windowsHide: true, encoding: "utf-8" });
   if (r.status !== 0) {
     emit.error({
       code: "restic_missing",

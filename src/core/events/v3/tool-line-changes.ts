@@ -51,11 +51,7 @@ function compare(before: string, after: string): LineChanges | undefined {
     const result = spawnSync(
       "git",
       ["diff", "--no-index", "--no-ext-diff", "--no-textconv", "--numstat", "--", oldPath, newPath],
-      {
-        encoding: "utf8",
-        timeout: 2000,
-        maxBuffer: 4096,
-      },
+      { windowsHide: true, encoding: "utf8", timeout: 2000, maxBuffer: 4096 },
     );
     if (result.status !== 0 && result.status !== 1) return;
     const match = /^(\d+)\t(\d+)\t/.exec(result.stdout);

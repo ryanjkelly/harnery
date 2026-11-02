@@ -263,6 +263,7 @@
     "check:portability": "bun run scripts/check-portability.ts",
     "check:public-surface": "bun run scripts/check-public-surface.ts",
     "check:layering": "bun run scripts/check-layering.ts",
+    "check:windows-hide": "bun run scripts/check-windows-hide.ts",
     "probe:supervisor-budget": "bun run scripts/probe-supervisor-budget.ts",
     "lint:fix": "bun x @biomejs/biome check --write src openclaw-plugin opencode-plugin",
     "format": "bun x @biomejs/biome format --write src openclaw-plugin opencode-plugin",

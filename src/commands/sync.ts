@@ -80,7 +80,7 @@ function findHarneryDir(): string | null {
 }
 
 function checkRclone(emit: EmitContext): boolean {
-  const r = spawnSync("rclone", ["version"], { encoding: "utf-8" });
+  const r = spawnSync("rclone", ["version"], { windowsHide: true, encoding: "utf-8" });
   if (r.status !== 0) {
     emit.error({
       code: "rclone_missing",
@@ -95,7 +95,7 @@ function checkRclone(emit: EmitContext): boolean {
 }
 
 function listRemotes(): string[] {
-  const r = spawnSync("rclone", ["listremotes"], { encoding: "utf-8" });
+  const r = spawnSync("rclone", ["listremotes"], { windowsHide: true, encoding: "utf-8" });
   if (r.status !== 0) return [];
   return r.stdout
     .split("\n")
@@ -225,7 +225,7 @@ export function registerSyncCommand(program: Command, emit: EmitContext): void {
       const { local, remote } = buildRcloneArgs(cfg, hDir, "push");
       const args = ["check", local, remote, "--one-way", ...syncIncludeFlags()];
       if (opts.verbose) args.push("-v");
-      const r = spawnSync("rclone", args, { stdio: "inherit" });
+      const r = spawnSync("rclone", args, { windowsHide: true, stdio: "inherit" });
       emit.setExitCode(r.status ?? 1);
     });
 
@@ -254,7 +254,7 @@ export function registerSyncCommand(program: Command, emit: EmitContext): void {
       const args = ["copy", local, remote, ...syncIncludeFlags()];
       if (opts.dryRun) args.push("--dry-run");
       if (opts.verbose) args.push("-v");
-      const r = spawnSync("rclone", args, { stdio: "inherit" });
+      const r = spawnSync("rclone", args, { windowsHide: true, stdio: "inherit" });
       emit.setExitCode(r.status ?? 1);
     });
 
@@ -283,7 +283,7 @@ export function registerSyncCommand(program: Command, emit: EmitContext): void {
       const args = ["copy", remote, local, ...syncIncludeFlags()];
       if (opts.dryRun) args.push("--dry-run");
       if (opts.verbose) args.push("-v");
-      const r = spawnSync("rclone", args, { stdio: "inherit" });
+      const r = spawnSync("rclone", args, { windowsHide: true, stdio: "inherit" });
       emit.setExitCode(r.status ?? 1);
     });
 
@@ -303,6 +303,7 @@ export function registerSyncCommand(program: Command, emit: EmitContext): void {
       }
       const remote = `${cfg.remote}:${cfg.prefix}`;
       const r = spawnSync("rclone", ["lsf", remote, "-R", "--max-depth", opts.depth], {
+        windowsHide: true,
         stdio: "inherit",
       });
       emit.setExitCode(r.status ?? 1);

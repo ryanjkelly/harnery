@@ -747,7 +747,12 @@ type GitReadResult =
 
 function git(cwd: string, args: string[]): GitReadResult {
   try {
-    const result = spawnSync("git", args, { cwd, encoding: "utf8", timeout: 2_000 });
+    const result = spawnSync("git", args, {
+      windowsHide: true,
+      cwd,
+      encoding: "utf8",
+      timeout: 2_000,
+    });
     if (result.error) {
       return {
         ok: false,

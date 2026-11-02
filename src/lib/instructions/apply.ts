@@ -341,6 +341,7 @@ export function applyInstructions(projectRoot: string, opts: ApplyOpts): ApplyRe
 /** True when `dir` is inside a real Git work tree (an empty `.git` folder does not count). */
 function insideGitWorkTree(dir: string): boolean {
   const r = spawnSync("git", ["-C", dir, "rev-parse", "--is-inside-work-tree"], {
+    windowsHide: true,
     encoding: "utf8",
   });
   return r.status === 0 && r.stdout.trim() === "true";

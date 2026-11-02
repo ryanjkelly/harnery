@@ -104,6 +104,7 @@ function readIndexBlobs(root: string, oids: readonly string[]): Promise<Map<stri
 
   return new Promise((resolveResult, rejectResult) => {
     const process = spawn("git", ["cat-file", "--batch"], {
+      windowsHide: true,
       cwd: root,
       env: { ...globalThis.process.env },
       stdio: ["pipe", "pipe", "pipe"],

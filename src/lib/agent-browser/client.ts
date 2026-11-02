@@ -78,6 +78,7 @@ export class AgentBrowser {
     const binary = this.opts.binary ?? "agent-browser";
     const env = this.scrubEnv();
     const result = spawnSync(binary, args, {
+      windowsHide: true,
       timeout: timeoutMs ?? this.opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       encoding: "utf8",
       env,

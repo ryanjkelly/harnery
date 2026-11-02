@@ -301,7 +301,13 @@ const GIT_DISCOVERY_VARS = [
 function gitProbe(args: string[], cwd: string): { status: number; stdout: string } {
   const env = { ...process.env };
   for (const v of GIT_DISCOVERY_VARS) delete env[v];
-  const result = spawnSync("git", args, { cwd, env, encoding: "utf8", timeout: 2000 });
+  const result = spawnSync("git", args, {
+    windowsHide: true,
+    cwd,
+    env,
+    encoding: "utf8",
+    timeout: 2000,
+  });
   return { status: result.status ?? 1, stdout: result.stdout ?? "" };
 }
 

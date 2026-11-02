@@ -133,7 +133,10 @@ function readPpid(pid: number): number | null {
   }
   // Portable fallback: `ps -o ppid= -p <pid>` works on macOS/BSD/Linux.
   try {
-    const out = spawnSync("ps", ["-o", "ppid=", "-p", String(pid)], { encoding: "utf8" });
+    const out = spawnSync("ps", ["-o", "ppid=", "-p", String(pid)], {
+      windowsHide: true,
+      encoding: "utf8",
+    });
     if (out.status === 0) {
       const n = Number.parseInt(out.stdout.trim(), 10);
       if (Number.isFinite(n) && n > 0) return n;

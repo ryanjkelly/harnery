@@ -38,6 +38,7 @@ export function playSound(
     const player = join(repoRoot, "scripts", "hooks", "play-sound.sh");
     if (!existsSync(player)) return;
     spawnSync("bash", [player, soundEvent, String(maxPlays)], {
+      windowsHide: true,
       env: { ...process.env, CLAUDE_SOUND_SESSION_ID: sessionId },
       timeout: 4000,
       stdio: "ignore",

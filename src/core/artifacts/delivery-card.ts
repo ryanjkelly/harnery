@@ -312,7 +312,10 @@ function displayPath(path: string, environment: DisplayEnvironment): string {
     (process.env.WSL_INTEROP || process.env.HARNERY_AGENT_COORD_BRIDGE === "codex-wsl")
   ) {
     try {
-      return execFileSync("wslpath", ["-w", resolve(path)], { encoding: "utf8" }).trim();
+      return execFileSync("wslpath", ["-w", resolve(path)], {
+        encoding: "utf8",
+        windowsHide: true,
+      }).trim();
     } catch {
       // Fall through to the native path when wslpath is unavailable.
     }

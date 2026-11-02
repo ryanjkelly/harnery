@@ -1044,7 +1044,7 @@ function execSearch(
   strict: boolean,
 ): Promise<Match[]> {
   return new Promise((resolveP, reject) => {
-    const proc = spawn(bin, args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
+    const proc = spawn(bin, args, { windowsHide: true, cwd, stdio: ["ignore", "pipe", "pipe"] });
     const decoder = new NulDecoder(decodeMode);
     const matches: Match[] = [];
     let stderr = "";

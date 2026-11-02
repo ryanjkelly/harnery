@@ -45,6 +45,7 @@ export function windowsChromePath(
 /** `%LOCALAPPDATA%` as a Windows path, read through cmd.exe interop. */
 export function windowsLocalAppData(): string | undefined {
   const result = spawnSync("cmd.exe", ["/c", "echo %LOCALAPPDATA%"], {
+    windowsHide: true,
     encoding: "utf8",
     timeout: 10_000,
   });
@@ -294,12 +295,13 @@ function runPowerShellScript(
   writeFileSync(scriptLinux, script, { mode: 0o600 });
   try {
     const scriptWindows = spawnSync("wslpath", ["-w", scriptLinux], {
+      windowsHide: true,
       encoding: "utf8",
     }).stdout.trim();
     const result = spawnSync(
       "powershell.exe",
       ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptWindows, ...args],
-      { encoding: "utf8", timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024 },
+      { windowsHide: true, encoding: "utf8", timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024 },
     );
     return {
       status: result.status,

@@ -235,12 +235,14 @@ function isFileCommittedClean(coordRoot: string, relPath: string): boolean {
   if (!existsSync(abs)) return false;
   try {
     const tracked = spawnSync("git", ["ls-files", "--error-unmatch", "--", rel], {
+      windowsHide: true,
       cwd: coordRoot,
       encoding: "utf8",
       timeout: 2000,
     });
     if (tracked.status !== 0) return false;
     const result = spawnSync("git", ["diff", "--quiet", "HEAD", "--", rel], {
+      windowsHide: true,
       cwd: coordRoot,
       encoding: "utf8",
       timeout: 2000,

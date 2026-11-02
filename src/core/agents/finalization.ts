@@ -111,7 +111,13 @@ export function readSessionWriteClaims(
 function git(args: string[], cwd: string): GitResult {
   const env = { ...process.env };
   for (const name of GIT_DISCOVERY_VARS) delete env[name];
-  const result = spawnSync("git", args, { cwd, env, encoding: "utf8", timeout: 5_000 });
+  const result = spawnSync("git", args, {
+    windowsHide: true,
+    cwd,
+    env,
+    encoding: "utf8",
+    timeout: 5_000,
+  });
   return {
     status: result.status ?? 1,
     stdout: result.stdout ?? "",

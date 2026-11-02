@@ -139,6 +139,7 @@ export function registerRmCommand(
 
 function gitTopLevel(dir: string): string | undefined {
   const result = spawnSync("git", ["-C", dir, "rev-parse", "--show-toplevel"], {
+    windowsHide: true,
     encoding: "utf8",
     timeout: 10_000,
   });

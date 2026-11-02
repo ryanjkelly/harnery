@@ -589,7 +589,11 @@ function systemPageSize(): number {
 }
 
 function positiveGetconf(key: string, fallback: number): number {
-  const result = spawnSync("getconf", [key], { encoding: "utf8", timeout: 1_000 });
+  const result = spawnSync("getconf", [key], {
+    windowsHide: true,
+    encoding: "utf8",
+    timeout: 1_000,
+  });
   const value = result.status === 0 ? Number(result.stdout.trim()) : Number.NaN;
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }

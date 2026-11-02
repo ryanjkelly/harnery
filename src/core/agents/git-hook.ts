@@ -18,7 +18,7 @@ import { spawnSync } from "node:child_process";
 export type GitHookEvent = "pre-commit" | "post-commit" | "post-checkout";
 
 function git(args: string[], cwd: string): string {
-  const r = spawnSync("git", args, { cwd, encoding: "utf8", timeout: 5000 });
+  const r = spawnSync("git", args, { windowsHide: true, cwd, encoding: "utf8", timeout: 5000 });
   return r.status === 0 ? (r.stdout ?? "") : "";
 }
 

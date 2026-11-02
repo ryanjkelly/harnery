@@ -268,6 +268,7 @@ function assertCleanClone(clone: string): void {
     throw new Error(`Clean clone removal requires a standalone .git directory: ${clone}`);
   const git = (args: string[]) => {
     const result = spawnSync("git", ["-c", "core.fsmonitor=false", "-C", clone, ...args], {
+      windowsHide: true,
       encoding: "utf8",
       timeout: 10_000,
       maxBuffer: 4 * 1024 * 1024,
@@ -417,6 +418,7 @@ function assertNoUnpushedHistory(gitDir: string): void {
       "--remotes",
     ],
     {
+      windowsHide: true,
       encoding: "utf8",
       timeout: 10_000,
       env: { ...process.env, LC_ALL: "C", GIT_DIR: undefined, GIT_WORK_TREE: undefined },
@@ -467,6 +469,7 @@ function fingerprint(stat: Stats): string {
 function assertUntracked(target: string): void {
   const git = (args: string[]) =>
     spawnSync("git", ["-C", dirname(target), ...args], {
+      windowsHide: true,
       encoding: "utf8",
       timeout: 10_000,
       maxBuffer: 4 * 1024 * 1024,

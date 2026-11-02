@@ -375,7 +375,11 @@ function reconcile(declared: CapabilitySupport, observed: BenchVerdict): BenchVe
  * refuses to answer. Shared with the live attestation probe so both halves of
  * the capability story key on the same string. */
 export function probeBinaryVersion(binary: string): string | null {
-  const result = spawnSync(binary, ["--version"], { encoding: "utf8", timeout: 5_000 });
+  const result = spawnSync(binary, ["--version"], {
+    windowsHide: true,
+    encoding: "utf8",
+    timeout: 5_000,
+  });
   if (result.error || result.status !== 0) return null;
   return (result.stdout || result.stderr).trim().split("\n")[0] || "installed";
 }

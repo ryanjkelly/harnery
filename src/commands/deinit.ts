@@ -247,7 +247,10 @@ function render(
 }
 
 function gitTopLevel(): string | null {
-  const r = spawnSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" });
+  const r = spawnSync("git", ["rev-parse", "--show-toplevel"], {
+    windowsHide: true,
+    encoding: "utf8",
+  });
   const out = r.status === 0 ? r.stdout.trim() : "";
   return out || null;
 }

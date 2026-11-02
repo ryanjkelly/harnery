@@ -222,6 +222,7 @@ function execHarness(
   extraEnv: Record<string, string> = {},
 ) {
   const pending = execFileAsync(bin, args, {
+    windowsHide: true,
     cwd: call.dir,
     timeout: call.timeoutMs,
     maxBuffer: MAX_BUFFER,

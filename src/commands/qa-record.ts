@@ -301,10 +301,12 @@ export function probeRevision():
   | undefined {
   try {
     const head = execFileSync("git", ["rev-parse", "HEAD"], {
+      windowsHide: true,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
     }).trim();
     const porcelain = execFileSync("git", ["status", "--porcelain"], {
+      windowsHide: true,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
     });

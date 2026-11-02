@@ -124,6 +124,7 @@ async function invokeRoute(
   try {
     const invocation = buildInvocation(route, prompt, dir, responseSchema);
     const pending = execFileAsync(route.binary, invocation.args, {
+      windowsHide: true,
       cwd: dir,
       env: semanticChildEnv(),
       timeout: timeoutMs,

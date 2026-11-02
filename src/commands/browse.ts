@@ -3516,6 +3516,7 @@ async function runPlainLogin(
     );
   }
   mkdirSync(profileDir, { recursive: true });
+  // windows-hide-allow: the person signs in to this Chrome window, so it must be visible
   const child = spawn(
     executable,
     [
@@ -3858,6 +3859,7 @@ async function runWindowsPlainLogin(
       "warn",
     );
   }
+  // windows-hide-allow: the person signs in to this Chrome window, so it must be visible
   const child = spawn(
     chromeLinux,
     [`--user-data-dir=${profileWindows}`, "--no-first-run", "--no-default-browser-check", url],

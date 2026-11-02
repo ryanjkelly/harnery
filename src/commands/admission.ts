@@ -129,6 +129,7 @@ async function runChild(
     const outcome = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
       (resolvePromise, rejectPromise) => {
         const child = spawn(executable as string, childArgs, {
+          windowsHide: true,
           stdio: "inherit",
           shell: false,
           env,
@@ -752,7 +753,7 @@ function launchDetachedJob(emit: EmitContext, options: LaunchOptions): void {
         "--timeout",
         String(options.timeoutMinutes),
       ],
-      { detached: true, stdio: ["ignore", logFd, logFd] },
+      { windowsHide: true, detached: true, stdio: ["ignore", logFd, logFd] },
     );
     child.unref();
   } catch (err: unknown) {
@@ -913,6 +914,7 @@ export async function superviseJob(emit: EmitContext, opts: AdmissionSuperviseOp
     const outcome = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
       (resolvePromise, rejectPromise) => {
         const child = spawn(executable as string, childArgs, {
+          windowsHide: true,
           stdio: ["ignore", logFd as number, logFd as number],
           shell: false,
           env: { ...process.env, [HELD_ENV]: [...heldResources(), document.resource].join(",") },

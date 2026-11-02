@@ -344,7 +344,7 @@ export function ensureCloudflared(
       "-o",
       local,
     ],
-    { stdio: "inherit" },
+    { windowsHide: true, stdio: "inherit" },
   );
   if (download.status !== 0) throw new Error("Downloading cloudflared failed; install it by hand.");
   chmodSync(local, 0o755);
