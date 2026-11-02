@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
-import { DEFAULT_WEB_PORT, resolveWebPort } from "../core/config.ts";
+import { DEFAULT_WEB_PORT, resolveBinName, resolveWebPort } from "../core/config.ts";
 import { ensureSemanticServiceRunning } from "../core/semantic/service.ts";
 import { processLogDestination } from "../core/storage/process-log.ts";
 import { ensureSupervisorRunning } from "../core/supervisor/service.ts";
@@ -18,6 +18,7 @@ import {
   readWebPerformanceReport,
   WEB_PERFORMANCE_LOG,
 } from "../lib/web-performance.ts";
+import { buildAndStamp, ensureFreshWebBuild, webDistDir } from "./web-build-stamp.ts";
 import { lazyFetchWebRoot, webRunner } from "./web-fetch.ts";
 
 /**
@@ -26,7 +27,7 @@ import { lazyFetchWebRoot, webRunner } from "./web-fetch.ts";
  * Subcommands:
  *   up [--prod]:   start the server (dev mode default; --prod runs next start)
  *   build:         next build (production bundle)
- *   start:         next start (must `harn web build` first)
+ *   start:         next start (rebuilds first when the build is stale)
  *   performance:   summarize request latency and event-loop delays
  *
  * Launches the Next.js app under `harnery/web/` against the user's current
@@ -155,6 +156,7 @@ interface UpOpts {
   coordRoot?: string;
   prod?: boolean;
   fetch?: boolean;
+  rebuild?: boolean;
   maxOldSpace?: string;
 }
 
@@ -200,6 +202,50 @@ async function requireAvailablePort(emit: EmitContext, port: number): Promise<bo
   return false;
 }
 
+/** Run the dashboard's production build (`next build`) and return its exit status. */
+function runWebBuild(root: string): number {
+  const r = spawnSync(webRunner(), ["run", "build"], {
+    windowsHide: true,
+    cwd: root,
+    stdio: "inherit",
+  });
+  return r.status ?? 1;
+}
+
+/**
+ * Make sure a production start serves a build that matches the current
+ * sources. Runs after the port check, so a rebuild never happens under a live
+ * server on that port. With `rebuild` false the existing build is served as
+ * is, and only its absence is an error.
+ */
+function prepareProductionBuild(emit: EmitContext, root: string, rebuild: boolean): boolean {
+  const bin = resolveBinName();
+  if (!rebuild) {
+    const distDir = webDistDir(root);
+    if (existsSync(distDir)) return true;
+    emit.error({
+      code: "no_build",
+      message: `no production build at ${distDir}`,
+      hint: `Run \`${bin} web build\` first, or drop --no-rebuild to build automatically.`,
+    });
+    process.exitCode = 1;
+    return false;
+  }
+  const result = ensureFreshWebBuild(
+    root,
+    () => runWebBuild(root),
+    (line) => emit.log(line, "info"),
+  );
+  if (result.ok) return true;
+  emit.error({
+    code: "web_build_failed",
+    message: `dashboard build failed with exit code ${result.status} (rebuilt because ${result.reason})`,
+    hint: "Fix the build error above and retry, or pass --no-rebuild to serve the existing build.",
+  });
+  process.exitCode = 1;
+  return false;
+}
+
 export function registerWebCommand(program: Command, emit: EmitContext): void {
   const web = program
     .command("web")
@@ -209,14 +255,16 @@ export function registerWebCommand(program: Command, emit: EmitContext): void {
     .command("up")
     .description(
       "Start the dashboard. Default: dev mode (HMR, no build needed). With " +
-        "--prod, runs next start (requires a prior `harn web build`).",
+        "--prod, runs next start, building first when the build is missing or " +
+        "older than the source.",
     )
     .option("-p, --port <port>", `Listen port (default ${DEFAULT_WEB_PORT})`)
     .option(
       "--coord-root <dir>",
       "Override the coord root (default: cwd; web walks up looking for .harnery/)",
     )
-    .option("--prod", "Use next start instead of next dev (requires prior build)")
+    .option("--prod", "Use next start instead of next dev (rebuilds a stale build first)")
+    .option("--no-rebuild", "With --prod, serve the existing build even if it is stale")
     .option("--no-fetch", "Don't auto-fetch the dashboard if it's missing (npm installs)")
     .option(
       "--max-old-space <mb>",
@@ -239,20 +287,12 @@ export function registerWebCommand(program: Command, emit: EmitContext): void {
       }
       const mode = opts.prod ? "start" : "dev";
 
-      if (opts.prod) {
-        const nextDir = path.join(root, ".next");
-        if (!existsSync(nextDir)) {
-          emit.error({
-            code: "no_build",
-            message: `--prod requires a prior build (no .next at ${nextDir})`,
-            hint: "Run `harn web build` first.",
-          });
-          process.exitCode = 1;
-          return;
-        }
-      }
-
       if (!(await requireAvailablePort(emit, port))) return;
+      if (opts.prod) {
+        if (!prepareProductionBuild(emit, root, opts.rebuild !== false)) return;
+        // A rebuild can take minutes; confirm nothing claimed the port meanwhile.
+        if (!(await requireAvailablePort(emit, port))) return;
+      }
 
       await startSupervisorWithWeb(coordRoot, emit);
       await startSemanticServiceWithWeb(coordRoot, emit);
@@ -308,18 +348,18 @@ export function registerWebCommand(program: Command, emit: EmitContext): void {
         return;
       }
       emit.log("running next build…", "info");
-      const r = spawnSync(webRunner(), ["run", "build"], {
-        cwd: root,
-        stdio: "inherit",
-      });
-      process.exitCode = r.status ?? 1;
+      process.exitCode = buildAndStamp(root, () => runWebBuild(root));
     });
 
   web
     .command("start")
-    .description("Start the production server (next start). Requires prior `harn web build`.")
+    .description(
+      "Start the production server (next start), building first when the build is " +
+        "missing or older than the source.",
+    )
     .option("-p, --port <port>", `Listen port (default ${DEFAULT_WEB_PORT})`)
     .option("--coord-root <dir>", "Override the coord root")
+    .option("--no-rebuild", "Serve the existing build even if it is stale")
     .option("--no-fetch", "Don't auto-fetch the dashboard if it's missing (npm installs)")
     .option(
       "--max-old-space <mb>",
@@ -331,16 +371,6 @@ export function registerWebCommand(program: Command, emit: EmitContext): void {
         process.exitCode = 1;
         return;
       }
-      const nextDir = path.join(root, ".next");
-      if (!existsSync(nextDir)) {
-        emit.error({
-          code: "no_build",
-          message: `no .next/ found at ${nextDir}`,
-          hint: "Run `harn web build` first.",
-        });
-        process.exitCode = 1;
-        return;
-      }
       const coordRoot = opts.coordRoot ?? process.cwd();
       let port: number;
       try {
@@ -349,6 +379,9 @@ export function registerWebCommand(program: Command, emit: EmitContext): void {
         reportInvalidPort(emit, error);
         return;
       }
+      if (!(await requireAvailablePort(emit, port))) return;
+      if (!prepareProductionBuild(emit, root, opts.rebuild !== false)) return;
+      // A rebuild can take minutes; confirm nothing claimed the port meanwhile.
       if (!(await requireAvailablePort(emit, port))) return;
       await startSupervisorWithWeb(coordRoot, emit);
       await startSemanticServiceWithWeb(coordRoot, emit);

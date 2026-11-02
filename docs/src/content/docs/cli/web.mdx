@@ -18,15 +18,15 @@ The dashboard is not bundled in the npm package (which is the CLI + coord engine
 ## Subcommands
 
 ```
-harn web up [--port 4276] [--coord-root <dir>] [--prod] [--no-fetch] [--max-old-space <mb>]
+harn web up [--port 4276] [--coord-root <dir>] [--prod] [--no-rebuild] [--no-fetch] [--max-old-space <mb>]
 harn web build [--no-fetch]
-harn web start [--port 4276] [--coord-root <dir>] [--no-fetch] [--max-old-space <mb>]
+harn web start [--port 4276] [--coord-root <dir>] [--no-rebuild] [--no-fetch] [--max-old-space <mb>]
 harn web performance [--coord-root <dir>] [--since 1h] [--limit 20] [--json]
 ```
 
 ## `up`
 
-Boot the dashboard. Dev mode by default (HMR, no build needed). With `--prod`, runs `next start` (requires a prior `web build`).
+Boot the dashboard. Dev mode by default (HMR, no build needed). With `--prod`, runs `next start`, building first when the production build is missing or out of date (see [Build freshness](#build-freshness)).
 
 ```bash
 harn web up
@@ -44,14 +44,32 @@ Produce the production bundle:
 harn web build
 ```
 
-Runs `next build` against `harnery/web/`. Output lands in `harnery/web/.next/`.
+Runs `next build` against `harnery/web/`. Output lands in `harnery/web/.next/`, along with a `harnery-build-stamp.json` that records which sources the build came from.
 
 ## `start`
 
-Start the production server (requires prior `build`):
+Start the production server:
 
 ```bash
-harn web build && harn web start
+harn web start
+```
+
+## Build freshness
+
+The production bundle includes `web/` and Harnery's own `src/`, so a build made before an update keeps serving the old pages until it is rebuilt. `up --prod` and `start` check the build before they start the server. When the build is missing, has no stamp, or was made from different sources, they print one line saying why and run the same build as `harn web build`. The server starts only if that build succeeds.
+
+The check runs after the port check, so it never rebuilds under a server that is already running on that port.
+
+How the sources are compared:
+
+- **Git checkout** (a clone, a submodule, or the cached npm fetch): the tree hashes of `web/` and `src/` at `HEAD`, plus the content of every uncommitted or untracked file under them. Commits elsewhere in the repository do not trigger a rebuild.
+- **Anywhere else:** the newest modification time and the file count across `web/app`, `web/components`, `web/lib`, `web/middleware.ts`, `web/next.config.ts`, `web/package.json`, `web/server-*.mjs`, and `src/`.
+
+`node_modules/` is never read, so the check takes well under a second. Pass `--no-rebuild` to serve whatever build exists, stale or not:
+
+```bash
+harn web start --no-rebuild
+harn web up --prod --no-rebuild
 ```
 
 ## Memory
