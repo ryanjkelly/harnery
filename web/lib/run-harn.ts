@@ -14,6 +14,10 @@ export interface HarnResult {
   ok: boolean;
   stdout: string;
   stderr: string;
+  /** The process exit code; null when it was killed or never started. */
+  exitCode: number | null;
+  /** True when `timeoutMs` ran out and the process was killed. */
+  timedOut: boolean;
 }
 
 /**
@@ -40,8 +44,10 @@ export function runHarn(args: string[], opts: { timeoutMs?: number } = {}): Prom
     });
     let stdout = "";
     let stderr = "";
+    let timedOut = false;
     const timer = opts.timeoutMs
       ? setTimeout(() => {
+          timedOut = true;
           stderr += `harn ${args[0] ?? ""} did not finish in ${Math.round(opts.timeoutMs! / 1000)} seconds`;
           proc.kill();
         }, opts.timeoutMs)
@@ -54,11 +60,11 @@ export function runHarn(args: string[], opts: { timeoutMs?: number } = {}): Prom
     });
     proc.on("close", (code) => {
       if (timer) clearTimeout(timer);
-      resolve({ ok: code === 0, stdout, stderr });
+      resolve({ ok: code === 0 && !timedOut, stdout, stderr, exitCode: code, timedOut });
     });
     proc.on("error", (err) => {
       if (timer) clearTimeout(timer);
-      resolve({ ok: false, stdout, stderr: `${stderr}${err.message}` });
+      resolve({ ok: false, stdout, stderr: `${stderr}${err.message}`, exitCode: null, timedOut });
     });
   });
 }

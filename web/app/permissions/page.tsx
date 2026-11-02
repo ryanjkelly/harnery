@@ -1,13 +1,26 @@
+import { headers } from "next/headers";
 import { FormattedDateTime } from "@/components/FormattedDateTime";
 import { NavBar } from "@/components/NavBar";
+import {
+  ComputerModeControl,
+  type ComputerModeOption,
+} from "@/components/permissions/ComputerModeControl";
 import { Badge } from "@/components/ui/badge";
 import { hostInfo } from "@/lib/config";
 import { coordRoot } from "@/lib/coord-reader";
 import {
+  COMPUTER_MODE_LABELS,
+  COMPUTER_MODES,
+  CONFIRM_SECONDS,
+  type ComputerModeChoice,
   type ComputerStatus,
+  computerModeLooser,
+  isComputerMode,
   MEANINGS,
   type PermissionsReport,
+  PROJECT_DEFAULT_CHOICE,
   readPermissionsPage,
+  requestLocality,
 } from "@/lib/permissions";
 
 export const dynamic = "force-dynamic";
@@ -102,16 +115,50 @@ function Section({
   );
 }
 
+const MODE_SOURCE: Record<string, string> = {
+  project: "the project's default",
+  "user-project": "your own choice for this project",
+  "user-default": "your own choice for all your projects",
+};
+
+/** The choices the page offers, with what each would mean for this person now. */
+function modeOptions(status: ComputerStatus): ComputerModeOption[] {
+  const current = isComputerMode(status.mode) ? status.mode : "off";
+  const projectMode = isComputerMode(status.project_mode) ? status.project_mode : "off";
+  const clearMeaning =
+    status.mode_source === "user-default"
+      ? `Make no separate choice for this project, so your choice for all your projects (${status.mode}) applies.`
+      : status.mode_source === "user-project"
+        ? `Remove your choice for this project, so the project's default (${projectMode}) applies, or your choice for all your projects if you made one.`
+        : `Follow the project's default (${projectMode}).`;
+  return [
+    ...COMPUTER_MODES.map((mode) => ({
+      value: mode as ComputerModeChoice,
+      label: COMPUTER_MODE_LABELS[mode],
+      meaning: MEANINGS.computerMode[mode] ?? "",
+      looser: computerModeLooser(mode, current),
+    })),
+    {
+      value: PROJECT_DEFAULT_CHOICE,
+      label: "Use the default",
+      meaning: clearMeaning,
+      looser: status.mode_source === "user-project" && computerModeLooser(projectMode, current),
+    },
+  ];
+}
+
 function ComputerSection({
   status,
   error,
   report,
   bin,
+  local,
 }: {
   status?: ComputerStatus;
   error?: string;
   report?: PermissionsReport;
   bin: string;
+  local: boolean;
 }) {
   const approvals = report?.desktopApprovals ?? [];
   if (!status) {
@@ -122,27 +169,45 @@ function ComputerSection({
     );
   }
   const yours = status.mode_source !== "project";
+  const projectAllows = status.project_mode !== "off";
+  const cliHint = `run \`${bin} computer mode <off | ask-each-task | ask-once-per-session | on>\` (or \`--clear\`)`;
+  const change = !projectAllows
+    ? `This project's own settings (.harnery/config.jsonc) decide whether agents may use the desktop at all; until it allows that, there is no personal mode to choose.`
+    : local
+      ? `Choose your own mode above, ask your agent (for example "set my computer-use mode to ask once per session"), or ${cliHint}. It applies to you on this computer, for this project. Loosening it shows you a confirmation pop-up first.`
+      : `Your own mode can be changed only from a browser on this computer. There, choose it on this page, ask your agent, or ${cliHint}. Loosening it shows you a confirmation pop-up first.`;
   return (
     <Section
       title="Computer use (the screen, mouse and keyboard)"
       summary={
-        status.enabled
+        projectAllows
           ? "Whether agents may use this computer's desktop, and how they ask."
           : "This project does not allow agents to use the desktop."
       }
-      change={`To change your own setting, ask your agent, for example "set my computer-use mode to ask once per session", or run \`${bin} computer mode <off | ask-each-task | ask-once-per-session | on>\`. Loosening it shows you a confirmation pop-up first.`}
+      change={change}
     >
       <Setting
         label="Your mode"
         value={status.mode}
         meaning={MEANINGS.computerMode[status.mode]}
-        source={yours ? "your own choice on this computer" : "the project's default"}
+        source={MODE_SOURCE[status.mode_source] ?? status.mode_source}
       />
       {yours ? (
         <Setting
           label="Project default"
           value={status.project_mode}
           meaning={MEANINGS.computerMode[status.project_mode]}
+        />
+      ) : null}
+      {projectAllows && local ? (
+        <ComputerModeControl
+          options={modeOptions(status)}
+          selected={
+            status.mode_source === "user-project" && isComputerMode(status.mode)
+              ? status.mode
+              : PROJECT_DEFAULT_CHOICE
+          }
+          confirmSeconds={CONFIRM_SECONDS}
         />
       ) : null}
       <div className="py-2 text-sm">
@@ -341,6 +406,7 @@ function CursorSection({ report }: { report: PermissionsReport }) {
 export default async function PermissionsPage() {
   const { permissions, permissionsError, computer, computerError } = await readPermissionsPage();
   const bin = hostInfo().binName;
+  const local = requestLocality(await headers()).local;
   return (
     <div>
       <NavBar scannedDir={coordRoot()} />
@@ -349,7 +415,7 @@ export default async function PermissionsPage() {
           <h1 className="text-lg font-semibold">Permissions</h1>
           <p className="text-sm text-muted-foreground">
             {
-              "What the coding agents on this computer are allowed to do, read from each tool's own settings. Nothing on this page changes a setting; each section says how to change it. Amber marks a setting with no limits."
+              "What the coding agents on this computer are allowed to do, read from each tool's own settings. The one thing you can change here is your own computer-use mode, and only from a browser on this computer; each other section says how to change it. Amber marks a setting with no limits."
             }
           </p>
           {permissions ? (
@@ -360,7 +426,13 @@ export default async function PermissionsPage() {
           ) : null}
         </header>
         <div className="space-y-4">
-          <ComputerSection status={computer} error={computerError} report={permissions} bin={bin} />
+          <ComputerSection
+            status={computer}
+            error={computerError}
+            report={permissions}
+            bin={bin}
+            local={local}
+          />
           {permissions ? (
             <>
               <ClaudeSection report={permissions} />

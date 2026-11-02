@@ -2,10 +2,14 @@
  * Data and plain-English wording for the Permissions page: what the coding
  * agents on this computer may do. Read through `harn permissions --json` and
  * `harn computer status --json`, so the page shows what the CLI reports.
+ *
+ * The page's one write, the person's own computer-use mode for this project,
+ * also goes through the CLI (`harn computer mode`), and only from a request
+ * made on this computer: see `requestLocality`.
  */
 
 import type { PermissionsReport } from "../../src/core/permissions";
-import { runHarn } from "./run-harn";
+import { type HarnResult, runHarn } from "./run-harn";
 
 export type { PermissionsReport };
 
@@ -114,3 +118,292 @@ export const MEANINGS = {
     enabled: "Cursor's commands run in a sandbox.",
   } as Record<string, string>,
 };
+
+// ------------------------------------------------------------------ changing your own mode
+
+/**
+ * The computer-use modes, strictest first. Mirrors `COMPUTER_MODES` in the
+ * CLI's config (a test keeps them equal); kept here so the dashboard does not
+ * pull the CLI's config module into its bundle.
+ */
+export const COMPUTER_MODES = ["off", "ask-each-task", "ask-once-per-session", "on"] as const;
+export type ComputerMode = (typeof COMPUTER_MODES)[number];
+
+/** The page's choice that removes the person's own mode for this project. */
+export const PROJECT_DEFAULT_CHOICE = "default";
+export type ComputerModeChoice = ComputerMode | typeof PROJECT_DEFAULT_CHOICE;
+
+/** Short button labels for each mode. */
+export const COMPUTER_MODE_LABELS: Record<ComputerMode, string> = {
+  off: "Off",
+  "ask-each-task": "Ask before each task",
+  "ask-once-per-session": "Ask once per session",
+  on: "On, without asking",
+};
+
+/**
+ * How long the CLI's confirmation pop-up waits for an answer. Mirrors
+ * `DEFAULT_CONFIRM_SECONDS` in the computer command (a test keeps them equal).
+ */
+export const CONFIRM_SECONDS = 120;
+
+/** How long the dashboard lets `harn computer mode` run: the pop-up's wait plus headroom. */
+export const MODE_CHANGE_TIMEOUT_MS = (CONFIRM_SECONDS + 30) * 1000;
+
+export function isComputerMode(value: unknown): value is ComputerMode {
+  return typeof value === "string" && (COMPUTER_MODES as readonly string[]).includes(value);
+}
+
+/** True when mode `a` asks for less approval than mode `b`. */
+export function computerModeLooser(a: ComputerMode, b: ComputerMode): boolean {
+  return COMPUTER_MODES.indexOf(a) > COMPUTER_MODES.indexOf(b);
+}
+
+/** Validate a change request body: exactly `{ "mode": <mode or "default"> }`. */
+export function parseModeChangeRequest(
+  body: unknown,
+): { ok: true; choice: ComputerModeChoice } | { ok: false; message: string } {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return { ok: false, message: 'Send the new mode as { "mode": "..." }.' };
+  }
+  const keys = Object.keys(body);
+  if (keys.length !== 1 || keys[0] !== "mode") {
+    return { ok: false, message: "Send only the new mode." };
+  }
+  const mode = (body as { mode: unknown }).mode;
+  if (mode === PROJECT_DEFAULT_CHOICE || isComputerMode(mode)) return { ok: true, choice: mode };
+  return {
+    ok: false,
+    message: `The mode must be one of ${[...COMPUTER_MODES, PROJECT_DEFAULT_CHOICE].join(", ")}.`,
+  };
+}
+
+/** The CLI arguments for one validated choice. Always this project, never every project. */
+export function modeChangeArgs(choice: ComputerModeChoice): string[] {
+  return choice === PROJECT_DEFAULT_CHOICE
+    ? ["computer", "mode", "--clear", "--json"]
+    : ["computer", "mode", choice, "--json"];
+}
+
+export type ModeChangeOutcome =
+  | { outcome: "changed"; mode?: string; message: string }
+  | {
+      outcome: "declined" | "timed-out" | "unavailable" | "refused" | "busy" | "failed";
+      message: string;
+    };
+
+function cliError(stderr: string): { code?: string; message?: string } {
+  for (const line of stderr.split(/\r?\n/).reverse()) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("{")) continue;
+    try {
+      const parsed = JSON.parse(trimmed) as { error?: { code?: unknown; message?: unknown } };
+      if (parsed.error && typeof parsed.error === "object") {
+        return {
+          code: typeof parsed.error.code === "string" ? parsed.error.code : undefined,
+          message: typeof parsed.error.message === "string" ? parsed.error.message : undefined,
+        };
+      }
+    } catch {
+      // not the error line
+    }
+  }
+  return {};
+}
+
+/**
+ * Turn the CLI's answer into plain words. The CLI reports a "No" and an
+ * unanswered pop-up the same way (exit 4, `computer_approval_declined`), so a
+ * refusal that took about as long as the pop-up waits counts as unanswered.
+ */
+export function interpretModeChange(result: HarnResult, elapsedMs: number): ModeChangeOutcome {
+  if (result.timedOut) {
+    return {
+      outcome: "timed-out",
+      message: "Not changed: the confirmation pop-up got no answer in time.",
+    };
+  }
+  if (result.ok) {
+    let mode: string | undefined;
+    try {
+      const parsed = JSON.parse(result.stdout) as { mode?: unknown };
+      if (typeof parsed.mode === "string") mode = parsed.mode;
+    } catch {
+      // changed, but with no readable answer
+    }
+    const meaning = mode ? MEANINGS.computerMode[mode] : undefined;
+    return {
+      outcome: "changed",
+      ...(mode ? { mode } : {}),
+      message: mode
+        ? `Changed. Your computer-use mode for this project is now ${mode}${meaning ? `: ${meaning}` : "."}`
+        : "Changed.",
+    };
+  }
+  const error = cliError(result.stderr);
+  if (error.code === "computer_approval_declined") {
+    const noWay = /no way to ask(?: \((.*)\))?/.exec(error.message ?? "");
+    if (noWay) {
+      return {
+        outcome: "unavailable",
+        message: `Not changed: the confirmation pop-up could not be shown on this computer${noWay[1] ? ` (${noWay[1]})` : ""}.`,
+      };
+    }
+    if (elapsedMs >= (CONFIRM_SECONDS - 5) * 1000) {
+      return {
+        outcome: "timed-out",
+        message: `Not changed: the confirmation pop-up closed after ${CONFIRM_SECONDS / 60} minutes without an answer.`,
+      };
+    }
+    return {
+      outcome: "declined",
+      message: "Not changed: you answered No in the confirmation pop-up.",
+    };
+  }
+  if (error.code === "computer_disabled") {
+    return {
+      outcome: "refused",
+      message:
+        "Not changed: this project does not allow agents to use the desktop, and your own mode cannot turn it on.",
+    };
+  }
+  return {
+    outcome: "failed",
+    message: `Not changed: ${error.message ?? (errorLine(result.stderr) || "harn computer mode gave no answer")}`,
+  };
+}
+
+/** Change the person's own mode for this project through the CLI. Call only after `checkLocalWrite`. */
+export async function changeComputerMode(choice: ComputerModeChoice): Promise<ModeChangeOutcome> {
+  const started = Date.now();
+  const result = await runHarn(modeChangeArgs(choice), { timeoutMs: MODE_CHANGE_TIMEOUT_MS });
+  return interpretModeChange(result, Date.now() - started);
+}
+
+// ------------------------------------------------------------------ local requests only
+
+/** A header reader: `Headers`, or Next's `ReadonlyHeaders`. */
+export interface HeaderSource {
+  get(name: string): string | null;
+}
+
+/** Headers only a proxy or tunnel adds: Cloudflare and Tailscale identify their visitors with these. */
+const REMOTE_ONLY_HEADERS = [
+  "cf-connecting-ip",
+  "cf-ray",
+  "cf-ipcountry",
+  "cdn-loop",
+  "true-client-ip",
+  "tailscale-user-login",
+  "tailscale-user-name",
+  "tailscale-funnel-request",
+];
+
+/** The hostname of a Host-style value (`name`, `name:port`, `[v6]:port`), lowercased. */
+function hostnameOf(value: string): string {
+  const v = value.trim().toLowerCase();
+  if (v.startsWith("[")) return v.slice(1, v.indexOf("]") > 0 ? v.indexOf("]") : undefined);
+  const colons = v.split(":").length - 1;
+  return colons === 1 ? v.slice(0, v.indexOf(":")) : v;
+}
+
+/** An address on this computer: 127.0.0.0/8, ::1, or IPv4-mapped 127.x. */
+export function isLoopbackAddress(value: string): boolean {
+  const v = value
+    .trim()
+    .toLowerCase()
+    .replace(/^\[|\]$/g, "");
+  const v4 = v.startsWith("::ffff:") ? v.slice(7) : v;
+  if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(v4)) return true;
+  return v === "::1" || v === "0:0:0:0:0:0:0:1";
+}
+
+/**
+ * A Host value naming this computer. Only `localhost` itself: other
+ * `*.localhost` names (the dashboard's files origin) serve untrusted pages.
+ */
+export function isLoopbackHost(value: string): boolean {
+  const name = hostnameOf(value);
+  return name === "localhost" || isLoopbackAddress(name);
+}
+
+function list(value: string | null): string[] {
+  return (value ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Whether a request came from a browser on this computer.
+ *
+ * The dashboard listens on 127.0.0.1 only, so anyone elsewhere reaches it
+ * through a local proxy: `harn tunnel`'s gate keeps Host as `localhost` but
+ * records the public name in X-Forwarded-Host, and Cloudflare and Tailscale
+ * add their own visitor headers and X-Forwarded-For. Next fills
+ * X-Forwarded-Host and X-Forwarded-For from the real Host and socket when a
+ * request has none, so a direct local request still passes.
+ */
+export function requestLocality(
+  h: HeaderSource,
+): { local: true } | { local: false; reason: string } {
+  const remote = { local: false as const, reason: "This request did not come from this computer." };
+  const host = h.get("host");
+  if (!host || !isLoopbackHost(host)) return remote;
+  for (const name of REMOTE_ONLY_HEADERS) {
+    if (h.get(name) !== null) return remote;
+  }
+  if (!list(h.get("x-forwarded-host")).every(isLoopbackHost)) return remote;
+  if (!list(h.get("x-forwarded-for")).every(isLoopbackAddress)) return remote;
+  if (!list(h.get("x-real-ip")).every(isLoopbackAddress)) return remote;
+  for (const element of list(h.get("forwarded"))) {
+    for (const pair of element.split(";")) {
+      const [key, raw = ""] = pair.split("=");
+      const value = raw.trim().replace(/^"|"$/g, "");
+      const k = key?.trim().toLowerCase();
+      if (k === "for" && !isLoopbackAddress(value)) return remote;
+      if (k === "host" && !isLoopbackHost(value)) return remote;
+    }
+  }
+  return { local: true };
+}
+
+/**
+ * A change must come from this computer and from the dashboard's own page:
+ * a browser posting from another site (or another local port) is refused.
+ */
+export function checkLocalWrite(h: HeaderSource): { ok: true } | { ok: false; message: string } {
+  const locality = requestLocality(h);
+  if (!locality.local) {
+    return {
+      ok: false,
+      message:
+        "Not changed: your computer-use mode can be changed only from a browser on this computer.",
+    };
+  }
+  const site = h.get("sec-fetch-site");
+  if (site !== null && site !== "same-origin" && site !== "none") {
+    return { ok: false, message: "Not changed: the request did not come from the dashboard page." };
+  }
+  const origin = h.get("origin");
+  if (origin !== null) {
+    let originHost: string;
+    try {
+      const url = new URL(origin);
+      if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("scheme");
+      originHost = url.host;
+    } catch {
+      return {
+        ok: false,
+        message: "Not changed: the request did not come from the dashboard page.",
+      };
+    }
+    if (originHost.toLowerCase() !== (h.get("host") ?? "").toLowerCase()) {
+      return {
+        ok: false,
+        message: "Not changed: the request did not come from the dashboard page.",
+      };
+    }
+  }
+  return { ok: true };
+}

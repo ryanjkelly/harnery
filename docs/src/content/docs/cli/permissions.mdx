@@ -43,6 +43,21 @@ with the computer-use status, a one-line meaning for every value, and how to
 change each setting. Settings that let an agent act with no limit (no
 approvals, no sandbox) are marked.
 
+One setting can be changed there: your own computer-use mode for this
+project (off, ask before each task, ask once per session, on, or use the
+default). The page runs [`harn computer mode`](/cli/computer/) for you, so
+the CLI's rules apply: a project whose own mode is `off` offers no choice,
+and loosening the mode first shows you the CLI's confirmation pop-up. The
+page waits for your answer (up to two minutes) and then says whether the
+mode changed, you answered No, or the pop-up closed unanswered.
+
+The change is accepted only from a browser on this computer. The dashboard
+listens on `127.0.0.1`, and the page refuses a request that arrives through
+a tunnel or proxy (a forwarded host or address, or a Cloudflare or Tailscale
+visitor header) or that was posted from another site. Viewed remotely, the
+page shows your mode without the control. Everything else on the page stays
+read-only.
+
 ## Examples
 
 ```bash
