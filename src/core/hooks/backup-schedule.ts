@@ -134,6 +134,7 @@ export function scheduleBackupSnapshot(coordRoot: string): {
     {
       cwd: resolve(coordRoot),
       detached: true,
+      windowsHide: true,
       stdio: "ignore",
     },
   );

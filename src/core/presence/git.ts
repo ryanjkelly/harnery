@@ -52,6 +52,7 @@ function runGit(
     const r = spawnSync("git", ["-C", root, ...args], {
       encoding: "utf8",
       timeout: GIT_TIMEOUT_MS,
+      windowsHide: true,
       env: gitEnv(),
       ...(input !== undefined ? { input } : {}),
     });
@@ -153,6 +154,7 @@ function runNetworkGit(
   try {
     const child = spawn("git", ["-C", root, ...args], {
       detached: true,
+      windowsHide: true,
       stdio: "ignore",
       env: gitEnv(),
     });

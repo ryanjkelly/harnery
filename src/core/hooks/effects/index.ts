@@ -142,6 +142,7 @@ export function runSessionSyncExtension(repoRoot: string, force: boolean): void 
     const child = spawn("bash", [script, force ? "1" : "0"], {
       env: { ...process.env, HARNERY_OUTPUT_SESSION_TEE: "0" },
       detached: true,
+      windowsHide: true,
       stdio: "ignore",
     });
     child.unref();

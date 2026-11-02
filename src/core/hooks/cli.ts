@@ -1915,6 +1915,7 @@ function scheduleSessionMaintenance(coordRoot: string, adapter: Adapter): void {
       {
         cwd: coordRoot,
         detached: true,
+        windowsHide: true,
         stdio: "ignore",
         env: childEnv(coordRoot),
       },
@@ -1994,6 +1995,7 @@ function scheduleRuntimeContextRetry(
       {
         cwd: coordRoot,
         detached: true,
+        windowsHide: true,
         stdio: "ignore",
         env: childEnv(coordRoot),
       },

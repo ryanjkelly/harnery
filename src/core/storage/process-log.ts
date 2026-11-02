@@ -152,6 +152,7 @@ export function spawnRotatingProcess(options: RotatingProcessOptions): ChildProc
   };
   return spawn(launcher.command, [...launcher.arguments, specification], {
     detached: true,
+    windowsHide: true,
     stdio: "ignore",
     env: { ...(options.env ?? process.env) } as NodeJS.ProcessEnv,
   });
@@ -167,6 +168,7 @@ export function runRotatingProcessSync(options: RotatingProcessOptions): number 
   sink.startGeneration();
   const result = spawnSync(options.command, options.arguments ?? [], {
     encoding: "utf8",
+    windowsHide: true,
     env: { ...(options.env ?? process.env) } as NodeJS.ProcessEnv,
   });
   if (result.stdout) sink.append(result.stdout);
@@ -190,6 +192,7 @@ export async function runProcessLogWorker(raw: string | undefined): Promise<void
   sink.startGeneration();
   const child = spawn(parsed.command, parsed.arguments, {
     env: process.env,
+    windowsHide: true,
     stdio: ["ignore", "pipe", "pipe"],
   });
   child.stdout?.setEncoding("utf8");

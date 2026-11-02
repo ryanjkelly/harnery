@@ -1992,9 +1992,12 @@ function ownerLiveness(
 function containsTrackedPath(repoRoot: string, path: string): boolean {
   const rel = relative(repoRoot, path);
   if (rel.startsWith("..") || isAbsolute(rel)) return true;
+  // windowsHide: this runs inside the console-less session-maintenance worker,
+  // where an unhidden console child opens a new terminal window on Windows.
   const result = spawnSync("git", ["ls-files", "-z", "--", rel], {
     cwd: repoRoot,
     encoding: "utf8",
+    windowsHide: true,
   });
   // If Git itself cannot answer, fail closed.
   return result.status !== 0 || result.stdout.length > 0;
