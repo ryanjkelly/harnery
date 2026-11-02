@@ -251,6 +251,18 @@ describe("checkWiring (portable commit-guard detection)", () => {
     writeFileSync(join(hooksDir, "pre-commit"), "#!/bin/sh\nagent-coord verdict\n");
     expect(checkWiring(root)).toEqual([]);
   });
+
+  test("an absolute core.hooksPath is honored on every platform", () => {
+    // On Windows git prints a drive path (C:/...), which does not start with "/".
+    const hooks = join(root, "shared-hooks");
+    spawnSync("git", ["-C", root, "init", "-q"], { encoding: "utf8" });
+    spawnSync("git", ["-C", root, "config", "core.hooksPath", hooks.replaceAll("\\", "/")], {
+      encoding: "utf8",
+    });
+    mkdirSync(hooks, { recursive: true });
+    writeFileSync(join(hooks, "pre-commit"), "#!/bin/sh\nagent-coord verdict\n");
+    expect(checkWiring(root)).toEqual([]);
+  });
 });
 
 describe("formatPendingCouncils", () => {

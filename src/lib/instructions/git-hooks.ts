@@ -93,22 +93,77 @@ export function resolveHooksDir(projectRoot: string): string | null {
   return isAbsolute(p) ? p : resolve(projectRoot, p);
 }
 
+/** Checked-out first-level submodules named in the project's `.gitmodules`. */
+function submoduleRoots(projectRoot: string): string[] {
+  if (!existsSync(join(projectRoot, ".gitmodules"))) return [];
+  const r = spawnSync(
+    "git",
+    ["config", "--file", ".gitmodules", "--get-regexp", "^submodule\\..*\\.path$"],
+    { windowsHide: true, cwd: projectRoot, encoding: "utf8", timeout: 5000 },
+  );
+  if (r.status !== 0) return [];
+  const roots: string[] = [];
+  for (const line of (r.stdout ?? "").split(/\r?\n/)) {
+    const path = line.replace(/^\S+\s+/, "").trim();
+    if (!line.trim() || !path) continue;
+    const dir = resolve(projectRoot, path);
+    if (existsSync(join(dir, ".git"))) roots.push(dir);
+  }
+  return roots;
+}
+
+function samePath(a: string, b: string): boolean {
+  const norm = (p: string) => {
+    const r = resolve(p);
+    return process.platform === "win32" ? r.toLowerCase() : r;
+  };
+  return norm(a) === norm(b);
+}
+
+/**
+ * Every distinct effective hooks dir the managed regions belong in: the
+ * project's, then each checked-out first-level submodule's. A commit inside a
+ * submodule runs that submodule's hooks, and the region already resolves the
+ * superproject's harnery, so the commit guard covers it too. A submodule
+ * whose `core.hooksPath` points at the project's own hooks dir is the same
+ * target and is listed once. Empty when `projectRoot` isn't a git repo.
+ */
+export function hookTargets(projectRoot: string): string[] {
+  const own = resolveHooksDir(projectRoot);
+  if (!own) return [];
+  const dirs = [own];
+  for (const sub of submoduleRoots(projectRoot)) {
+    const dir = resolveHooksDir(sub);
+    if (dir && !dirs.some((d) => samePath(d, dir))) dirs.push(dir);
+  }
+  return dirs;
+}
+
 export interface GitHooksResult {
   actions: string[];
   warnings: string[];
 }
 
-/** Install or refresh the managed region in each of the three hook files. */
+/**
+ * Install or refresh the managed region in each of the three hook files, in
+ * the project's hooks dir and each submodule's (`hookTargets`).
+ */
 export function applyGitHooks(projectRoot: string, opts: { dryRun?: boolean }): GitHooksResult {
-  const dryRun = opts.dryRun === true;
   const actions: string[] = [];
   const warnings: string[] = [];
-  const hooksDir = resolveHooksDir(projectRoot);
-  if (!hooksDir) {
+  const targets = hookTargets(projectRoot);
+  if (targets.length === 0) {
     warnings.push("not a git repository; skipped git-hook regions");
     return { actions, warnings };
   }
+  for (const hooksDir of targets) {
+    actions.push(...applyGitHooksIn(projectRoot, hooksDir, opts.dryRun === true));
+  }
+  return { actions, warnings };
+}
 
+function applyGitHooksIn(projectRoot: string, hooksDir: string, dryRun: boolean): string[] {
+  const actions: string[] = [];
   if (!existsSync(hooksDir) && !dryRun) mkdirSync(hooksDir, { recursive: true });
 
   for (const event of GIT_HOOK_EVENTS) {
@@ -166,7 +221,7 @@ export function applyGitHooks(projectRoot: string, opts: { dryRun?: boolean }): 
     actions.push(`+ inserted git-hook region into ${display} (after shebang)`);
   }
 
-  return { actions, warnings };
+  return actions;
 }
 
 /**
@@ -199,27 +254,27 @@ export function gitHooksInstalled(projectRoot: string): boolean {
 export function checkGitHooks(projectRoot: string): { status: ManagedStatus; issues: string[] } {
   const issues: string[] = [];
   let worst: ManagedStatus = "fresh";
-  const hooksDir = resolveHooksDir(projectRoot);
-  if (!hooksDir) return { status: "fresh", issues };
   if (!gitHooksInstalled(projectRoot)) return { status: "fresh", issues };
 
-  for (const event of GIT_HOOK_EVENTS) {
-    const file = join(hooksDir, event);
-    const display = relative(projectRoot, file);
-    if (!existsSync(file)) {
-      issues.push(`${display}: missing (run init to create the harnery git hook)`);
-      worst = "missing";
-      continue;
-    }
-    const status = checkRegion(
-      readFileSync(file, "utf8"),
-      regionName(event),
-      renderGitHookBody(event),
-      "hash",
-    );
-    if (status !== "fresh") {
-      issues.push(`${display}: git-hook region ${status} (re-run init to refresh)`);
-      if (worst === "fresh") worst = status;
+  for (const hooksDir of hookTargets(projectRoot)) {
+    for (const event of GIT_HOOK_EVENTS) {
+      const file = join(hooksDir, event);
+      const display = relative(projectRoot, file);
+      if (!existsSync(file)) {
+        issues.push(`${display}: missing (run init to create the harnery git hook)`);
+        worst = "missing";
+        continue;
+      }
+      const status = checkRegion(
+        readFileSync(file, "utf8"),
+        regionName(event),
+        renderGitHookBody(event),
+        "hash",
+      );
+      if (status !== "fresh") {
+        issues.push(`${display}: git-hook region ${status} (re-run init to refresh)`);
+        if (worst === "fresh") worst = status;
+      }
     }
   }
   return { status: worst, issues };
@@ -234,29 +289,29 @@ export function removeGitHooks(projectRoot: string, opts: { dryRun?: boolean }):
   const dryRun = opts.dryRun === true;
   const actions: string[] = [];
   const warnings: string[] = [];
-  const hooksDir = resolveHooksDir(projectRoot);
-  if (!hooksDir) return { actions, warnings };
 
-  for (const event of GIT_HOOK_EVENTS) {
-    const file = join(hooksDir, event);
-    if (!existsSync(file)) continue;
-    const display = relative(projectRoot, file);
-    const content = readFileSync(file, "utf8");
-    const { text, removed } = removeRegion(content, regionName(event), "hash");
-    if (!removed) continue;
+  for (const hooksDir of hookTargets(projectRoot)) {
+    for (const event of GIT_HOOK_EVENTS) {
+      const file = join(hooksDir, event);
+      if (!existsSync(file)) continue;
+      const display = relative(projectRoot, file);
+      const content = readFileSync(file, "utf8");
+      const { text, removed } = removeRegion(content, regionName(event), "hash");
+      if (!removed) continue;
 
-    const residue = text.replace(/^#![^\n]*\n?/, "").trim();
-    if (residue === "") {
-      if (dryRun) actions.push(`+ would remove ${display} (was harnery-owned)`);
-      else {
-        rmSync(file);
-        actions.push(`+ removed ${display} (was harnery-owned)`);
+      const residue = text.replace(/^#![^\n]*\n?/, "").trim();
+      if (residue === "") {
+        if (dryRun) actions.push(`+ would remove ${display} (was harnery-owned)`);
+        else {
+          rmSync(file);
+          actions.push(`+ removed ${display} (was harnery-owned)`);
+        }
+      } else if (dryRun) {
+        actions.push(`+ would remove git-hook region from ${display} (host content kept)`);
+      } else {
+        writeFileSync(file, text);
+        actions.push(`+ removed git-hook region from ${display} (host content kept)`);
       }
-    } else if (dryRun) {
-      actions.push(`+ would remove git-hook region from ${display} (host content kept)`);
-    } else {
-      writeFileSync(file, text);
-      actions.push(`+ removed git-hook region from ${display} (host content kept)`);
     }
   }
   return { actions, warnings };

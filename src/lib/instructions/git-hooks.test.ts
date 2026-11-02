@@ -7,6 +7,7 @@ import {
   applyGitHooks,
   checkGitHooks,
   GIT_HOOK_EVENTS,
+  hookTargets,
   removeGitHooks,
   renderGitHookBody,
   resolveHooksDir,
@@ -166,5 +167,77 @@ describe("adoption-aware check (upgrade safety)", () => {
     const check = checkGitHooks(repo);
     expect(check.status).toBe("missing");
     expect(check.issues.length).toBe(2);
+  });
+});
+
+describe("submodules", () => {
+  // A parent with one checked-out submodule at sub/, built from a local repo.
+  function addSubmodule(): string {
+    const source = `${repo}-source`;
+    mkdirSync(source, { recursive: true });
+    sh(["git", "init", "--quiet", "-b", "main"], source);
+    sh(
+      [
+        "git",
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "commit",
+        "--quiet",
+        "--allow-empty",
+        "-m",
+        "init",
+      ],
+      source,
+    );
+    sh(
+      ["git", "-c", "protocol.file.allow=always", "submodule", "--quiet", "add", source, "sub"],
+      repo,
+    );
+    return join(repo, "sub");
+  }
+
+  afterEach(() => {
+    rmSync(`${repo}-source`, { recursive: true, force: true });
+  });
+
+  test("init installs the regions in the submodule's own hooks dir; check and deinit cover it", () => {
+    const sub = addSubmodule();
+    const subHooks = resolveHooksDir(sub)!;
+    expect(hookTargets(repo)).toHaveLength(2);
+
+    applyGitHooks(repo, {});
+    for (const event of GIT_HOOK_EVENTS) {
+      expect(readFileSync(join(subHooks, event), "utf8")).toContain(
+        `harnery:begin git-hook-${event}`,
+      );
+    }
+    expect(checkGitHooks(repo).status).toBe("fresh");
+
+    rmSync(join(subHooks, "pre-commit"));
+    const check = checkGitHooks(repo);
+    expect(check.status).toBe("missing");
+    expect(check.issues.join("\n")).toContain("modules");
+
+    applyGitHooks(repo, {});
+    removeGitHooks(repo, {});
+    for (const event of GIT_HOOK_EVENTS) expect(existsSync(join(subHooks, event))).toBe(false);
+  });
+
+  test("a submodule sharing the project's hooks dir is one target", () => {
+    const sub = addSubmodule();
+    sh(["git", "config", "core.hooksPath", resolveHooksDir(repo)!.replaceAll("\\", "/")], sub);
+    expect(hookTargets(repo)).toHaveLength(1);
+  });
+
+  test("an uninitialized submodule is skipped", () => {
+    addSubmodule();
+    sh(
+      ["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "-m", "add sub"],
+      repo,
+    );
+    sh(["git", "submodule", "--quiet", "deinit", "-f", "sub"], repo);
+    expect(hookTargets(repo)).toHaveLength(1);
   });
 });

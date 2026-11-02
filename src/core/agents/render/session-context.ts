@@ -9,7 +9,7 @@
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { resolveBinName, resolveHooksSetupHint } from "../../config.ts";
 import { harneryVersion, loadAdapterWiring } from "../../hooks/adapter/wiring.ts";
 import { formatPeerInbox, peerInbox } from "../../inbox/peer-messages.ts";
@@ -397,8 +397,9 @@ function gitHooksDir(repoDir: string): string | null {
   if (r.status !== 0) return null;
   const p = r.stdout.trim();
   if (!p) return null;
-  // `--git-path` prints relative to repoDir (we passed -C); absolutize.
-  return p.startsWith("/") ? p : join(repoDir, p);
+  // `--git-path` prints relative to repoDir (we passed -C), or absolute when
+  // core.hooksPath is; `isAbsolute` also accepts a Windows drive path (C:/...).
+  return isAbsolute(p) ? p : resolve(repoDir, p);
 }
 
 function extractFirstSubmodule(gitmodulesPath: string): string | null {
