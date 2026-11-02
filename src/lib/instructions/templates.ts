@@ -657,11 +657,19 @@ lists them.
   invoke) over typing and coordinate clicks.
 - Never pass cua's \`delivery_mode: "foreground"\` unless the driver returned
   \`background_unavailable\` or \`delivery_failed\` for that action.
-- For a browser, use cua's \`browser_prepare\` with \`allow_launch: true\` and
-  \`profile: {"mode": "isolated_new"}\`. Never attach to the user's real
-  profile unless the operator asks for it.
-- Never type a password, username, or one-time code into a sign-in page. Stop
-  and ask the operator to sign in.
+- For a browser page that needs no sign-in, use cua's \`browser_prepare\` with
+  \`allow_launch: true\` and \`profile: {"mode": "isolated_new"}\`. The driver
+  controls that browser through the DevTools protocol, and sites can tell.
+- Never ask the person to sign in to an outside account (Google, a vendor, a
+  bank) inside a driver-owned isolated browser: sites flag it as automation,
+  show bot checks, and may lock the account. When the task needs the person's
+  signed-in session, ask whether you may attach to their running browser
+  (\`strategy: {"kind": "existing_profile"}\`), which already carries it, and
+  attach only on a yes. If they say no and a sign-in is still needed, they sign
+  in through \`${b} browse --login\` (a plain browser with nothing attached) and
+  you continue with the headless tools.
+- Never type a password, username, or one-time code into a sign-in page
+  yourself.
 - An approval to use the desktop is not approval to communicate. Never click
   Send, Reply, Post, Share, Accept, or Submit, or press Enter in a compose
   field, unless the operator approved that specific message.
