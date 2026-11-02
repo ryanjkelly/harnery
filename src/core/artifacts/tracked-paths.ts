@@ -69,8 +69,34 @@ function relativeInside(repoRoot: string, path: string): string | null {
   return rel.startsWith("..") || isAbsolute(rel) ? null : rel;
 }
 
-/** One `git ls-files` for everything under `scope` (a repository-local path). */
+/** Listing attempts before a still-changing index fails closed. */
+const STABLE_LISTING_ATTEMPTS = 3;
+
+let afterListing: (() => void) | null = null;
+
+/** Tests only: run `hook` after each `git ls-files` returns, to stage mid-listing. */
+export function setAfterTrackedListingForTest(hook: (() => void) | null): void {
+  afterListing = hook;
+}
+
+/**
+ * One `git ls-files` for everything under `scope` (a repository-local path).
+ *
+ * A listing counts only when the index is identical before and after it: Git
+ * staging can land while `ls-files` runs, and a listing of the older index
+ * would let a deletion remove a path that is now tracked. A listing that
+ * stays unstable after a few attempts fails closed.
+ */
 export function readTrackedPaths(repoRoot: string, scope: string): TrackedPathSnapshot {
+  for (let attempt = 0; attempt < STABLE_LISTING_ATTEMPTS; attempt++) {
+    const snapshot = listTrackedPaths(repoRoot, scope);
+    if (snapshot.entries === null || snapshot.index === null) return snapshot;
+    if (indexIdentity(repoRoot) === snapshot.index) return snapshot;
+  }
+  return { scope: resolve(scope), entries: null, index: null };
+}
+
+function listTrackedPaths(repoRoot: string, scope: string): TrackedPathSnapshot {
   const rel = relativeInside(repoRoot, scope);
   if (rel === null) return { scope: resolve(scope), entries: null, index: null };
   // Identify the index before listing, so a write during the listing counts as a change.
@@ -83,6 +109,7 @@ export function readTrackedPaths(repoRoot: string, scope: string): TrackedPathSn
     ["ls-files", "-z", "--", CASE_INSENSITIVE_PATHS ? `:(icase)${pathspec}` : pathspec],
     { cwd: repoRoot, encoding: "utf8", windowsHide: true, maxBuffer: 256 * 1024 * 1024 },
   );
+  afterListing?.();
   // If Git itself cannot answer, fail closed.
   if (result.status !== 0 || typeof result.stdout !== "string") {
     return { scope: resolve(scope), entries: null, index };

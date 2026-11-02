@@ -3,11 +3,16 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { containsTrackedPath, readTrackedPaths } from "./tracked-paths.ts";
+import {
+  containsTrackedPath,
+  readTrackedPaths,
+  setAfterTrackedListingForTest,
+} from "./tracked-paths.ts";
 
 const roots: string[] = [];
 
 afterEach(() => {
+  setAfterTrackedListingForTest(null);
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -49,6 +54,32 @@ describe("tracked path snapshot", () => {
     const { root, store } = repo();
     expect(containsTrackedPath(root, join(store, "unit-a"))).toBe(true);
     expect(containsTrackedPath(root, join(store, "unit-b"))).toBe(false);
+  });
+
+  test("a path staged while the listing runs is not reported untracked", () => {
+    const { root, store } = repo();
+    let staged = false;
+    setAfterTrackedListingForTest(() => {
+      if (staged) return;
+      staged = true;
+      git(root, "add", "-f", join(store, "unit-b", "loose.txt"));
+    });
+    const snapshot = readTrackedPaths(root, store);
+    expect(staged).toBe(true);
+    expect(containsTrackedPath(root, join(store, "unit-b"), snapshot)).toBe(true);
+  });
+
+  test("an index that keeps changing during every listing fails closed", () => {
+    const { root, store } = repo();
+    let n = 0;
+    setAfterTrackedListingForTest(() => {
+      const file = join(store, "unit-b", `churn-${n++}.txt`);
+      writeFileSync(file, "x\n");
+      git(root, "add", "-f", file);
+    });
+    const snapshot = readTrackedPaths(root, store);
+    expect(snapshot.entries).toBeNull();
+    expect(containsTrackedPath(root, join(store, "unit-b"), snapshot)).toBe(true);
   });
 
   test("a path outside the snapshot's scope gets its own read instead of a guess", () => {
