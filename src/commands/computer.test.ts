@@ -1,5 +1,9 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir, userInfo } from "node:os";
+import { join, resolve } from "node:path";
 import { Command } from "commander";
+import { initializeV3Fixture, seedV3Session } from "../../tests/helpers/event-v3-runtime.ts";
 import type { EmitContext } from "../commander.ts";
 import type { ComputerMode, ComputerPreferences, ComputerProjectConfig } from "../core/config.ts";
 import type { ConfirmRequest, ConfirmResult } from "../lib/computer/confirm.ts";
@@ -23,6 +27,7 @@ import {
   EXIT_LEASE_HELD,
   type GrantsApi,
   redactInlineScreenshots,
+  resolveLeaseOwner,
 } from "./computer.ts";
 
 const NOW = Date.parse("2026-11-01T12:00:00Z");
@@ -612,6 +617,158 @@ describe("computer approval modes", () => {
       config: () => cfg("off", { config_error: 'computer.mode must be one of ...; got "yes"' }),
     });
     expect(cap.errors[0]?.code).toBe("computer_config_invalid");
+  });
+});
+
+describe("resolveLeaseOwner across projects", () => {
+  // Everything owner resolution reads from the environment, cleared per test so
+  // the session running this suite cannot leak into it.
+  const KEYS = [
+    "HARNERY_AGENT_COORD_SESSION_ID",
+    "CLAUDE_CODE_SESSION_ID",
+    "CURSOR_SESSION_ID",
+    "CURSOR_CONVERSATION_ID",
+    "CODEX_SESSION_ID",
+    "CODEX_THREAD_ID",
+    "OPENCODE_SESSION_ID",
+    "HARNERY_AGENT_COORD_OWNER",
+    "HARNERY_AGENT_COORD_BRIDGE",
+    "HARNERY_AGENT_COORD_PLATFORM",
+    "CLAUDE_PROJECT_DIR",
+    "HARNERY_COORD_ROOT_OVERRIDE",
+  ] as const;
+  const saved = KEYS.map((key) => [key, process.env[key]] as const);
+  let base: string;
+  /** The workspace the agent's session is registered in. */
+  let workspace: string;
+  /** A project nested inside it that the agent acts on. */
+  let project: string;
+  /** A plain directory to resolve from, outside every coordination root. */
+  let elsewhere: string;
+
+  beforeEach(() => {
+    base = resolve(mkdtempSync(join(tmpdir(), "harn-computer-owner-")));
+    workspace = join(base, "workspace");
+    project = join(workspace, "client-project");
+    elsewhere = join(base, "elsewhere");
+    mkdirSync(join(workspace, ".harnery"), { recursive: true });
+    mkdirSync(join(project, ".harnery"), { recursive: true });
+    mkdirSync(elsewhere, { recursive: true });
+    initializeV3Fixture(workspace);
+    initializeV3Fixture(project);
+    for (const key of KEYS) delete process.env[key];
+  });
+
+  afterEach(() => {
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    rmSync(base, { recursive: true, force: true });
+  });
+
+  test("an agent registered in the project it acts on is named from it", () => {
+    seedV3Session(project, "inst-ada", {
+      sessionId: "sess-ada",
+      adapter: "claude-code",
+      name: "Ada",
+    });
+    process.env.CLAUDE_CODE_SESSION_ID = "sess-ada";
+    process.env.HARNERY_COORD_ROOT_OVERRIDE = project;
+    expect(resolveLeaseOwner(elsewhere)).toEqual({
+      id: "inst-ada",
+      label: "agent-Ada",
+      project,
+      sessionProject: project,
+    });
+  });
+
+  test("an agent acting on another project is named from its own", () => {
+    seedV3Session(workspace, "inst-bob", {
+      sessionId: "sess-bob",
+      adapter: "claude-code",
+      name: "Bob",
+    });
+    process.env.CLAUDE_CODE_SESSION_ID = "sess-bob";
+    process.env.HARNERY_COORD_ROOT_OVERRIDE = project;
+    expect(resolveLeaseOwner(elsewhere)).toEqual({
+      id: "inst-bob",
+      label: "agent-Bob",
+      project,
+      sessionProject: workspace,
+    });
+  });
+
+  test("a session in an unrelated project is found through the adapter's project dir", () => {
+    const sibling = join(base, "sibling");
+    mkdirSync(join(sibling, ".harnery"), { recursive: true });
+    initializeV3Fixture(sibling);
+    seedV3Session(sibling, "inst-cy", { sessionId: "sess-cy", adapter: "claude-code", name: "Cy" });
+    process.env.CLAUDE_CODE_SESSION_ID = "sess-cy";
+    process.env.CLAUDE_PROJECT_DIR = sibling;
+    process.env.HARNERY_COORD_ROOT_OVERRIDE = project;
+    expect(resolveLeaseOwner(elsewhere)).toMatchObject({
+      id: "inst-cy",
+      label: "agent-Cy",
+      project,
+      sessionProject: sibling,
+    });
+  });
+
+  test("the acting project's sole live agent does not outrank the caller's own session", () => {
+    seedV3Session(project, "inst-stranger", { sessionId: "sess-x", adapter: "claude-code" });
+    seedV3Session(workspace, "inst-bob", {
+      sessionId: "sess-bob",
+      adapter: "claude-code",
+      name: "Bob",
+    });
+    process.env.CLAUDE_CODE_SESSION_ID = "sess-bob";
+    process.env.HARNERY_COORD_ROOT_OVERRIDE = project;
+    expect(resolveLeaseOwner(elsewhere).id).toBe("inst-bob");
+  });
+
+  test("with no session anywhere the caller is the operating-system user", () => {
+    process.env.CLAUDE_CODE_SESSION_ID = "sess-unknown";
+    process.env.HARNERY_COORD_ROOT_OVERRIDE = project;
+    const owner = resolveLeaseOwner(elsewhere);
+    expect(owner.id.startsWith(`shell:${userInfo().username}@`)).toBe(true);
+    expect(owner.label).toBe(`shell-${userInfo().username}`);
+    expect(owner.project).toBe(project);
+    expect(owner.sessionProject).toBeUndefined();
+  });
+
+  test("grant, call and done agree on a cross-project agent", async () => {
+    seedV3Session(workspace, "inst-bob", {
+      sessionId: "sess-bob",
+      adapter: "claude-code",
+      name: "Bob",
+    });
+    process.env.CLAUDE_CODE_SESSION_ID = "sess-bob";
+    process.env.HARNERY_COORD_ROOT_OVERRIDE = project;
+    const grants = fakeGrants();
+    const confirm = fakeConfirm();
+    const driver = fakeDriver();
+    const over = {
+      grants,
+      confirm,
+      driver,
+      owner: () => resolveLeaseOwner(elsewhere),
+      config: () => cfg("ask-each-task"),
+    };
+
+    expect((await run(["grant", "--purpose", "file the report"], over)).exitCode()).toBe(0);
+    expect(confirm.asked[0]?.message).toContain(
+      "agent-Bob (an AI agent working in workspace) wants to use this computer's screen",
+    );
+    expect(grants.grants[0]).toMatchObject({
+      owner_id: "inst-bob",
+      owner_label: "agent-Bob",
+      project,
+    });
+    expect((await run(["call", "click", "{}"], over)).exitCode()).toBe(0);
+    expect(driver.calls).toHaveLength(1);
+    await run(["done"], over);
+    expect(grants.grants).toHaveLength(0);
   });
 });
 

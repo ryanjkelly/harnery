@@ -179,8 +179,13 @@ export interface LeaseOwner {
   id: string;
   /** Display label, e.g. "agent-Dexter". Also the default driver session. */
   label: string;
-  /** Project root of the caller, informational. */
+  /** Project root the command acts on; approvals are scoped to it. */
   project?: string;
+  /**
+   * Project root the agent's own session is registered in, when known. It
+   * differs from `project` when an agent acts on another project.
+   */
+  sessionProject?: string;
 }
 
 /** On-disk lease record (one per desktop). */

@@ -100,13 +100,21 @@ harn computer done
 
 `grant` asks the person directly: a Yes/No prompt in an interactive terminal,
 or otherwise a native dialog on the desktop (Windows, also from WSL; macOS;
-Linux desktops with `zenity`). The dialog names the agent and its purpose,
-says how long the approval lasts, and reminds the person to close anything the
-agent should not see, because whatever is on screen can reach the model
-provider. It defaults to the refusing button, and no answer within
-`--timeout` (default 120 seconds) counts as no. `done` ends a task approval and
-releases the desktop; `lease release` also ends it. `revoke` ends your
-approvals now, and `revoke --all` ends every agent's on this desktop.
+Linux desktops with `zenity`). The dialog names the agent, the project it is
+working in, and its purpose, says how long the approval lasts, and reminds the
+person to close anything the agent should not see, because whatever is on
+screen can reach the model provider. It defaults to the refusing button, and no
+answer within `--timeout` (default 120 seconds) counts as no. `done` ends a task
+approval and releases the desktop; `lease release` also ends it. `revoke` ends
+your approvals now, and `revoke --all` ends every agent's on this desktop.
+
+An approval belongs to one agent in one project. An agent that points
+`HARNERY_COORD_ROOT_OVERRIDE` at another project is still named by its own
+session: Harnery finds that session in the project that registered it, so the
+dialog, the approval and the lease show the agent's name, and the approval is
+kept for the project the command acts on. Only a caller outside any agent
+session is named after the operating-system user (`shell-<user>`), and every
+such shell by that user shares one approval and one lease.
 
 Approvals and every decision about them are kept beside the lease
 (`grants.json` and `grants-log.ndjson`). They are plain files any process
@@ -213,7 +221,7 @@ object (default `{}`). In order, the command:
 
 1. Sets `session` to the caller's agent name when the arguments omit it, so
    the driver's per-session state follows the agent. A shell outside any agent
-   session is labelled `shell-<ppid>`.
+   session is labelled `shell-<user>`.
 2. Takes the desktop lease for the caller, or refreshes it. When another agent
    holds it, the call waits up to `--wait` seconds (default `wait_seconds`,
    else 30) and then exits 3:

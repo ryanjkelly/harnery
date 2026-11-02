@@ -15,9 +15,10 @@
 // person's approval first, or they declined.
 
 import { hostname, userInfo } from "node:os";
+import { basename } from "node:path";
 import { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
-import { resolveCoordRoot, resolveOwner } from "../core/agents/coord-client.ts";
+import { resolveCoordRoot, resolveOwnerAcrossRoots } from "../core/agents/coord-client.ts";
 import { agentDisplayName, resolveShortName } from "../core/agents/state/activity-log.ts";
 import {
   COMPUTER_MODES,
@@ -122,15 +123,24 @@ export type ComputerDepsInput = Pick<ComputerDeps, "emit" | "binName"> &
  * Who is asking for the desktop: the coordinated agent when one is resolvable,
  * else the calling OS user (`shell:<user>@<hostname>`, label `shell-<user>`), so
  * separate shell invocations by the same person share one lease.
+ *
+ * An agent may act on another project than the one its session is registered
+ * in (`HARNERY_COORD_ROOT_OVERRIDE`). Its identity and name then come from its
+ * own project, while `project` stays the root the command acts on, which is
+ * what approvals are scoped to. Grant, call and done each resolve the owner
+ * the same way, so a granted agent is recognized on its next call.
  */
-export function resolveLeaseOwner(): LeaseOwner {
-  const root = resolveCoordRoot();
-  const id = resolveOwner();
+export function resolveLeaseOwner(start: string = process.cwd()): LeaseOwner {
+  const found = resolveOwnerAcrossRoots(start);
+  const root = resolveCoordRoot(start);
+  const id = found.owner;
   if (id) {
+    const home = found.root ?? root;
     return {
       id,
-      label: root ? resolveShortName(root, id) : agentDisplayName(id),
+      label: home ? resolveShortName(home, id) : agentDisplayName(id),
       ...(root ? { project: root } : {}),
+      ...(home ? { sessionProject: home } : {}),
     };
   }
   const user = userInfo().username;
@@ -205,7 +215,7 @@ async function resolveDeps(input: ComputerDepsInput): Promise<ComputerDeps> {
       write: (root, mode) => writeComputerPreference(root, mode),
     },
     projectRoot: input.projectRoot ?? (() => resolveCoordRoot()),
-    owner: input.owner ?? resolveLeaseOwner,
+    owner: input.owner ?? (() => resolveLeaseOwner()),
     config: input.config ?? ((prefs) => readComputerConfig(undefined, prefs)),
     writeStderr: input.writeStderr ?? ((text) => process.stderr.write(text)),
     now: input.now ?? Date.now,
@@ -322,8 +332,10 @@ function grantMessage(
     kind === "task"
       ? `for this task only, up to ${Math.round(durationMs / 60_000)} minutes`
       : `for the rest of this agent's session, up to ${Math.round(durationMs / 3_600_000)} hours`;
+  const where = owner.sessionProject ?? owner.project;
+  const who = where ? `an AI agent working in ${basename(where)}` : "an AI agent";
   return [
-    `${owner.label} (an AI agent) wants to use this computer's screen, mouse and keyboard.`,
+    `${owner.label} (${who}) wants to use this computer's screen, mouse and keyboard.`,
     "",
     `What for: ${purpose}`,
     "",

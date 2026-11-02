@@ -364,10 +364,7 @@ export function resolveOwner(): string | null {
  * Codex session see itself?" need to know whether `HARNERY_AGENT_COORD_OWNER`
  * is propagating or the ppid-walk is the load-bearing path.
  */
-export function resolveOwnerWithSource(): {
-  owner: string | null;
-  source: "env" | "pidmap" | "pidmap_fallback" | "session_env" | "active_singleton" | "none";
-} {
+export function resolveOwnerWithSource(): { owner: string | null; source: OwnerSource } {
   const bridge = process.env.HARNERY_AGENT_COORD_BRIDGE?.trim();
   const envOwner = process.env.HARNERY_AGENT_COORD_OWNER?.trim();
   // A bridge-marked child must prove identity through a live V3 producer. An
@@ -379,6 +376,27 @@ export function resolveOwnerWithSource(): {
 
   const root = monorepoRoot();
   if (!root) return { owner: null, source: "none" };
+  return resolveOwnerInRoot(root, { singleton: true });
+}
+
+/** Which resolution path named the owner. */
+export type OwnerSource =
+  | "env"
+  | "pidmap"
+  | "pidmap_fallback"
+  | "session_env"
+  | "active_singleton"
+  | "none";
+
+/**
+ * Owner resolution against ONE given root: the session-env join, then the
+ * pid-map walk, then (only when `singleton` is set) the sole live agent.
+ */
+function resolveOwnerInRoot(
+  root: string,
+  options: { singleton: boolean },
+): { owner: string | null; source: Exclude<OwnerSource, "env"> } {
+  const bridge = process.env.HARNERY_AGENT_COORD_BRIDGE?.trim();
 
   // Every supported adapter exports its native session id into subprocesses.
   // Match it against the live V3 producer state, never a disposable cache.
@@ -431,12 +449,72 @@ export function resolveOwnerWithSource(): {
   // status` / `set-task` the stop hook recommends work without a `--session-id`
   // flag in the common single-agent case. With 0 or 2+ live agents it would be
   // a guess, so we stay null and require the explicit flag.
-  const singleton = resolveSingleActiveOwner(root);
+  const singleton = options.singleton ? resolveSingleActiveOwner(root) : null;
   if (singleton) {
     return { owner: singleton, source: "active_singleton" };
   }
 
   return { owner: null, source: "none" };
+}
+
+/**
+ * Like `resolveOwnerWithSource`, but also looks for this session in the other
+ * coordination roots that could have registered it, and reports which root
+ * answered.
+ *
+ * `HARNERY_COORD_ROOT_OVERRIDE` lets an agent act on another project's
+ * `.harnery/` than the one its own session lives in. That root has never seen
+ * the session, so plain resolution there finds nobody (or, worse, guesses the
+ * sole live agent of that project). A command that must name the caller to a
+ * person, such as a desktop-control prompt, needs the real agent.
+ *
+ * Order: an explicit owner override; a verified match (session env or pid map)
+ * in the current root; a verified match in another candidate root (the
+ * adapter's `CLAUDE_PROJECT_DIR`, the roots enclosing `start`, the git-derived
+ * roots, then the roots enclosing the current one); the current root's sole
+ * live agent; none. Other roots never use the sole-live-agent guess, because a
+ * stranger in a project this process does not belong to is not its session.
+ */
+export function resolveOwnerAcrossRoots(start: string = process.cwd()): {
+  owner: string | null;
+  /** The root that knows the owner; the current root when none does. */
+  root: string | null;
+  source: OwnerSource;
+} {
+  const current = resolveCoordRoot(start);
+  const bridge = process.env.HARNERY_AGENT_COORD_BRIDGE?.trim();
+  const envOwner = process.env.HARNERY_AGENT_COORD_OWNER?.trim();
+  if (envOwner && !bridge) return { owner: envOwner, root: current, source: "env" };
+  if (current) {
+    const here = resolveOwnerInRoot(current, { singleton: false });
+    if (here.owner) return { ...here, root: current };
+  }
+  for (const candidate of sessionHomeCandidates(current, start)) {
+    const there = resolveOwnerInRoot(candidate, { singleton: false });
+    if (there.owner) return { ...there, root: candidate };
+  }
+  if (current && existsSync(resolve(current, ".harnery", "pid-map"))) {
+    const singleton = resolveSingleActiveOwner(current);
+    if (singleton) return { owner: singleton, root: current, source: "active_singleton" };
+  }
+  return { owner: null, root: current, source: "none" };
+}
+
+/** Roots other than `current` that could hold this session, most likely first. */
+function sessionHomeCandidates(current: string | null, start: string): string[] {
+  const skip = current ? resolve(current) : null;
+  const found: string[] = [];
+  const push = (value: string | null | undefined) => {
+    if (!value) return;
+    const normalized = resolve(value);
+    if (normalized !== skip && !found.includes(normalized)) found.push(normalized);
+  };
+  const projectDir = process.env.CLAUDE_PROJECT_DIR;
+  if (projectDir) push(nearestCoordRoot(projectDir));
+  for (const root of ancestorCoordRoots(start)) push(root);
+  for (const root of gitCoordRoots(start)) push(root);
+  if (current) for (const root of ancestorCoordRoots(dirname(resolve(current)))) push(root);
+  return found;
 }
 
 /**

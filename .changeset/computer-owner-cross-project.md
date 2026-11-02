@@ -1,0 +1,5 @@
+---
+"harnery": patch
+---
+
+`harn computer` now names the right agent when it acts on another project's `.harnery/` (`HARNERY_COORD_ROOT_OVERRIDE`) than the one its session is registered in. It used to find no session in that root and label the caller after the operating-system user (`shell-<user>`), so the approval dialog did not say which agent was asking, and every such agent shared one approval and one lease. The owner is now looked up in the project that registered the session, through the adapter's project directory, the roots enclosing the working directory and the acting root, and the git-derived roots, and only a verified match (session id or pid map) counts there. The dialog, the approval and the lease carry that agent's id and name, while the approval stays scoped to the project the command acts on. The dialog also says which project the agent is working in. A sole live agent in the acting project no longer stands in for a caller whose own session is found elsewhere. The new `resolveOwnerAcrossRoots()` in `harnery/core/agents` does the lookup, and `LeaseOwner` gains an optional `sessionProject`.
