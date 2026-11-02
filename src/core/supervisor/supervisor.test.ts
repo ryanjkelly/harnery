@@ -15,6 +15,7 @@ import {
   type SupervisorActivitySnapshot,
   type SupervisorLogFeed,
   type SupervisorServiceStatusRecord,
+  type SupervisorStatus,
 } from "./contract.ts";
 import { explainSupervisorFinding } from "./explanations.ts";
 import { updateSupervisorFindings } from "./findings.ts";
@@ -26,6 +27,7 @@ import {
   requestSupervisorStop,
   runSupervisor,
   spawnSupervisor,
+  supervisorReplacePath,
 } from "./service.ts";
 import {
   collectServiceHealth,
@@ -1078,56 +1080,178 @@ describe("supervisor code changes", () => {
     expect(relaunched).toBe(false);
   });
 
-  test("ensure replaces a running local supervisor on older code", async () => {
-    const current = { id: "1.0.0@new", root: "/pkg" };
-    const running = (code?: { id: string | null; root: string }, host = hostname()) =>
-      ({
-        running: true,
-        stale: false,
-        generation: "same",
-        liveness: "running",
-        running_build: null,
-        installed_build: { version: "1.0.0", revision: "x" },
-        restart_needed: false,
-        build_status: "current",
-        record: { ...statusRecord(), host, ...(code ? { code } : {}) },
-        status_path: "/s",
-        snapshot_path: "/p",
-      }) as const;
-    const ensure = async (
-      status: ReturnType<typeof running>,
-      stops = true,
-    ): Promise<{ state: string; stops: number; starts: number }> => {
-      let stopCalls = 0;
-      let starts = 0;
-      const result = await ensureSupervisorRunning("/fixture/replace", {
+  const oldCode = { id: "1.0.0@old", root: "/pkg" };
+  const newCode = { id: "1.0.0@new", root: "/pkg" };
+
+  function liveStatus(
+    code: { id: string | null; root: string } | undefined,
+    extra: Partial<SupervisorServiceStatusRecord> = {},
+  ): SupervisorStatus {
+    return {
+      running: true,
+      stale: false,
+      generation: "same",
+      liveness: "running",
+      running_build: null,
+      installed_build: { version: "1.0.0", revision: "x" },
+      restart_needed: false,
+      build_status: "current",
+      record: { ...statusRecord(), nonce: "old-generation", ...(code ? { code } : {}), ...extra },
+      status_path: "/s",
+      snapshot_path: "/p",
+    };
+  }
+  const stoppedStatus = (): SupervisorStatus => ({
+    ...liveStatus(undefined),
+    running: false,
+    liveness: "stopped",
+    record: undefined,
+  });
+
+  function tempRoot(): string {
+    const root = mkdtempSync(join(tmpdir(), "harn-supervisor-replace-"));
+    roots.push(root);
+    return root;
+  }
+
+  test("ensure leaves current and foreign supervisors alone", async () => {
+    const root = tempRoot();
+    let starts = 0;
+    const ensure = (status: SupervisorStatus) =>
+      ensureSupervisorRunning(root, {
         readStatus: () => status,
         start: async () => {
           starts += 1;
           return status;
         },
-        currentCode: () => current,
-        stopForReplacement: async () => {
-          stopCalls += 1;
-          return stops;
-        },
+        currentCode: () => newCode,
+        wait: async () => {},
+        replacementTimeoutMs: 0,
       });
-      return { state: result.state, stops: stopCalls, starts };
-    };
-    expect(await ensure(running({ id: "1.0.0@old", root: "/pkg" }))).toEqual({
-      state: "replaced",
-      stops: 1,
-      starts: 1,
+    expect((await ensure(liveStatus(newCode))).state).toBe("running");
+    expect((await ensure(liveStatus(oldCode, { host: `${hostname()}-elsewhere` }))).state).toBe(
+      "running",
+    );
+    expect(starts).toBe(0);
+  });
+
+  test("a stop issued during a legacy replacement wins (F2)", async () => {
+    const root = tempRoot();
+    let current = liveStatus(undefined);
+    let starts = 0;
+    const result = await ensureSupervisorRunning(root, {
+      readStatus: () => current,
+      start: async () => {
+        starts += 1;
+        return current;
+      },
+      currentCode: () => newCode,
+      wait: async () => {
+        requestSupervisorStop(root);
+        current = stoppedStatus();
+      },
+      replacementTimeoutMs: 5_000,
     });
-    expect(await ensure(running())).toEqual({ state: "replaced", stops: 1, starts: 1 });
-    expect(await ensure(running(current))).toEqual({ state: "running", stops: 0, starts: 0 });
-    expect(await ensure(running({ id: "1.0.0@old", root: "/pkg" }), false)).toEqual({
-      state: "running",
-      stops: 1,
-      starts: 0,
+    expect(result.state).toBe("unavailable");
+    expect(starts).toBe(0);
+    expect(existsSync(supervisorPaths(root).stop)).toBe(true);
+  });
+
+  test("a stop issued while a supervisor hands over wins (F2)", async () => {
+    const root = tempRoot();
+    let current = liveStatus(oldCode);
+    let starts = 0;
+    const result = await ensureSupervisorRunning(root, {
+      readStatus: () => current,
+      start: async () => {
+        starts += 1;
+        return current;
+      },
+      currentCode: () => newCode,
+      wait: async () => {
+        requestSupervisorStop(root);
+        current = stoppedStatus();
+      },
+      replacementTimeoutMs: 5_000,
     });
-    expect(
-      await ensure(running({ id: "1.0.0@old", root: "/pkg" }, `${hostname()}-elsewhere`)),
-    ).toEqual({ state: "running", stops: 0, starts: 0 });
+    expect(result.state).toBe("unavailable");
+    expect(starts).toBe(0);
+    // The request went to its own file, never the stop request.
+    expect(JSON.parse(readFileSync(supervisorReplacePath(root), "utf8")).target_nonce).toBe(
+      "old-generation",
+    );
+    expect(existsSync(supervisorPaths(root).stop)).toBe(true);
+  });
+
+  test("an automatic start keeps a pending stop request (F2)", async () => {
+    const root = tempRoot();
+    writePrivateJsonAtomic(supervisorPaths(root).stop, { requested_at: "x" });
+    await expect(
+      runSupervisor({
+        coordRoot: root,
+        honorStop: true,
+        maxCycles: 1,
+        codeWatch: changingWatch(Number.POSITIVE_INFINITY),
+      }),
+    ).rejects.toThrow("pending stop request");
+    expect(existsSync(supervisorPaths(root).stop)).toBe(true);
+  });
+
+  test("exits on a replacement request for its own generation only, then relaunches", async () => {
+    const root = tempRoot();
+    let waits = 0;
+    let relaunched = false;
+    const result = await runSupervisor({
+      coordRoot: root,
+      intervalMs: 500,
+      keepAlive: true,
+      maxCycles: 20,
+      wait: async () => {
+        waits += 1;
+        const nonce = (
+          JSON.parse(readFileSync(supervisorPaths(root).service, "utf8")) as { nonce: string }
+        ).nonce;
+        writePrivateJsonAtomic(supervisorReplacePath(root), {
+          schema_version: 1,
+          target_nonce: waits === 1 ? "someone-else" : nonce,
+        });
+      },
+      codeWatch: changingWatch(Number.POSITIVE_INFINITY),
+      async relaunch() {
+        relaunched = true;
+      },
+    });
+    expect(result.exit_reason).toBe("replacement_requested");
+    expect(result.cycle_count).toBe(2);
+    expect(relaunched).toBe(true);
+    expect(existsSync(supervisorReplacePath(root))).toBe(false);
+  });
+
+  test("a legacy replacement carries the supervisor's settings (F4)", async () => {
+    const root = tempRoot();
+    let current = liveStatus(undefined, {
+      interval_ms: 750,
+      idle_exit_ms: 60_000,
+      keep_alive: true,
+    });
+    const starts: unknown[] = [];
+    const result = await ensureSupervisorRunning(root, {
+      readStatus: () => current,
+      start: async (_root, options) => {
+        starts.push(options);
+        return liveStatus(newCode, { nonce: "fresh" });
+      },
+      currentCode: () => newCode,
+      wait: async () => {
+        current = stoppedStatus();
+      },
+      replacementTimeoutMs: 5_000,
+    });
+    expect(result.state).toBe("replaced");
+    expect(starts).toEqual([
+      { intervalMs: 750, idleExitMs: 60_000, keepAlive: true, honorStop: true },
+    ]);
+    // The launcher withdrew its own stop request before starting.
+    expect(existsSync(supervisorPaths(root).stop)).toBe(false);
   });
 });

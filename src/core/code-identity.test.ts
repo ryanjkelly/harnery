@@ -1,16 +1,21 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   type CodeIdentityRecord,
+  clearReplacementRequest,
   codeChangeMessage,
   codeIdentityReplacementNeeded,
   createCodeIdentityReader,
   currentCodeIdentity,
   readCodeIdentity,
+  replacementRequestedFor,
   shortCodeIdentity,
   watchCodeIdentity,
+  withdrawStopForReplacement,
+  writeReplacementRequest,
+  writeStopForReplacement,
 } from "./code-identity.ts";
 
 const roots: string[] = [];
@@ -244,5 +249,30 @@ describe("shortCodeIdentity", () => {
     expect(shortCodeIdentity(`1.2.3@${A}`)).toBe("1.2.3@aaaaaaaaaaaa");
     expect(shortCodeIdentity("1.2.3")).toBe("1.2.3");
     expect(shortCodeIdentity(null)).toBe("unknown");
+  });
+});
+
+describe("replacement requests", () => {
+  test("address one daemon generation and are cleared on demand", () => {
+    const path = join(packageRoot(), "replace.json");
+    writeReplacementRequest(path, "gen-a");
+    expect(replacementRequestedFor(path, "gen-a")).toBe(true);
+    expect(replacementRequestedFor(path, "gen-b")).toBe(false);
+    clearReplacementRequest(path, "gen-a");
+    expect(existsSync(path)).toBe(true);
+    clearReplacementRequest(path);
+    expect(existsSync(path)).toBe(false);
+  });
+
+  test("a launcher withdraws only its own stop request", () => {
+    const path = join(packageRoot(), "stop.json");
+    const id = writeStopForReplacement(path);
+    expect(withdrawStopForReplacement(path, id)).toBe("withdrawn");
+    expect(existsSync(path)).toBe(false);
+    expect(withdrawStopForReplacement(path, id)).toBe("missing");
+    const mine = writeStopForReplacement(path);
+    writeFileSync(path, JSON.stringify({ requested_at: "later", requested_by_pid: 1 }));
+    expect(withdrawStopForReplacement(path, mine)).toBe("operator");
+    expect(existsSync(path)).toBe(true);
   });
 });

@@ -17,9 +17,11 @@
  * restart in a loop.
  */
 
-import { readFileSync, statSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { readFileSync, rmSync, statSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { writePrivateJsonAtomic } from "./storage/atomic-json.ts";
 
 /** The package root this module was loaded from (`src/` or `dist/` sit one level below it). */
 export function harneryCodeRoot(): string {
@@ -299,4 +301,94 @@ export function watchCodeIdentity(
 /** One lifecycle line every daemon writes on a confirmed change. */
 export function codeChangeMessage(change: CodeIdentityChange): string {
   return `code changed (${shortCodeIdentity(change.from)} -> ${shortCodeIdentity(change.to)}); exiting for restart`;
+}
+
+/*
+ * Replacement requests. A launcher that finds a live daemon on older code
+ * asks it to hand over through a file of its own, never through the
+ * operator's stop request (which may mean "paused") and never through a
+ * signal (which on Windows terminates the process outright). The request
+ * names the daemon generation it targets, so a successor ignores it.
+ */
+
+interface ReplacementRequestFile {
+  schema_version: 1;
+  target_nonce: string;
+  request_id: string;
+  requested_at: string;
+  requested_by_pid: number;
+}
+
+/** Ask the daemon whose record carries `targetNonce` to finish its current work and hand over. */
+export function writeReplacementRequest(path: string, targetNonce: string): string {
+  const request: ReplacementRequestFile = {
+    schema_version: 1,
+    target_nonce: targetNonce,
+    request_id: randomUUID(),
+    requested_at: new Date().toISOString(),
+    requested_by_pid: process.pid,
+  };
+  writePrivateJsonAtomic(path, request);
+  return request.request_id;
+}
+
+function readJsonObject(path: string): Record<string, unknown> | null {
+  try {
+    const value = JSON.parse(readFileSync(path, "utf8")) as unknown;
+    return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Is there a replacement request addressed to the daemon generation `nonce`? */
+export function replacementRequestedFor(path: string, nonce: string): boolean {
+  return readJsonObject(path)?.target_nonce === nonce;
+}
+
+/** Remove a replacement request unless it targets `keepNonce` (a successor's own). */
+export function clearReplacementRequest(path: string, keepNonce?: string): void {
+  if (keepNonce !== undefined && replacementRequestedFor(path, keepNonce)) return;
+  try {
+    rmSync(path, { force: true });
+  } catch {
+    // A request left behind targets a generation that no longer exists.
+  }
+}
+
+/**
+ * Daemons from before replacement requests understand only the durable stop
+ * request. The launcher writes one carrying its own `replacement_id`, so it
+ * can later tell its request from an operator's stop written over it.
+ */
+export function writeStopForReplacement(path: string): string {
+  const replacementId = randomUUID();
+  writePrivateJsonAtomic(path, {
+    requested_at: new Date().toISOString(),
+    requested_by_pid: process.pid,
+    replacement_id: replacementId,
+  });
+  return replacementId;
+}
+
+/**
+ * Withdraw the launcher's own stop request. `operator` means someone wrote a
+ * stop over it, which must be honored; `missing` means it is already gone.
+ */
+export function withdrawStopForReplacement(
+  path: string,
+  replacementId: string,
+): "withdrawn" | "operator" | "missing" {
+  const value = readJsonObject(path);
+  if (value === null) {
+    try {
+      statSync(path);
+      return "operator";
+    } catch {
+      return "missing";
+    }
+  }
+  if (value.replacement_id !== replacementId) return "operator";
+  rmSync(path, { force: true });
+  return "withdrawn";
 }

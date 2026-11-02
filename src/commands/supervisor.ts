@@ -108,12 +108,14 @@ export function registerSupervisorCommand(
     .option("--interval-ms <milliseconds>", "Collection interval", integer)
     .option("--idle-exit-ms <milliseconds>", "Idle exit interval", integer)
     .option("--keep-alive", "Remain resident until explicitly stopped")
+    .option("--honor-stop", "Exit instead of clearing a pending stop request (automatic starts)")
     .action(
       async (options: {
         root?: string;
         intervalMs?: number;
         idleExitMs?: number;
         keepAlive?: boolean;
+        honorStop?: boolean;
       }) => {
         try {
           const root = resolve(options.root ?? coordRoot(context));
@@ -126,7 +128,9 @@ export function registerSupervisorCommand(
             await runSupervisor({
               coordRoot: root,
               ...settings,
-              // After a code change, hand over to a supervisor running the new code.
+              honorStop: options.honorStop,
+              // After a code change or a replacement request, hand over to a
+              // supervisor running the new code.
               relaunch: () => relaunchSupervisor(root, settings),
             }),
           );

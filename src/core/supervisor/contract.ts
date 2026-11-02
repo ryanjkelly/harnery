@@ -76,7 +76,7 @@ export interface SupervisorServiceStatusRecord {
   /** The code this daemon loaded; absent on daemons that predate the field. */
   code?: CodeIdentityRecord;
   /** Why the daemon left its loop, when it was not a stop request or idle exit. */
-  exit_reason?: "code_changed";
+  exit_reason?: "code_changed" | "replacement_requested";
 }
 
 export interface SupervisorStatus {

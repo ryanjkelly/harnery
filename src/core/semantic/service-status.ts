@@ -45,7 +45,7 @@ export interface SemanticServiceStatusRecord {
   /** The code this daemon loaded; absent on daemons that predate the field. */
   code?: CodeIdentityRecord;
   /** Why the daemon left its loop, when it was not an operator stop. */
-  exit_reason?: "code_changed";
+  exit_reason?: "code_changed" | "replacement_requested";
 }
 
 export interface SemanticServiceStatus {

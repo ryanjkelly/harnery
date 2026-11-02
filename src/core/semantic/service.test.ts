@@ -12,6 +12,9 @@ import {
   readSemanticServiceStatus,
   requestSemanticServiceStop,
   runSemanticServiceDaemon,
+  type SemanticServiceStatus,
+  type SemanticServiceStatusRecord,
+  semanticReplacePath,
 } from "./service.ts";
 import { readSemanticSoakReport } from "./soak.ts";
 import {
@@ -803,18 +806,23 @@ describe("semantic service code changes", () => {
     expect(relaunched).toBe(false);
   });
 
-  test("ensure replaces a live local daemon that runs older code", async () => {
-    const current = { id: "1.0.0@new", root: "/pkg" };
-    const live = (code?: { id: string | null; root: string }) => ({
+  const oldCode = { id: "1.0.0@old", root: "/pkg" };
+  const newCode = { id: "1.0.0@new", root: "/pkg" };
+
+  function liveStatus(
+    code: CodeIdentityRecord | undefined,
+    extra: Partial<SemanticServiceStatusRecord> = {},
+  ): SemanticServiceStatus {
+    return {
       running: true,
       stale: false,
       pending_count: 0,
       record: {
-        schema_version: 1 as const,
+        schema_version: 1,
         pid: process.pid,
         host: hostname(),
-        nonce: "n",
-        state: "running" as const,
+        nonce: "old-generation",
+        state: "running",
         started_at: new Date().toISOString(),
         heartbeat_at: new Date().toISOString(),
         sweep_count: 0,
@@ -822,58 +830,196 @@ describe("semantic service code changes", () => {
         model_calls: 0,
         cache_hits: 0,
         ...(code ? { code } : {}),
+        ...extra,
       },
-    });
-    const fresh = { running: true, stale: false, pending_count: 0 };
-    const ensure = async (
-      status: ReturnType<typeof live>,
-      stops: boolean,
-      currentCode: CodeIdentityRecord = current,
-    ): Promise<{ state: string; stops: number; starts: number }> => {
-      let stopCalls = 0;
-      let starts = 0;
-      const result = await ensureSemanticServiceRunning("/fixture/replace", {
+    };
+  }
+  const stoppedStatus: SemanticServiceStatus = { running: false, stale: false, pending_count: 0 };
+
+  test("ensure leaves current, foreign, other-install, and unknown-identity readers alone", async () => {
+    const root = fixture();
+    let starts = 0;
+    const ensure = (status: SemanticServiceStatus, currentCode: CodeIdentityRecord = newCode) =>
+      ensureSemanticServiceRunning(root, {
         readStatus: () => status,
         start: async () => {
           starts += 1;
-          return fresh;
+          return stoppedStatus;
         },
-        isPaused: () => false,
         isActive: () => true,
         currentCode: () => currentCode,
-        stopForReplacement: async () => {
-          stopCalls += 1;
-          return stops;
+        wait: async () => {},
+        replacementTimeoutMs: 0,
+      });
+    expect((await ensure(liveStatus(newCode))).state).toBe("running");
+    expect((await ensure(liveStatus(oldCode), { id: null, root: "/pkg" })).state).toBe("running");
+    expect((await ensure(liveStatus({ id: "1.0.0@old", root: "/other" }))).state).toBe("running");
+    expect((await ensure(liveStatus(oldCode, { host: `${hostname()}-elsewhere` }))).state).toBe(
+      "running",
+    );
+    expect(starts).toBe(0);
+    expect(existsSync(semanticReplacePath(root))).toBe(false);
+  });
+
+  test("ensure never replaces a paused stale reader and keeps the pause (F1)", async () => {
+    const root = fixture();
+    requestSemanticServiceStop(root);
+    let starts = 0;
+    const result = await ensureSemanticServiceRunning(root, {
+      readStatus: () => liveStatus(oldCode),
+      start: async () => {
+        starts += 1;
+        return stoppedStatus;
+      },
+      isActive: () => true,
+      currentCode: () => newCode,
+      wait: async () => {},
+      replacementTimeoutMs: 0,
+    });
+    expect(result.state).toBe("paused");
+    expect(starts).toBe(0);
+    expect(existsSync(semanticPaths(root).stop)).toBe(true);
+    expect(existsSync(semanticReplacePath(root))).toBe(false);
+  });
+
+  test("a pause written during a legacy replacement survives it (F1)", async () => {
+    const root = fixture();
+    let current = liveStatus(undefined);
+    let starts = 0;
+    const result = await ensureSemanticServiceRunning(root, {
+      readStatus: () => current,
+      start: async () => {
+        starts += 1;
+        return stoppedStatus;
+      },
+      isActive: () => true,
+      currentCode: () => newCode,
+      wait: async () => {
+        // The operator pauses while the old reader is finishing its call.
+        requestSemanticServiceStop(root);
+        current = stoppedStatus;
+      },
+      replacementTimeoutMs: 5_000,
+    });
+    expect(result.state).toBe("paused");
+    expect(starts).toBe(0);
+    expect(existsSync(semanticPaths(root).stop)).toBe(true);
+  });
+
+  test("an automatic start keeps a pause written before the daemon ran (F1)", async () => {
+    const root = fixture();
+    requestSemanticServiceStop(root);
+    await expect(
+      runSemanticServiceDaemon({
+        coordRoot: root,
+        keepPause: true,
+        maxSweeps: 1,
+        readSince: idleRead,
+        waitForWake: async () => {},
+        codeWatch: changingWatch(Number.POSITIVE_INFINITY),
+      }),
+    ).rejects.toThrow("paused");
+    expect(existsSync(semanticPaths(root).stop)).toBe(true);
+    // The lease was released, so an explicit start still works.
+    acquireSemanticServiceLease(root)();
+  });
+
+  test("a legacy replacement carries the reader's call ceiling (F4)", async () => {
+    const root = fixture();
+    let current = liveStatus(undefined, { calls_per_hour: 12 });
+    const starts: unknown[] = [];
+    const result = await ensureSemanticServiceRunning(root, {
+      readStatus: () => current,
+      start: async (_root, options) => {
+        starts.push(options);
+        return liveStatus(newCode, { nonce: "fresh" });
+      },
+      isActive: () => true,
+      currentCode: () => newCode,
+      wait: async () => {
+        current = stoppedStatus;
+      },
+      replacementTimeoutMs: 5_000,
+    });
+    expect(result.state).toBe("replaced");
+    expect(starts).toEqual([{ keepPause: true, callsPerHour: 12 }]);
+    // The launcher withdrew its own stop request, so nothing reads as paused.
+    expect(existsSync(semanticPaths(root).stop)).toBe(false);
+  });
+
+  test("ensure asks a stale reader to hand over after its model call, never signalling it (F3)", async () => {
+    const root = fixture();
+    const busyRead = (() => ({
+      events: [{}],
+      diagnostics: [],
+      complete: true,
+      genesis_id: "gex_fixture",
+      active_schema_digest: "fixture",
+      advances: [],
+      bytes: 0,
+      cursor: undefined,
+      reset_required: false,
+    })) as unknown as typeof readLedgerV3Since;
+    const sleep = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
+    let calls = 0;
+    let completed = 0;
+    let relaunched = false;
+    const signals: unknown[] = [];
+    const originalKill = process.kill;
+    process.kill = ((pid: number, signal?: string | number) => {
+      if (signal === 0) return originalKill(pid, 0);
+      signals.push(signal);
+      return true;
+    }) as typeof process.kill;
+    try {
+      const daemon = runSemanticServiceDaemon({
+        coordRoot: root,
+        debounceMs: 0,
+        wakeIntervalMs: 1,
+        heartbeatIntervalMs: 60_000,
+        maxSweeps: 1_000,
+        readSince: busyRead,
+        async runOnce() {
+          calls += 1;
+          await sleep(150);
+          completed += 1;
+          return {
+            schema_version: 1,
+            evidence_count: 0,
+            evidence_by_harness: { "claude-code": 0, codex: 0, cursor: 0 },
+            model_calls: 0,
+            cache_hits: 0,
+            outcomes: [],
+            completed_at: new Date().toISOString(),
+          };
+        },
+        waitForWake: () => sleep(5),
+        codeWatch: changingWatch(Number.POSITIVE_INFINITY),
+        async relaunch() {
+          relaunched = true;
+          const fresh = liveStatus(newCode, { nonce: "fresh-generation" }).record;
+          writeFileSync(semanticPaths(root).service, JSON.stringify(fresh));
         },
       });
-      return { state: result.state, stops: stopCalls, starts };
-    };
-    expect(await ensure(live({ id: "1.0.0@old", root: "/pkg" }), true)).toEqual({
-      state: "replaced",
-      stops: 1,
-      starts: 1,
-    });
-    // A daemon from before identity recording is replaced once.
-    expect(await ensure(live(), true)).toEqual({ state: "replaced", stops: 1, starts: 1 });
-    // Same code, an unknown current identity, or another installation: untouched.
-    expect(await ensure(live(current), true)).toEqual({ state: "running", stops: 0, starts: 0 });
-    expect(
-      await ensure(live({ id: "1.0.0@old", root: "/pkg" }), true, { id: null, root: "/pkg" }),
-    ).toEqual({ state: "running", stops: 0, starts: 0 });
-    expect(await ensure(live({ id: "1.0.0@old", root: "/elsewhere" }), true)).toEqual({
-      state: "running",
-      stops: 0,
-      starts: 0,
-    });
-    // A daemon still inside a model call keeps running; it relaunches itself.
-    expect(await ensure(live({ id: "1.0.0@old", root: "/pkg" }), false)).toEqual({
-      state: "running",
-      stops: 1,
-      starts: 0,
-    });
-    // Another host's daemon is never replaced from here.
-    const foreign = live({ id: "1.0.0@old", root: "/pkg" });
-    foreign.record.host = `${hostname()}-elsewhere`;
-    expect(await ensure(foreign, true)).toEqual({ state: "running", stops: 0, starts: 0 });
+      while (!readSemanticServiceStatus(root).running) await sleep(5);
+      const result = await ensureSemanticServiceRunning(root, {
+        start: async () => {
+          throw new Error("the reader relaunches itself; the launcher must not start one");
+        },
+        isActive: () => true,
+        currentCode: () => newCode,
+        replacementTimeoutMs: 5_000,
+      });
+      const terminal = await daemon;
+      expect(result.state).toBe("replaced");
+      expect(result.status?.record?.nonce).toBe("fresh-generation");
+      expect(terminal.exit_reason).toBe("replacement_requested");
+      expect(relaunched).toBe(true);
+      expect(completed).toBe(calls);
+      expect(signals).toEqual([]);
+      expect(existsSync(semanticReplacePath(root))).toBe(false);
+    } finally {
+      process.kill = originalKill;
+    }
   });
 });

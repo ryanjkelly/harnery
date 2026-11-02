@@ -1,6 +1,6 @@
 ---
 title: "0232: Daemons restart when the installed code changes"
-description: "ADR: the relay, semantic, and supervisor daemons record a cheap identity of the installed Harnery code (package version plus the checkout's HEAD commit, read from files) and compare it on their own loop. A confirmed change makes the daemon exit and hand over to one started from the new code; launchers also replace a live daemon whose recorded identity is out of date."
+description: "ADR: the relay, semantic, and supervisor daemons record a cheap identity of the installed Harnery code (package version plus the checkout's HEAD commit, read from files) and compare it on their own loop. A confirmed change makes the daemon exit and hand over to one started from the new code; launchers also replace a live daemon whose recorded identity is out of date, through a replacement request of its own that an operator stop always overrides."
 ---
 
 **Status:** accepted (2026-11-02) · **Scope:** product tier (`core/code-identity`, `core/presence/relay-client`, `core/semantic/service`, `core/supervisor/service`)
@@ -57,11 +57,36 @@ and an unknown build counts as "restart needed", which would loop if acted on.
   replace it when they differ. A record with no identity predates this
   change, so it is replaced once; its replacement records one. A record from
   another package root is left alone, so two installations that share a
-  project do not take turns replacing each other's daemon. The relay
-  replacement takes over the pid file and the old daemon exits as
-  superseded. The semantic replacement signals the old daemon without the
-  durable stop request, because that request also means "paused by the
-  operator". The supervisor replacement uses its durable stop request.
+  project do not take turns replacing each other's daemon.
+- **A replacement is a request of its own, never a signal.** For the
+  semantic reader and the supervisor, the launcher writes a `replace.json`
+  naming the daemon generation (its status nonce) it targets. The daemon
+  finishes its current model call or cycle, exits, and relaunches itself
+  with the settings it was started with; the launcher only waits up to ten
+  seconds for the successor. A signal is never used, because on Windows it
+  terminates the process outright, mid-call. The operator's stop request is
+  never used either, because for the semantic reader it also means "paused"
+  and for the supervisor an operator stop issued during the handover could
+  not be told apart from the launcher's.
+- **Daemons from before this change** understand only the stop request. For
+  them the launcher writes a stop request carrying its own `replacement_id`,
+  waits, and withdraws it only if it is still its own. If an operator wrote a
+  stop over it, the stop stands and nothing is started. The replacement is
+  then started with the old daemon's recorded settings (`calls_per_hour`, or
+  `interval_ms`, `idle_exit_ms` and `keep_alive`).
+- **Automatic starts never clear a stop.** Launcher and relaunch starts pass
+  `--keep-pause` (semantic) or `--honor-stop` (supervisor): a daemon started
+  that way exits at once when a stop request exists, instead of clearing it
+  as an explicit start does. A pause written at any point during a
+  replacement therefore survives it.
+- **One relay at a time.** Starting a relay daemon first takes a launch
+  reservation (`relay-launch.json`, created atomically, expiring after 20
+  seconds), so concurrent hooks start one process between them. A
+  replacement takes over the pid file, and the old daemon, which now checks
+  every five seconds whether it was superseded, closes its socket and exits.
+  The new daemon connects only after the old process has exited, waiting at
+  most 75 seconds, which covers a pre-change daemon that notices only at its
+  minute tick.
 - **Operator stops win.** A daemon stopped by its stop command never
   relaunches itself, whatever the code did.
 
@@ -99,8 +124,12 @@ and an unknown build counts as "restart needed", which would loop if acted on.
   arguments must stay readable by the previous release's launcher, or the
   first relaunch after that upgrade fails. The failure is logged, and the
   next launcher call starts the daemon.
-- A semantic reader on a POSIX host that is inside a long model call can take
-  longer than the launcher's ten-second wait to stop. The launcher then
-  reports it as still running. The reader relaunches itself when it exits,
-  except for a reader from before this change, which waits for the next
-  launcher call.
+- A semantic reader inside a long model call can take longer than the
+  launcher's ten-second wait. The launcher then reports it as still running,
+  and the reader relaunches itself when the call ends. A reader from before
+  this change cannot relaunch itself: the launcher withdraws its stop
+  request, the reader keeps running on the old code, and the next launcher
+  call tries again.
+- Signalling a stale daemon to stop it at once was rejected. It would be
+  faster, but on Windows the signal kills the process mid-call and skips its
+  lease release and shutdown record.

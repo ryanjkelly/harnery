@@ -33,6 +33,7 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
   watch,
   writeFileSync,
 } from "node:fs";
@@ -129,6 +130,7 @@ function atomicWriteJson(path: string, value: unknown): void {
 export type EnsureRelayDaemonResult =
   | "disabled"
   | "running"
+  | "pending"
   | "started"
   | "replaced"
   | "unavailable";
@@ -138,14 +140,83 @@ export interface EnsureRelayDaemonDependencies {
   isAlive: (pid: number) => boolean;
   currentCode: () => CodeIdentityRecord;
   launch: (coordRoot: string) => boolean;
+  nowMs: () => number;
+}
+
+/** A launch reservation outlives a daemon that dies before taking its pid file. */
+export const RELAY_LAUNCH_RESERVATION_MS = 20_000;
+/** How long a new daemon waits for the one it replaces before connecting anyway. */
+export const RELAY_HANDOVER_WAIT_MS = 75_000;
+/** How often a running daemon checks whether a successor took its pid file. */
+const SUPERSEDE_CHECK_MS = 5_000;
+
+function launchReservationPath(coordRoot: string): string {
+  return join(presenceDir(coordRoot), "relay-launch.json");
+}
+
+/**
+ * Atomically reserve the right to launch a relay daemon, so concurrent hooks
+ * start one process between them. The daemon releases the reservation once
+ * it owns the pid file; an expired reservation (a launch that died early) is
+ * taken over.
+ */
+export function reserveRelayLaunch(coordRoot: string, nowMs = Date.now()): boolean {
+  const path = launchReservationPath(coordRoot);
+  mkdirSync(presenceDir(coordRoot), { recursive: true });
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const fd = openSync(path, "wx");
+      try {
+        writeFileSync(
+          fd,
+          JSON.stringify({
+            pid: process.pid,
+            created_at: new Date(nowMs).toISOString(),
+            expires_at: new Date(nowMs + RELAY_LAUNCH_RESERVATION_MS).toISOString(),
+          }),
+        );
+      } finally {
+        closeSync(fd);
+      }
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") return false;
+    }
+    let expiresAt = Number.NaN;
+    try {
+      expiresAt = Date.parse(
+        (JSON.parse(readFileSync(path, "utf8")) as { expires_at?: string }).expires_at ?? "",
+      );
+    } catch {
+      // An unreadable reservation is judged by its age instead.
+      try {
+        expiresAt = statSync(path).mtimeMs + RELAY_LAUNCH_RESERVATION_MS;
+      } catch {
+        continue;
+      }
+    }
+    if (Number.isFinite(expiresAt) && expiresAt > nowMs) return false;
+    rmSync(path, { force: true });
+  }
+  return false;
+}
+
+export function releaseRelayLaunchReservation(coordRoot: string): void {
+  try {
+    rmSync(launchReservationPath(coordRoot), { force: true });
+  } catch {
+    /* it expires on its own */
+  }
 }
 
 /**
  * Lazy-start the relay daemon for this repo if a relay is configured and no
  * live daemon already owns the pid file. A live daemon that runs older code
- * than this installation is replaced: the new daemon takes over the pid file
- * and the old one sees itself superseded on its next tick. Called from the
- * hook path — must return fast and never throw.
+ * than this installation is replaced: the new daemon takes over the pid file,
+ * the old one sees itself superseded and closes its socket, and the new one
+ * connects only after the old process has exited. A launch reservation keeps
+ * concurrent hooks from starting more than one daemon. Called from the hook
+ * path — must return fast and never throw.
  */
 export function ensureRelayDaemon(
   coordRoot: string,
@@ -157,6 +228,7 @@ export function ensureRelayDaemon(
       isAlive: pidAlive,
       currentCode: currentCodeIdentity,
       launch: launchRelayDaemon,
+      nowMs: Date.now,
       ...overrides,
     };
     const url = deps.relayUrl(coordRoot);
@@ -165,11 +237,39 @@ export function ensureRelayDaemon(
     const live = rec !== null && rec.url === url && deps.isAlive(rec.pid);
     const stale = live && codeIdentityReplacementNeeded(rec.code, deps.currentCode());
     if (live && !stale) return "running";
-    if (!deps.launch(coordRoot)) return "unavailable";
+    if (!reserveRelayLaunch(coordRoot, deps.nowMs())) return "pending";
+    if (!deps.launch(coordRoot)) {
+      releaseRelayLaunchReservation(coordRoot);
+      return "unavailable";
+    }
     return stale ? "replaced" : "started";
   } catch {
     return "unavailable";
   }
+}
+
+/**
+ * Wait for the daemon this one replaced to exit, so two daemons never hold
+ * sockets for the same machine at once. Returns false when the wait timed out
+ * or this daemon was itself superseded meanwhile.
+ */
+export async function awaitPreviousRelayExit(input: {
+  previousPid: number;
+  stillOwner: () => boolean;
+  isAlive?: (pid: number) => boolean;
+  wait?: (milliseconds: number) => Promise<void>;
+  timeoutMs?: number;
+  nowMs?: () => number;
+}): Promise<boolean> {
+  const isAlive = input.isAlive ?? pidAlive;
+  const wait = input.wait ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
+  const now = input.nowMs ?? Date.now;
+  const deadline = now() + (input.timeoutMs ?? RELAY_HANDOVER_WAIT_MS);
+  while (isAlive(input.previousPid)) {
+    if (!input.stillOwner() || now() >= deadline) return false;
+    await wait(250);
+  }
+  return input.stillOwner();
 }
 
 function launchRelayDaemon(coordRoot: string): boolean {
@@ -261,6 +361,7 @@ export async function runRelayDaemon(
   }
 
   // Take (or take over) the pid file. A superseded daemon notices and exits.
+  const previous = readRelayPidRecord(coordRoot);
   const myRecord: RelayPidRecord = {
     pid: process.pid,
     url,
@@ -268,6 +369,25 @@ export async function runRelayDaemon(
     code: codeWatch.initial,
   };
   atomicWriteJson(pidFilePath(coordRoot), myRecord);
+  releaseRelayLaunchReservation(coordRoot);
+  const ownsPidFile = () => readRelayPidRecord(coordRoot)?.pid === process.pid;
+  if (previous && previous.pid !== process.pid && pidAlive(previous.pid)) {
+    // Connect only once the daemon being replaced has closed its socket.
+    const released = await awaitPreviousRelayExit({
+      previousPid: previous.pid,
+      stillOwner: ownsPidFile,
+    });
+    if (!ownsPidFile()) {
+      await closeProcessLoggers();
+      return 0;
+    }
+    if (!released) {
+      appendPresenceRelayDiagnostic(coordRoot, "relay.lifecycle", {
+        phase: "handover_timeout",
+        message: `previous daemon pid ${previous.pid} did not exit; connecting anyway`,
+      });
+    }
+  }
 
   const creds = await deriveRoomCredentials({
     rootCommitSha: sha,
@@ -406,8 +526,31 @@ export async function runRelayDaemon(
     /* keepalive interval still covers publication */
   }
 
+  // Superseded by a newer daemon → close the socket and exit, so the
+  // successor (which waits for this process to exit) can connect.
+  const exitSuperseded = (): void => {
+    log("pid file superseded; exiting", "superseded");
+    shuttingDown = true;
+    clearInterval(interval);
+    clearInterval(supersedeCheck);
+    try {
+      ws?.close(1000, "superseded");
+    } catch {
+      /* ignore */
+    }
+    void closeProcessLoggers().finally(() => process.exit(0));
+  };
+
+  // A successor takes the pid file and waits for this process to go; notice
+  // within seconds rather than at the next minute tick.
+  const supersedeCheck = setInterval(() => {
+    if (shuttingDown) return;
+    if (readRelayPidRecord(coordRoot)?.pid !== process.pid) exitSuperseded();
+  }, SUPERSEDE_CHECK_MS);
+
   // Keepalive + lifecycle checks.
   const interval = setInterval(() => {
+    if (shuttingDown) return;
     void publishNow();
     const codeChange = codeWatch.poll();
     const decision = relayTickDecision({
@@ -417,17 +560,8 @@ export async function runRelayDaemon(
       idleSince,
       nowMs: Date.now(),
     });
-    // Superseded by a newer daemon → exit quietly.
     if (decision === "superseded") {
-      log("pid file superseded; exiting", "superseded");
-      shuttingDown = true;
-      clearInterval(interval);
-      try {
-        ws?.close();
-      } catch {
-        /* ignore */
-      }
-      void closeProcessLoggers().finally(() => process.exit(0));
+      exitSuperseded();
       return;
     }
     // The installed code moved on → close cleanly, hand the pid file to a
@@ -439,6 +573,7 @@ export async function runRelayDaemon(
       });
       shuttingDown = true;
       clearInterval(interval);
+      clearInterval(supersedeCheck);
       try {
         ws?.close(1000, "code changed");
       } catch {
@@ -449,6 +584,8 @@ export async function runRelayDaemon(
       } catch {
         /* ignore */
       }
+      // The pid file is gone, so the successor connects at once; the
+      // reservation keeps a racing hook from starting a second one.
       ensureRelayDaemon(coordRoot);
       void closeProcessLoggers().finally(() => process.exit(0));
       return;
@@ -458,6 +595,7 @@ export async function runRelayDaemon(
       log("no live sessions; idle exit", "idle_exit");
       shuttingDown = true;
       clearInterval(interval);
+      clearInterval(supersedeCheck);
       try {
         rmSync(pidFilePath(coordRoot), { force: true });
         ws?.close();

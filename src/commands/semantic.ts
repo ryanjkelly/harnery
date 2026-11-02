@@ -103,13 +103,15 @@ export function registerSemanticCommand(
     .description("Internal detached semantic service entrypoint")
     .option("--root <path>", "Explicit coordination root")
     .option("--calls-per-hour <count>", "Configured call ceiling below the hard limit", integer)
-    .action(async (options: { root?: string; callsPerHour?: number }) => {
+    .option("--keep-pause", "Exit instead of clearing an operator pause (automatic starts)")
+    .action(async (options: { root?: string; callsPerHour?: number; keepPause?: boolean }) => {
       try {
         const root = resolve(options.root ?? coordRoot(context));
         emit.data(
           await runSemanticServiceDaemon({
             coordRoot: root,
             callsPerHour: options.callsPerHour,
+            keepPause: options.keepPause,
             // After a code change, hand over to a daemon running the new code.
             relaunch: () => relaunchSemanticService(root, { callsPerHour: options.callsPerHour }),
           }),

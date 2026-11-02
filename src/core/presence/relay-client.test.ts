@@ -8,9 +8,13 @@ import { closeProcessLoggers } from "../storage/logger.ts";
 import { readRemoteMachines } from "./index.ts";
 import {
   appendPresenceRelayDiagnostic,
+  awaitPreviousRelayExit,
   ensureRelayDaemon,
+  RELAY_LAUNCH_RESERVATION_MS,
   relayDaemonStatus,
   relayTickDecision,
+  releaseRelayLaunchReservation,
+  reserveRelayLaunch,
 } from "./relay-client.ts";
 import { computeSenderId, deriveRoomCredentials, encryptPayload } from "./relay-protocol.ts";
 
@@ -224,7 +228,10 @@ describe("relay daemon code changes", () => {
     writeFileSync(join(root, ".harnery", "presence", "relay-daemon.json"), JSON.stringify(record));
   }
 
-  function ensure(): { result: string; launches: number } {
+  function ensure(options: { nowMs?: number; launchOk?: boolean } = {}): {
+    result: string;
+    launches: number;
+  } {
     let launches = 0;
     const result = ensureRelayDaemon(root, {
       relayUrl: () => "ws://relay.test",
@@ -232,11 +239,14 @@ describe("relay daemon code changes", () => {
       currentCode: () => current,
       launch: () => {
         launches += 1;
-        return true;
+        return options.launchOk ?? true;
       },
+      ...(options.nowMs !== undefined ? { nowMs: () => options.nowMs as number } : {}),
     });
     return { result, launches };
   }
+
+  const reservationPath = () => join(root, ".harnery", "presence", "relay-launch.json");
 
   const pidRecord = () => ({
     pid: process.pid,
@@ -247,9 +257,12 @@ describe("relay daemon code changes", () => {
   test("ensure replaces a live daemon that runs older code and leaves a current one", () => {
     writePid({ ...pidRecord(), code: { id: "1.0.0@old", root: "/pkg" } });
     expect(ensure()).toEqual({ result: "replaced", launches: 1 });
+    // The new daemon releases the reservation once it owns the pid file.
+    releaseRelayLaunchReservation(root);
     // A daemon from before identity recording is replaced once.
     writePid(pidRecord());
     expect(ensure()).toEqual({ result: "replaced", launches: 1 });
+    releaseRelayLaunchReservation(root);
     writePid({ ...pidRecord(), code: current });
     expect(ensure()).toEqual({ result: "running", launches: 0 });
     // An unknown recorded identity or another installation never restarts.
@@ -260,6 +273,68 @@ describe("relay daemon code changes", () => {
     // A dead daemon is simply started.
     writePid({ ...pidRecord(), pid: 999_999, code: current });
     expect(ensure()).toEqual({ result: "started", launches: 1 });
+  });
+
+  test("concurrent launchers start one replacement between them (F5)", () => {
+    writePid({ ...pidRecord(), code: { id: "1.0.0@old", root: "/pkg" } });
+    const nowMs = Date.now();
+    expect(ensure({ nowMs })).toEqual({ result: "replaced", launches: 1 });
+    // A second hook before the new daemon takes the pid file launches nothing.
+    expect(ensure({ nowMs: nowMs + 1_000 })).toEqual({ result: "pending", launches: 0 });
+    expect(existsSync(reservationPath())).toBe(true);
+    // A reservation whose launch died is taken over once it expires.
+    expect(ensure({ nowMs: nowMs + RELAY_LAUNCH_RESERVATION_MS + 1 })).toEqual({
+      result: "replaced",
+      launches: 1,
+    });
+    // A failed launch gives the reservation back at once.
+    releaseRelayLaunchReservation(root);
+    expect(ensure({ launchOk: false })).toEqual({ result: "unavailable", launches: 1 });
+    expect(existsSync(reservationPath())).toBe(false);
+    expect(reserveRelayLaunch(root)).toBe(true);
+    expect(reserveRelayLaunch(root)).toBe(false);
+  });
+
+  test("a replacement waits for the daemon it replaces to exit before connecting (F5)", async () => {
+    let alive = true;
+    let waits = 0;
+    const released = await awaitPreviousRelayExit({
+      previousPid: 4242,
+      stillOwner: () => true,
+      isAlive: () => alive,
+      wait: async () => {
+        waits += 1;
+        if (waits === 3) alive = false;
+      },
+    });
+    expect(released).toBe(true);
+    expect(waits).toBe(3);
+
+    // A successor of its own ends the wait without connecting.
+    expect(
+      await awaitPreviousRelayExit({
+        previousPid: 4242,
+        stillOwner: () => false,
+        isAlive: () => true,
+        wait: async () => {},
+      }),
+    ).toBe(false);
+
+    // A previous daemon that never exits is waited on only until the deadline.
+    let nowMs = 0;
+    expect(
+      await awaitPreviousRelayExit({
+        previousPid: 4242,
+        stillOwner: () => true,
+        isAlive: () => true,
+        wait: async (ms) => {
+          nowMs += ms;
+        },
+        nowMs: () => nowMs,
+        timeoutMs: 1_000,
+      }),
+    ).toBe(false);
+    expect(nowMs).toBeGreaterThanOrEqual(1_000);
   });
 
   test("the lifecycle tick exits on a confirmed code change unless superseded", () => {

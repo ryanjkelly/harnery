@@ -18,10 +18,15 @@ import {
 import {
   type CodeChangeWatch,
   type CodeIdentityRecord,
+  clearReplacementRequest,
   codeChangeMessage,
   codeIdentityReplacementNeeded,
   currentCodeIdentity,
+  replacementRequestedFor,
   watchCodeIdentity,
+  withdrawStopForReplacement,
+  writeReplacementRequest,
+  writeStopForReplacement,
 } from "../code-identity.ts";
 import { resolveBinName } from "../config.ts";
 import { pressureHistoryFromSupervisor } from "../diagnostics/advice.ts";
@@ -87,6 +92,8 @@ export interface RunSupervisorInput {
   wait?: (milliseconds: number) => Promise<void>;
   /** Detects a change to the installed code; the default checks every 30 s. */
   codeWatch?: CodeChangeWatch;
+  /** Refuse to start while a stop request is in place, instead of clearing it. */
+  honorStop?: boolean;
   /**
    * Starts the replacement after a code change, once this daemon has released
    * its lease. The detached daemon entrypoint passes the real launcher; left
@@ -101,17 +108,29 @@ export type EnsureSupervisorResult =
 
 export interface EnsureSupervisorDependencies {
   readStatus: (coordRoot: string) => SupervisorStatus;
-  start: (coordRoot: string) => Promise<SupervisorStatus>;
+  start: (coordRoot: string, options: SpawnSupervisorOptions) => Promise<SupervisorStatus>;
   currentCode: () => CodeIdentityRecord;
-  /** Stop a stale daemon for replacement; resolves to whether it stopped. */
-  stopForReplacement: (coordRoot: string) => Promise<boolean>;
+  wait: (milliseconds: number) => Promise<void>;
+  /** How long a launcher waits for a stale supervisor to hand over. */
+  replacementTimeoutMs: number;
 }
 
-const REPLACEMENT_STOP_TIMEOUT_MS = 10_000;
+export interface SpawnSupervisorOptions {
+  intervalMs?: number;
+  idleExitMs?: number;
+  keepAlive?: boolean;
+  /**
+   * Refuse to run while a stop request is in place instead of clearing it.
+   * Automatic replacements use this; an explicit start clears the request.
+   */
+  honorStop?: boolean;
+}
+
+const REPLACEMENT_TIMEOUT_MS = 10_000;
 
 export async function spawnSupervisor(
   coordRootRaw: string,
-  options: { intervalMs?: number; idleExitMs?: number; keepAlive?: boolean } = {},
+  options: SpawnSupervisorOptions = {},
 ): Promise<SupervisorStatus> {
   const coordRoot = resolve(coordRootRaw);
   const current = readSupervisorStatus(coordRoot);
@@ -141,6 +160,7 @@ export async function spawnSupervisor(
       "--idle-exit-ms",
       String(idleExitMs),
       ...(options.keepAlive ? ["--keep-alive"] : []),
+      ...(options.honorStop ? ["--honor-stop"] : []),
     ],
     {
       cwd: coordRoot,
@@ -171,8 +191,10 @@ export async function spawnSupervisor(
 
 /**
  * Start the supervisor unless one is running. A running local supervisor that
- * loaded older code than this installation is stopped through its durable
- * stop request and started again from the new code (ADR 0232).
+ * loaded older code than this installation is replaced (ADR 0232) with the
+ * same interval, idle exit, and keep-alive settings. The replacement goes
+ * through a request of its own, so a `supervisor stop` issued during the
+ * handover always wins.
  */
 export async function ensureSupervisorRunning(
   coordRoot: string,
@@ -180,54 +202,109 @@ export async function ensureSupervisorRunning(
 ): Promise<EnsureSupervisorResult> {
   const dependencies: EnsureSupervisorDependencies = {
     readStatus: (root) => readSupervisorStatus(root),
-    start: (root) => spawnSupervisor(root),
+    start: (root, options) => spawnSupervisor(root, options),
     currentCode: currentCodeIdentity,
-    stopForReplacement: stopSupervisorForReplacement,
+    wait: delay,
+    replacementTimeoutMs: REPLACEMENT_TIMEOUT_MS,
     ...overrides,
   };
+  const stopPath = supervisorPaths(coordRoot).stop;
   const status = dependencies.readStatus(coordRoot);
-  let replacing = false;
+  let replacing: SupervisorServiceStatusRecord | undefined;
   if (status.running) {
-    const local = status.record?.host === hostname();
-    if (!local || !codeIdentityReplacementNeeded(status.record?.code, dependencies.currentCode())) {
+    const record = status.record;
+    const local = record?.host === hostname();
+    if (
+      !record ||
+      !local ||
+      !codeIdentityReplacementNeeded(record.code, dependencies.currentCode())
+    ) {
       return { state: "running", status };
     }
-    if (!(await dependencies.stopForReplacement(coordRoot))) {
-      return { state: "running", status: dependencies.readStatus(coordRoot) };
+    const deadline = Date.now() + dependencies.replacementTimeoutMs;
+    if (record.code !== undefined) {
+      // This supervisor understands replacement requests: it finishes its
+      // cycle, exits, and relaunches itself; the launcher only waits.
+      writeReplacementRequest(supervisorReplacePath(coordRoot), record.nonce);
+      while (Date.now() < deadline) {
+        const after = dependencies.readStatus(coordRoot);
+        if (after.running && after.record && after.record.nonce !== record.nonce) {
+          return { state: "replaced", status: after };
+        }
+        if (after.liveness === "stopped" && existsSync(stopPath)) return stoppedByRequest(after);
+        await dependencies.wait(100);
+      }
+      const final = dependencies.readStatus(coordRoot);
+      if (final.liveness !== "stopped") return { state: "running", status: final };
+      if (existsSync(stopPath)) return stoppedByRequest(final);
+      // It exited without a successor appearing; start one here.
+    } else {
+      // A supervisor from before replacement requests honors only the stop
+      // request. Ours carries an id, so a stop written over it wins.
+      const replacementId = writeStopForReplacement(stopPath);
+      let after = dependencies.readStatus(coordRoot);
+      while (after.liveness !== "stopped" && Date.now() < deadline) {
+        await dependencies.wait(100);
+        after = dependencies.readStatus(coordRoot);
+      }
+      if (withdrawStopForReplacement(stopPath, replacementId) === "operator") {
+        return stoppedByRequest(after);
+      }
+      if (after.liveness !== "stopped") return { state: "running", status: after };
     }
-    replacing = true;
+    replacing = record;
   }
   try {
-    const started = await dependencies.start(coordRoot);
+    const started = await dependencies.start(
+      coordRoot,
+      replacing
+        ? {
+            intervalMs: replacing.interval_ms,
+            idleExitMs: replacing.idle_exit_ms,
+            keepAlive: replacing.keep_alive,
+            honorStop: true,
+          }
+        : {},
+    );
     return { state: replacing ? "replaced" : "started", status: started };
   } catch (error) {
+    const after = dependencies.readStatus(coordRoot);
+    if (replacing && existsSync(stopPath)) return stoppedByRequest(after);
+    if (replacing && after.running) return { state: "replaced", status: after };
     return {
       state: "unavailable",
-      status: dependencies.readStatus(coordRoot),
+      status: after,
       error: error instanceof Error ? error.message : String(error),
     };
   }
 }
 
-async function stopSupervisorForReplacement(coordRoot: string): Promise<boolean> {
-  requestSupervisorStop(coordRoot);
-  const deadline = Date.now() + REPLACEMENT_STOP_TIMEOUT_MS;
-  while (readSupervisorStatus(coordRoot).liveness !== "stopped" && Date.now() < deadline)
-    await delay(100);
-  return readSupervisorStatus(coordRoot).liveness === "stopped";
+function stoppedByRequest(status: SupervisorStatus): EnsureSupervisorResult {
+  return {
+    state: "unavailable",
+    status,
+    error: "local supervisor was stopped by a stop request during its replacement",
+  };
+}
+
+/** Where a launcher asks a stale supervisor to hand over. */
+export function supervisorReplacePath(coordRoot: string): string {
+  return resolve(supervisorPaths(coordRoot).root, "replace.json");
 }
 
 /**
- * The relaunch the detached daemon entrypoint uses after a code change: start
- * a supervisor from the newly installed code with the same settings, unless
- * something else already started one.
+ * The relaunch the detached daemon entrypoint uses after a code change or a
+ * replacement request: start a supervisor from the newly installed code with
+ * the same settings, unless something else already started one or a stop
+ * request arrived.
  */
 export async function relaunchSupervisor(
   coordRoot: string,
   options: { intervalMs?: number; idleExitMs?: number; keepAlive?: boolean } = {},
 ): Promise<void> {
   if (readSupervisorStatus(coordRoot).liveness !== "stopped") return;
-  await spawnSupervisor(coordRoot, options);
+  if (existsSync(supervisorPaths(coordRoot).stop)) return;
+  await spawnSupervisor(coordRoot, { ...options, honorStop: true });
 }
 
 export type SupervisorStopResult = SupervisorStatus & ServiceStopFields;
@@ -259,8 +336,15 @@ export async function runSupervisor(
   const keepAlive = input.keepAlive ?? false;
   const now = input.now ?? (() => new Date());
   const wait = input.wait ?? delay;
+  if (input.honorStop && existsSync(paths.stop)) {
+    // An automatic start never overrides a stop request written before it ran.
+    throw new Error("local supervisor has a pending stop request; not starting");
+  }
   const lease = acquireServiceLease(paths.lease, startRefusal);
   rmSync(paths.stop, { force: true });
+  const replacePath = supervisorReplacePath(coordRoot);
+  // Any request left behind targets an earlier generation.
+  clearReplacementRequest(replacePath);
   const codeWatch = input.codeWatch ?? watchCodeIdentity();
   let codeChanged = false;
   const codeChangeConfirmed = (): boolean => {
@@ -274,6 +358,19 @@ export async function runSupervisor(
       to_code: change.to,
     });
     return true;
+  };
+  let replacementRequested = false;
+  // Leave the loop for newer code: this supervisor saw the change, or a
+  // launcher asked it to hand over.
+  const handoverDue = (): boolean => {
+    if (codeChangeConfirmed()) return true;
+    if (!replacementRequested && replacementRequestedFor(replacePath, status.nonce)) {
+      replacementRequested = true;
+      log(coordRoot, "supervisor.replacement_requested", {
+        message: "replacement requested by a launcher on newer code; exiting for restart",
+      });
+    }
+    return replacementRequested;
   };
   const startedAt = now().toISOString();
   const startToken = processStartToken(process.pid);
@@ -334,7 +431,7 @@ export async function runSupervisor(
     keep_alive: keepAlive,
   });
   try {
-    while (!stopping && !existsSync(paths.stop) && !codeChangeConfirmed()) {
+    while (!stopping && !existsSync(paths.stop) && !handoverDue()) {
       const cycleStarted = performance.now();
       try {
         const cycleNow = now();
@@ -526,12 +623,14 @@ export async function runSupervisor(
     // A stop request (durable file or signal) is someone else's decision and
     // never relaunches; a launcher that replaces a stale supervisor starts the
     // new one itself.
-    const relaunching = codeChanged && !stopping && !existsSync(paths.stop);
-    if (relaunching) status.exit_reason = "code_changed";
+    const relaunching =
+      (codeChanged || replacementRequested) && !stopping && !existsSync(paths.stop);
+    if (relaunching) status.exit_reason = codeChanged ? "code_changed" : "replacement_requested";
+    clearReplacementRequest(replacePath);
     writeStatus();
     log(coordRoot, "supervisor.stopped", {
       cycle_count: status.cycle_count,
-      ...(relaunching ? { exit_reason: "code_changed" } : {}),
+      ...(status.exit_reason ? { exit_reason: status.exit_reason } : {}),
     });
     lease.release();
     if (relaunching && input.relaunch) {
