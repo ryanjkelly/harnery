@@ -21,7 +21,9 @@ import {
  * exercises the real binary both ways.
  */
 
-const AGENT_COORD = resolve(import.meta.dir, "..", "..", "bin", "agent-coord");
+// The `.mjs` launcher through the running runtime, not the bash wrapper, which
+// Windows cannot spawn directly.
+const AGENT_COORD = resolve(import.meta.dir, "..", "..", "bin", "agent-coord.mjs");
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -71,7 +73,7 @@ describe("agent-coord root pinning (coordHelperOpts)", () => {
 
   test("unpinned spawn from a nested coord root misses the heartbeat (the bug)", () => {
     const { nested, owner } = makeNestedRoots();
-    const r = spawnSync(AGENT_COORD, ["set-task", owner, "x"], {
+    const r = spawnSync(process.execPath, [AGENT_COORD, "set-task", owner, "x"], {
       cwd: nested,
       encoding: "utf8",
       env: bareEnv(),
@@ -82,7 +84,7 @@ describe("agent-coord root pinning (coordHelperOpts)", () => {
 
   test("pinned spawn from the same nested cwd finds the heartbeat (the fix)", () => {
     const { outer, nested, owner } = makeNestedRoots();
-    const r = spawnSync(AGENT_COORD, ["set-task", owner, "pinned works"], {
+    const r = spawnSync(process.execPath, [AGENT_COORD, "set-task", owner, "pinned works"], {
       cwd: nested,
       encoding: "utf8",
       env: bareEnv({ HARNERY_COORD_ROOT_OVERRIDE: outer }),

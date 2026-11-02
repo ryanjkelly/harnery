@@ -2,11 +2,13 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, posix } from "node:path";
+import { posix } from "node:path";
 import { gzipSync } from "node:zlib";
 import { buildTarGz } from "../../../tests/helpers/tar-fixture.ts";
 import { INSTALL_MARKER, installPinnedArchive, listTarGz } from "./archive.ts";
 import type { PinnedArtifact } from "./types.ts";
+
+const { join } = posix;
 
 function artifact(bytes: Uint8Array, extra: Partial<PinnedArtifact> = {}): PinnedArtifact {
   return {
@@ -22,7 +24,9 @@ function artifact(bytes: Uint8Array, extra: Partial<PinnedArtifact> = {}): Pinne
 
 let root: string;
 beforeEach(() => {
-  root = mkdtempSync(join(tmpdir(), "archive-test-"));
+  // These tests simulate POSIX hosts, whose plans join paths with posix syntax.
+  // Forward slashes keep a Windows temp dir valid for both that and the file system.
+  root = mkdtempSync(join(tmpdir(), "archive-test-")).replace(/\\/g, "/");
 });
 afterEach(() => {
   rmSync(root, { recursive: true, force: true });

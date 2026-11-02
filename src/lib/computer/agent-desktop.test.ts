@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { posix } from "node:path";
 import { buildTarGz } from "../../../tests/helpers/tar-fixture.ts";
 import {
   AGENT_DESKTOP_CALL_TIMEOUT_MS,
@@ -19,9 +19,13 @@ import {
 import { responsibleAppName, type SpawnResult } from "./driver-support.ts";
 import type { HostInfo } from "./types.ts";
 
+const { join } = posix;
+
 let root: string;
 beforeEach(() => {
-  root = mkdtempSync(join(tmpdir(), "agent-desktop-test-"));
+  // These tests simulate POSIX hosts, whose plans join paths with posix syntax.
+  // Forward slashes keep a Windows temp dir valid for both that and the file system.
+  root = mkdtempSync(join(tmpdir(), "agent-desktop-test-")).replace(/\\/g, "/");
 });
 afterEach(() => {
   rmSync(root, { recursive: true, force: true });

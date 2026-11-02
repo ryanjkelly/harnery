@@ -152,9 +152,10 @@ describe("writePidmapRow", () => {
  * A BSD host reaches every one of these functions through the `ps` probe, and
  * the only honest way to know that path works is to run it. It is the same code
  * on either OS, so forcing the probe exercises it here rather than leaving it to
- * be discovered on somebody's laptop.
+ * be discovered on somebody's laptop. Windows has no POSIX `ps` to force, and
+ * never selects this probe, so the block runs on Unix hosts only.
  */
-describe("the ps probe (a machine with no procfs)", () => {
+describe.skipIf(process.platform === "win32")("the ps probe (a machine with no procfs)", () => {
   let saved: string | undefined;
 
   beforeEach(() => {

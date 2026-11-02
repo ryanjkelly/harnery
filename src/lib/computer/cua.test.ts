@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { posix } from "node:path";
 import { buildTarGz } from "../../../tests/helpers/tar-fixture.ts";
 import { buildZip } from "../zip/index.ts";
 import {
@@ -22,6 +22,8 @@ import {
   type SpawnResult,
 } from "./cua.ts";
 import type { HostInfo } from "./types.ts";
+
+const { join } = posix;
 
 const TOP = `cua-driver-rs-${CUA_DRIVER_VERSION}-windows-x86_64`;
 const FILES = [
@@ -37,7 +39,9 @@ const FILES = [
 
 let root: string;
 beforeEach(() => {
-  root = mkdtempSync(join(tmpdir(), "cua-test-"));
+  // These tests simulate POSIX hosts, whose plans join paths with posix syntax.
+  // Forward slashes keep a Windows temp dir valid for both that and the file system.
+  root = mkdtempSync(join(tmpdir(), "cua-test-")).replace(/\\/g, "/");
 });
 afterEach(() => {
   rmSync(root, { recursive: true, force: true });
