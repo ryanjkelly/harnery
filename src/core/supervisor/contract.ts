@@ -1,4 +1,5 @@
 import type { ProcessGenerationVerdict } from "../agents/state/proc-start.ts";
+import type { CodeIdentityRecord } from "../code-identity.ts";
 import type {
   PressureAssessment,
   PressureHysteresisState,
@@ -72,6 +73,10 @@ export interface SupervisorServiceStatusRecord {
   idle_since?: string;
   last_error_code?: string;
   stopped_at?: string;
+  /** The code this daemon loaded; absent on daemons that predate the field. */
+  code?: CodeIdentityRecord;
+  /** Why the daemon left its loop, when it was not a stop request or idle exit. */
+  exit_reason?: "code_changed";
 }
 
 export interface SupervisorStatus {

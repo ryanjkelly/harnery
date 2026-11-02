@@ -17,6 +17,7 @@ import {
   spawnSemanticService,
   storeSemanticReviewSubmission,
 } from "../core/semantic/index.ts";
+import { relaunchSemanticService } from "../core/semantic/service.ts";
 
 export function registerSemanticCommand(
   program: Command,
@@ -104,10 +105,13 @@ export function registerSemanticCommand(
     .option("--calls-per-hour <count>", "Configured call ceiling below the hard limit", integer)
     .action(async (options: { root?: string; callsPerHour?: number }) => {
       try {
+        const root = resolve(options.root ?? coordRoot(context));
         emit.data(
           await runSemanticServiceDaemon({
-            coordRoot: resolve(options.root ?? coordRoot(context)),
+            coordRoot: root,
             callsPerHour: options.callsPerHour,
+            // After a code change, hand over to a daemon running the new code.
+            relaunch: () => relaunchSemanticService(root, { callsPerHour: options.callsPerHour }),
           }),
         );
       } catch (error) {

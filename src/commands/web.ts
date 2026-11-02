@@ -113,6 +113,7 @@ export function webPerformanceLogDestination(
 async function startSemanticServiceWithWeb(coordRoot: string, emit: EmitContext): Promise<void> {
   const result = await ensureSemanticServiceRunning(coordRoot);
   if (result.state === "started") emit.log("semantic reader · started automatically", "info");
+  if (result.state === "replaced") emit.log("semantic reader · restarted on new code", "info");
   if (result.state === "running") emit.log("semantic reader · already running", "info");
   if (result.state === "paused") emit.log("semantic reader · paused by operator", "info");
   if (result.state === "inactive") emit.log("semantic reader · waiting for active V3", "info");
@@ -125,6 +126,7 @@ async function startSupervisorWithWeb(coordRoot: string, emit: EmitContext): Pro
   registerSupervisorConsumer(coordRoot, { id: "dashboard" });
   const result = await ensureSupervisorRunning(coordRoot);
   if (result.state === "started") emit.log("local supervisor · started automatically", "info");
+  if (result.state === "replaced") emit.log("local supervisor · restarted on new code", "info");
   if (result.state === "running") emit.log("local supervisor · already running", "info");
   if (result.state === "unavailable") {
     emit.log(`local supervisor · unavailable (${result.error})`, "warn");

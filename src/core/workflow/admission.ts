@@ -50,7 +50,8 @@ export async function observeWorkflowDiagnosticAdmission(
   try {
     runtime.registerConsumer(input.coordRoot, { id: consumerId });
     const ensured = await runtime.ensureSupervisor(input.coordRoot);
-    serviceState = ensured.state;
+    // A supervisor replaced for newer code is, to admission, a fresh start.
+    serviceState = ensured.state === "replaced" ? "started" : ensured.state;
     if (ensured.state === "unavailable") {
       return unavailableObservation(
         runtime,

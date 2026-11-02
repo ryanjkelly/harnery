@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
+import type { CodeChangeWatch, CodeIdentityRecord } from "../code-identity.ts";
 import type { readLedgerV3Since } from "../events/v3/index.ts";
 import { closeProcessLoggers } from "../storage/logger.ts";
 import {
@@ -720,5 +721,159 @@ describe("semantic service", () => {
         semantic_readings: [{ ...readings[0], prompt: "must not cross the log boundary" }],
       }),
     ).toThrow("rejects field: prompt");
+  });
+});
+
+describe("semantic service code changes", () => {
+  const idleRead = (() => ({
+    events: [],
+    diagnostics: [],
+    complete: true,
+    genesis_id: "gex_fixture",
+    active_schema_digest: "fixture",
+    advances: [],
+    bytes: 0,
+    cursor: undefined,
+    reset_required: false,
+  })) as unknown as typeof readLedgerV3Since;
+
+  function changingWatch(confirmOnPoll: number): CodeChangeWatch {
+    let polls = 0;
+    const change = { from: "1.0.0@old", to: "1.0.0@new" };
+    return {
+      initial: { id: "1.0.0@old", root: "/pkg" },
+      poll() {
+        polls += 1;
+        return polls >= confirmOnPoll ? change : null;
+      },
+      checkNow: () => change,
+    };
+  }
+
+  test("exits on a confirmed code change, releases its lease, then relaunches", async () => {
+    const root = fixture();
+    const relaunches: boolean[] = [];
+    const terminal = await runSemanticServiceDaemon({
+      coordRoot: root,
+      debounceMs: 60_000,
+      wakeIntervalMs: 1,
+      heartbeatIntervalMs: 60_000,
+      maxSweeps: 50,
+      readSince: idleRead,
+      async runOnce() {
+        throw new Error("no pass is due");
+      },
+      waitForWake: async () => {},
+      codeWatch: changingWatch(3),
+      async relaunch() {
+        // The lease is free by the time the replacement starts.
+        relaunches.push(existsSync(semanticPaths(root).lease));
+      },
+    });
+    expect(terminal.state).toBe("stopped");
+    expect(terminal.exit_reason).toBe("code_changed");
+    expect(terminal.sweep_count).toBe(2);
+    expect(terminal.code).toEqual({ id: "1.0.0@old", root: "/pkg" });
+    expect(relaunches).toEqual([false]);
+    expect(readSemanticServiceStatus(root).record?.exit_reason).toBe("code_changed");
+  });
+
+  test("an operator stop never relaunches, even on changed code", async () => {
+    const root = fixture();
+    let relaunched = false;
+    const terminal = await runSemanticServiceDaemon({
+      coordRoot: root,
+      debounceMs: 60_000,
+      wakeIntervalMs: 1,
+      heartbeatIntervalMs: 60_000,
+      maxSweeps: 50,
+      readSince: idleRead,
+      async runOnce() {
+        throw new Error("no pass is due");
+      },
+      waitForWake: async () => {
+        writeFileSync(semanticPaths(root).stop, "{}");
+      },
+      codeWatch: changingWatch(Number.POSITIVE_INFINITY),
+      async relaunch() {
+        relaunched = true;
+      },
+    });
+    expect(terminal.exit_reason).toBeUndefined();
+    expect(relaunched).toBe(false);
+  });
+
+  test("ensure replaces a live local daemon that runs older code", async () => {
+    const current = { id: "1.0.0@new", root: "/pkg" };
+    const live = (code?: { id: string | null; root: string }) => ({
+      running: true,
+      stale: false,
+      pending_count: 0,
+      record: {
+        schema_version: 1 as const,
+        pid: process.pid,
+        host: hostname(),
+        nonce: "n",
+        state: "running" as const,
+        started_at: new Date().toISOString(),
+        heartbeat_at: new Date().toISOString(),
+        sweep_count: 0,
+        pass_count: 0,
+        model_calls: 0,
+        cache_hits: 0,
+        ...(code ? { code } : {}),
+      },
+    });
+    const fresh = { running: true, stale: false, pending_count: 0 };
+    const ensure = async (
+      status: ReturnType<typeof live>,
+      stops: boolean,
+      currentCode: CodeIdentityRecord = current,
+    ): Promise<{ state: string; stops: number; starts: number }> => {
+      let stopCalls = 0;
+      let starts = 0;
+      const result = await ensureSemanticServiceRunning("/fixture/replace", {
+        readStatus: () => status,
+        start: async () => {
+          starts += 1;
+          return fresh;
+        },
+        isPaused: () => false,
+        isActive: () => true,
+        currentCode: () => currentCode,
+        stopForReplacement: async () => {
+          stopCalls += 1;
+          return stops;
+        },
+      });
+      return { state: result.state, stops: stopCalls, starts };
+    };
+    expect(await ensure(live({ id: "1.0.0@old", root: "/pkg" }), true)).toEqual({
+      state: "replaced",
+      stops: 1,
+      starts: 1,
+    });
+    // A daemon from before identity recording is replaced once.
+    expect(await ensure(live(), true)).toEqual({ state: "replaced", stops: 1, starts: 1 });
+    // Same code, an unknown current identity, or another installation: untouched.
+    expect(await ensure(live(current), true)).toEqual({ state: "running", stops: 0, starts: 0 });
+    expect(
+      await ensure(live({ id: "1.0.0@old", root: "/pkg" }), true, { id: null, root: "/pkg" }),
+    ).toEqual({ state: "running", stops: 0, starts: 0 });
+    expect(await ensure(live({ id: "1.0.0@old", root: "/elsewhere" }), true)).toEqual({
+      state: "running",
+      stops: 0,
+      starts: 0,
+    });
+    // A daemon still inside a model call keeps running; it relaunches itself.
+    expect(await ensure(live({ id: "1.0.0@old", root: "/pkg" }), false)).toEqual({
+      state: "running",
+      stops: 1,
+      starts: 0,
+    });
+    // Another host's daemon is never replaced from here.
+    const foreign = live({ id: "1.0.0@old", root: "/pkg" });
+    foreign.record.host = `${hostname()}-elsewhere`;
+    expect(await ensure(foreign, true)).toEqual({ state: "running", stops: 0, starts: 0 });
   });
 });

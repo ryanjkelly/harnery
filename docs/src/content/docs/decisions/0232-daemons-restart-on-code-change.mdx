@@ -1,0 +1,106 @@
+---
+title: "0232: Daemons restart when the installed code changes"
+description: "ADR: the relay, semantic, and supervisor daemons record a cheap identity of the installed Harnery code (package version plus the checkout's HEAD commit, read from files) and compare it on their own loop. A confirmed change makes the daemon exit and hand over to one started from the new code; launchers also replace a live daemon whose recorded identity is out of date."
+---
+
+**Status:** accepted (2026-11-02) · **Scope:** product tier (`core/code-identity`, `core/presence/relay-client`, `core/semantic/service`, `core/supervisor/service`)
+
+## Context
+
+Harnery's long-lived background processes are detached daemons: the presence
+relay client, the semantic reader, and the local supervisor. Each one keeps
+running the modules it loaded when it started. A fix that reaches the
+checkout through a pull, or the installation through an upgrade, does not
+reach a daemon that is already running. The daemon keeps the old behavior,
+including the bug the fix was for, until someone finds the process and kills
+it by hand. Nothing in the daemon notices that the code underneath it moved.
+
+The supervisor and the governor service already record a `running_build` and
+report `restart_needed`, but only as status for a person to read. That build
+is read with a `git` subprocess, which is too expensive to run on every tick,
+and an unknown build counts as "restart needed", which would loop if acted on.
+
+## Decision
+
+- **A cheap code identity.** `core/code-identity` computes `<version>` from
+  the package's `package.json`, plus `@<commit>` when the package root is a
+  Git checkout. The commit comes from plain file reads: `.git` as a directory,
+  or a `.git` file naming a `gitdir` (submodules and linked worktrees, with
+  `commondir` for shared refs), then `HEAD`, then the loose ref or
+  `packed-refs`. No subprocess runs. The result is cached against the stat of
+  every file consulted, so a repeat read costs a few `stat` calls. An
+  identity that cannot be read is `null`.
+- **`null` never means changed.** A daemon whose starting identity is `null`
+  never restarts for code reasons, and a `null` read during the loop is
+  ignored. A daemon that cannot tell must not restart in a loop.
+- **Confirmed before acting.** Each daemon checks at most every 30 seconds and
+  acts only when two consecutive reads agree on the same new identity, so it
+  does not hand over to an update that is still being written.
+- **Each daemon records what it loaded.** The relay's pid file, the semantic
+  status record, and the supervisor status record carry
+  `code: { id, root }`, where `root` is the package root the identity
+  describes.
+- **Exit and hand over.** On a confirmed change the daemon writes one
+  lifecycle record ("code changed (old -> new); exiting for restart") and
+  leaves through its normal path. The semantic reader stops at the same point
+  an operator stop uses, after the current model call. The relay closes its
+  socket cleanly. Then each starts its replacement from the new code: the
+  relay through its own launcher, the semantic reader and the supervisor
+  through their start functions after releasing their leases. The relaunch
+  happens only in the detached daemon entrypoints, so a library caller that
+  runs the loop in process only sees it return with
+  `exit_reason: "code_changed"`.
+- **Launchers replace a stale daemon.** `ensureRelayDaemon` (run by the
+  session-start and stop hooks), `ensureSemanticServiceRunning`, and
+  `ensureSupervisorRunning` (run by `web up` and by workflow admission)
+  compare a live local daemon's recorded identity with the current one and
+  replace it when they differ. A record with no identity predates this
+  change, so it is replaced once; its replacement records one. A record from
+  another package root is left alone, so two installations that share a
+  project do not take turns replacing each other's daemon. The relay
+  replacement takes over the pid file and the old daemon exits as
+  superseded. The semantic replacement signals the old daemon without the
+  durable stop request, because that request also means "paused by the
+  operator". The supervisor replacement uses its durable stop request.
+- **Operator stops win.** A daemon stopped by its stop command never
+  relaunches itself, whatever the code did.
+
+## Alternatives
+
+- **A `git rev-parse HEAD` subprocess per check.** Correct, but it starts a
+  process every tick in every daemon. On Windows each spawn is costly and is
+  one more chance to open a console window.
+- **Watch the source files.** A recursive watch over the package is
+  expensive, platform-dependent, and fires on every edit in a development
+  checkout, where restarting on each save is not wanted.
+- **Compare file modification times of the loaded modules.** It catches
+  uncommitted edits too, but it needs the module list, costs a `stat` per
+  file, and restarts on edits nobody meant to ship. The version and commit
+  are what a pull or an upgrade changes.
+- **Only report it.** Status already said "restart needed" for two of these
+  services, and the problem still needed a person to notice and act.
+- **Exit and rely on the launchers alone.** That works for the relay, whose
+  launcher runs at every agent turn. The semantic reader and the supervisor
+  are started when the dashboard starts, so they would stay down until it was
+  restarted. They relaunch themselves instead.
+
+## Consequences
+
+- A pull or an upgrade reaches the running relay, semantic reader, and
+  supervisor within about a minute, or at the next launcher call.
+- Uncommitted edits in a development checkout do not restart daemons. Restart
+  them with their stop and start commands while iterating.
+- The governor service is not covered. It is started only by an explicit
+  `governor service start` and has no automatic restart path, so exiting on a
+  code change would leave its goals unattended. Its status keeps reporting
+  `restart_needed` for the operator.
+- The relaunch runs the old process's start function, which builds the new
+  daemon's command line. A future change to an internal daemon entrypoint's
+  arguments must stay readable by the previous release's launcher, or the
+  first relaunch after that upgrade fails. The failure is logged, and the
+  next launcher call starts the daemon.
+- A semantic reader on a POSIX host that is inside a long model call can take
+  longer than the launcher's ten-second wait to stop. The launcher then
+  reports it as still running. The reader relaunches itself when it exits,
+  except for a reader from before this change, which waits for the next
+  launcher call.

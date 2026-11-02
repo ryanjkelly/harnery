@@ -15,6 +15,14 @@ import {
   serviceLeaseOwner,
   serviceStartRefusal,
 } from "../agents/state/service-process.ts";
+import {
+  type CodeChangeWatch,
+  type CodeIdentityRecord,
+  codeChangeMessage,
+  codeIdentityReplacementNeeded,
+  currentCodeIdentity,
+  watchCodeIdentity,
+} from "../code-identity.ts";
 import { resolveBinName } from "../config.ts";
 import { pressureHistoryFromSupervisor } from "../diagnostics/advice.ts";
 import { assessPressure } from "../diagnostics/pressure.ts";
@@ -77,11 +85,29 @@ export interface RunSupervisorInput {
   maxCycles?: number;
   now?: () => Date;
   wait?: (milliseconds: number) => Promise<void>;
+  /** Detects a change to the installed code; the default checks every 30 s. */
+  codeWatch?: CodeChangeWatch;
+  /**
+   * Starts the replacement after a code change, once this daemon has released
+   * its lease. The detached daemon entrypoint passes the real launcher; left
+   * out, the daemon only exits.
+   */
+  relaunch?: () => Promise<unknown>;
 }
 
 export type EnsureSupervisorResult =
-  | { state: "running" | "started"; status: SupervisorStatus }
+  | { state: "running" | "started" | "replaced"; status: SupervisorStatus }
   | { state: "unavailable"; status: SupervisorStatus; error: string };
+
+export interface EnsureSupervisorDependencies {
+  readStatus: (coordRoot: string) => SupervisorStatus;
+  start: (coordRoot: string) => Promise<SupervisorStatus>;
+  currentCode: () => CodeIdentityRecord;
+  /** Stop a stale daemon for replacement; resolves to whether it stopped. */
+  stopForReplacement: (coordRoot: string) => Promise<boolean>;
+}
+
+const REPLACEMENT_STOP_TIMEOUT_MS = 10_000;
 
 export async function spawnSupervisor(
   coordRootRaw: string,
@@ -143,19 +169,65 @@ export async function spawnSupervisor(
   throw new Error(`local supervisor failed to start; inspect ${paths.service}`);
 }
 
-export async function ensureSupervisorRunning(coordRoot: string): Promise<EnsureSupervisorResult> {
-  const status = readSupervisorStatus(coordRoot);
-  if (status.running) return { state: "running", status };
+/**
+ * Start the supervisor unless one is running. A running local supervisor that
+ * loaded older code than this installation is stopped through its durable
+ * stop request and started again from the new code (ADR 0232).
+ */
+export async function ensureSupervisorRunning(
+  coordRoot: string,
+  overrides: Partial<EnsureSupervisorDependencies> = {},
+): Promise<EnsureSupervisorResult> {
+  const dependencies: EnsureSupervisorDependencies = {
+    readStatus: (root) => readSupervisorStatus(root),
+    start: (root) => spawnSupervisor(root),
+    currentCode: currentCodeIdentity,
+    stopForReplacement: stopSupervisorForReplacement,
+    ...overrides,
+  };
+  const status = dependencies.readStatus(coordRoot);
+  let replacing = false;
+  if (status.running) {
+    const local = status.record?.host === hostname();
+    if (!local || !codeIdentityReplacementNeeded(status.record?.code, dependencies.currentCode())) {
+      return { state: "running", status };
+    }
+    if (!(await dependencies.stopForReplacement(coordRoot))) {
+      return { state: "running", status: dependencies.readStatus(coordRoot) };
+    }
+    replacing = true;
+  }
   try {
-    const started = await spawnSupervisor(coordRoot);
-    return { state: "started", status: started };
+    const started = await dependencies.start(coordRoot);
+    return { state: replacing ? "replaced" : "started", status: started };
   } catch (error) {
     return {
       state: "unavailable",
-      status: readSupervisorStatus(coordRoot),
+      status: dependencies.readStatus(coordRoot),
       error: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+async function stopSupervisorForReplacement(coordRoot: string): Promise<boolean> {
+  requestSupervisorStop(coordRoot);
+  const deadline = Date.now() + REPLACEMENT_STOP_TIMEOUT_MS;
+  while (readSupervisorStatus(coordRoot).liveness !== "stopped" && Date.now() < deadline)
+    await delay(100);
+  return readSupervisorStatus(coordRoot).liveness === "stopped";
+}
+
+/**
+ * The relaunch the detached daemon entrypoint uses after a code change: start
+ * a supervisor from the newly installed code with the same settings, unless
+ * something else already started one.
+ */
+export async function relaunchSupervisor(
+  coordRoot: string,
+  options: { intervalMs?: number; idleExitMs?: number; keepAlive?: boolean } = {},
+): Promise<void> {
+  if (readSupervisorStatus(coordRoot).liveness !== "stopped") return;
+  await spawnSupervisor(coordRoot, options);
 }
 
 export type SupervisorStopResult = SupervisorStatus & ServiceStopFields;
@@ -189,6 +261,20 @@ export async function runSupervisor(
   const wait = input.wait ?? delay;
   const lease = acquireServiceLease(paths.lease, startRefusal);
   rmSync(paths.stop, { force: true });
+  const codeWatch = input.codeWatch ?? watchCodeIdentity();
+  let codeChanged = false;
+  const codeChangeConfirmed = (): boolean => {
+    if (codeChanged) return true;
+    const change = codeWatch.poll();
+    if (!change) return false;
+    codeChanged = true;
+    log(coordRoot, "supervisor.code_changed", {
+      message: codeChangeMessage(change),
+      from_code: change.from,
+      to_code: change.to,
+    });
+    return true;
+  };
   const startedAt = now().toISOString();
   const startToken = processStartToken(process.pid);
   const status: SupervisorServiceStatusRecord = {
@@ -205,6 +291,7 @@ export async function runSupervisor(
     keep_alive: keepAlive,
     idle_exit_ms: idleExitMs,
     cycle_count: 0,
+    code: codeWatch.initial,
   };
   let stopping = false;
   let previousResource: ResourceSamplerState | undefined;
@@ -247,7 +334,7 @@ export async function runSupervisor(
     keep_alive: keepAlive,
   });
   try {
-    while (!stopping && !existsSync(paths.stop)) {
+    while (!stopping && !existsSync(paths.stop) && !codeChangeConfirmed()) {
       const cycleStarted = performance.now();
       try {
         const cycleNow = now();
@@ -436,13 +523,25 @@ export async function runSupervisor(
     status.state = "stopped";
     status.stopped_at = now().toISOString();
     status.idle_since = undefined;
+    // A stop request (durable file or signal) is someone else's decision and
+    // never relaunches; a launcher that replaces a stale supervisor starts the
+    // new one itself.
+    const relaunching = codeChanged && !stopping && !existsSync(paths.stop);
+    if (relaunching) status.exit_reason = "code_changed";
     writeStatus();
-    log(coordRoot, "supervisor.stopped", { cycle_count: status.cycle_count });
-    try {
-      await closeProcessLoggers();
-    } finally {
-      lease.release();
+    log(coordRoot, "supervisor.stopped", {
+      cycle_count: status.cycle_count,
+      ...(relaunching ? { exit_reason: "code_changed" } : {}),
+    });
+    lease.release();
+    if (relaunching && input.relaunch) {
+      try {
+        await input.relaunch();
+      } catch (error) {
+        log(coordRoot, "supervisor.relaunch_error", {}, error);
+      }
     }
+    await closeProcessLoggers();
   }
   return status;
 }

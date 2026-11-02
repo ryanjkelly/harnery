@@ -2,6 +2,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { hostname } from "node:os";
 import { resolve } from "node:path";
 
+import type { CodeIdentityRecord } from "../code-identity.ts";
 import type { SemanticHarness } from "./contract.ts";
 import { SEMANTIC_READER_ROUTES } from "./routes.ts";
 import {
@@ -41,6 +42,10 @@ export interface SemanticServiceStatusRecord {
   last_pass_at?: string;
   last_error_code?: SemanticServiceErrorCode;
   stopped_at?: string;
+  /** The code this daemon loaded; absent on daemons that predate the field. */
+  code?: CodeIdentityRecord;
+  /** Why the daemon left its loop, when it was not an operator stop. */
+  exit_reason?: "code_changed";
 }
 
 export interface SemanticServiceStatus {

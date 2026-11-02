@@ -20,6 +20,14 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { coordEnv } from "../../lib/env.ts";
 import {
+  type CodeChangeWatch,
+  type CodeIdentityRecord,
+  codeChangeMessage,
+  codeIdentityReplacementNeeded,
+  currentCodeIdentity,
+  watchCodeIdentity,
+} from "../code-identity.ts";
+import {
   type ReadLedgerV3SinceResult,
   readEventV3ControlState,
   readLedgerV3Since,
@@ -115,11 +123,20 @@ export interface RunSemanticServiceDaemonInput {
     shouldStop: () => boolean;
   }) => Promise<SemanticOnceReport>;
   waitForWake?: (milliseconds: number) => Promise<void>;
+  /** Detects a change to the installed code; the default checks every 30 s. */
+  codeWatch?: CodeChangeWatch;
+  /**
+   * Starts the replacement after a code change, once this daemon has released
+   * its lease. The detached daemon entrypoint passes the real launcher; left
+   * out, the daemon only exits.
+   */
+  relaunch?: () => Promise<unknown>;
 }
 
 export type EnsureSemanticServiceState =
   | "running"
   | "started"
+  | "replaced"
   | "paused"
   | "inactive"
   | "unavailable";
@@ -135,7 +152,12 @@ export interface EnsureSemanticServiceDependencies {
   start: (coordRoot: string) => Promise<SemanticServiceStatus>;
   isPaused: (coordRoot: string) => boolean;
   isActive: (coordRoot: string) => boolean;
+  currentCode: () => CodeIdentityRecord;
+  /** Stop a stale daemon for replacement; resolves to whether it stopped. */
+  stopForReplacement: (coordRoot: string) => Promise<boolean>;
 }
+
+const REPLACEMENT_STOP_TIMEOUT_MS = 10_000;
 
 export async function spawnSemanticService(
   coordRootRaw: string,
@@ -198,7 +220,8 @@ export async function spawnSemanticService(
  *
  * Dashboard hosts call this before launching their web process. A failed
  * semantic launch is reported as data instead of throwing so the read-only
- * dashboard remains available.
+ * dashboard remains available. A live daemon on this host that loaded older
+ * code than this installation is stopped and started again (ADR 0232).
  */
 export async function ensureSemanticServiceRunning(
   coordRootRaw: string,
@@ -210,21 +233,73 @@ export async function ensureSemanticServiceRunning(
     start: spawnSemanticService,
     isPaused: (root) => existsSync(semanticPaths(root).stop),
     isActive: (root) => readEventV3ControlState(root).state === "active",
+    currentCode: currentCodeIdentity,
+    stopForReplacement: stopSemanticServiceForReplacement,
     ...overrides,
   };
   const status = dependencies.readStatus(coordRoot);
-  if (status.running) return { state: "running", status };
-  if (dependencies.isPaused(coordRoot)) return { state: "paused", status };
+  let replacing = false;
+  if (status.running) {
+    const local = status.record?.host === hostname();
+    if (!local || !codeIdentityReplacementNeeded(status.record?.code, dependencies.currentCode())) {
+      return { state: "running", status };
+    }
+    // A daemon still inside a model call keeps it; it relaunches itself when
+    // it exits, so a slow stop is reported as still running.
+    if (!(await dependencies.stopForReplacement(coordRoot))) {
+      return { state: "running", status: dependencies.readStatus(coordRoot) };
+    }
+    replacing = true;
+  } else if (dependencies.isPaused(coordRoot)) return { state: "paused", status };
   if (!dependencies.isActive(coordRoot)) return { state: "inactive", status };
   try {
-    return { state: "started", status: await dependencies.start(coordRoot) };
+    return {
+      state: replacing ? "replaced" : "started",
+      status: await dependencies.start(coordRoot),
+    };
   } catch (error) {
+    const after = dependencies.readStatus(coordRoot);
+    // The stopped daemon relaunched itself first; that is the replacement.
+    if (replacing && after.running) return { state: "replaced", status: after };
     return {
       state: "unavailable",
-      status: dependencies.readStatus(coordRoot),
+      status: after,
       error: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+/**
+ * Signal a stale local daemon and wait briefly for it to go. This writes no
+ * durable stop request: that file is also the operator's pause, and the
+ * replacement must not read as paused.
+ */
+async function stopSemanticServiceForReplacement(coordRootRaw: string): Promise<boolean> {
+  const coordRoot = resolve(coordRootRaw);
+  const status = readSemanticServiceStatus(coordRoot);
+  if (!status.running) return true;
+  if (status.record?.host !== hostname()) return false;
+  try {
+    process.kill(status.record.pid, "SIGTERM");
+  } catch {
+    // An exited process is what the wait below looks for.
+  }
+  const deadline = Date.now() + REPLACEMENT_STOP_TIMEOUT_MS;
+  while (readSemanticServiceStatus(coordRoot).running && Date.now() < deadline) await delay(100);
+  return !readSemanticServiceStatus(coordRoot).running;
+}
+
+/**
+ * The relaunch the detached daemon entrypoint uses after a code change:
+ * start a daemon from the newly installed code with the same call ceiling,
+ * unless something else already started one.
+ */
+export async function relaunchSemanticService(
+  coordRoot: string,
+  options: { callsPerHour?: number } = {},
+): Promise<void> {
+  if (readSemanticServiceStatus(coordRoot).running) return;
+  await spawnSemanticService(coordRoot, options);
 }
 
 export function requestSemanticServiceStop(coordRootRaw: string): SemanticServiceStatus {
@@ -270,6 +345,21 @@ export async function runSemanticServiceDaemon(
     ),
   );
   const readSince = input.readSince ?? readLedgerV3Since;
+  const codeWatch = input.codeWatch ?? watchCodeIdentity();
+  let codeChanged = false;
+  const codeChangeConfirmed = (): boolean => {
+    if (codeChanged) return true;
+    const change = codeWatch.poll();
+    if (!change) return false;
+    codeChanged = true;
+    appendSemanticServiceDiagnostic(coordRoot, {
+      event: "code_changed",
+      message: codeChangeMessage(change),
+      from_code: change.from,
+      to_code: change.to,
+    });
+    return true;
+  };
   const runOnce =
     input.runOnce ??
     (async (options) =>
@@ -294,6 +384,7 @@ export async function runSemanticServiceDaemon(
     model_calls: 0,
     cache_hits: 0,
     process_usage: emptySemanticUsageAggregate(),
+    code: codeWatch.initial,
   };
   let stopRequested = false;
   let dirtySince: number | undefined;
@@ -325,7 +416,7 @@ export async function runSemanticServiceDaemon(
     }
   }, heartbeatIntervalMs);
   try {
-    while (!stopRequested && !existsSync(paths.stop)) {
+    while (!stopRequested && !existsSync(paths.stop) && !codeChangeConfirmed()) {
       const sweepAt = now();
       status.sweep_count += 1;
       let sawWork = false;
@@ -363,7 +454,9 @@ export async function runSemanticServiceDaemon(
             coordRoot,
             ...(input.callsPerHour !== undefined ? { callsPerHour: input.callsPerHour } : {}),
             debounceMs,
-            shouldStop: () => stopRequested || existsSync(paths.stop),
+            // A code change ends the pass after the current model call, the
+            // same graceful point an operator stop uses.
+            shouldStop: () => stopRequested || existsSync(paths.stop) || codeChangeConfirmed(),
           });
           status.pass_count += 1;
           sawWork = true;
@@ -438,6 +531,12 @@ export async function runSemanticServiceDaemon(
     process.off("SIGTERM", requestStop);
     status.state = "stopped";
     status.stopped_at = now().toISOString();
+    // An operator stop (the durable request) never relaunches. Otherwise the
+    // daemon relaunches when it saw the code change itself, or when a
+    // launcher stopped it to replace it with newer code.
+    const relaunching =
+      !existsSync(paths.stop) && (codeChanged || (stopRequested && codeWatch.checkNow() !== null));
+    if (relaunching) status.exit_reason = "code_changed";
     writeStatus();
     appendSemanticServiceDiagnostic(coordRoot, {
       event: "service_stopped",
@@ -445,12 +544,20 @@ export async function runSemanticServiceDaemon(
       passes: status.pass_count,
       model_calls: status.model_calls,
       usage: status.process_usage,
+      ...(relaunching ? { exit_reason: "code_changed" } : {}),
     });
-    try {
-      await closeProcessLoggers();
-    } finally {
-      release();
+    release();
+    if (relaunching && input.relaunch) {
+      try {
+        await input.relaunch();
+      } catch (error) {
+        appendSemanticServiceDiagnostic(coordRoot, {
+          event: "relaunch_error",
+          message: error instanceof Error ? error.message.slice(0, 300) : String(error),
+        });
+      }
     }
+    await closeProcessLoggers();
   }
   return status;
 }

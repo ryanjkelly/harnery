@@ -6,7 +6,12 @@ import { join } from "node:path";
 import { startRelayServer } from "../../commands/relay.ts";
 import { closeProcessLoggers } from "../storage/logger.ts";
 import { readRemoteMachines } from "./index.ts";
-import { appendPresenceRelayDiagnostic, relayDaemonStatus } from "./relay-client.ts";
+import {
+  appendPresenceRelayDiagnostic,
+  ensureRelayDaemon,
+  relayDaemonStatus,
+  relayTickDecision,
+} from "./relay-client.ts";
 import { computeSenderId, deriveRoomCredentials, encryptPayload } from "./relay-protocol.ts";
 
 /**
@@ -208,5 +213,91 @@ describe("relayDaemonStatus", () => {
     expect(
       existsSync(join(rollbackRoot, ".harnery", "logs", "presence-relay", "active.jsonl")),
     ).toBeFalse();
+  });
+});
+
+describe("relay daemon code changes", () => {
+  const current = { id: "1.0.0@new", root: "/pkg" };
+
+  function writePid(record: Record<string, unknown>): void {
+    mkdirSync(join(root, ".harnery", "presence"), { recursive: true });
+    writeFileSync(join(root, ".harnery", "presence", "relay-daemon.json"), JSON.stringify(record));
+  }
+
+  function ensure(): { result: string; launches: number } {
+    let launches = 0;
+    const result = ensureRelayDaemon(root, {
+      relayUrl: () => "ws://relay.test",
+      isAlive: (pid) => pid === process.pid,
+      currentCode: () => current,
+      launch: () => {
+        launches += 1;
+        return true;
+      },
+    });
+    return { result, launches };
+  }
+
+  const pidRecord = () => ({
+    pid: process.pid,
+    url: "ws://relay.test",
+    started_at: new Date().toISOString(),
+  });
+
+  test("ensure replaces a live daemon that runs older code and leaves a current one", () => {
+    writePid({ ...pidRecord(), code: { id: "1.0.0@old", root: "/pkg" } });
+    expect(ensure()).toEqual({ result: "replaced", launches: 1 });
+    // A daemon from before identity recording is replaced once.
+    writePid(pidRecord());
+    expect(ensure()).toEqual({ result: "replaced", launches: 1 });
+    writePid({ ...pidRecord(), code: current });
+    expect(ensure()).toEqual({ result: "running", launches: 0 });
+    // An unknown recorded identity or another installation never restarts.
+    writePid({ ...pidRecord(), code: { id: null, root: "/pkg" } });
+    expect(ensure()).toEqual({ result: "running", launches: 0 });
+    writePid({ ...pidRecord(), code: { id: "1.0.0@old", root: "/elsewhere" } });
+    expect(ensure()).toEqual({ result: "running", launches: 0 });
+    // A dead daemon is simply started.
+    writePid({ ...pidRecord(), pid: 999_999, code: current });
+    expect(ensure()).toEqual({ result: "started", launches: 1 });
+  });
+
+  test("the lifecycle tick exits on a confirmed code change unless superseded", () => {
+    const record = { ...pidRecord(), code: { id: "1.0.0@old", root: "/pkg" } };
+    const change = { from: "1.0.0@old", to: "1.0.0@new" };
+    const nowMs = Date.now();
+    expect(
+      relayTickDecision({ record, pid: process.pid, codeChange: null, idleSince: null, nowMs }),
+    ).toBe("continue");
+    expect(
+      relayTickDecision({ record, pid: process.pid, codeChange: change, idleSince: null, nowMs }),
+    ).toBe("code_changed");
+    expect(
+      relayTickDecision({
+        record,
+        pid: process.pid + 1,
+        codeChange: change,
+        idleSince: null,
+        nowMs,
+      }),
+    ).toBe("superseded");
+    expect(
+      relayTickDecision({
+        record: null,
+        pid: process.pid,
+        codeChange: null,
+        idleSince: null,
+        nowMs,
+      }),
+    ).toBe("superseded");
+    expect(
+      relayTickDecision({
+        record,
+        pid: process.pid,
+        codeChange: null,
+        idleSince: nowMs - 10 * 60_000,
+        nowMs,
+      }),
+    ).toBe("idle_exit");
   });
 });

@@ -16,6 +16,8 @@
  *     merges them with the git-refs floor (freshest source per machine wins)
  *   - exits after ~5 minutes with no live local sessions (hooks restart it
  *     when sessions return), and exits if its pid file is superseded
+ *   - exits and relaunches itself when the installed Harnery code changes
+ *     (ADR 0232), so a fix pulled into the checkout reaches the running daemon
  *
  * Everything fails silent; the git-refs transport is always the floor.
  * Requires a global WebSocket (Bun, Node >= 21, Workers) — on older Nodes the
@@ -38,6 +40,15 @@ import { join } from "node:path";
 import { coordEnv } from "../../lib/env.ts";
 import { resolveMachineLabel } from "../../lib/machine.ts";
 import { harnCliEntry } from "../cli-entry.ts";
+import {
+  type CodeChangeWatch,
+  type CodeIdentityChange,
+  type CodeIdentityRecord,
+  codeChangeMessage,
+  codeIdentityReplacementNeeded,
+  currentCodeIdentity,
+  watchCodeIdentity,
+} from "../code-identity.ts";
 import { presenceRelayUrl } from "../config.ts";
 import { eventV3ActiveWatchPath } from "../events/v3/reader.ts";
 import { closeProcessLoggers, legacyLogFields, processLogger } from "../storage/logger.ts";
@@ -77,6 +88,8 @@ export interface RelayPidRecord {
   pid: number;
   url: string;
   started_at: string;
+  /** The code this daemon loaded; absent on daemons that predate the field. */
+  code?: CodeIdentityRecord;
 }
 
 export function readRelayPidRecord(coordRoot: string): RelayPidRecord | null {
@@ -113,22 +126,58 @@ function atomicWriteJson(path: string, value: unknown): void {
   renameSync(tmp, path);
 }
 
+export type EnsureRelayDaemonResult =
+  | "disabled"
+  | "running"
+  | "started"
+  | "replaced"
+  | "unavailable";
+
+export interface EnsureRelayDaemonDependencies {
+  relayUrl: (coordRoot: string) => string | null;
+  isAlive: (pid: number) => boolean;
+  currentCode: () => CodeIdentityRecord;
+  launch: (coordRoot: string) => boolean;
+}
+
 /**
  * Lazy-start the relay daemon for this repo if a relay is configured and no
- * live daemon already owns the pid file. Called from the hook path — must
- * return fast and never throw.
+ * live daemon already owns the pid file. A live daemon that runs older code
+ * than this installation is replaced: the new daemon takes over the pid file
+ * and the old one sees itself superseded on its next tick. Called from the
+ * hook path — must return fast and never throw.
  */
-export function ensureRelayDaemon(coordRoot: string): void {
+export function ensureRelayDaemon(
+  coordRoot: string,
+  overrides: Partial<EnsureRelayDaemonDependencies> = {},
+): EnsureRelayDaemonResult {
   try {
-    const url = presenceRelayUrl(coordRoot);
-    if (!url) return;
+    const deps: EnsureRelayDaemonDependencies = {
+      relayUrl: presenceRelayUrl,
+      isAlive: pidAlive,
+      currentCode: currentCodeIdentity,
+      launch: launchRelayDaemon,
+      ...overrides,
+    };
+    const url = deps.relayUrl(coordRoot);
+    if (!url) return "disabled";
     const rec = readRelayPidRecord(coordRoot);
-    if (rec && rec.url === url && pidAlive(rec.pid)) return;
+    const live = rec !== null && rec.url === url && deps.isAlive(rec.pid);
+    const stale = live && codeIdentityReplacementNeeded(rec.code, deps.currentCode());
+    if (live && !stale) return "running";
+    if (!deps.launch(coordRoot)) return "unavailable";
+    return stale ? "replaced" : "started";
+  } catch {
+    return "unavailable";
+  }
+}
 
+function launchRelayDaemon(coordRoot: string): boolean {
+  try {
     // The runtime itself runs the CLI entry, so the daemon starts on Windows
     // too (see cli-entry.ts).
     const entry = harnCliEntry();
-    if (!existsSync(entry)) return;
+    if (!existsSync(entry)) return false;
 
     mkdirSync(presenceDir(coordRoot), { recursive: true });
     const sharedLogs = coordEnv("SHARED_LOGS") !== "0";
@@ -148,13 +197,38 @@ export function ensureRelayDaemon(coordRoot: string): void {
     });
     if (log !== undefined) closeSync(log);
     child.unref();
+    return true;
   } catch {
-    /* best-effort */
+    return false;
   }
 }
 
+export type RelayTickDecision = "continue" | "superseded" | "code_changed" | "idle_exit";
+
+/**
+ * What the daemon's 60 s lifecycle tick does next. A superseded pid file wins
+ * (another daemon already took over), then a confirmed code change, then the
+ * idle exit.
+ */
+export function relayTickDecision(input: {
+  record: RelayPidRecord | null;
+  pid: number;
+  codeChange: CodeIdentityChange | null;
+  idleSince: number | null;
+  nowMs: number;
+}): RelayTickDecision {
+  if (!input.record || input.record.pid !== input.pid) return "superseded";
+  if (input.codeChange) return "code_changed";
+  if (input.idleSince !== null && input.nowMs - input.idleSince > IDLE_EXIT_MS) return "idle_exit";
+  return "continue";
+}
+
 /** Foreground daemon loop (spawned detached by ensureRelayDaemon). */
-export async function runRelayDaemon(coordRoot: string): Promise<number> {
+export async function runRelayDaemon(
+  coordRoot: string,
+  options: { codeWatch?: CodeChangeWatch } = {},
+): Promise<number> {
+  const codeWatch = options.codeWatch ?? watchCodeIdentity();
   const url = presenceRelayUrl(coordRoot);
   if (!url) {
     const message = "relay-daemon: no relay configured (presence.relay)";
@@ -191,6 +265,7 @@ export async function runRelayDaemon(coordRoot: string): Promise<number> {
     pid: process.pid,
     url,
     started_at: new Date().toISOString(),
+    code: codeWatch.initial,
   };
   atomicWriteJson(pidFilePath(coordRoot), myRecord);
 
@@ -334,9 +409,16 @@ export async function runRelayDaemon(coordRoot: string): Promise<number> {
   // Keepalive + lifecycle checks.
   const interval = setInterval(() => {
     void publishNow();
+    const codeChange = codeWatch.poll();
+    const decision = relayTickDecision({
+      record: readRelayPidRecord(coordRoot),
+      pid: process.pid,
+      codeChange,
+      idleSince,
+      nowMs: Date.now(),
+    });
     // Superseded by a newer daemon → exit quietly.
-    const rec = readRelayPidRecord(coordRoot);
-    if (!rec || rec.pid !== process.pid) {
+    if (decision === "superseded") {
       log("pid file superseded; exiting", "superseded");
       shuttingDown = true;
       clearInterval(interval);
@@ -348,8 +430,31 @@ export async function runRelayDaemon(coordRoot: string): Promise<number> {
       void closeProcessLoggers().finally(() => process.exit(0));
       return;
     }
+    // The installed code moved on → close cleanly, hand the pid file to a
+    // daemon started from the new code, and exit.
+    if (decision === "code_changed" && codeChange) {
+      log(codeChangeMessage(codeChange), "code_changed", "relay.lifecycle", {
+        from_code: codeChange.from,
+        to_code: codeChange.to,
+      });
+      shuttingDown = true;
+      clearInterval(interval);
+      try {
+        ws?.close(1000, "code changed");
+      } catch {
+        /* ignore */
+      }
+      try {
+        rmSync(pidFilePath(coordRoot), { force: true });
+      } catch {
+        /* ignore */
+      }
+      ensureRelayDaemon(coordRoot);
+      void closeProcessLoggers().finally(() => process.exit(0));
+      return;
+    }
     // Idle machine (no live sessions for a while) → exit; hooks restart us.
-    if (idleSince && Date.now() - idleSince > IDLE_EXIT_MS) {
+    if (decision === "idle_exit") {
       log("no live sessions; idle exit", "idle_exit");
       shuttingDown = true;
       clearInterval(interval);

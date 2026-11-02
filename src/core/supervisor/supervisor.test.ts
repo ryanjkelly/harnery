@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
+import type { CodeChangeWatch } from "../code-identity.ts";
 import { installedHarneryBuild } from "../events/v3/runtime-build.ts";
 import type { ResourceSnapshot } from "../resources/contract.ts";
 import { resourcePaths } from "../resources/storage.ts";
@@ -20,7 +21,12 @@ import { updateSupervisorFindings } from "./findings.ts";
 import { updateSupervisorHistory } from "./history.ts";
 import { readSupervisorHookHealth } from "./hook-health-storage.ts";
 import { collectHookHealth, exactHookEntrypoint } from "./hooks.ts";
-import { requestSupervisorStop, runSupervisor, spawnSupervisor } from "./service.ts";
+import {
+  ensureSupervisorRunning,
+  requestSupervisorStop,
+  runSupervisor,
+  spawnSupervisor,
+} from "./service.ts";
 import {
   collectServiceHealth,
   registerSupervisorConsumer,
@@ -1009,3 +1015,119 @@ function activityAt(
     ],
   };
 }
+
+describe("supervisor code changes", () => {
+  function changingWatch(confirmOnPoll: number): CodeChangeWatch {
+    let polls = 0;
+    const change = { from: "1.0.0@old", to: "1.0.0@new" };
+    return {
+      initial: { id: "1.0.0@old", root: "/pkg" },
+      poll() {
+        polls += 1;
+        return polls >= confirmOnPoll ? change : null;
+      },
+      checkNow: () => change,
+    };
+  }
+
+  test("exits on a confirmed code change, releases its lease, then relaunches", async () => {
+    const root = mkdtempSync(join(tmpdir(), "harn-supervisor-code-"));
+    roots.push(root);
+    let nowMs = Date.parse("2026-08-30T12:00:00.000Z");
+    const leaseHeld: boolean[] = [];
+    const result = await runSupervisor({
+      coordRoot: root,
+      intervalMs: 500,
+      keepAlive: true,
+      maxCycles: 20,
+      now: () => new Date(nowMs),
+      wait: async (milliseconds) => {
+        nowMs += milliseconds;
+      },
+      codeWatch: changingWatch(2),
+      async relaunch() {
+        leaseHeld.push(existsSync(supervisorPaths(root).lease));
+      },
+    });
+    expect(result.state).toBe("stopped");
+    expect(result.exit_reason).toBe("code_changed");
+    expect(result.cycle_count).toBe(1);
+    expect(result.code).toEqual({ id: "1.0.0@old", root: "/pkg" });
+    expect(leaseHeld).toEqual([false]);
+    expect(readSupervisorStatus(root).liveness).toBe("stopped");
+  });
+
+  test("a stop request never relaunches", async () => {
+    const root = mkdtempSync(join(tmpdir(), "harn-supervisor-code-stop-"));
+    roots.push(root);
+    let relaunched = false;
+    const result = await runSupervisor({
+      coordRoot: root,
+      intervalMs: 500,
+      keepAlive: true,
+      maxCycles: 20,
+      wait: async () => {
+        writePrivateJsonAtomic(supervisorPaths(root).stop, { requested_at: "x" });
+      },
+      codeWatch: changingWatch(Number.POSITIVE_INFINITY),
+      async relaunch() {
+        relaunched = true;
+      },
+    });
+    expect(result.exit_reason).toBeUndefined();
+    expect(relaunched).toBe(false);
+  });
+
+  test("ensure replaces a running local supervisor on older code", async () => {
+    const current = { id: "1.0.0@new", root: "/pkg" };
+    const running = (code?: { id: string | null; root: string }, host = hostname()) =>
+      ({
+        running: true,
+        stale: false,
+        generation: "same",
+        liveness: "running",
+        running_build: null,
+        installed_build: { version: "1.0.0", revision: "x" },
+        restart_needed: false,
+        build_status: "current",
+        record: { ...statusRecord(), host, ...(code ? { code } : {}) },
+        status_path: "/s",
+        snapshot_path: "/p",
+      }) as const;
+    const ensure = async (
+      status: ReturnType<typeof running>,
+      stops = true,
+    ): Promise<{ state: string; stops: number; starts: number }> => {
+      let stopCalls = 0;
+      let starts = 0;
+      const result = await ensureSupervisorRunning("/fixture/replace", {
+        readStatus: () => status,
+        start: async () => {
+          starts += 1;
+          return status;
+        },
+        currentCode: () => current,
+        stopForReplacement: async () => {
+          stopCalls += 1;
+          return stops;
+        },
+      });
+      return { state: result.state, stops: stopCalls, starts };
+    };
+    expect(await ensure(running({ id: "1.0.0@old", root: "/pkg" }))).toEqual({
+      state: "replaced",
+      stops: 1,
+      starts: 1,
+    });
+    expect(await ensure(running())).toEqual({ state: "replaced", stops: 1, starts: 1 });
+    expect(await ensure(running(current))).toEqual({ state: "running", stops: 0, starts: 0 });
+    expect(await ensure(running({ id: "1.0.0@old", root: "/pkg" }), false)).toEqual({
+      state: "running",
+      stops: 1,
+      starts: 0,
+    });
+    expect(
+      await ensure(running({ id: "1.0.0@old", root: "/pkg" }, `${hostname()}-elsewhere`)),
+    ).toEqual({ state: "running", stops: 0, starts: 0 });
+  });
+});

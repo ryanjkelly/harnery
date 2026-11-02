@@ -3,6 +3,7 @@ import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
 import { readSupervisorHookHealth } from "../core/supervisor/hook-health-storage.ts";
 import {
+  relaunchSupervisor,
   requestSupervisorStop,
   runSupervisor,
   spawnSupervisor,
@@ -115,12 +116,18 @@ export function registerSupervisorCommand(
         keepAlive?: boolean;
       }) => {
         try {
+          const root = resolve(options.root ?? coordRoot(context));
+          const settings = {
+            intervalMs: options.intervalMs,
+            idleExitMs: options.idleExitMs,
+            keepAlive: options.keepAlive,
+          };
           emit.data(
             await runSupervisor({
-              coordRoot: resolve(options.root ?? coordRoot(context)),
-              intervalMs: options.intervalMs,
-              idleExitMs: options.idleExitMs,
-              keepAlive: options.keepAlive,
+              coordRoot: root,
+              ...settings,
+              // After a code change, hand over to a supervisor running the new code.
+              relaunch: () => relaunchSupervisor(root, settings),
             }),
           );
         } catch (error) {
