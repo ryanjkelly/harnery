@@ -20,6 +20,17 @@ function sh(args: string[], cwd: string): void {
   if (r.status !== 0) throw new Error(`${args.join(" ")}: ${r.stderr}`);
 }
 
+/**
+ * The shell Git runs hooks with. On Windows that is Git's own `sh.exe`, which
+ * is often not on PATH; it sits three levels above `git --exec-path`.
+ */
+function hookShell(): string {
+  if (process.platform !== "win32") return "sh";
+  const execPath = spawnSync("git", ["--exec-path"], { encoding: "utf8" }).stdout.trim();
+  const gitSh = join(execPath, "..", "..", "..", "bin", "sh.exe");
+  return existsSync(gitSh) ? gitSh : "sh";
+}
+
 beforeEach(() => {
   repo = join(
     tmpdir(),
@@ -173,7 +184,7 @@ describe("renderGitHookBody", () => {
     const script = join(project, "hook.sh");
     writeFileSync(script, `#!/bin/sh\n${renderGitHookBody("post-commit")}\n`);
     const out = join(repo, "hook-out.txt");
-    const r = spawnSync("sh", [script], {
+    const r = spawnSync(hookShell(), [script], {
       cwd: project,
       env: { ...process.env, HOOK_OUT: out },
       encoding: "utf8",
