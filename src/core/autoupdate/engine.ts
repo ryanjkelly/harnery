@@ -64,6 +64,13 @@ import {
 
 /** Set on the detached runner and every step so nested CLI calls never tick. */
 export const AUTOUPDATE_CHILD_ENV = "HARNERY_AUTOUPDATE_CHILD";
+/**
+ * `HARNERY_AUTOUPDATE=off` (or `0`) turns self-update off for one process
+ * tree. A tool that runs host commands inside its own scratch copy of a
+ * project, such as a pre-commit check that builds a snapshot repository, sets
+ * it so the copy never runs the project's update steps.
+ */
+export const AUTOUPDATE_OFF_ENV = "HARNERY_AUTOUPDATE";
 
 const MINUTE_MS = 60_000;
 const DAY_MS = AUTOUPDATE_DEFAULTS.dailyHours * 60 * MINUTE_MS;
@@ -279,6 +286,9 @@ export function autoUpdateTick(coordRoot: string, deps: AutoUpdateDeps = {}): Ti
   try {
     const d = resolveDeps(deps);
     if (isChild(d.env)) return { action: "disabled", detail: "inside an auto-update run" };
+    const off = d.env[AUTOUPDATE_OFF_ENV]?.trim().toLowerCase();
+    if (off === "off" || off === "0")
+      return { action: "disabled", detail: `${AUTOUPDATE_OFF_ENV}=${off}` };
     if (insideGitHook(d.env)) return { action: "disabled", detail: "inside a Git hook" };
     // Only a Git checkout has anything to update. A hook's exported snapshot of
     // the project (no .git) carries the config but must never run the steps.

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   AUTOUPDATE_CHILD_ENV,
+  AUTOUPDATE_OFF_ENV,
   type AutoUpdateDeps,
   autoUpdateTick,
   checkForUpdate,
@@ -83,6 +84,7 @@ function cfg(overrides: Partial<AutoUpdateConfig> = {}): AutoUpdateConfig {
 /** The test process's env without the variables Git sets for hooks, so a tick here is not "inside a hook". */
 function outsideHookEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env, [AUTOUPDATE_CHILD_ENV]: "" };
+  delete env[AUTOUPDATE_OFF_ENV];
   for (const name of GIT_HOOK_ENV) delete env[name];
   return env;
 }
@@ -103,6 +105,13 @@ describe("autoUpdateTick", () => {
     );
     expect(autoUpdateTick(work, deps(null)).action).toBe("disabled");
     expect(autoUpdateTick(work, deps(cfg({ enabled: false }))).action).toBe("disabled");
+  });
+
+  test("HARNERY_AUTOUPDATE=off or 0 turns it off for the process tree", () => {
+    for (const value of ["off", "0", "OFF"])
+      expect(
+        autoUpdateTick(work, deps(cfg(), { env: { [AUTOUPDATE_OFF_ENV]: value } })).action,
+      ).toBe("disabled");
   });
 
   test("disabled outside a Git checkout, such as a hook's exported snapshot", () => {

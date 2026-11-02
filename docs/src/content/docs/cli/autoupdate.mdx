@@ -58,6 +58,9 @@ that commit or push.
 A project root with no `.git` never triggers one, so a hook that exports a
 snapshot of the project to check it (and strips Git's variables) cannot start
 the update steps inside that copy.
+A tool that runs host commands inside its own scratch Git repository, which
+neither rule can recognize, sets `HARNERY_AUTOUPDATE=off` (or `0`) in their
+environment to turn self-update off for that process tree.
 
 - A line on stdout or stderr that starts with `harnery-notice:` becomes a
   notice for the agents in this checkout. Each agent session sees it once, on
