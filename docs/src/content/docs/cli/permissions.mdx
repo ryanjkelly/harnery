@@ -1,0 +1,52 @@
+---
+title: harn permissions
+description: See what the coding agents on this computer may do, from each tool's own settings.
+sidebar:
+  order: 48
+---
+
+```bash
+harn permissions [--json] [--no-codex]
+```
+
+Each coding agent keeps its permissions in its own place, in its own words.
+`permissions` reads them all and reports what the agents on this computer
+may do, for the current project. It never changes a setting.
+
+## What it reads
+
+- **Claude Code:** the permission mode and the allow, ask and deny rules
+  from the user settings (`CLAUDE_CONFIG_DIR`, or `~/.claude`), the
+  project's shared `.claude/settings.json`, its local
+  `.claude/settings.local.json`, and any managed policy file. Rules from all
+  files apply together; the mode comes from the most specific file that sets
+  one. A mode chosen when Claude Code was started (a launch flag, or the
+  desktop app's own setting) is not in any file and wins over these.
+- **Codex:** its effective approval policy, sandbox, whether it trusts this
+  project, and the trust state of each of the project's hooks. Codex itself
+  answers, through `codex app-server` (`config/read` and `hooks/list`), so
+  the report matches what Codex enforces. That takes a few seconds;
+  `--no-codex` skips it.
+- **Cursor:** the CLI's approval mode, sandbox, and allow and deny lists from
+  `~/.cursor/cli-config.json` and the project's `.cursor/cli.json`.
+- **Desktop control:** every live approval on this computer, for any agent
+  or project: who, for what, and until when. The mode and drivers are in
+  [`harn computer status`](/cli/computer/).
+
+Only permission fields are read back. Account details, environment variables
+and tokens in those files never appear in the report.
+
+## The dashboard page
+
+The dashboard's **Permissions** page (`/permissions`) shows the same report
+with the computer-use status, a one-line meaning for every value, and how to
+change each setting. Settings that let an agent act with no limit (no
+approvals, no sandbox) are marked.
+
+## Examples
+
+```bash
+harn permissions                 # plain summary
+harn permissions --json          # the full report
+harn permissions --no-codex      # skip asking Codex
+```

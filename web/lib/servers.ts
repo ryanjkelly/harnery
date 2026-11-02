@@ -3,38 +3,10 @@
  * dashboard and the CLI share one implementation.
  */
 
-import { spawn } from "node:child_process";
-import path from "node:path";
 import type { ServersReport } from "../../src/core/servers";
-import { coordRoot } from "./coord-reader";
+import { runHarn } from "./run-harn";
 
 export type { ServersReport, ServerView, UnregisteredListener } from "../../src/core/servers";
-
-interface HarnResult {
-  ok: boolean;
-  stdout: string;
-  stderr: string;
-}
-
-function runHarn(args: string[]): Promise<HarnResult> {
-  const root = coordRoot();
-  return new Promise((resolve) => {
-    const proc = spawn(path.join(root, "harnery", "bin", "harn"), args, {
-      cwd: root,
-      env: { ...process.env, HARNERY_COORD_ROOT_OVERRIDE: root },
-    });
-    let stdout = "";
-    let stderr = "";
-    proc.stdout.on("data", (c) => {
-      stdout += c.toString();
-    });
-    proc.stderr.on("data", (c) => {
-      stderr += c.toString();
-    });
-    proc.on("close", (code) => resolve({ ok: code === 0, stdout, stderr }));
-    proc.on("error", (err) => resolve({ ok: false, stdout, stderr: `${stderr}${err.message}` }));
-  });
-}
 
 export async function readServersReport(): Promise<{ report?: ServersReport; error?: string }> {
   const result = await runHarn(["servers", "list", "--json"]);

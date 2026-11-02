@@ -816,6 +816,16 @@ function harneryCommandBundles({
         (await import("./commands/servers.ts")).registerServersCommand(program, emit, context),
     ),
     lazy(
+      "permissions",
+      "Show what the coding agents on this computer may do: Claude Code, Codex and Cursor permission settings and live desktop-control approvals (read-only)",
+      async (program) =>
+        (await import("./commands/permissions.ts")).registerPermissionsCommand(
+          program,
+          emit,
+          context,
+        ),
+    ),
+    lazy(
       "docs",
       "Documentation tooling: freshness report, metadata, lint, sweep, index",
       async (program) =>
