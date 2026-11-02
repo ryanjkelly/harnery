@@ -105,6 +105,15 @@ describe("autoUpdateTick", () => {
     expect(autoUpdateTick(work, deps(cfg({ enabled: false }))).action).toBe("disabled");
   });
 
+  test("disabled outside a Git checkout, such as a hook's exported snapshot", () => {
+    const snapshot = join(base, "snapshot");
+    mkdirSync(snapshot, { recursive: true });
+    expect(autoUpdateTick(snapshot, deps(cfg()))).toEqual({
+      action: "disabled",
+      detail: "not a Git checkout",
+    });
+  });
+
   test("disabled inside a Git hook, so a commit never starts a pull", () => {
     for (const name of GIT_HOOK_ENV) {
       const result = autoUpdateTick(work, deps(cfg(), { env: { [name]: "/repo/.git/x" } }));

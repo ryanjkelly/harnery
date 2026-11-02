@@ -21,7 +21,7 @@ import {
   utimesSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, extname, resolve, win32 } from "node:path";
+import { dirname, extname, join, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readAutoUpdateConfig, resolveBinName } from "../config.ts";
 import { fingerprint } from "./fingerprint.ts";
@@ -280,6 +280,10 @@ export function autoUpdateTick(coordRoot: string, deps: AutoUpdateDeps = {}): Ti
     const d = resolveDeps(deps);
     if (isChild(d.env)) return { action: "disabled", detail: "inside an auto-update run" };
     if (insideGitHook(d.env)) return { action: "disabled", detail: "inside a Git hook" };
+    // Only a Git checkout has anything to update. A hook's exported snapshot of
+    // the project (no .git) carries the config but must never run the steps.
+    if (!existsSync(join(coordRoot, ".git")))
+      return { action: "disabled", detail: "not a Git checkout" };
     const cfg = d.readConfig(coordRoot);
     if (!cfg?.enabled) return { action: "disabled" };
     const now = d.now();
