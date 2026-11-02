@@ -675,7 +675,8 @@ describe("start-token parity between the two implementations", () => {
   });
 
   test("both read the same token for one live process, in either dialect", () => {
-    for (const probe of ["procfs", "ps"] as const) {
+    const probes = process.platform === "win32" ? ["windows"] : ["procfs", "ps"];
+    for (const probe of probes) {
       process.env.HARNERY_PID_PROBE = probe;
       const canonical = processStartToken(process.pid);
       if (canonical === null) continue; // no procfs on this machine

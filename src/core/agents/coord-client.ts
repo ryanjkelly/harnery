@@ -265,8 +265,32 @@ export function parsePidmapRowStartToken(row: string): string | undefined {
  * a test can hold this one against `processStartToken` and fail on drift.
  */
 export function pidStartToken(pid: number): string | null {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return null;
   const forced = process.env.HARNERY_PID_PROBE;
-  const useProcfs = forced === "procfs" || (forced !== "ps" && existsSync("/proc/self/stat"));
+  const forcedProbe =
+    forced === "procfs" || forced === "ps" || forced === "windows" ? forced : undefined;
+  // Windows has neither procfs nor `ps`; it reports the creation time in UTC
+  // ticks, which needs no locale pinning.
+  if (forcedProbe === "windows" || (!forcedProbe && process.platform === "win32")) {
+    try {
+      const out = spawnSync(
+        "powershell.exe",
+        [
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          `try { (Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks } catch { exit 1 }`,
+        ],
+        { encoding: "utf8", timeout: 4_000, windowsHide: true },
+      );
+      const ticks = out.stdout?.trim();
+      return out.status === 0 && ticks && /^\d+$/.test(ticks) ? `w${ticks}` : null;
+    } catch {
+      return null;
+    }
+  }
+  const useProcfs =
+    forcedProbe === "procfs" || (forcedProbe !== "ps" && existsSync("/proc/self/stat"));
   // One machine, one probe. Falling back to the other on a read failure would
   // answer in the wrong dialect and read as a recycled pid.
   if (useProcfs) {
