@@ -31,7 +31,11 @@ desktop is for a desktop program with no file or API route, a site that
 refuses the headless browser even when signed in, or work the person will
 continue in a window no link can hand them. Using the screen, changing
 something in an outside system, and sending a message are three separate
-approvals. An automation-controlled headed browser window is kept for what
+approvals. An agent app's own browser, a pane built into the app or the
+app's control of the person's Chrome, comes last, after every other route
+failed, and is never used for a sign-in. Asking for a result is not asking
+for a new tool: agents ask before writing an integration the repository
+would keep. An automation-controlled headed browser window is kept for what
 only Playwright provides, such as scripted batches with assertions, HAR
 capture, or viewport emulation. The full routing is in the `harn-computer`
 skill. The design is in

@@ -86,7 +86,7 @@ export function renderInstructionsBlock(
   // Opt-in surface: the default block stays byte-identical unless the project
   // enabled computer use and the skill is actually installed.
   const computerPointer = skills.computer
-    ? `\n\n**Desktop control.** This project enables \`${b} computer\` for driving native desktop apps and real browsers. Work invisibly first (APIs, CLIs, files, \`${b} fetch\`, headless \`${b} browse\`) and deliver results in the chat as an answer, a link or a picture; open a page in the person's browser only when they ask. Use the desktop for a desktop program with no file or API route, a site that refuses the headless browser, or work the person will continue in a window no link can hand them. The \`harn-computer\` skill has the routing, the approval step and the loop, and the desktop is one shared resource held by one agent at a time.`
+    ? `\n\n**Desktop control.** This project enables \`${b} computer\` for driving native desktop apps and real browsers. Work invisibly first (APIs, CLIs, files, \`${b} fetch\`, headless \`${b} browse\`) and deliver results in the chat as an answer, a link or a picture; open a page in the person's browser only when they ask ("show me" counts). Your agent app's own browser (a built-in pane, or its control of the person's Chrome) comes last, after every other route failed. Use the desktop for a desktop program with no file or API route, a site that refuses the headless browser, or work the person will continue in a window no link can hand them. The \`harn-computer\` skill has the routing, the approval step and the loop, and the desktop is one shared resource held by one agent at a time.`
     : "";
   // Render the journal categories from the canonical enum so this prose can
   // never drift from what `journal add` actually accepts (the "note, plan…" list
@@ -569,8 +569,18 @@ coming.
 5. The desktop (\`${b} computer\`) only for a desktop program with no file or
    API route, a site that refuses the headless browser even when signed in,
    or work the person will continue in a state no link can hand them.
-6. Nothing worked: stop, deliver what you found, and say plainly what could
+6. Your agent app's own browser, last: a browser pane built into the app,
+   or the app's connection that drives the person's Chrome. Use it only
+   after every route above failed, and say so in the chat first. Driving the
+   person's Chrome this way needs their agreement, like any use of their
+   running browser, and never serves a sign-in: a sign-in goes through
+   step 4.
+7. Nothing worked: stop, deliver what you found, and say plainly what could
    not be done. Never climb to a riskier tool on your own.
+
+A request for a result is not a request to build a tool. When no command or
+integration reaches the system the task needs, say so and ask before writing
+one; never commit or push a new one unasked.
 
 An automation-controlled window (\`${b} browse --headed\`,
 \`${b} browse --login --attached\`) is only for what Playwright alone gives you
@@ -582,7 +592,9 @@ viewport emulation, and never on an outside account.
 - An answer in plain words, or the headline plus a link to the full result.
 - A web page as a link, one that reproduces the state (search terms,
   filters) when the site allows. Open it in their browser only when they
-  ask to open or see it now.
+  ask to open or see it now; "show me" counts as asking. Open it with the
+  operating system's default-browser command, not a browser pane in your
+  app.
 - A state no link can reproduce as a picture of just that part, checked
   before sending, with a sentence saying what it shows. Some chat apps show
   a local picture only as a link (Claude Desktop's Code tab does; the Codex
