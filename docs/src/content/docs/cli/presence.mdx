@@ -1,12 +1,12 @@
 ---
 title: harn presence
-description: Mobile/office state for agents, plus cross-machine session presence over git refs (publish / fetch / peers).
+description: Mobile/office state for agents, plus cross-machine session presence over git refs and the relay (publish / fetch / peers / relay-status).
 sidebar:
   order: 15
 ---
 
 ```
-harn presence [get|set|clear|publish|fetch|peers] [options]
+harn presence [get|set|clear|publish|fetch|peers|mail|relay-status] [options]
 ```
 
 Two related surfaces share this command: **mobile/office state** (is the human
@@ -109,6 +109,7 @@ harn presence publish [--force]   # publish this machine's sessions now (synchro
 harn presence fetch [--force]     # pull peer machines' refs now
 harn presence peers [--json]      # sessions on other machines (refs + relay cache merged) + daemon status
 harn presence mail [--sync]       # cross-machine messages: outbox awaiting acknowledgement, counts
+harn presence relay-status [--json]  # diagnose the relay transport from local state (no network)
 harn presence relay-daemon        # run the relay client daemon in the foreground (hooks spawn it detached)
 ```
 
@@ -132,6 +133,34 @@ sessions. The daemon exits when the machine goes idle and reconnects with
 backoff; if the relay is unreachable, presence silently rides the git-refs
 floor. Self-hosting: [`harn relay serve`](/cli/relay/) or deploy
 `relay/worker/` to your own Cloudflare account.
+
+### Checking the relay
+
+`harn presence relay-status` answers "is the relay working on this machine?"
+from local files alone; it makes no network calls. It prints one JSON document
+(or a short summary on a terminal without `--json`) with:
+
+- `relay`: the configured relay URL, or `configured: false`.
+- `room`: the first 8 characters of the opaque room id, so two machines can
+  confirm they derived the same room. The room key is never shown.
+- `daemon`: the pid file (`.harnery/presence/relay-daemon.json`), whether that
+  process is alive, its start time and uptime, and whether its relay URL still
+  matches the config.
+- `log`: the latest connect, disconnect (with close code), idle exit, takeover
+  and error from the presence-relay log, plus connect and disconnect counts
+  since the running daemon started.
+- `relay_cache` and `git_refs`: the other machines this clone has heard
+  from over each transport, with agent counts, publish times, ages and a
+  `stale` flag. Task text and file lists are left out.
+- `publish_state`: when this machine last published its git presence ref.
+
+The daemon logs every drop as a `relay.disconnected` record carrying the close
+code, a shortened close reason, whether the close was clean, how long the
+socket was up, any socket error, and the reconnect delay it chose. Backoff
+resets only after a connection stays up for 30 seconds, so a relay that accepts
+and immediately drops the socket keeps backing off. While attempts keep
+failing, the daemon logs the first three, then only every power-of-two attempt
+or once per 15 quiet minutes, and the next record says how many it skipped.
 
 ### Cross-machine messages
 

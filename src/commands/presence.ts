@@ -17,6 +17,7 @@ import {
   runRelayDaemon,
 } from "../core/presence/index.ts";
 import { importMail, mailStatus, publishMail } from "../core/presence/mail.ts";
+import { type RelayStatus, relayStatus } from "../core/presence/relay-status.ts";
 import {
   ageSeconds,
   applyDetection,
@@ -45,7 +46,7 @@ export function registerPresenceCommand(program: Command, emit: EmitContext): vo
   const cmd = program
     .command("presence")
     .description(
-      "Presence: mobile/office state (get/set/clear/detect) + cross-machine session presence (publish/fetch/peers)",
+      "Presence: mobile/office state (get/set/clear/detect) + cross-machine session presence (publish/fetch/peers/relay-status)",
     )
     .action(() => {
       printStatus(emit);
@@ -196,6 +197,25 @@ export function registerPresenceCommand(program: Command, emit: EmitContext): vo
     });
 
   cmd
+    .command("relay-status")
+    .description(
+      "Diagnose the relay transport from local state only: configured relay, daemon pid and " +
+        "liveness, last connect/disconnect/idle exit from the presence-relay log, room id " +
+        "prefix, relay-cache and git-ref peers (names, agent counts, ages), and the last git publish",
+    )
+    .option("--json", "JSON output")
+    .action(async (opts: { json?: boolean }) => {
+      const root = requireRoot(emit);
+      const status = await relayStatus(root);
+      if (opts.json) emit.config({ format: "json" });
+      if (opts.json || !process.stdout.isTTY) {
+        emit.data(status);
+        return;
+      }
+      emit.text(formatRelayStatus(status));
+    });
+
+  cmd
     .command("peers")
     .description(
       "Show sessions on other machines (merged from presence refs + the relay daemon's cache)",
@@ -262,6 +282,66 @@ export function registerPresenceCommand(program: Command, emit: EmitContext): vo
         );
       }
     });
+}
+
+/** Human-readable `presence relay-status` (TTY without --json). Exported for tests. */
+export function formatRelayStatus(s: RelayStatus): string {
+  const lines: string[] = [];
+  const age = (secs: number | null) => (secs === null ? "unknown age" : `${formatAge(secs)} ago`);
+  const when = (e: { at: string } | null) =>
+    e
+      ? age(Math.max(0, Math.floor((Date.parse(s.generated_at) - Date.parse(e.at)) / 1000)))
+      : "never";
+  lines.push(`machine: ${s.machine}`);
+  lines.push(
+    s.relay.configured
+      ? `relay: ${s.relay.url}`
+      : "relay: not configured (git-refs transport only)",
+  );
+  lines.push(
+    s.room.id_prefix
+      ? `room: ${s.room.id_prefix}…${s.room.salted ? " (salted)" : ""}`
+      : `room: unknown (${s.room.reason})`,
+  );
+  const d = s.daemon;
+  lines.push(
+    d.running
+      ? `daemon: running, pid ${d.pid_record?.pid}, up ${formatAge(d.uptime_secs ?? 0)}${d.url_matches_config === false ? " (pid file names a different relay)" : ""}`
+      : d.pid_record
+        ? `daemon: not running (stale pid ${d.pid_record.pid})`
+        : "daemon: not running",
+  );
+  const disc = s.log.last_disconnected;
+  lines.push(`last connect: ${when(s.log.last_connected)}`);
+  lines.push(
+    `last disconnect: ${when(disc)}${disc ? ` (code ${disc.fields.code ?? "none"})` : ""}`,
+  );
+  lines.push(`last idle exit: ${when(s.log.last_idle_exit)}`);
+  if (s.log.since_daemon_start) {
+    const { connects, disconnects } = s.log.since_daemon_start;
+    lines.push(`since daemon start: ${connects} connects, ${disconnects} disconnects logged`);
+  }
+  if (s.log.error) lines.push(`log: unreadable (${s.log.error})`);
+  const peers = (label: string, rows: RelayStatus["relay_cache"]): void => {
+    if (rows.length === 0) {
+      lines.push(`${label}: none`);
+      return;
+    }
+    lines.push(`${label}:`);
+    for (const r of rows) {
+      lines.push(
+        `  ${r.machine}${r.self ? " (this machine)" : ""}  ${r.agents ?? "?"} agents, published ${age(r.age_secs)}${r.stale ? " (stale)" : ""}`,
+      );
+    }
+  };
+  peers("relay cache", s.relay_cache);
+  peers("git refs", s.git_refs);
+  lines.push(
+    s.publish_state?.pushed_at
+      ? `last git publish: ${age(s.publish_state.age_secs)} (${s.publish_state.agents ?? "?"} agents)`
+      : "last git publish: never",
+  );
+  return `${lines.join("\n")}\n`;
 }
 
 function requireRoot(emit: EmitContext): string {

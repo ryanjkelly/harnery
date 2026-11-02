@@ -51,12 +51,11 @@ import {
   encryptPayload,
   parseRelayFrame,
 } from "./relay-protocol.ts";
+import { initialReconnectState, planReconnect, type ReconnectState } from "./relay-reconnect.ts";
 
 const KEEPALIVE_MS = 60_000;
 const WATCH_DEBOUNCE_MS = 500;
 const IDLE_EXIT_MS = 5 * 60_000;
-const BACKOFF_MIN_MS = 1_000;
-const BACKOFF_MAX_MS = 60_000;
 
 function presenceDir(coordRoot: string): string {
   return join(coordRoot, ".harnery", "presence");
@@ -70,25 +69,25 @@ function pidFilePath(coordRoot: string): string {
   return join(presenceDir(coordRoot), "relay-daemon.json");
 }
 
-function logFilePath(coordRoot: string): string {
+export function relayLegacyLogPath(coordRoot: string): string {
   return join(presenceDir(coordRoot), "relay-daemon.log");
 }
 
-interface PidRecord {
+export interface RelayPidRecord {
   pid: number;
   url: string;
   started_at: string;
 }
 
-function readPidRecord(coordRoot: string): PidRecord | null {
+export function readRelayPidRecord(coordRoot: string): RelayPidRecord | null {
   try {
-    return JSON.parse(readFileSync(pidFilePath(coordRoot), "utf8")) as PidRecord;
+    return JSON.parse(readFileSync(pidFilePath(coordRoot), "utf8")) as RelayPidRecord;
   } catch {
     return null;
   }
 }
 
-function pidAlive(pid: number): boolean {
+export function pidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
@@ -98,7 +97,7 @@ function pidAlive(pid: number): boolean {
 }
 
 /** The committed rotatable room salt, when the repo minted one. */
-function readRoomSalt(coordRoot: string): string | undefined {
+export function readRoomSalt(coordRoot: string): string | undefined {
   try {
     const s = readFileSync(join(coordRoot, ".harnery", "presence-salt"), "utf8").trim();
     return s || undefined;
@@ -123,7 +122,7 @@ export function ensureRelayDaemon(coordRoot: string): void {
   try {
     const url = presenceRelayUrl(coordRoot);
     if (!url) return;
-    const rec = readPidRecord(coordRoot);
+    const rec = readRelayPidRecord(coordRoot);
     if (rec && rec.url === url && pidAlive(rec.pid)) return;
 
     // The runtime itself runs the CLI entry, so the daemon starts on Windows
@@ -133,7 +132,7 @@ export function ensureRelayDaemon(coordRoot: string): void {
 
     mkdirSync(presenceDir(coordRoot), { recursive: true });
     const sharedLogs = coordEnv("SHARED_LOGS") !== "0";
-    const log = sharedLogs ? undefined : openSync(logFilePath(coordRoot), "a");
+    const log = sharedLogs ? undefined : openSync(relayLegacyLogPath(coordRoot), "a");
     const child = spawn(process.execPath, [entry, "presence", "relay-daemon"], {
       windowsHide: true,
       cwd: coordRoot,
@@ -188,7 +187,7 @@ export async function runRelayDaemon(coordRoot: string): Promise<number> {
   }
 
   // Take (or take over) the pid file. A superseded daemon notices and exits.
-  const myRecord: PidRecord = {
+  const myRecord: RelayPidRecord = {
     pid: process.pid,
     url,
     started_at: new Date().toISOString(),
@@ -205,16 +204,23 @@ export async function runRelayDaemon(coordRoot: string): Promise<number> {
   const wsUrl = `${url.replace(/\/+$/, "")}/v1/room/${creds.roomId}`;
 
   let ws: WebSocket | null = null;
-  let backoff = BACKOFF_MIN_MS;
+  let reconnect: ReconnectState = initialReconnectState();
   let lastBasisHash = "";
   let lastSentAt = 0;
   let idleSince: number | null = null;
   let shuttingDown = false;
 
-  const log = (msg: string) => {
+  // `phase` gives `presence relay-status` a stable key; older records carry
+  // only the message.
+  const log = (
+    msg: string,
+    phase: string,
+    event = "relay.lifecycle",
+    extra: Record<string, unknown> = {},
+  ) => {
     console.log(`[${new Date().toISOString()}] ${msg}`);
     if (coordEnv("SHARED_LOGS") !== "0") {
-      appendPresenceRelayDiagnostic(coordRoot, "relay.lifecycle", { message: msg });
+      appendPresenceRelayDiagnostic(coordRoot, event, { phase, message: msg, ...extra });
     }
   };
 
@@ -258,35 +264,56 @@ export async function runRelayDaemon(coordRoot: string): Promise<number> {
 
   const connect = (): void => {
     if (shuttingDown) return;
+    // Per-socket facts for the disconnect record. An error is folded into
+    // the close that follows it, so each socket writes at most one record and
+    // the reconnect throttle covers errors too.
+    let openedAt: number | null = null;
+    let socketError: string | undefined;
+    let ended = false;
+    const scheduleReconnect = (code: number | null, reason: string, wasClean: boolean) => {
+      if (ended) return;
+      ended = true;
+      if (shuttingDown) return;
+      const plan = planReconnect(reconnect, {
+        code,
+        reason,
+        wasClean,
+        openedAt,
+        closedAt: Date.now(),
+        error: socketError,
+      });
+      reconnect = plan.next;
+      if (plan.log) {
+        const { phase, message, ...fields } = plan.log;
+        log(String(message), String(phase), "relay.disconnected", fields);
+      }
+      setTimeout(connect, plan.delayMs);
+    };
     try {
       const sock = new WebSocket(wsUrl);
       ws = sock;
       sock.onopen = () => {
-        backoff = BACKOFF_MIN_MS;
-        log(`connected room=${creds.roomId.slice(0, 8)}… as ${machine}`);
+        openedAt = Date.now();
+        log(`connected room=${creds.roomId.slice(0, 8)}… as ${machine}`, "connected");
         void publishNow(true);
       };
       sock.onmessage = (ev) => {
         void handleFrame(String(ev.data));
       };
-      const scheduleReconnect = () => {
-        if (shuttingDown) return;
-        const jitter = Math.random() * backoff * 0.3;
-        const delay = Math.min(BACKOFF_MAX_MS, backoff) + jitter;
-        backoff = Math.min(BACKOFF_MAX_MS, backoff * 2);
-        setTimeout(connect, delay);
+      sock.onclose = (ev) => {
+        scheduleReconnect(ev.code, ev.reason ?? "", ev.wasClean);
       };
-      sock.onclose = scheduleReconnect;
-      sock.onerror = () => {
+      sock.onerror = (ev) => {
+        socketError ??= errorText(ev);
         try {
           sock.close();
         } catch {
           /* ignore */
         }
       };
-    } catch {
-      setTimeout(connect, backoff);
-      backoff = Math.min(BACKOFF_MAX_MS, backoff * 2);
+    } catch (e) {
+      socketError = e instanceof Error ? e.message : String(e);
+      scheduleReconnect(null, "", false);
     }
   };
 
@@ -308,9 +335,9 @@ export async function runRelayDaemon(coordRoot: string): Promise<number> {
   const interval = setInterval(() => {
     void publishNow();
     // Superseded by a newer daemon → exit quietly.
-    const rec = readPidRecord(coordRoot);
+    const rec = readRelayPidRecord(coordRoot);
     if (!rec || rec.pid !== process.pid) {
-      log("pid file superseded; exiting");
+      log("pid file superseded; exiting", "superseded");
       shuttingDown = true;
       clearInterval(interval);
       try {
@@ -323,7 +350,7 @@ export async function runRelayDaemon(coordRoot: string): Promise<number> {
     }
     // Idle machine (no live sessions for a while) → exit; hooks restart us.
     if (idleSince && Date.now() - idleSince > IDLE_EXIT_MS) {
-      log("no live sessions; idle exit");
+      log("no live sessions; idle exit", "idle_exit");
       shuttingDown = true;
       clearInterval(interval);
       try {
@@ -338,6 +365,15 @@ export async function runRelayDaemon(coordRoot: string): Promise<number> {
 
   // Never resolves in normal operation; exits happen above.
   return await new Promise<number>(() => {});
+}
+
+/** Best-effort text of a WebSocket error event (Bun and Node attach `message`). */
+function errorText(ev: Event): string {
+  const m = (ev as Event & { message?: unknown; error?: unknown }).message;
+  if (typeof m === "string" && m) return m;
+  const err = (ev as Event & { error?: unknown }).error;
+  if (err instanceof Error && err.message) return err.message;
+  return ev.type || "error";
 }
 
 export function appendPresenceRelayDiagnostic(
@@ -355,7 +391,10 @@ export function appendPresenceRelayDiagnostic(
       // Bootstrap failures retain a bounded text file for process diagnostics.
     }
   }
-  const sink = new RotatingTextSink({ path: logFilePath(coordRoot), max_bytes: 512 * 1_024 });
+  const sink = new RotatingTextSink({
+    path: relayLegacyLogPath(coordRoot),
+    max_bytes: 512 * 1_024,
+  });
   sink.append(
     `${JSON.stringify({ schema_version: 1, ts: new Date().toISOString(), event, ...fields })}\n`,
   );
@@ -370,7 +409,7 @@ export function relayDaemonStatus(coordRoot: string): {
   url?: string;
   started_at?: string;
 } {
-  const rec = readPidRecord(coordRoot);
+  const rec = readRelayPidRecord(coordRoot);
   if (rec && pidAlive(rec.pid)) {
     return { running: true, pid: rec.pid, url: rec.url, started_at: rec.started_at };
   }
