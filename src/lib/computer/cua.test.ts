@@ -497,6 +497,36 @@ describe("Cua Driver on macOS and Linux", () => {
     await expect(driver.install(driver.planInstall(mac()))).rejects.toThrow("is not Cua Driver");
   });
 
+  test("doctor and call explain a pending permission grant and a stopped daemon", async () => {
+    const { bytes, sha256 } = darwinArchive();
+    let reply =
+      "permissions_pending: macOS Accessibility or Screen Recording permission is still pending\n";
+    const { driver } = macDriver(bytes, sha256, {
+      spawnSync: (command, args) => {
+        if (command === "ditto") cpSync(args[0] as string, args[1] as string, { recursive: true });
+        return {
+          status: command === "codesign" || command === "ditto" ? 0 : 1,
+          stdout: reply,
+          stderr: "",
+        };
+      },
+    });
+    await driver.install(driver.planInstall(mac()));
+
+    const pending = driver.health(mac());
+    expect(pending.exitCode).toBe(1);
+    const check = (pending.json as { checks: Record<string, string>[] }).checks[0];
+    expect(check?.name).toBe("tcc_permissions");
+    expect(check?.status).toBe("fail");
+    expect(check?.message).toContain("CuaDriver");
+    expect(check?.message).toContain("computer down, then computer up");
+    expect(driver.call(mac(), "list_apps", {}).stderr).toContain("Turn on CuaDriver");
+
+    reply = "Cua Driver daemon is not running on /tmp/cua.sock.\n";
+    const stopped = (driver.health(mac()).json as { checks: Record<string, string>[] }).checks[0];
+    expect(stopped).toMatchObject({ name: "daemon", status: "fail" });
+  });
+
   test("Linux uses the linux build, a home preference file, and no app bundle", () => {
     const driver = createCuaDriver({ arch: "arm64", home: () => "/home/me" });
     const plan = driver.planInstall({ kind: "linux", desktopStateDir: join(root, "state") });

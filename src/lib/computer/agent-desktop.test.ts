@@ -5,15 +5,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildTarGz } from "../../../tests/helpers/tar-fixture.ts";
 import {
+  AGENT_DESKTOP_CALL_TIMEOUT_MS,
+  AGENT_DESKTOP_MAX_CALL_TIMEOUT_MS,
   AGENT_DESKTOP_PINS,
   AGENT_DESKTOP_VERSION,
   type AgentDesktopDeps,
+  agentDesktopCallTimeoutMs,
   agentDesktopPlatform,
   agentDesktopSession,
   createAgentDesktopDriver,
   unwrapSingleBatch,
 } from "./agent-desktop.ts";
-import type { SpawnResult } from "./driver-support.ts";
+import { responsibleAppName, type SpawnResult } from "./driver-support.ts";
 import type { HostInfo } from "./types.ts";
 
 let root: string;
@@ -241,5 +244,184 @@ describe("agent-desktop install and calls", () => {
     expect(agentDesktopSession("shell:me@box")).toBe("shell-me-box");
     expect(agentDesktopSession("!!!")).toBe("harnery");
     expect(agentDesktopSession("x".repeat(80))).toHaveLength(64);
+  });
+});
+
+describe("agent-desktop call timeouts", () => {
+  test("a call gets the short default plus whatever it asks to wait", () => {
+    expect(agentDesktopCallTimeoutMs("snapshot", {})).toBe(AGENT_DESKTOP_CALL_TIMEOUT_MS);
+    expect(agentDesktopCallTimeoutMs("snapshot", { wait_for: "button:OK" })).toBe(
+      AGENT_DESKTOP_CALL_TIMEOUT_MS + 30_000,
+    );
+    expect(agentDesktopCallTimeoutMs("click", { wait_for: "x", wait_timeout: 5_000 })).toBe(
+      AGENT_DESKTOP_CALL_TIMEOUT_MS + 5_000,
+    );
+    expect(agentDesktopCallTimeoutMs("wait", { ms: 2_000 })).toBe(
+      AGENT_DESKTOP_CALL_TIMEOUT_MS + 2_000,
+    );
+    expect(agentDesktopCallTimeoutMs("type", { timeout_ms: 9_000 })).toBe(
+      AGENT_DESKTOP_CALL_TIMEOUT_MS + 9_000,
+    );
+    expect(
+      agentDesktopCallTimeoutMs("batch", {
+        commands: [
+          { command: "wait", args: { ms: 1_000 } },
+          { command: "snapshot", args: { wait_timeout: 4_000 } },
+        ],
+      }),
+    ).toBe(AGENT_DESKTOP_CALL_TIMEOUT_MS + 5_000);
+    expect(agentDesktopCallTimeoutMs("wait", { ms: 10_000_000 })).toBe(
+      AGENT_DESKTOP_MAX_CALL_TIMEOUT_MS,
+    );
+  });
+
+  test("call passes the per-call timeout to the process", async () => {
+    const timeouts: number[] = [];
+    const { driver } = await installed("linux", {
+      spawnSync: (_c, _a, options) => {
+        timeouts.push(options.timeout);
+        return { status: 0, stdout: "", stderr: "" };
+      },
+    });
+    driver.call(host("linux"), "wait", { ms: 3_000 });
+    expect(timeouts).toEqual([AGENT_DESKTOP_CALL_TIMEOUT_MS + 3_000]);
+    expect(driver.callTimeoutFor?.("wait", { ms: 3_000 })).toBe(
+      AGENT_DESKTOP_CALL_TIMEOUT_MS + 3_000,
+    );
+  });
+});
+
+describe("agent-desktop command hosts on macOS", () => {
+  /** A process table holding the given command hosts and a running call. */
+  function table(exe: string, hosts: number[]) {
+    const state = { hosts: [...hosts] };
+    const read = (field: "command" | "comm") => [
+      { pid: 1, ppid: 0, command: "/sbin/launchd" },
+      ...state.hosts.map((pid) => ({ pid, ppid: 1, command: exe })),
+      { pid: 900, ppid: 800, command: field === "command" ? `${exe} batch []` : exe },
+    ];
+    return { state, read };
+  }
+
+  test("status lists only the argument-less host processes; other hosts list none", async () => {
+    let exe = "";
+    const { driver, result } = await installed("macos", {
+      processTable: (field) => table(exe, [501, 502]).read(field),
+    });
+    exe = result.executable;
+    expect(driver.backgroundProcesses?.(host("macos"))).toEqual([
+      { pid: 501, kind: "command host" },
+      { pid: 502, kind: "command host" },
+    ]);
+    expect(driver.backgroundProcesses?.(host("linux"))).toEqual([]);
+  });
+
+  test("stop sends SIGTERM, escalates to SIGKILL for a host that stays, and reports none left", async () => {
+    let exe = "";
+    const procs = table("", [501, 502]);
+    const signals: string[] = [];
+    const { driver, result } = await installed("macos", {
+      processTable: (field) => table(exe, procs.state.hosts).read(field),
+      kill: (pid, signal) => {
+        signals.push(`${pid}:${signal}`);
+        if (signal === "SIGKILL" || pid === 501)
+          procs.state.hosts = procs.state.hosts.filter((p) => p !== pid);
+      },
+      sleepSync: () => {},
+    });
+    exe = result.executable;
+    expect(driver.stopBackgroundProcesses?.(host("macos"))).toEqual([]);
+    expect(signals).toEqual(["501:SIGTERM", "502:SIGTERM", "502:SIGKILL"]);
+  });
+
+  test("a timed-out call restarts the command host and says what to do", async () => {
+    let exe = "";
+    const procs = table("", [501]);
+    const { driver, result } = await installed("macos", {
+      processTable: (field) => table(exe, procs.state.hosts).read(field),
+      kill: (pid) => {
+        procs.state.hosts = procs.state.hosts.filter((p) => p !== pid);
+      },
+      sleepSync: () => {},
+      spawnSync: () => ({
+        status: null,
+        stdout: "",
+        stderr: "",
+        error: Object.assign(new Error("spawnSync ETIMEDOUT"), { code: "ETIMEDOUT" }),
+      }),
+    });
+    exe = result.executable;
+    const out = driver.call(host("macos"), "list-windows", {});
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("timed out after 30s");
+    expect(out.stderr).toContain("restarted agent-desktop's command host");
+    expect(procs.state.hosts).toEqual([]);
+  });
+});
+
+describe("agent-desktop permissions on macOS", () => {
+  const appRows = (field: "command" | "comm") => [
+    { pid: 1, ppid: 0, command: "/sbin/launchd" },
+    {
+      pid: 10,
+      ppid: 1,
+      command: "/Applications/Editor.app/Contents/MacOS/Editor",
+    },
+    {
+      pid: 20,
+      ppid: 10,
+      command:
+        "/Applications/Editor.app/Contents/Frameworks/Editor Helper.app/Contents/MacOS/Editor Helper",
+    },
+    { pid: 30, ppid: 20, command: field === "comm" ? "/bin/zsh" : "/bin/zsh -l" },
+  ];
+
+  test("names the outermost app the agent runs inside", () => {
+    expect(responsibleAppName(appRows("comm"), 30)).toBe("Editor");
+    expect(responsibleAppName([{ pid: 5, ppid: 1, command: "/usr/bin/ssh" }], 5)).toBeUndefined();
+  });
+
+  test("doctor names that app for a denied grant and treats unknown automation as information", async () => {
+    const { driver } = await installed("macos", {
+      processTable: appRows,
+      selfPid: 30,
+      spawnSync: () => ({
+        status: 0,
+        stderr: "",
+        stdout: JSON.stringify({
+          ok: true,
+          command: "status",
+          data: {
+            permissions: {
+              accessibility: { state: "denied" },
+              automation: { state: "unknown" },
+              screen_recording: { state: "granted" },
+            },
+          },
+        }),
+      }),
+    });
+    const checks = (driver.health(host("macos")).json as { checks: Record<string, string>[] })
+      .checks;
+    expect(checks.map((c) => `${c.name}:${c.status}`)).toEqual([
+      "accessibility:fail",
+      "automation:info",
+      "screen_recording:pass",
+    ]);
+    expect(checks[0]?.message).toContain('"Editor" (the app this agent runs in)');
+  });
+
+  test("a refused call and the install plan name where to grant", async () => {
+    const { driver } = await installed("macos", {
+      processTable: appRows,
+      selfPid: 30,
+      spawnSync: () => ({
+        status: 1,
+        stderr: "",
+        stdout: JSON.stringify({ ok: false, command: "batch", error: { code: "PERM_DENIED" } }),
+      }),
+    });
+    expect(driver.call(host("macos"), "snapshot", {}).stderr).toContain('"Editor"');
+    expect(driver.planInstall(host("macos")).setup?.[0]).toContain('"Editor"');
   });
 });

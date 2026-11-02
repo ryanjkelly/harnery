@@ -747,6 +747,71 @@ describe("computer with two drivers", () => {
   });
 });
 
+describe("computer background processes", () => {
+  /** A daemonless driver that left command hosts running. */
+  function withHosts(pids: number[]) {
+    const state = { pids: [...pids], stops: 0 };
+    const driver = {
+      ...fakeDriver({ id: "beta", hasDaemon: false }),
+      backgroundProcesses: () => state.pids.map((pid) => ({ pid, kind: "command host" })),
+      stopBackgroundProcesses: () => {
+        state.stops++;
+        state.pids = [];
+        return [];
+      },
+    } as FakeDriver;
+    return { driver, state };
+  }
+
+  test("status lists them with the command that stops them", async () => {
+    const { driver } = withHosts([501, 502]);
+    const cap = await run(["status"], { drivers: [driver] });
+    expect(cap.text.join("\n")).toContain(
+      "helpers:   2 command hosts running (pid 501, 502); `acme computer down` stops them",
+    );
+    const json = await run(["status", "--json"], { drivers: [driver] });
+    expect(json.data[0]).toMatchObject({
+      drivers: [{ id: "beta", background_processes: [{ pid: 501 }, { pid: 502 }] }],
+    });
+  });
+
+  test("down stops them while the desktop is free or yours", async () => {
+    const { driver, state } = withHosts([501, 502]);
+    const cap = await run(["down"], { drivers: [driver] });
+    expect(cap.text.join("\n").trim()).toBe("beta: stopped 2 command hosts.");
+    expect(state.stops).toBe(1);
+    expect(cap.exitCode()).toBe(0);
+    const again = await run(["down"], { drivers: [driver] });
+    expect(again.text.join("\n").trim()).toBe("beta: no daemon.");
+  });
+
+  test("down leaves them running while another agent holds the desktop, exit 3", async () => {
+    const { driver, state } = withHosts([501]);
+    const cap = await run(["down"], { drivers: [driver], lease: fakeLease(lease()) });
+    expect(state.stops).toBe(0);
+    expect(cap.text.join("\n")).toContain("beta: left 1 command host running (pid 501)");
+    expect(cap.text.join("\n")).toContain("agent-Other");
+    expect(cap.exitCode()).toBe(EXIT_LEASE_HELD);
+  });
+
+  test("a call holds the lease for that call's own timeout", async () => {
+    const driver = {
+      ...fakeDriver(),
+      callTimeoutMs: 30_000,
+      callTimeoutFor: (_tool: string, args: Record<string, unknown>) =>
+        30_000 + Number(args.ms ?? 0),
+    } as FakeDriver;
+    driver.calls = [];
+    const leaseApi = fakeLease();
+    await run(["call", "wait", '{"ms": 200000}'], {
+      driver,
+      lease: leaseApi,
+      config: () => cfg("on", { idle_seconds: 60 }),
+    });
+    expect(leaseApi.acquired[0]?.idleMs).toBe(245_000);
+  });
+});
+
 describe("redactInlineScreenshots for generic keys", () => {
   test("also redacts long base64 under a generic key", () => {
     const b64 = "QUJD".repeat(1000);

@@ -114,3 +114,33 @@ outside the install directory, and it reuses the zip reader's path checks.
   System Settings.
 - The lease still serializes all desktop work, so agents using different
   drivers do not run desktop tasks at the same time.
+
+## Amendment: first macOS run (2026-11-01)
+
+The first run on real macOS hardware (macOS 27, Apple silicon) confirmed both
+drivers work there and changed four details of how Harnery runs them.
+
+- **agent-desktop is daemonless to Harnery, not process-free.** On macOS each
+  call hands its work to a command host that the binary starts on demand, one
+  per calling environment, and that keeps running after the call returns.
+  Harnery still starts nothing, but `DesktopDriver` gains optional
+  `backgroundProcesses` and `stopBackgroundProcesses`: `status` lists the hosts
+  and `down` stops them, except while another agent holds the desktop.
+- **Call timeouts follow the call.** A host stuck on an unresponsive app made
+  calls wait for Harnery's full 120-second limit although the binary's own
+  deadlines are a few seconds. agent-desktop calls now time out after 30
+  seconds plus the wait the call asks for, a timed-out call on macOS restarts
+  the host, and the lease covers each call's own timeout
+  (`callTimeoutFor`).
+- **Permission guidance names the app.** agent-desktop's requests are charged
+  to the app the agent runs in, so every terminal, editor or agent app needs
+  its own grant; install, doctor and a `PERM_DENIED` result name that app.
+  Cua Driver answers every tool with `permissions_pending` until its grants
+  apply, its own diagnostics included, so doctor reports that, and a stopped
+  daemon, as checks with next steps. Unknown Automation is information, not
+  failure.
+- **Two macOS behaviours go in the skill.** agent-desktop's `launch` returns
+  before a window exists and some apps draw none until activated, and its
+  headless `set-value` and `type` do not mark a document edited, so a later
+  save writes nothing. The skill points those cases at Cua Driver's
+  `launch_app` and `set_value`.

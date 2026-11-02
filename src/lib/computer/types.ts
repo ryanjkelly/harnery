@@ -92,6 +92,17 @@ export interface DaemonStatus {
   pid?: number;
 }
 
+/**
+ * A process a driver starts on its own and leaves running after a call returns
+ * (for example agent-desktop's per-environment command host on macOS). It is
+ * not a daemon `up` starts, but `status` reports it and `down` stops it.
+ */
+export interface BackgroundProcess {
+  pid: number;
+  /** What the process is, e.g. "command host". */
+  kind: string;
+}
+
 export interface DriverCallResult {
   /** Process exit code of the driver invocation. */
   exitCode: number;
@@ -122,6 +133,15 @@ export interface DesktopDriver {
   readonly hasDaemon: boolean;
   /** Longest one `call` may run before the driver gives up, in ms; the lease outlasts it. */
   readonly callTimeoutMs?: number;
+  /**
+   * The timeout for one specific call, when it depends on the call's own wait
+   * arguments. Falls back to `callTimeoutMs` when absent.
+   */
+  callTimeoutFor?(tool: string, args: Record<string, unknown>): number;
+  /** Background processes the driver left running on this host (see BackgroundProcess). */
+  backgroundProcesses?(host: HostInfo): BackgroundProcess[];
+  /** Stop every background process; returns the ones still running afterwards. */
+  stopBackgroundProcesses?(host: HostInfo): BackgroundProcess[];
   /** Resolve the install plan for this host without side effects. */
   planInstall(host: HostInfo): InstallPlan;
   /** Download, verify, extract and write preferences. Idempotent. */

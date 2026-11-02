@@ -39,6 +39,7 @@ import type {
   GrantLogEntry,
 } from "../lib/computer/grants.ts";
 import type {
+  BackgroundProcess,
   DaemonStatus,
   DesktopDriver,
   DesktopLease,
@@ -400,8 +401,14 @@ function leaseOptions(
 }
 
 /** Lease time for one `call`: long enough that the call itself can never outlive the lease. */
-function callLeaseIdleMs(deps: ComputerDeps, driver: DesktopDriver): number {
-  return Math.max(configuredIdleMs(deps), (driver.callTimeoutMs ?? 0) + CALL_LEASE_MARGIN_MS);
+function callLeaseIdleMs(
+  deps: ComputerDeps,
+  driver: DesktopDriver,
+  tool: string,
+  args: Record<string, unknown>,
+): number {
+  const timeout = driver.callTimeoutFor?.(tool, args) ?? driver.callTimeoutMs ?? 0;
+  return Math.max(configuredIdleMs(deps), timeout + CALL_LEASE_MARGIN_MS);
 }
 
 function secondsUntil(iso: string, nowMs: number): number {
@@ -485,6 +492,14 @@ async function ensureDaemon(driver: DesktopDriver, host: HostInfo): Promise<Daem
     );
   }
   return started;
+}
+
+function describeBackground(procs: BackgroundProcess[], stopHint?: string): string {
+  if (procs.length === 0) return "none running";
+  const kinds = [...new Set(procs.map((p) => p.kind))].join(", ");
+  const plural = procs.length === 1 ? "" : "s";
+  const base = `${procs.length} ${kinds}${plural} running (pid ${procs.map((p) => p.pid).join(", ")})`;
+  return stopHint ? `${base}; ${stopHint}` : base;
 }
 
 function describeDaemon(driver: DesktopDriver, daemon: DaemonStatus | null): string {
@@ -622,7 +637,15 @@ export function createComputerCommand(
               daemon = { running: false, detail: (err as Error).message };
             }
           }
-          return { driver, installed, daemon };
+          let background: BackgroundProcess[] | null = null;
+          if (installed && driver.backgroundProcesses) {
+            try {
+              background = driver.backgroundProcesses(host);
+            } catch {
+              background = null;
+            }
+          }
+          return { driver, installed, daemon, background };
         });
         const lease = supported ? deps.lease.read(leaseOptions(deps, host as SupportedHost)) : null;
         const nowMs = deps.now();
@@ -649,13 +672,14 @@ export function createComputerCommand(
               ...(host.note ? { note: host.note } : {}),
             },
             default_driver: defaultId ?? null,
-            drivers: drivers.map(({ driver, installed, daemon }) => ({
+            drivers: drivers.map(({ driver, installed, daemon, background }) => ({
               id: driver.id,
               version: driver.version,
               summary: driver.summary,
               has_daemon: driver.hasDaemon,
               installed,
               daemon,
+              background_processes: background,
             })),
             lease: lease ? { ...lease, expires_in_seconds: expiresInSeconds(lease, nowMs) } : null,
           });
@@ -680,13 +704,17 @@ export function createComputerCommand(
             : []),
           `host:      ${host.kind}${host.reason ? ` (${host.reason})` : ""}${host.note ? ` (${host.note})` : ""}`,
         ];
-        for (const { driver, installed, daemon } of drivers) {
+        for (const { driver, installed, daemon, background } of drivers) {
           lines.push(
             `driver:    ${driver.id} ${driver.version} (pinned${driver.id === defaultId ? ", default" : ""}): ${driver.summary}`,
           );
           if (supported) {
             lines.push(`  installed: ${installed ?? "not installed"}`);
             if (installed) lines.push(`  daemon:    ${describeDaemon(driver, daemon)}`);
+            if (installed && background)
+              lines.push(
+                `  helpers:   ${describeBackground(background, `\`${deps.binName} computer down\` stops them`)}`,
+              );
           }
         }
         if (supported)
@@ -802,7 +830,10 @@ export function createComputerCommand(
 
   computer
     .command("down")
-    .description("Stop each installed driver's daemon.")
+    .description(
+      "Stop each installed driver's daemon and any background processes it left running " +
+        "(left alone while another agent holds the desktop, since a call may be using them).",
+    )
     .option(DRIVER_OPTION, driverHelp("to stop; default: every installed driver"))
     .action(
       guarded(input, (deps, opts: { driver?: string }) => {
@@ -810,9 +841,29 @@ export function createComputerCommand(
         const drivers = targetDrivers(deps, opts.driver);
         if (opts.driver) requireInstalled(deps, drivers[0] as DesktopDriver, host);
         const lines: string[] = [];
+        const holder = deps.lease.read(leaseOptions(deps, host));
+        const owner = deps.owner();
+        const heldByOther = holder && holder.owner_id !== owner.id ? holder : null;
         for (const driver of drivers.filter((d) => d.installedExecutable(host))) {
+          const background = driver.backgroundProcesses?.(host) ?? [];
+          if (background.length > 0 && driver.stopBackgroundProcesses) {
+            if (heldByOther) {
+              lines.push(
+                `${driver.id}: left ${describeBackground(background)}; the desktop is held by ${describeLease(heldByOther, deps.now())}.`,
+              );
+              deps.emit.setExitCode(EXIT_LEASE_HELD);
+            } else {
+              const remaining = driver.stopBackgroundProcesses(host);
+              lines.push(
+                remaining.length
+                  ? `${driver.id}: could not stop ${describeBackground(remaining)}.`
+                  : `${driver.id}: stopped ${background.length} ${background[0]?.kind ?? "process"}${background.length === 1 ? "" : "s"}.`,
+              );
+              if (remaining.length) deps.emit.setExitCode(1);
+            }
+          }
           if (!driver.hasDaemon) {
-            lines.push(`${driver.id}: no daemon.`);
+            if (background.length === 0) lines.push(`${driver.id}: no daemon.`);
             continue;
           }
           const status = driver.stopDaemon(host);
@@ -954,7 +1005,12 @@ export function createComputerCommand(
           // the desktop; refresh to the normal idle period once it returns.
           const acquired = await deps.lease.acquire(
             owner,
-            leaseOptions(deps, host, Math.round(waitSeconds * 1000), callLeaseIdleMs(deps, driver)),
+            leaseOptions(
+              deps,
+              host,
+              Math.round(waitSeconds * 1000),
+              callLeaseIdleMs(deps, driver, tool, args),
+            ),
           );
           if (!acquired.ok) throw heldError(deps, acquired.holder);
 

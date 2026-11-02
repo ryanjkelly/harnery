@@ -32,7 +32,7 @@ and [decision record 0231](/decisions/0231-two-desktop-drivers-on-every-desktop/
 | Id | Driver | Reads and acts through | Daemon |
 |---|---|---|---|
 | `cua` | Cua Driver 0.38.0 | Tool calls with element tokens; accessibility, keyboard and pixel routes; window screenshots; an isolated browser through CDP | Yes |
-| `agent-desktop` | agent-desktop 1.0.2 | Accessibility-tree snapshots with refs scoped to each snapshot; headless semantic actions by default | No |
+| `agent-desktop` | agent-desktop 1.0.2 | Accessibility-tree snapshots with refs scoped to each snapshot; headless semantic actions by default | No; on macOS it starts its own command host, which `status` reports and `down` stops |
 
 Both drive the same desktop under the same lease. `call`, `tools` and
 `describe` use one driver: `--driver <id>`, else the project's
@@ -120,10 +120,13 @@ harn computer status
 
 Shows whether the project enables computer use, the host kind, and for each
 driver its pinned version, whether it is the default, the installed executable
-(or `not installed`), and whether its daemon is running (or not needed). It
-ends with the current desktop lease holder, its generation, and its idle
-expiry. `--json` emits the same fields, with the drivers under `drivers` and
-the default under `default_driver`. Status never changes anything.
+(or `not installed`), and whether its daemon is running (or not needed). A
+driver that leaves background processes running after a call, such as
+agent-desktop's command host on macOS, gets a `helpers:` line with their
+process ids. It ends with the current desktop lease holder, its generation,
+and its idle expiry. `--json` emits the same fields, with the drivers under
+`drivers` (background processes under `background_processes`) and the default
+under `default_driver`. Status never changes anything.
 
 ## computer install
 
@@ -149,15 +152,26 @@ pin.
 ## computer up / down
 
 `up` starts each installed driver's daemon at the user's normal integrity level
-if it is not already running. `down` stops them. agent-desktop has no daemon,
-so both skip it. `call` starts a needed daemon on its own, so `up` is optional.
+if it is not already running. `down` stops them, together with any background
+processes a driver left running. agent-desktop has no daemon, so `up` skips it;
+on macOS `down` stops its command hosts, one per calling environment, which it
+otherwise keeps running after each call. While another agent holds the desktop,
+`down` leaves those processes alone, because a call may be using them, and
+exits 3. `call` starts a needed daemon on its own, so `up` is optional.
 
 ## computer doctor
 
 Runs each installed driver's own health report and prints one line per check
 under the driver's name. agent-desktop's checks are its OS permission states,
-so a missing macOS Accessibility grant shows here. Any check that does not
-pass, or a failing driver exit, exits 1. `--json` emits
+so a missing macOS Accessibility grant shows here, naming the app the grant
+belongs to: macOS charges agent-desktop's requests to the app it runs inside
+(a terminal, an editor, an agent app), and each such app needs its own grant.
+Automation reads as information, since macOS asks for it per target app only
+when an action needs it. Until Cua Driver's grants apply on macOS, its daemon
+answers everything with `permissions_pending`; doctor turns that, and a daemon
+that is not running, into a failing check that says what to do. A new grant
+can take about a minute to apply. Any check that does not pass, or a failing
+driver exit, exits 1. `--json` emits
 `{ ok, drivers: [{ driver, ok, exit_code, checks, report }] }`.
 
 ## computer tools / describe
@@ -218,8 +232,12 @@ exit code.
 The lease is one file per desktop, kept in the desktop's own state directory,
 so callers in WSL distros, native Windows shells, and different repositories
 all see the same holder. An idle lease expires `idle_seconds` after the last
-call (default 120). While a call runs, the lease is held for at least the
-driver's call timeout plus a margin, so a slow call never outlives it. Each new
+call (default 120). While a call runs, the lease is held for at least that
+call's timeout plus a margin, so a slow call never outlives it. agent-desktop
+calls time out after 30 seconds plus whatever the call asks to wait for
+(`wait_timeout`, `timeout_ms`, or the `wait` command's `ms`); on macOS a
+timed-out call also restarts the command host, so one unresponsive app does not
+stall every later call. Each new
 holder increments the generation.
 
 ## Exit codes

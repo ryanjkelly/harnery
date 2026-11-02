@@ -15,7 +15,9 @@
  * On macOS the driver must run from `/Applications/CuaDriver.app`: macOS ties
  * Accessibility and Screen Recording grants to that signed bundle and its
  * location. Install verifies the bundle's signature and identifier before it
- * copies the bundle there.
+ * copies the bundle there. Until both grants apply, the daemon answers every
+ * tool, its own permission check included, with `permissions_pending`; health
+ * and call turn that into a check that names the app and the steps to take.
  *
  * Internal module: not exported from package.json.
  */
@@ -385,7 +387,9 @@ export function createCuaDriver(deps: CuaDeps = {}): DesktopDriver {
           : `Copy ${CUA_APP_NAME} to ${appPath}; macOS ties the driver's permission grants to that location.`,
       ];
       plan.setup = [
-        "On first use, allow Cua Driver in System Settings > Privacy & Security > Accessibility and > Screen Recording.",
+        "Starting the daemon opens System Settings: turn on CuaDriver under Privacy & Security > Accessibility " +
+          "(Device Control and Data Access on macOS 27 and later) and > Screen Recording, then restart the daemon " +
+          "(computer down, then computer up). A new grant can take about a minute to apply.",
       ];
     }
     if (host.kind === "linux")
@@ -489,6 +493,44 @@ export function createCuaDriver(deps: CuaDeps = {}): DesktopDriver {
     return status;
   }
 
+  /** What to do when the daemon reports `permissions_pending`, for doctor and call. */
+  function permissionsPendingHint(): string {
+    return (
+      `macOS has not yet granted Accessibility and Screen Recording to CuaDriver (${appPath}). ` +
+      "Turn on CuaDriver under both in System Settings > Privacy & Security (Accessibility is named " +
+      "Device Control and Data Access on macOS 27 and later), then restart the driver daemon (computer down, then computer up). " +
+      "A new grant can take about a minute to apply."
+    );
+  }
+
+  const isPermissionsPending = (result: DriverCallResult): boolean =>
+    /permissions_pending/.test(result.stdout) || /permissions_pending/.test(result.stderr);
+
+  function health(host: HostInfo): DriverCallResult {
+    const result = exec(host, ["call", "health_report", "{}"], CALL_TIMEOUT_MS);
+    if (result.json !== undefined) return result;
+    const text = `${result.stdout}\n${result.stderr}`;
+    let check: { name: string; status: string; message: string } | undefined;
+    if (host.kind === "macos" && isPermissionsPending(result))
+      check = { name: "tcc_permissions", status: "fail", message: permissionsPendingHint() };
+    else if (/daemon is not running/i.test(text))
+      check = {
+        name: "daemon",
+        status: "fail",
+        message: "not running; start it with the computer up command",
+      };
+    if (!check) return result;
+    const json = { checks: [check] };
+    return { exitCode: 1, stdout: `${JSON.stringify(json)}\n`, stderr: "", json };
+  }
+
+  function call(host: HostInfo, tool: string, args: Record<string, unknown>): DriverCallResult {
+    const result = exec(host, ["call", tool, JSON.stringify(args)], CALL_TIMEOUT_MS);
+    if (host.kind === "macos" && isPermissionsPending(result))
+      result.stderr += `${permissionsPendingHint()}\n`;
+    return result;
+  }
+
   function stopDaemon(host: HostInfo): DaemonStatus {
     exec(host, ["stop"], STATUS_TIMEOUT_MS);
     return daemonStatus(host);
@@ -523,10 +565,10 @@ export function createCuaDriver(deps: CuaDeps = {}): DesktopDriver {
     daemonStatus,
     startDaemon,
     stopDaemon,
-    call: (host, tool, args) => exec(host, ["call", tool, JSON.stringify(args)], CALL_TIMEOUT_MS),
+    call,
     listTools: (host) => exec(host, ["list-tools"], CALL_TIMEOUT_MS),
     describe: (host, tool) => exec(host, ["describe", tool], CALL_TIMEOUT_MS),
-    health: (host) => exec(host, ["call", "health_report", "{}"], CALL_TIMEOUT_MS),
+    health,
     translateArgsPaths,
     translateResultPaths: (host, stdout) =>
       host.kind === "wsl" ? translateWindowsResultPaths(stdout, paths.toCaller) : stdout,

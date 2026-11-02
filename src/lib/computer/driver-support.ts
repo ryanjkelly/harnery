@@ -153,6 +153,68 @@ export function defaultWslpath(
   };
 }
 
+/** One row of the process table: `command` is the full command line, or the executable path for `comm`. */
+export interface ProcessRow {
+  pid: number;
+  ppid: number;
+  command: string;
+}
+
+/**
+ * Read the process table with `ps` (macOS and Linux). `field` picks the full
+ * command line (`command`) or just the executable path (`comm`). Returns an
+ * empty list when `ps` fails, so callers degrade to "nothing found".
+ */
+export function readProcessTable(
+  run: SpawnSyncFn,
+  env: NodeJS.ProcessEnv,
+  field: "command" | "comm",
+): ProcessRow[] {
+  const result = run("ps", ["-axww", "-o", `pid=,ppid=,${field}=`], { timeout: 10_000, env });
+  if (result.status !== 0) return [];
+  const rows: ProcessRow[] = [];
+  for (const line of normalize(result.stdout).split("\n")) {
+    const match = /^\s*(\d+)\s+(\d+)\s(.*)$/.exec(line);
+    if (match)
+      rows.push({
+        pid: Number(match[1]),
+        ppid: Number(match[2]),
+        command: (match[3] ?? "").trim(),
+      });
+  }
+  return rows;
+}
+
+/**
+ * The macOS app a process runs inside, for naming where a permission grant
+ * must go. macOS attributes Accessibility and Screen Recording requests from a
+ * command-line tool to the app that launched it, which is the outermost app
+ * bundle among the process's ancestors (a terminal, an editor, an agent app).
+ * Within one executable path the outermost `.app` wins, so an editor's helper
+ * (`/Applications/Editor.app/Contents/Frameworks/Helper.app/...`) resolves to
+ * "Editor". Returns undefined when no ancestor runs from an app bundle.
+ */
+export function responsibleAppName(rows: ProcessRow[], startPid: number): string | undefined {
+  const byPid = new Map(rows.map((row) => [row.pid, row]));
+  let found: string | undefined;
+  const seen = new Set<number>();
+  let pid = startPid;
+  while (pid > 1 && !seen.has(pid)) {
+    seen.add(pid);
+    const row = byPid.get(pid);
+    if (!row) break;
+    const app = /\/([^/]+)\.app\//.exec(row.command)?.[1];
+    if (app) found = app;
+    pid = row.ppid;
+  }
+  return found;
+}
+
+/** Block the current thread for `ms` (short waits inside a synchronous driver method). */
+export function sleepSync(ms: number): void {
+  if (ms > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 /** Merge `preferences` into a JSON object file, atomically, keeping other keys. */
 export function mergePreferences(
   file: string,

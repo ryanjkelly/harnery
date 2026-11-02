@@ -3,9 +3,20 @@
  *
  * agent-desktop is a single native executable (plus one platform helper on
  * macOS and Linux) that reads and operates apps through the OS accessibility
- * tree. It has no background daemon on Windows or Linux; on macOS it manages
- * its own short-lived command host. Every call is one process, so `up` and
- * `down` have nothing to do.
+ * tree. It has no daemon to start: every call is one process. On macOS that
+ * process hands its work to a per-environment command host, which it starts
+ * on demand and which keeps running after the call returns. Harnery reports
+ * those hosts in `status`, stops them in `down`, and restarts them when a call
+ * times out, because a host stuck on an unresponsive app would otherwise make
+ * every later call wait for the full timeout too.
+ *
+ * Call timeouts follow the call: a short default, extended by the wait the
+ * call itself asks for (`wait_timeout`, `timeout_ms`, the `wait` command's
+ * `ms`), so an agent learns about a stuck app in seconds rather than minutes.
+ *
+ * macOS attributes this executable's permission requests to the app it runs
+ * inside (a terminal, an editor, an agent app), so install, doctor and a
+ * permission refusal name that app.
  *
  * A Harnery `call <tool> <json>` becomes `agent-desktop batch` with one entry,
  * `{"command": tool, "args": json}`, whose keys are the command's snake_case
@@ -28,13 +39,18 @@ import {
   archLabel,
   defaultSpawnSync,
   defaultWslpath,
+  type ProcessRow,
   pathApi,
+  readProcessTable,
   requireStateDir,
+  responsibleAppName,
   type SpawnSyncFn,
+  sleepSync,
   toCallResult,
   wslPaths,
 } from "./driver-support.ts";
 import type {
+  BackgroundProcess,
   DaemonStatus,
   DesktopDriver,
   DriverCallResult,
@@ -114,8 +130,47 @@ export const AGENT_DESKTOP_PINS: Readonly<Record<AgentDesktopPlatform, PinnedArt
     ),
   });
 
-export const AGENT_DESKTOP_CALL_TIMEOUT_MS = 120_000;
+/** Default limit for one call; the binary's own deadlines are a few seconds. */
+export const AGENT_DESKTOP_CALL_TIMEOUT_MS = 30_000;
+/** Upper bound however long a call asks to wait. */
+export const AGENT_DESKTOP_MAX_CALL_TIMEOUT_MS = 600_000;
+/** The binary's default for `--wait-for` / `--wait-for-gone` without `--wait-timeout`. */
+const DEFAULT_WAIT_FOR_MS = 30_000;
 const STATUS_TIMEOUT_MS = 15_000;
+const HOST_STOP_GRACE_MS = 2_000;
+const HOST_KIND = "command host";
+
+/** Milliseconds one command's own arguments ask to wait for. */
+function requestedWaitMs(tool: string, args: Record<string, unknown>): number {
+  const num = (key: string): number => {
+    const value = Number(args[key]);
+    return Number.isFinite(value) && value > 0 ? value : 0;
+  };
+  let wait = num("wait_timeout") + num("timeout_ms");
+  if (tool === "wait") wait += num("ms") || (num("wait_timeout") ? 0 : DEFAULT_WAIT_FOR_MS);
+  if ((args.wait_for !== undefined || args.wait_for_gone !== undefined) && !num("wait_timeout"))
+    wait += DEFAULT_WAIT_FOR_MS;
+  return wait;
+}
+
+/**
+ * The timeout for one call: the default plus whatever the call asks to wait
+ * (summed across a batch's entries), capped at the maximum.
+ */
+export function agentDesktopCallTimeoutMs(tool: string, args: Record<string, unknown>): number {
+  let wait = 0;
+  if (tool === "batch" && Array.isArray(args.commands)) {
+    for (const entry of args.commands) {
+      if (!entry || typeof entry !== "object") continue;
+      const { command, args: entryArgs } = entry as { command?: unknown; args?: unknown };
+      wait += requestedWaitMs(
+        typeof command === "string" ? command : "",
+        entryArgs && typeof entryArgs === "object" ? (entryArgs as Record<string, unknown>) : {},
+      );
+    }
+  } else wait = requestedWaitMs(tool, args);
+  return Math.min(AGENT_DESKTOP_MAX_CALL_TIMEOUT_MS, AGENT_DESKTOP_CALL_TIMEOUT_MS + wait);
+}
 
 /** Commands the binary ships, grouped as its own docs group them. */
 export const AGENT_DESKTOP_COMMANDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
@@ -181,6 +236,13 @@ export interface AgentDesktopDeps {
   env?: NodeJS.ProcessEnv;
   wslpath?: (flag: "-w" | "-u", path: string) => string | undefined;
   now?: () => number;
+  /** Process table reader (macOS command hosts and the app that launched this process). */
+  processTable?: (field: "command" | "comm") => ProcessRow[];
+  /** Signal a process; throws when it is gone. */
+  kill?: (pid: number, signal: NodeJS.Signals) => void;
+  /** This process's pid, the start of the walk to the app it runs inside. */
+  selfPid?: number;
+  sleepSync?: (ms: number) => void;
 }
 
 export function agentDesktopPlatform(
@@ -229,6 +291,36 @@ export function createAgentDesktopDriver(deps: AgentDesktopDeps = {}): DesktopDr
   const run = deps.spawnSync ?? defaultSpawnSync;
   const baseEnv = (): NodeJS.ProcessEnv => deps.env ?? process.env;
   const paths = wslPaths(deps.wslpath ?? defaultWslpath(run, baseEnv, STATUS_TIMEOUT_MS));
+  const processTable =
+    deps.processTable ?? ((field: "command" | "comm") => readProcessTable(run, baseEnv(), field));
+  const kill = deps.kill ?? ((pid: number, signal: NodeJS.Signals) => process.kill(pid, signal));
+  const pause = deps.sleepSync ?? sleepSync;
+
+  /** The app macOS charges this agent's permission requests to, when it can be named. */
+  function grantTarget(host: HostInfo): string | undefined {
+    if (host.kind !== "macos") return undefined;
+    try {
+      return responsibleAppName(processTable("comm"), deps.selfPid ?? process.pid);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Where to grant, in words: the named app, or a description when it cannot be named. */
+  function grantPlace(host: HostInfo): string {
+    const app = grantTarget(host);
+    return app
+      ? `"${app}" (the app this agent runs in)`
+      : "the app your agent runs in (its terminal, editor, or agent app)";
+  }
+
+  function grantHint(host: HostInfo): string {
+    return (
+      `Grant Accessibility and Screen Recording to ${grantPlace(host)} in System Settings > Privacy & Security ` +
+      "(Accessibility is named Device Control and Data Access on macOS 27 and later). " +
+      "Each app you run agents from needs its own grant, and a new grant can take about a minute to apply."
+    );
+  }
 
   function artifactFor(host: HostInfo): PinnedArtifact {
     const arch = deps.arch ?? process.arch;
@@ -271,11 +363,54 @@ export function createAgentDesktopDriver(deps: AgentDesktopDeps = {}): DesktopDr
 
   function exec(host: HostInfo, args: string[], timeout = AGENT_DESKTOP_CALL_TIMEOUT_MS) {
     const exe = requireExecutable(host);
-    return toCallResult(
-      `agent-desktop ${args[0]}`,
-      timeout,
-      run(exe, args, { timeout, env: baseEnv() }),
-    );
+    const raw = run(exe, args, { timeout, env: baseEnv() });
+    const result = toCallResult(`agent-desktop ${args[0]}`, timeout, raw);
+    const timedOut = (raw.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT";
+    if (timedOut && host.kind === "macos") {
+      const remaining = stopBackgroundProcesses(host);
+      result.stderr +=
+        "An app may not be answering accessibility requests. " +
+        (remaining.length
+          ? `agent-desktop's command host could not be stopped (pid ${remaining.map((p) => p.pid).join(", ")}). `
+          : "Harnery restarted agent-desktop's command host, so the next call starts fresh. ") +
+        "Snapshot again before retrying; the action may already have been delivered.\n";
+    }
+    return result;
+  }
+
+  function backgroundProcesses(host: HostInfo): BackgroundProcess[] {
+    if (host.kind !== "macos") return [];
+    const exe = installedExecutable(host);
+    if (!exe) return [];
+    // The host runs the executable with no arguments; a call always has some.
+    return processTable("command")
+      .filter((row) => row.command === exe)
+      .map((row) => ({ pid: row.pid, kind: HOST_KIND }));
+  }
+
+  function stopBackgroundProcesses(host: HostInfo): BackgroundProcess[] {
+    const signal = (procs: BackgroundProcess[], sig: NodeJS.Signals) => {
+      for (const proc of procs)
+        try {
+          kill(proc.pid, sig);
+        } catch {
+          // Already gone.
+        }
+    };
+    const targets = backgroundProcesses(host);
+    if (targets.length === 0) return [];
+    signal(targets, "SIGTERM");
+    const alive = () => {
+      const pids = new Set(backgroundProcesses(host).map((p) => p.pid));
+      return targets.filter((p) => pids.has(p.pid));
+    };
+    for (let waited = 0; waited < HOST_STOP_GRACE_MS && alive().length > 0; waited += 100)
+      pause(100);
+    const stubborn = alive();
+    if (stubborn.length === 0) return [];
+    signal(stubborn, "SIGKILL");
+    pause(200);
+    return alive();
   }
 
   function planInstall(host: HostInfo): InstallPlan {
@@ -293,7 +428,7 @@ export function createAgentDesktopDriver(deps: AgentDesktopDeps = {}): DesktopDr
     };
     if (host.kind === "macos")
       plan.setup = [
-        `Grant Accessibility (and Screen Recording for screenshots) to the app your agent runs in; \`${executable} permissions --guide\` opens the right System Settings page.`,
+        `${grantHint(host)} \`${executable} permissions --guide\` opens the right System Settings page.`,
       ];
     if (host.kind === "linux")
       plan.setup = [
@@ -333,10 +468,23 @@ export function createAgentDesktopDriver(deps: AgentDesktopDeps = {}): DesktopDr
           stdout: "",
           stderr: 'The batch tool takes {"commands": [{"command": "...", "args": {...}}, ...]}.\n',
         };
-      return exec(host, ["batch", JSON.stringify(commands), ...flags]);
+      return exec(
+        host,
+        ["batch", JSON.stringify(commands), ...flags],
+        agentDesktopCallTimeoutMs(tool, { commands }),
+      );
     }
     const entry = { command: tool, args: commands === undefined ? rest : { ...rest, commands } };
-    return unwrapSingleBatch(exec(host, ["batch", JSON.stringify([entry]), ...flags]));
+    const result = unwrapSingleBatch(
+      exec(
+        host,
+        ["batch", JSON.stringify([entry]), ...flags],
+        agentDesktopCallTimeoutMs(tool, rest),
+      ),
+    );
+    if (host.kind === "macos" && /"code"\s*:\s*"PERM_DENIED"/.test(result.stdout))
+      result.stderr += `${grantHint(host)}\n`;
+    return result;
   }
 
   function listTools(host: HostInfo): DriverCallResult {
@@ -389,12 +537,25 @@ export function createAgentDesktopDriver(deps: AgentDesktopDeps = {}): DesktopDr
     const data = (result.json as { data?: { permissions?: Record<string, { state?: string }> } })
       ?.data;
     if (!data?.permissions) return result;
+    const place = grantPlace(host);
     const checks = Object.entries(data.permissions).map(([name, value]) => {
       const state = value?.state ?? "unknown";
+      if (state === "granted" || state === "not_required")
+        return { name, status: "pass", message: state };
+      // macOS cannot report Automation ahead of time; it asks per target app when an action needs it.
+      if (name === "automation" && state === "unknown")
+        return {
+          name,
+          status: "info",
+          message: "unknown until an action scripts another app; macOS asks then",
+        };
       return {
         name,
-        status: state === "granted" || state === "not_required" ? "pass" : "fail",
-        message: state,
+        status: "fail",
+        message:
+          host.kind === "macos" && (name === "accessibility" || name === "screen_recording")
+            ? `${state}; grant it to ${place} in System Settings > Privacy & Security, then retry (a new grant can take about a minute)`
+            : state,
       };
     });
     const json = { checks, report: result.json };
@@ -433,6 +594,9 @@ export function createAgentDesktopDriver(deps: AgentDesktopDeps = {}): DesktopDr
       "accessibility-tree snapshots with refs scoped to each snapshot; headless semantic actions by default; no daemon",
     hasDaemon: false,
     callTimeoutMs: AGENT_DESKTOP_CALL_TIMEOUT_MS,
+    callTimeoutFor: agentDesktopCallTimeoutMs,
+    backgroundProcesses,
+    stopBackgroundProcesses,
     planInstall,
     install,
     installedExecutable,

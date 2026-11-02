@@ -615,6 +615,17 @@ loop and retry rules from the binary itself.
 If a packaged app (Calculator, Settings) fails by name with \`APP_NOT_FOUND\`,
 get its window id from \`list-windows\` and pass \`window_id\` instead.
 
+\`launch\` returns once the process runs, before any window exists. If the next
+snapshot fails with \`WINDOW_NOT_FOUND\`, the app has not drawn a window; some
+(Calculator on macOS) draw none until activated. Launch it with cua's
+\`launch_app\`, which stays in the background, or pass \`"activate": true\`,
+which brings it to the front.
+
+On macOS, \`set-value\` and headless \`type\` change a document's text without the
+app marking it edited, so a later save writes nothing (the result says
+\`application_commit: not_verified\`). To edit a document you will save, use
+cua's \`set_value\`, which registers the edit.
+
 Pass \`"headed": true\` only when a command refuses headless delivery: it moves
 the pointer and takes focus from the person.
 
