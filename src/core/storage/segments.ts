@@ -14,6 +14,7 @@ import {
   readSync,
   realpathSync,
   renameSync,
+  rmdirSync,
   rmSync,
   unlinkSync,
   writeSync,
@@ -346,6 +347,7 @@ export async function withFamilyLease<T>(
       if (leaseHasWrongType(lease)) {
         throw new HarneryLogLeaseError("wrong_type", `log lease is not a directory: ${lease}`);
       }
+      if (removeEmptyLease(lease)) continue;
       if (recoverStaleLease(lease, policy.lease_stale_ms)) continue;
       if (Date.now() - started >= policy.lease_timeout_ms) {
         throw new HarneryLogLeaseError(
@@ -385,6 +387,11 @@ function claimLease(lease: string): LeaseOwner {
   try {
     mkdirSync(claim, { mode: stateDirMode() });
     writeNewFile(join(claim, "owner.json"), Buffer.from(content));
+    // POSIX rename refuses to put a directory over a file, but Windows replaces a regular file
+    // or symlink at the target, which would silently consume a wrong-type lease instead of
+    // failing closed. Check first. Mutual exclusion does not rest on this check: every holder
+    // publishes a directory, and Windows rename never replaces a directory.
+    if (leaseHasWrongType(lease)) throw new Error(`log lease is not a directory: ${lease}`);
     renameSync(claim, lease);
   } finally {
     rmSync(claim, { recursive: true, force: true });
@@ -561,15 +568,61 @@ function recoverStaleLease(lease: string, maximumAgeMs: number): boolean {
   }
 }
 
+/**
+ * Windows refuses to rename a directory while any file inside it is open, so the release
+ * rename fails with EPERM whenever a waiting writer is reading `owner.json` to check for a
+ * stale owner. Swallowing that error left the lease held by a live process, which no one may
+ * recover, so every later writer timed out. Retry those sharing errors briefly, and surface a
+ * release that still fails rather than leak the lease silently.
+ */
 function releaseOwnedLease(lease: string, owner: LeaseOwner): void {
-  try {
-    const current = JSON.parse(
-      readRegularFile(join(lease, "owner.json"), 4_096).toString("utf8"),
-    ) as LeaseOwner;
+  const deadline = Date.now() + LEASE_RELEASE_RETRY_MS;
+  while (true) {
+    let current: LeaseOwner;
+    try {
+      current = JSON.parse(
+        readRegularFile(join(lease, "owner.json"), 4_096).toString("utf8"),
+      ) as LeaseOwner;
+    } catch {
+      // A missing or replaced lease does not belong to this operation.
+      return;
+    }
     if (current.owner_id !== owner.owner_id) return;
-    retireLease(lease, owner.owner_id);
+    try {
+      retireLease(lease, owner.owner_id);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") return;
+      if (!isWindowsSharingError(code) || Date.now() >= deadline) throw error;
+      Atomics.wait(leaseSleepCell, 0, 0, 1);
+    }
+  }
+}
+
+const LEASE_RELEASE_RETRY_MS = 5_000;
+const leaseSleepCell = new Int32Array(new SharedArrayBuffer(4));
+
+function isWindowsSharingError(code: string | undefined): boolean {
+  return (
+    process.platform === "win32" && (code === "EPERM" || code === "EACCES" || code === "EBUSY")
+  );
+}
+
+/**
+ * POSIX rename replaces an empty directory, so a claim takes over an empty lease left by an
+ * interrupted create-then-write writer. Windows rename never replaces a directory, so that
+ * lease would block every writer forever. rmdir removes a directory only while it is empty, and
+ * a held lease always has an owner record, so this is the same takeover as the POSIX rename.
+ */
+function removeEmptyLease(lease: string): boolean {
+  try {
+    const stat = lstatSync(lease);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) return false;
+    rmdirSync(lease);
+    return true;
   } catch {
-    // A missing or replaced lease does not belong to this operation.
+    return false;
   }
 }
 
