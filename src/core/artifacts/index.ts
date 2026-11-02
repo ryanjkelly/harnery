@@ -10,7 +10,6 @@
  * removal lets a creating owner delete its reviewed, unheld workspace sooner.
  */
 
-import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import type { Stats } from "node:fs";
 import {
@@ -54,7 +53,12 @@ import {
   validArtifactActivity,
 } from "./activity.ts";
 import { ARTIFACT_MANIFEST, ARTIFACT_SCHEMA_VERSION, ARTIFACTS_DIR } from "./constants.ts";
-import { withArtifactLock } from "./mutation-lock.ts";
+import { ArtifactLockBusyError, withArtifactLock } from "./mutation-lock.ts";
+import {
+  containsTrackedPath,
+  readTrackedPaths,
+  type TrackedPathSnapshot,
+} from "./tracked-paths.ts";
 
 export { ARTIFACT_MANIFEST, ARTIFACT_SCHEMA_VERSION, ARTIFACTS_DIR } from "./constants.ts";
 export type {
@@ -287,6 +291,15 @@ export function inventoryArtifacts(
   repoRoot: string,
   opts: { now?: Date; freshnessSeconds?: number } = {},
 ): ArtifactInventoryEntry[] {
+  return inventoryWithTracked(repoRoot, opts);
+}
+
+/** Inventory that answers every tracked-path question from one Git listing. */
+function inventoryWithTracked(
+  repoRoot: string,
+  opts: { now?: Date; freshnessSeconds?: number },
+  tracked?: TrackedPathSnapshot,
+): ArtifactInventoryEntry[] {
   const root = artifactsRoot(repoRoot);
   if (!existsSync(root)) return [];
   const now = opts.now ?? new Date();
@@ -307,8 +320,9 @@ export function inventoryArtifacts(
       ),
     ];
   }
+  const snapshot = tracked ?? (names.length ? readTrackedPaths(repoRoot, root) : undefined);
   for (const name of names) {
-    rows.push(classifyArtifactPath(repoRoot, join(root, name), now, freshnessSeconds));
+    rows.push(classifyArtifactPath(repoRoot, join(root, name), now, freshnessSeconds, snapshot));
   }
   return applyArtifactBudgets(repoRoot, rows, now);
 }
@@ -674,11 +688,12 @@ function adoptUnmanagedArtifactFilesUnlocked(
 ): ArtifactAdoptionResult {
   const now = input.now ?? new Date();
   const candidates: ArtifactAdoptionResult["candidates"] = [];
-  for (const row of inventoryArtifacts(repoRoot, { now })) {
+  const tracked = readTrackedPaths(repoRoot, artifactsRoot(repoRoot));
+  for (const row of inventoryWithTracked(repoRoot, { now }, tracked)) {
     if (row.classification !== "unmanaged") continue;
     try {
       const stat = lstatSync(row.path);
-      if (stat.isSymbolicLink() || containsTrackedPath(repoRoot, row.path)) continue;
+      if (stat.isSymbolicLink() || containsTrackedPath(repoRoot, row.path, tracked)) continue;
       if (stat.isFile()) {
         candidates.push({ path: row.path, name: row.name, bytes: stat.size, kind: "file" });
         continue;
@@ -714,13 +729,14 @@ function adoptUnmanagedArtifactFilesUnlocked(
 
   // Revalidate every exact source before creating a destination. A changed,
   // tracked, linked, or non-regular entry aborts the whole adoption.
+  const fresh = readTrackedPaths(repoRoot, artifactsRoot(repoRoot));
   for (const candidate of candidates) {
     const stat = lstatSync(candidate.path);
     const bytes = stat.isDirectory() ? safeTreeSize(candidate.path) : stat.size;
     if (
       stat.isSymbolicLink() ||
       bytes !== candidate.bytes ||
-      containsTrackedPath(repoRoot, candidate.path)
+      containsTrackedPath(repoRoot, candidate.path, fresh)
     ) {
       throw new Error(`unmanaged entry changed before adoption: ${candidate.name}`);
     }
@@ -769,7 +785,9 @@ export function cleanArtifacts(
 ): ArtifactInventoryEntry[] {
   if (!opts.yes) return inventoryArtifacts(repoRoot, opts);
   try {
-    return withArtifactLock(repoRoot, () => cleanArtifactsUnlocked(repoRoot, opts));
+    // Read Git before taking the lock; deletions recheck with a fresh listing.
+    const tracked = readTrackedPaths(repoRoot, artifactsRoot(repoRoot));
+    return withArtifactLock(repoRoot, () => cleanArtifactsUnlocked(repoRoot, opts, tracked));
   } catch (error) {
     return inventoryArtifacts(repoRoot, opts).map((row) =>
       row.action === "would-delete"
@@ -793,11 +811,16 @@ function cleanArtifactsUnlocked(
     maxDeletes?: number;
     timeBudgetMs?: number;
   },
+  tracked?: TrackedPathSnapshot,
 ): ArtifactInventoryEntry[] {
   const now = opts.now ?? new Date();
   const freshnessSeconds = opts.freshnessSeconds ?? 600;
-  const rows = inventoryArtifacts(repoRoot, { now, freshnessSeconds });
-  if (!opts.yes) return rows;
+  const rows = inventoryWithTracked(repoRoot, { now, freshnessSeconds }, tracked);
+  if (!opts.yes || !rows.some((row) => row.action === "would-delete")) return rows;
+  // The inventory may have used a listing read before the lock. One fresh
+  // listing covers every recheck below, so a path Git started tracking
+  // since then still blocks its deletion without one Git process per entry.
+  const fresh = readTrackedPaths(repoRoot, artifactsRoot(repoRoot));
   // The budget bounds deletion work. Inventory cost scales with the store, so
   // counting it here would leave room for only the one guaranteed deletion.
   const started = performance.now();
@@ -817,12 +840,12 @@ function cleanArtifactsUnlocked(
     // per-unit size are local decisions; recheck all their guards on the target.
     const current =
       entry.classification === "managed-over-budget"
-        ? inventoryArtifacts(repoRoot, { now, freshnessSeconds }).find(
+        ? inventoryWithTracked(repoRoot, { now, freshnessSeconds }, fresh).find(
             (row) => row.path === entry.path,
           )
         : applyArtifactUnitBudget(
             repoRoot,
-            classifyArtifactPath(repoRoot, entry.path, now, freshnessSeconds),
+            classifyArtifactPath(repoRoot, entry.path, now, freshnessSeconds, fresh),
             now,
           );
     if (!current) {
@@ -1174,7 +1197,8 @@ const AUTO_CLEAN_STAMP = ".harnery/artifacts-auto-clean.json";
 
 export interface ArtifactAutoCleanResult {
   ran: boolean;
-  reason: "swept" | "partial" | "failed" | "disabled" | "fresh" | "no-root";
+  /** `busy`: another live caller holds the store lock and is doing this work. */
+  reason: "swept" | "partial" | "failed" | "disabled" | "fresh" | "no-root" | "busy";
   deleted: number;
   bytes: number;
 }
@@ -1191,8 +1215,11 @@ export interface ArtifactAutoCleanResult {
  * touched) at most once per
  * interval (default 1h after completion, 1m between partial/failed slices).
  * The owner-aware lock serializes callers; interrupted attempts can retry.
- * Disable with `artifacts.auto_clean: false` or
- * `HARNERY_ARTIFACT_AUTO_CLEAN=0`.
+ * A caller that finds a verified live owner holding the lock (two session
+ * workers starting together, say) returns `busy` instead of throwing: the
+ * owner is already sweeping, so this is expected and not worth an error.
+ * An empty, invalid, or unverifiable lock still throws. Disable with
+ * `artifacts.auto_clean: false` or `HARNERY_ARTIFACT_AUTO_CLEAN=0`.
  */
 export function autoCleanArtifacts(
   repoRoot: string,
@@ -1204,12 +1231,54 @@ export function autoCleanArtifacts(
   if (!artifactAutoCleanEnabled(repoRoot)) {
     return { ran: false, reason: "disabled", deleted: 0, bytes: 0 };
   }
-  return withArtifactLock(repoRoot, () => autoCleanArtifactsUnlocked(repoRoot, opts));
+  const now = opts.now ?? new Date();
+  assertValidDate(now, "now");
+  // Unlocked read of the stamp: a throttled call never starts Git. The locked
+  // pass checks the stamp again before it acts.
+  if (autoCleanStampFresh(repoRoot, now)) {
+    return { ran: false, reason: "fresh", deleted: 0, bytes: 0 };
+  }
+  // The Git listing is the slow part on some hosts, so it runs before the
+  // lock is taken; deletions recheck against a fresh listing under the lock.
+  const tracked = readTrackedPaths(repoRoot, artifactsRoot(repoRoot));
+  try {
+    return withArtifactLock(repoRoot, () =>
+      autoCleanArtifactsUnlocked(repoRoot, { ...opts, now }, tracked),
+    );
+  } catch (error) {
+    if (error instanceof ArtifactLockBusyError) {
+      return { ran: false, reason: "busy", deleted: 0, bytes: 0 };
+    }
+    throw error;
+  }
+}
+
+function autoCleanStampFresh(repoRoot: string, now: Date): boolean {
+  const intervalMs = artifactAutoCleanIntervalHours() * 60 * 60 * 1000;
+  try {
+    const stamp = JSON.parse(readFileSync(join(resolve(repoRoot), AUTO_CLEAN_STAMP), "utf8")) as {
+      status?: string;
+      last_completed_at?: string;
+      retry_after?: string;
+    };
+    const last = Date.parse(stamp.last_completed_at ?? "");
+    return (
+      (stamp.status === "completed" &&
+        Number.isFinite(last) &&
+        now.getTime() - last < intervalMs) ||
+      (["partial", "failed"].includes(stamp.status ?? "") &&
+        Date.parse(stamp.retry_after ?? "") > now.getTime())
+    );
+  } catch {
+    // Missing or unreadable stamp: sweep now and write a fresh one.
+    return false;
+  }
 }
 
 function autoCleanArtifactsUnlocked(
   repoRoot: string,
   opts: { now?: Date; maxDeletes?: number; timeBudgetMs?: number },
+  tracked?: TrackedPathSnapshot,
 ): ArtifactAutoCleanResult {
   const now = opts.now ?? new Date();
   assertValidDate(now, "now");
@@ -1221,24 +1290,8 @@ function autoCleanArtifactsUnlocked(
   }
   const stampPath = join(resolve(repoRoot), AUTO_CLEAN_STAMP);
   const intervalMs = artifactAutoCleanIntervalHours() * 60 * 60 * 1000;
-  try {
-    const stamp = JSON.parse(readFileSync(stampPath, "utf8")) as {
-      status?: string;
-      last_completed_at?: string;
-      retry_after?: string;
-    };
-    const last = Date.parse(stamp.last_completed_at ?? "");
-    if (
-      (stamp.status === "completed" &&
-        Number.isFinite(last) &&
-        now.getTime() - last < intervalMs) ||
-      (["partial", "failed"].includes(stamp.status ?? "") &&
-        Date.parse(stamp.retry_after ?? "") > now.getTime())
-    ) {
-      return { ran: false, reason: "fresh", deleted: 0, bytes: 0 };
-    }
-  } catch {
-    // Missing or unreadable stamp: sweep now and write a fresh one.
+  if (autoCleanStampFresh(repoRoot, now)) {
+    return { ran: false, reason: "fresh", deleted: 0, bytes: 0 };
   }
   const maxDeletes = opts.maxDeletes ?? 10;
   const timeBudgetMs = opts.timeBudgetMs ?? 5000;
@@ -1259,7 +1312,11 @@ function autoCleanArtifactsUnlocked(
   };
   writeStamp({ ...attempt, status: "running" });
   try {
-    const rows = cleanArtifactsUnlocked(repoRoot, { yes: true, now, maxDeletes, timeBudgetMs });
+    const rows = cleanArtifactsUnlocked(
+      repoRoot,
+      { yes: true, now, maxDeletes, timeBudgetMs },
+      tracked,
+    );
     const deletedRows = rows.filter((row) => row.action === "deleted");
     const deleted = deletedRows.length;
     const bytes = deletedRows.reduce((sum, row) => sum + (row.bytes ?? 0), 0);
@@ -1325,6 +1382,7 @@ function classifyArtifactPath(
   path: string,
   now: Date,
   freshnessSeconds: number,
+  tracked?: TrackedPathSnapshot,
 ): ArtifactInventoryEntry {
   const name = basename(path);
   let st: Stats;
@@ -1392,7 +1450,7 @@ function classifyArtifactPath(
       action: "keep",
     };
   }
-  if (containsTrackedPath(repoRoot, path)) {
+  if (containsTrackedPath(repoRoot, path, tracked)) {
     return {
       ...base,
       classification: "managed-tracked",
@@ -1674,6 +1732,7 @@ export function migrateArtifacts(
   const migrate = (): ArtifactMigrationEntry[] => {
     const root = artifactsRoot(repoRoot);
     if (!existsSync(root)) return [];
+    const tracked = readTrackedPaths(repoRoot, root);
     return readdirSync(root)
       .sort()
       .map((name): ArtifactMigrationEntry => {
@@ -1682,7 +1741,7 @@ export function migrateArtifacts(
           const stat = lstatSync(path);
           if (stat.isSymbolicLink() || !stat.isDirectory())
             throw new Error("not a direct directory");
-          if (containsTrackedPath(repoRoot, path))
+          if (containsTrackedPath(repoRoot, path, tracked))
             throw new Error("artifact contains tracked files");
           const target = join(path, ARTIFACT_MANIFEST);
           const manifestStat = lstatSync(target);
@@ -1803,6 +1862,7 @@ export function repairArtifactActivity(
     }
     const root = artifactsRoot(repoRoot);
     if (!existsSync(root)) return [];
+    const tracked = readTrackedPaths(repoRoot, root);
     return readdirSync(root)
       .sort()
       .map((name): ArtifactActivityRepairEntry => {
@@ -1817,7 +1877,7 @@ export function repairArtifactActivity(
             .get(manifest.artifact_id)
             ?.find((item) => isDeepStrictEqual(item.value, manifest));
           if (!source) throw new Error("no exact migration preimage");
-          if (containsTrackedPath(repoRoot, path))
+          if (containsTrackedPath(repoRoot, path, tracked))
             throw new Error("artifact contains tracked files");
           const target = join(path, ARTIFACT_MANIFEST);
           const before = readFileSync(target, "utf8");
@@ -1987,20 +2047,6 @@ function ownerLiveness(
   } catch {
     return { state: "unknown", heartbeatMs: null };
   }
-}
-
-function containsTrackedPath(repoRoot: string, path: string): boolean {
-  const rel = relative(repoRoot, path);
-  if (rel.startsWith("..") || isAbsolute(rel)) return true;
-  // windowsHide: this runs inside the console-less session-maintenance worker,
-  // where an unhidden console child opens a new terminal window on Windows.
-  const result = spawnSync("git", ["ls-files", "-z", "--", rel], {
-    cwd: repoRoot,
-    encoding: "utf8",
-    windowsHide: true,
-  });
-  // If Git itself cannot answer, fail closed.
-  return result.status !== 0 || result.stdout.length > 0;
 }
 
 interface TreeUsage {

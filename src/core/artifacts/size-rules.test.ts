@@ -54,6 +54,14 @@ describe("artifact size rules", () => {
     truncateSync(join(unit.path, "disk.img"), 512 * MiB);
 
     const [row] = inventoryArtifacts(root, { now: later(48) });
+    if (process.platform === "win32") {
+      // NTFS allocates an extended file in full unless it is explicitly marked
+      // sparse, and Windows units are measured by length, so the file counts
+      // at full size there and the unit is oversize.
+      expect(row?.bytes).toBe(row?.apparent_bytes ?? -1);
+      expect(row?.classification).toBe("managed-oversize");
+      return;
+    }
     expect(row?.classification).toBe("managed-current");
     expect(row?.apparent_bytes).toBeGreaterThan(512 * MiB);
     expect(row?.bytes).toBeLessThan(MiB);

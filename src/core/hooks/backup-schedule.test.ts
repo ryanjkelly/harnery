@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { planScheduledBackup, scheduledBackupInvocation } from "./backup-schedule.ts";
 
 const roots: string[] = [];
@@ -27,7 +27,8 @@ describe("SessionStart backup schedule", () => {
         logFile: join(root, ".harnery", "logs", "backup-schedule.log"),
         statusFile: join(root, ".harnery", "logs", "backup-schedule.status.json"),
       });
-      expect(invocation?.harnBin.endsWith("/bin/harn"), adapter).toBeTrue();
+      // The path is native, so Windows separates it with backslashes.
+      expect(invocation?.harnBin.endsWith(`${sep}bin${sep}harn`), adapter).toBeTrue();
     }
   });
 

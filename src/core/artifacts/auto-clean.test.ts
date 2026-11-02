@@ -1,17 +1,20 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import * as childProcess from "node:child_process";
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
+import { processStartToken } from "../agents/state/proc-start.ts";
 import { autoCleanArtifacts, createArtifact } from "./index.ts";
 
 const roots: string[] = [];
@@ -61,7 +64,129 @@ const T0_PLUS_3D = new Date(T0.getTime() + 3 * DAY_MS);
 const T0_PLUS_3D_PLUS_30M = new Date(T0.getTime() + 3 * DAY_MS + 30 * 60 * 1000);
 const T0_PLUS_3D_PLUS_61M = new Date(T0.getTime() + 3 * DAY_MS + 61 * 60 * 1000);
 
+/** Count `git ls-files` processes started while `run` executes. */
+function countLsFiles<T>(
+  run: () => T,
+  after?: (call: number) => void,
+): { result: T; calls: number } {
+  const original = childProcess.spawnSync;
+  let calls = 0;
+  const spy = spyOn(childProcess, "spawnSync").mockImplementation(((
+    command: string,
+    args?: readonly string[],
+    options?: childProcess.SpawnSyncOptions,
+  ) => {
+    const out = original(command, args ?? [], options ?? {});
+    if (command === "git" && args?.[0] === "ls-files") {
+      calls++;
+      after?.(calls);
+    }
+    return out;
+  }) as typeof childProcess.spawnSync);
+  try {
+    return { result: run(), calls };
+  } finally {
+    spy.mockRestore();
+  }
+}
+
+/** A lock owned by this live test process, as a concurrent worker would hold it. */
+function holdLockAsLiveOwner(root: string): string {
+  const lock = join(root, ".harnery/artifacts-mutation.lock");
+  mkdirSync(lock);
+  writeFileSync(
+    join(lock, "owner-22222222-2222-2222-2222-222222222222.json"),
+    JSON.stringify({
+      version: 1,
+      host: hostname(),
+      pid: process.pid,
+      process_start: processStartToken(process.pid),
+      acquired_at: new Date().toISOString(),
+    }),
+  );
+  return lock;
+}
+
 describe("autoCleanArtifacts", () => {
+  test("a live concurrent owner makes the sweep a quiet skip, not an error", () => {
+    const root = makeRoot();
+    const path = seedExpired(root, T0);
+    const lock = holdLockAsLiveOwner(root);
+    expect(autoCleanArtifacts(root, { now: T0_PLUS_3D })).toEqual({
+      ran: false,
+      reason: "busy",
+      deleted: 0,
+      bytes: 0,
+    });
+    expect(existsSync(join(root, ".harnery/artifacts-auto-clean.json"))).toBe(false);
+    expect(existsSync(path)).toBe(true);
+    rmSync(lock, { recursive: true });
+    expect(autoCleanArtifacts(root, { now: T0_PLUS_3D }).deleted).toBe(1);
+  });
+
+  test("an owner whose run cannot be verified still surfaces as an error", () => {
+    const root = makeRoot();
+    seedExpired(root, T0);
+    const lock = holdLockAsLiveOwner(root);
+    const [file] = readdirSync(lock);
+    const owner = JSON.parse(readFileSync(join(lock, file!), "utf8"));
+    writeFileSync(join(lock, file!), JSON.stringify({ ...owner, process_start: null }));
+    expect(() => autoCleanArtifacts(root, { now: T0_PLUS_3D })).toThrow("lock unavailable");
+  });
+
+  test("one Git listing serves the whole inventory, and one more guards the deletions", () => {
+    const root = makeRoot();
+    for (let i = 0; i < 4; i++) seedExpired(root, T0, `expired-${i}`);
+    const kept = createArtifact(root, { slug: "current", purpose: "fresh", retentionDays: 30 });
+    writeFileSync(join(kept.path, "payload.txt"), "keep\n");
+    const { result, calls } = countLsFiles(() => autoCleanArtifacts(root, { now: T0_PLUS_3D }));
+    expect(result).toMatchObject({ reason: "swept", deleted: 4 });
+    expect(calls).toBe(2);
+    expect(existsSync(kept.path)).toBe(true);
+  });
+
+  test("a throttled sweep starts no Git process", () => {
+    const root = makeRoot();
+    seedExpired(root, T0);
+    autoCleanArtifacts(root, { now: T0_PLUS_3D });
+    const { result, calls } = countLsFiles(() =>
+      autoCleanArtifacts(root, { now: T0_PLUS_3D_PLUS_30M }),
+    );
+    expect(result.reason).toBe("fresh");
+    expect(calls).toBe(0);
+  });
+
+  test("a file Git starts tracking after the first listing still blocks deletion", () => {
+    const root = makeRoot();
+    const tracked = seedExpired(root, T0, "becomes-tracked");
+    const other = seedExpired(root, T0, "stays-untracked");
+    const { result } = countLsFiles(
+      () => autoCleanArtifacts(root, { now: T0_PLUS_3D }),
+      (call) => {
+        if (call !== 1) return;
+        const added = spawnSync("git", ["add", "-f", join(tracked, "payload.txt")], {
+          cwd: root,
+          windowsHide: true,
+        });
+        expect(added.status).toBe(0);
+      },
+    );
+    expect(result.deleted).toBe(1);
+    expect(existsSync(tracked)).toBe(true);
+    expect(existsSync(other)).toBe(false);
+  });
+
+  test("when Git cannot answer, nothing is deleted", () => {
+    const root = mkdtempSync(join(tmpdir(), "harnery-autoclean-nogit-"));
+    roots.push(root);
+    const path = seedExpired(root, T0);
+    // Keep Git from discovering an enclosing repository above the temp dir.
+    setEnv("GIT_CEILING_DIRECTORIES", tmpdir());
+    setEnv("GIT_DIR", join(root, "missing-git-dir"));
+    expect(autoCleanArtifacts(root, { now: T0_PLUS_3D }).deleted).toBe(0);
+    expect(existsSync(path)).toBe(true);
+  });
+
   test("lock contention does not consume the hourly cleanup opportunity", () => {
     const root = makeRoot();
     const path = seedExpired(root, T0);
@@ -134,7 +259,12 @@ describe("autoCleanArtifacts", () => {
     const locked = join(path, "locked");
     mkdirSync(locked);
     writeFileSync(join(locked, "pinned.txt"), "cannot be removed\n");
-    chmodSync(locked, 0o500);
+    // Windows ignores a directory's write bit, so pin the directory the way
+    // Windows does refuse: it cannot remove a process's working directory.
+    const pinByCwd = process.platform === "win32";
+    const previousCwd = process.cwd();
+    if (pinByCwd) process.chdir(locked);
+    else chmodSync(locked, 0o500);
     try {
       expect(autoCleanArtifacts(root, { now: T0_PLUS_3D })).toMatchObject({
         reason: "failed",
@@ -149,7 +279,8 @@ describe("autoCleanArtifacts", () => {
         autoCleanArtifacts(root, { now: new Date(T0_PLUS_3D.getTime() + 60_001) }).reason,
       ).toBe("fresh");
     } finally {
-      chmodSync(locked, 0o700);
+      if (pinByCwd) process.chdir(previousCwd);
+      else chmodSync(locked, 0o700);
     }
   });
 
