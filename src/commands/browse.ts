@@ -5,11 +5,12 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readlinkSync,
   statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, hostname } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { Command } from "commander";
 import { chromium } from "playwright";
@@ -384,7 +385,10 @@ export function registerBrowseCommand(
   binName = resolveBinName(),
 ): void {
   emit = emitParam;
-  browseBinName = binName;
+  // HARNERY_BIN outranks the program's own name, as in resolveBinName(): a
+  // detached sign-in runs Harnery's entry on a host's behalf and must still
+  // print the host's command name.
+  browseBinName = process.env.HARNERY_BIN?.trim() || binName;
   program
     .command("browse <url>")
     .description(
@@ -3492,6 +3496,76 @@ export function resolveLoginMode(
   return opts.attached ? "attached" : "plain";
 }
 
+export interface ProfileLockDeps {
+  exists: (path: string) => boolean;
+  /** Open for writing and close again; throws when another process holds it. */
+  openForWrite: (path: string) => void;
+  /** The target of a symbolic link; throws when there is none. */
+  readLink: (path: string) => string;
+  pidAlive: (pid: number) => boolean;
+  hostname: () => string;
+}
+
+const defaultProfileLockDeps: ProfileLockDeps = {
+  exists: existsSync,
+  openForWrite: (path) => closeSync(openSync(path, "r+")),
+  readLink: (path) => readlinkSync(path),
+  pidAlive: (pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (err) {
+      return (err as NodeJS.ErrnoException).code === "EPERM";
+    }
+  },
+  hostname,
+};
+
+/**
+ * Whether a running Chrome already has this profile open. A second Chrome
+ * started on an open profile hands its window to the first and exits at once,
+ * so a sign-in that waits on its own process would see the window "close"
+ * immediately and copy nothing. Windows Chrome keeps `lockfile` open with
+ * read sharing only, and deletes it on exit; a leftover file from a crash can
+ * be opened for writing. Elsewhere Chrome writes a `SingletonLock` link to
+ * `<host>-<pid>`; a link to a dead process on this host is stale.
+ */
+export function chromeProfileInUse(
+  profileDir: string,
+  platform: NodeJS.Platform = process.platform,
+  deps: ProfileLockDeps = defaultProfileLockDeps,
+): boolean {
+  if (platform === "win32") {
+    const lock = join(profileDir, "lockfile");
+    if (!deps.exists(lock)) return false;
+    try {
+      deps.openForWrite(lock);
+      return false;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      return code === "EBUSY" || code === "EPERM" || code === "EACCES";
+    }
+  }
+  let target: string;
+  try {
+    target = deps.readLink(join(profileDir, "SingletonLock"));
+  } catch {
+    return false;
+  }
+  const match = /^(.*)-(\d+)$/.exec(target);
+  if (!match) return true;
+  if (match[1] !== deps.hostname()) return true;
+  return deps.pidAlive(Number(match[2]));
+}
+
+function refuseOpenProfile(profileDir: string): void {
+  if (!chromeProfileInUse(profileDir)) return;
+  throw new Error(
+    `A Chrome window is already open on the sign-in profile ${profileDir}, probably an earlier sign-in. ` +
+      "Ask the person to finish signing in there and close that window, then run the sign-in again.",
+  );
+}
+
 /**
  * `--login`: spawn the installed Google Chrome directly on the shared
  * persistent profile, with no DevTools protocol attached. Playwright enables
@@ -3515,6 +3589,7 @@ async function runPlainLogin(
         "Install Google Chrome; do not fall back to --attached for a third-party sign-in.",
     );
   }
+  refuseOpenProfile(profileDir);
   mkdirSync(profileDir, { recursive: true });
   // windows-hide-allow: the person signs in to this Chrome window, so it must be visible
   const child = spawn(
@@ -3852,6 +3927,12 @@ async function runWindowsPlainLogin(
   }
   const chromeWindows = wslPathToWindows(chromeLinux);
   const profileWindows = windowsPlainProfile(localAppData);
+  if (windowsChromeProfileProcesses(profileWindows).length > 0) {
+    throw new Error(
+      `A Chrome window is already open on the sign-in profile ${profileWindows}, probably an earlier sign-in. ` +
+        "Ask the person to finish signing in there and close that window, then run the sign-in again.",
+    );
+  }
   const keep = keepWindowsChromeSession({ chromeWindows, profileWindows });
   if (!keep.kept) {
     emit.log(
@@ -4012,10 +4093,13 @@ async function runDetachedLogin(
 ): Promise<void> {
   const dir = dirname(FALLBACK_OUT_PREFIX);
   mkdirSync(dir, { recursive: true });
+  const profile = resolve(opts.profile ?? DEFAULT_PROFILE);
+  // Refuse here, before anything starts, so the agent hears it at once.
+  if (!useWindowsPlainLogin()) refuseOpenProfile(profile);
   const plan = detachedLoginPlan({
     url,
     store: resolve(opts.store ?? DEFAULT_STORE),
-    profile: resolve(opts.profile ?? DEFAULT_PROFILE),
+    profile,
     userAgent: opts.userAgent,
     cookies: opts.cookies !== false,
     pace: opts.pace !== false,
@@ -4024,10 +4108,13 @@ async function runDetachedLogin(
     stamp: new Date().toISOString().replace(/[:.]/g, "-"),
   });
   const logFd = openSync(plan.logFile, "a");
+  // The background process runs Harnery's own entry, so pass on the host's
+  // command name for the instructions it prints.
   const child = spawn(process.execPath, [harnCliEntry(), ...plan.args], {
     detached: true,
     stdio: ["ignore", logFd, logFd],
     windowsHide: true,
+    env: { ...process.env, HARNERY_BIN: browseBinName },
   });
   closeSync(logFd);
   let exitCode: number | null | undefined;

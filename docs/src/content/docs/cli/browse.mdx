@@ -128,6 +128,12 @@ sign-in from the agent's side. If the background process stops before its
 window opens (no Chrome installed, for example), `--detach` exits 1 with the
 log's last lines.
 
+Only one sign-in window can be open on the profile at a time. A second Chrome
+started on an open profile would hand its window to the first and exit at once,
+and the sign-in waiting on it would end before the person signed in. So
+`--login`, detached or not, refuses while a Chrome window already has the
+profile open, and says to finish and close that window first.
+
 For an agent-driven visible flow on a site you own, pair `--login --attached`
 with either `--control-file` or `--login-close-file`. The owner-only control descriptor lets
 repeated [`browse-session`](/cli/browse-session/) processes inspect and act on

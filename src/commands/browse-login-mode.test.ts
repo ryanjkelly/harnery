@@ -1,6 +1,47 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import { detachedLoginPlan, loginRelaySentence, resolveLoginMode } from "./browse.ts";
+import {
+  chromeProfileInUse,
+  detachedLoginPlan,
+  loginRelaySentence,
+  type ProfileLockDeps,
+  resolveLoginMode,
+} from "./browse.ts";
+
+describe("chromeProfileInUse", () => {
+  const errno = (code: string) => Object.assign(new Error(code), { code });
+  const deps = (over: Partial<ProfileLockDeps>): ProfileLockDeps => ({
+    exists: () => false,
+    openForWrite: () => {},
+    readLink: () => {
+      throw errno("ENOENT");
+    },
+    pidAlive: () => false,
+    hostname: () => "box",
+    ...over,
+  });
+
+  test("Windows: a lockfile Chrome holds means in use; none, or a leftover one, means free", () => {
+    expect(chromeProfileInUse("/p", "win32", deps({}))).toBeFalse();
+    expect(chromeProfileInUse("/p", "win32", deps({ exists: () => true }))).toBeFalse();
+    const held = deps({
+      exists: () => true,
+      openForWrite: () => {
+        throw errno("EBUSY");
+      },
+    });
+    expect(chromeProfileInUse("/p", "win32", held)).toBeTrue();
+  });
+
+  test("elsewhere: a SingletonLock to a live process, or another host, means in use", () => {
+    expect(chromeProfileInUse("/p", "linux", deps({}))).toBeFalse();
+    const link = (target: string, alive: boolean) =>
+      deps({ readLink: () => target, pidAlive: () => alive });
+    expect(chromeProfileInUse("/p", "linux", link("box-4242", true))).toBeTrue();
+    expect(chromeProfileInUse("/p", "darwin", link("box-4242", false))).toBeFalse();
+    expect(chromeProfileInUse("/p", "linux", link("other-4242", false))).toBeTrue();
+  });
+});
 
 describe("detached sign-in", () => {
   const base = {
