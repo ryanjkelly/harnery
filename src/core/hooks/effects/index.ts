@@ -17,15 +17,18 @@ import { existsSync, readdirSync, rmSync } from "node:fs";
 import os from "node:os";
 import { join } from "node:path";
 import { applyDetection } from "../../../lib/presence.ts";
+import { resolveBash } from "../../../lib/tools/bash.ts";
 import { coordBinPath, spawnCoordBinSync } from "../../agents/coord-bin.ts";
 
 export { captureImages, imageJanitor, recordImageArtifactsV3 } from "./image-capture.ts";
 
 /**
- * Play a notification sound via the cross-platform utility
- * (afplay on macOS, powershell.exe on WSL). The
- * utility backgrounds the actual player, so this returns fast. Rate-limiting
- * lives in the utility, keyed on CLAUDE_SOUND_SESSION_ID + the per-event count.
+ * Play a notification sound via the host's `scripts/hooks/play-sound.sh`
+ * utility, which picks the platform's player. The utility backgrounds the
+ * actual player, so this returns fast. Rate-limiting lives in the utility,
+ * keyed on CLAUDE_SOUND_SESSION_ID + the per-event count. The script runs under
+ * `resolveBash()` (Git for Windows' bash on Windows, never the WSL launcher);
+ * with no usable bash this is a silent no-op.
  * Claude-Code-only today (Cursor has no sounds; Codex's never worked).
  */
 export function playSound(
@@ -37,7 +40,9 @@ export function playSound(
   try {
     const player = join(repoRoot, "scripts", "hooks", "play-sound.sh");
     if (!existsSync(player)) return;
-    spawnSync("bash", [player, soundEvent, String(maxPlays)], {
+    const bash = resolveBash();
+    if (!bash) return;
+    spawnSync(bash, [player, soundEvent, String(maxPlays)], {
       windowsHide: true,
       env: { ...process.env, CLAUDE_SOUND_SESSION_ID: sessionId },
       timeout: 4000,
@@ -124,7 +129,8 @@ export function journalArchive(repoRoot: string, owner: string): void {
  * root, and core runs it detached + unref'd so a slow sink never blocks the
  * hook. `force` arrives as argv $1 ("1" on session end, "0" on turn stop) so the
  * host can rate-limit the stop path and force-flush on end. No-op when the
- * script is absent, so a plain public install spawns nothing. Mirrors
+ * script is absent or no usable bash exists (see `resolveBash()`), so a plain
+ * public install spawns nothing. Mirrors
  * `runTurnSummary`'s extension-script pattern. Caller gates to the claude-code
  * adapter.
  */
@@ -140,12 +146,17 @@ export function runSessionSyncExtension(repoRoot: string, force: boolean): void 
       "session-sync.sh",
     );
     if (!existsSync(script)) return;
-    const child = spawn("bash", [script, force ? "1" : "0"], {
+    const bash = resolveBash();
+    if (!bash) return;
+    const child = spawn(bash, [script, force ? "1" : "0"], {
       env: { ...process.env, HARNERY_OUTPUT_SESSION_TEE: "0" },
       detached: true,
       windowsHide: true,
       stdio: "ignore",
     });
+    // A spawn failure arrives as an async "error" event; unhandled, it would
+    // throw out of the hook process.
+    child.on("error", () => {});
     child.unref();
   } catch {
     // best-effort
