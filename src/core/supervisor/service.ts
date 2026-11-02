@@ -90,8 +90,10 @@ export interface RunSupervisorInput {
   wait?: (milliseconds: number) => Promise<void>;
   /** Detects a change to the installed code; the default checks every 30 s. */
   codeWatch?: CodeChangeWatch;
-  /** Refuse to start while a stop request is in place, instead of clearing it. */
+  /** Refuse to start while a stop request is in place, and never clear one. */
   honorStop?: boolean;
+  /** Test hook: runs between the startup stop check and taking the lease. */
+  beforeLease?: () => void;
   /**
    * Starts the replacement after a code change, once this daemon has released
    * its lease. The detached daemon entrypoint passes the real launcher; left
@@ -332,12 +334,20 @@ export async function runSupervisor(
   const keepAlive = input.keepAlive ?? false;
   const now = input.now ?? (() => new Date());
   const wait = input.wait ?? delay;
-  if (input.honorStop && existsSync(paths.stop)) {
-    // An automatic start never overrides a stop request written before it ran.
-    throw new Error("local supervisor has a pending stop request; not starting");
-  }
+  const pendingStopError = () =>
+    new Error("local supervisor has a pending stop request; not starting");
+  // An automatic start never deletes or overrides a stop request: it checks
+  // before and again after taking the lease, and the loop honors one that
+  // lands later. Only an explicit start clears the request.
+  if (input.honorStop && existsSync(paths.stop)) throw pendingStopError();
+  input.beforeLease?.();
   const lease = acquireServiceLease(paths.lease, startRefusal);
-  rmSync(paths.stop, { force: true });
+  if (input.honorStop) {
+    if (existsSync(paths.stop)) {
+      lease.release();
+      throw pendingStopError();
+    }
+  } else rmSync(paths.stop, { force: true });
   const replacePath = supervisorReplacePath(coordRoot);
   // Any request left behind targets an earlier generation.
   clearReplacementRequest(replacePath);

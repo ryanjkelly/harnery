@@ -956,6 +956,43 @@ describe("semantic service code changes", () => {
     expect(existsSync(semanticReplacePath(root))).toBe(false);
   });
 
+  test("an automatic start never deletes a pause, even one landing as it takes the lease (F10)", async () => {
+    const root = fixture();
+    await expect(
+      runSemanticServiceDaemon({
+        coordRoot: root,
+        keepPause: true,
+        maxSweeps: 1,
+        readSince: idleRead,
+        waitForWake: async () => {},
+        codeWatch: changingWatch(Number.POSITIVE_INFINITY),
+        // The operator pauses between the startup check and the lease.
+        beforeLease: () => {
+          requestSemanticServiceStop(root);
+        },
+      }),
+    ).rejects.toThrow("paused");
+    expect(existsSync(semanticPaths(root).stop)).toBe(true);
+    acquireSemanticServiceLease(root)();
+
+    // A pause landing while it runs stops it and is left in place.
+    const later = fixture();
+    const terminal = await runSemanticServiceDaemon({
+      coordRoot: later,
+      keepPause: true,
+      maxSweeps: 50,
+      readSince: idleRead,
+      waitForWake: async () => {
+        // The pause file alone: the stop command would also signal this
+        // test process, which runs the daemon in process.
+        writeFileSync(semanticPaths(later).stop, "{}");
+      },
+      codeWatch: changingWatch(Number.POSITIVE_INFINITY),
+    });
+    expect(terminal.state).toBe("stopped");
+    expect(existsSync(semanticPaths(later).stop)).toBe(true);
+  });
+
   test("an automatic start keeps a pause written before the daemon ran (F1)", async () => {
     const root = fixture();
     requestSemanticServiceStop(root);

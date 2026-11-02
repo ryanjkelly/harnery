@@ -295,6 +295,77 @@ describe("relay daemon code changes", () => {
     expect(reserveRelayLaunch(root)).toBe(false);
   });
 
+  test("an unfinished handover stays exclusive while the original owner lives (F11)", async () => {
+    const pidPath = join(root, ".harnery", "presence", "relay-daemon.json");
+    const original = { ...pidRecord(), pid: 4242, code: { id: "1.0.0@old", root: "/pkg" } };
+    let originalAlive = true;
+    const isAlive = (pid: number) => pid === process.pid || (pid === 4242 && originalAlive);
+    writePid(original);
+
+    // Hook 1 and hook 2 both read the original owner. Hook 1 reserves first
+    // and launches successor B, which starts waiting for the original owner.
+    let b: Promise<string> | undefined;
+    const bRecord = { ...pidRecord(), started_at: "2026-11-02T00:00:00.000Z", code: current };
+    const hook = (onReserve?: () => void, launch?: () => void) => {
+      let launches = 0;
+      const result = ensureRelayDaemon(root, {
+        relayUrl: () => "ws://relay.test",
+        isAlive,
+        currentCode: () => current,
+        launch: () => {
+          launches += 1;
+          launch?.();
+          return true;
+        },
+        ...(onReserve ? { beforeReserve: onReserve } : {}),
+      });
+      return { result, launches };
+    };
+    const hook2 = hook(() => {
+      // Runs after hook 2 read the original owner, before it reserves.
+      expect(
+        hook(undefined, () => {
+          b = takeOverRelayPidFile(root, bRecord, {
+            isAlive,
+            wait: () => new Promise((done) => setTimeout(done, 2)),
+          });
+        }),
+      ).toEqual({ result: "replaced", launches: 1 });
+    });
+    // Hook 2 launches nothing: B holds the reservation for its whole handover.
+    expect(hook2).toEqual({ result: "pending", launches: 0 });
+    expect(JSON.parse(readFileSync(pidPath, "utf8")).state).toBe("handover");
+
+    // Even with the reservation gone, a mid-handover owner is never superseded.
+    releaseRelayLaunchReservation(root);
+    expect(hook()).toEqual({ result: "pending", launches: 0 });
+
+    // A successor C launched anyway refuses to supersede B mid-handover.
+    expect(
+      await takeOverRelayPidFile(root, { ...pidRecord(), pid: 5151, code: current }, { isAlive }),
+    ).toBe("busy");
+    expect(JSON.parse(readFileSync(pidPath, "utf8")).pid).toBe(process.pid);
+
+    // Only once the original owner exits does B connect, and it then gives
+    // the reservation back.
+    originalAlive = false;
+    expect(await b).toBe("connect");
+    expect(JSON.parse(readFileSync(pidPath, "utf8")).state).toBe("connected");
+    expect(existsSync(reservationPath())).toBe(false);
+
+    // A stale owner snapshot is rechecked under the reservation: another
+    // launcher started a daemon after this one read the owner.
+    writePid(original);
+    const recheck = hook(() => {
+      writeFileSync(
+        pidPath,
+        JSON.stringify({ ...bRecord, started_at: "other", state: "connected" }),
+      );
+    });
+    expect(recheck).toEqual({ result: "pending", launches: 0 });
+    expect(existsSync(reservationPath())).toBe(false);
+  });
+
   test("a successor never connects while the daemon it replaces is still alive (F8)", async () => {
     const previous = { ...pidRecord(), pid: 4242, code: { id: "1.0.0@old", root: "/pkg" } };
     const mine = { ...pidRecord(), code: current };

@@ -1202,6 +1202,31 @@ describe("supervisor code changes", () => {
     expect(existsSync(supervisorPaths(root).stop)).toBe(true);
   });
 
+  test("an automatic start never deletes a stop landing as it takes the lease (F10)", async () => {
+    const root = tempRoot();
+    await expect(
+      runSupervisor({
+        coordRoot: root,
+        honorStop: true,
+        maxCycles: 1,
+        codeWatch: changingWatch(Number.POSITIVE_INFINITY),
+        // The operator stops it between the startup check and the lease.
+        beforeLease: () => {
+          requestSupervisorStop(root);
+        },
+      }),
+    ).rejects.toThrow("pending stop request");
+    expect(existsSync(supervisorPaths(root).stop)).toBe(true);
+    // The lease was released: an explicit start runs and clears the request.
+    const explicit = await runSupervisor({
+      coordRoot: root,
+      maxCycles: 1,
+      codeWatch: changingWatch(Number.POSITIVE_INFINITY),
+    });
+    expect(explicit.state).toBe("stopped");
+    expect(existsSync(supervisorPaths(root).stop)).toBe(false);
+  });
+
   test("an automatic start keeps a pending stop request (F2)", async () => {
     const root = tempRoot();
     writePrivateJsonAtomic(supervisorPaths(root).stop, { requested_at: "x" });

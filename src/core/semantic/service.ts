@@ -128,8 +128,10 @@ export interface RunSemanticServiceDaemonInput {
   waitForWake?: (milliseconds: number) => Promise<void>;
   /** Detects a change to the installed code; the default checks every 30 s. */
   codeWatch?: CodeChangeWatch;
-  /** Refuse to start while a pause is in place, instead of clearing it. */
+  /** Refuse to start while a pause is in place, and never clear one. */
   keepPause?: boolean;
+  /** Test hook: runs between the startup pause check and taking the lease. */
+  beforeLease?: () => void;
   /**
    * Starts the replacement after a code change, once this daemon has released
    * its lease. The detached daemon entrypoint passes the real launcher; left
@@ -368,13 +370,19 @@ export async function runSemanticServiceDaemon(
 ): Promise<SemanticServiceStatusRecord> {
   const coordRoot = resolve(input.coordRoot);
   const paths = semanticPaths(coordRoot);
+  const pausedError = () => new Error("semantic service is paused; not starting");
+  // An automatic start never deletes or overrides a pause: it checks before
+  // and again after taking the lease, and the loop honors one that lands
+  // later. Only an explicit start clears the pause.
+  if (input.keepPause && existsSync(paths.stop)) throw pausedError();
+  input.beforeLease?.();
   const release = acquireSemanticServiceLease(coordRoot);
-  if (input.keepPause && existsSync(paths.stop)) {
-    // An automatic start never overrides a pause written before it ran.
-    release();
-    throw new Error("semantic service is paused; not starting");
-  }
-  rmSync(paths.stop, { force: true });
+  if (input.keepPause) {
+    if (existsSync(paths.stop)) {
+      release();
+      throw pausedError();
+    }
+  } else rmSync(paths.stop, { force: true });
   const replacePath = semanticReplacePath(coordRoot);
   // Any request left behind targets an earlier generation.
   clearReplacementRequest(replacePath);

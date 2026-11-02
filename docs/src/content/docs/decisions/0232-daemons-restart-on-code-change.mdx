@@ -79,16 +79,25 @@ and an unknown build counts as "restart needed", which would loop if acted on.
   `interval_ms`, `idle_exit_ms` and `keep_alive`).
 - **Automatic starts never clear a stop.** Launcher and relaunch starts pass
   `--keep-pause` (semantic) or `--honor-stop` (supervisor): a daemon started
-  that way exits at once when a stop request exists, instead of clearing it
-  as an explicit start does. A pause written at any point during a
-  replacement therefore survives it.
+  that way never deletes a stop or pause. It checks before taking its lease
+  and again after, and exits (releasing the lease) when one exists; one that
+  lands later stops its loop as usual. Only an explicit `start` clears a stop
+  or pause. A pause written at any point during a replacement therefore
+  survives it.
 - **One relay at a time.** Starting a relay daemon first takes a launch
   reservation (`relay-launch.json`, created atomically, expiring after 20
-  seconds), so concurrent hooks start one process between them. A
-  replacement takes over the pid file, and the old daemon, which now checks
-  every five seconds whether it was superseded, closes its socket and exits.
-  The new daemon connects only after the old process has exited, waiting at
-  most 75 seconds. If the old process is still alive at the end of the wait,
+  seconds), so concurrent hooks start one process between them. A launcher
+  rereads the pid file after taking the reservation and launches nothing if
+  the owner changed since it decided. A replacement takes over the pid file
+  marked `handover`, and the old daemon, which now checks every five seconds
+  whether it was superseded, closes its socket and exits. Until the handover
+  ends, the new daemon keeps renewing the reservation, and no launcher or
+  successor supersedes a pid file marked `handover`, so a third daemon can
+  never wait on the successor alone while the original owner still holds its
+  socket. The new daemon connects only after the old process has exited,
+  waiting at most 75 seconds, then marks the pid file `connected` and
+  releases the reservation. If the old process is still alive at the end of
+  the wait,
   the new daemon hands the pid file back, gives up the reservation, logs once,
   and exits without connecting; the next launcher call tries again. A daemon
   that sees its own code change keeps its pid file and launches its successor
