@@ -513,7 +513,7 @@ export function registerBrowseCommand(
     .option(
       "--headed",
       "Automation-controlled headed window for scripted visual checks that need Playwright (batch steps, assertions, HAR, viewport). " +
-        "To show a page to a person or use their real browser, use the computer command (harn-computer skill). Not for signing in; use --login.",
+        "To show a page to a person, give them a link; to work in their own browser, use the computer command (harn-computer skill). Not for signing in; use --login.",
     )
     .option(
       "--browser-channel <name>",

@@ -20,13 +20,21 @@ harn computer lease release
 ```
 
 `harn computer` gives every harness the same desktop control through two
-pinned, checksum-verified driver binaries, each called through its CLI. Agents
-use it whenever work needs a visible window: showing the person a page, using
-their real browser and its signed-in session, or operating a native desktop
-app. Vendor APIs, CLIs, and the headless browser tools still come first for
-reading and checking data, and an automation-controlled headed browser window
-is kept for what only Playwright provides, such as scripted batches with
-assertions, HAR capture, or viewport emulation. The design is in
+pinned, checksum-verified driver binaries, each called through its CLI.
+
+Agents choose the route in three steps: what the task is, how to do it, and
+how the person receives the result. They work invisibly first (vendor APIs,
+CLIs, files, `harn fetch`, headless `harn browse`) and deliver in the chat: an
+answer, a link that reproduces the page's state, or a picture of just the part
+that matters; a page opens in the person's browser only when they ask. The
+desktop is for a desktop program with no file or API route, a site that
+refuses the headless browser even when signed in, or work the person will
+continue in a window no link can hand them. Using the screen, changing
+something in an outside system, and sending a message are three separate
+approvals. An automation-controlled headed browser window is kept for what
+only Playwright provides, such as scripted batches with assertions, HAR
+capture, or viewport emulation. The full routing is in the `harn-computer`
+skill. The design is in
 [decision record 0228](/decisions/0228-computer-use-through-a-pinned-desktop-driver/)
 and [decision record 0231](/decisions/0231-two-desktop-drivers-on-every-desktop/).
 

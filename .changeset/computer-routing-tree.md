@@ -1,0 +1,5 @@
+---
+"harnery": patch
+---
+
+The generated instructions and the `harn-computer` skill now route web and desktop work in three steps: what the task is, how to do it, and how the person receives it. Agents work invisibly first (APIs, CLIs, files, `fetch`, headless `browse`), deliver results in the chat as an answer, a link that reproduces the page's state, or a picture of just the relevant part, and open a page in the person's browser only when asked. The desktop is for a desktop program with no file or API route, a site that refuses the headless browser, or work the person continues in a window no link can hand them. The skill also covers asking once at the start for every sign-in and approval a task needs, keeping the desktop, outside-change and message approvals separate, the `browse --login` sign-in path, stopping instead of escalating to riskier tools, and checking the screen before the first capture. This replaces "the default whenever work needs a visible window", which sent agents to the desktop merely to show a page.

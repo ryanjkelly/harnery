@@ -86,7 +86,7 @@ export function renderInstructionsBlock(
   // Opt-in surface: the default block stays byte-identical unless the project
   // enabled computer use and the skill is actually installed.
   const computerPointer = skills.computer
-    ? `\n\n**Desktop control.** This project enables \`${b} computer\` for driving native desktop apps and real browsers. It is the default whenever work needs a visible window: showing the person a page, using their real browser, or operating a desktop app. APIs, CLIs and headless browser tools still come first for reading and checking data. The \`harn-computer\` skill has the loop and the approval step, and the desktop is one shared resource held by one agent at a time.`
+    ? `\n\n**Desktop control.** This project enables \`${b} computer\` for driving native desktop apps and real browsers. Work invisibly first (APIs, CLIs, files, \`${b} fetch\`, headless \`${b} browse\`) and deliver results in the chat as an answer, a link or a picture; open a page in the person's browser only when they ask. Use the desktop for a desktop program with no file or API route, a site that refuses the headless browser, or work the person will continue in a window no link can hand them. The \`harn-computer\` skill has the routing, the approval step and the loop, and the desktop is one shared resource held by one agent at a time.`
     : "";
   // Render the journal categories from the canonical enum so this prose can
   // never drift from what `journal add` actually accepts (the "note, plan…" list
@@ -536,14 +536,67 @@ say that first; it is the most useful sentence in the reply.`;
 
 function computerBody(b: string): string {
   return `\`${b} computer\` drives this machine's desktop through two pinned desktop drivers.
-Read and check data with a vendor API, a CLI, or the headless browser tools
-(\`${b} fetch\`, headless \`${b} browse\`) first. When the work needs a
-visible window, \`${b} computer\` is the default: showing the person a page,
-using their real browser and its signed-in session, or operating a native
-desktop app. Open an automation-controlled window (\`${b} browse --headed\`,
-\`${b} browse --login --attached\`) only for what Playwright alone gives you
-in a window, such as a scripted batch with assertions, a HAR capture, or
-viewport emulation.
+It is one of several ways to work with pages and programs, and the person's
+attention is the scarce resource: invisible work beats a window they did not
+need, and a result in the chat beats a window somewhere else.
+
+## Choose the route
+
+Decide what the task is, then how to do it, then how the person receives
+it. These are separate choices: a result the person should see does not by
+itself call for the desktop.
+
+**Before starting**, work out the whole task and check quietly which routes
+work (an API, a file, a sign-in the browse profile already holds). Then ask
+once, in the chat, for everything the task needs: any sign-ins, the desktop
+approval if a window is unavoidable, and any approval to change or send
+something, each named. Say before a pop-up or a window appears that it is
+coming.
+
+**How to do it**, most invisible first, one try per route:
+
+1. An API, a CLI command or the file itself.
+2. Reading a page: \`${b} fetch\` for public pages; headless \`${b} browse\` for
+   pages that need JavaScript or a sign-in.
+3. Changing something in a web app or outside system: prepare it in the
+   chat first, then make the change through its API or headless
+   \`${b} browse\` once the person approved it (below).
+4. A sign-in is missing or expired: say a separate browser window is coming,
+   run \`${b} browse --login <url>\` for the person to sign in, and continue
+   when it closes. After a bot check or an unusual-sign-in warning, stop and
+   tell them; never retry it automatically.
+5. The desktop (\`${b} computer\`) only for a desktop program with no file or
+   API route, a site that refuses the headless browser even when signed in,
+   or work the person will continue in a state no link can hand them.
+6. Nothing worked: stop, deliver what you found, and say plainly what could
+   not be done. Never climb to a riskier tool on your own.
+
+An automation-controlled window (\`${b} browse --headed\`,
+\`${b} browse --login --attached\`) is only for what Playwright alone gives you
+in a window, such as a scripted batch with assertions, a HAR capture or
+viewport emulation, and never on an outside account.
+
+**How the person receives it**, in the chat first:
+
+- An answer in plain words, or the headline plus a link to the full result.
+- A web page as a link, one that reproduces the state (search terms,
+  filters) when the site allows. Open it in their browser only when they
+  ask to open or see it now.
+- A state no link can reproduce as a picture of just that part, checked
+  before sending, with a sentence saying what it shows.
+- Work they will continue as a link to the prepared state in their own
+  browser, where they are already signed in; a desktop window only when no
+  link can do it and they agreed to take it over.
+- A step only they may take (a sign-in, a one-time code, a signature, an
+  unapproved message) left ready, with exactly what to press and why.
+
+**Three approvals stay separate.** The desktop approval (\`grant\`, below)
+covers using the screen for one purpose, nothing more. Changing anything in
+an outside system needs the person's approval before the first change:
+creating a draft, filling a field that saves itself, or uploading a file
+already counts. Anything that notifies a person (a send, an invitation, a
+form submission, a signature request) needs approval for that recipient and
+purpose; once approved, finish it yourself and check that it went through.
 
 ## Setup check
 
@@ -676,9 +729,11 @@ lists them.
 - An approval to use the desktop is not approval to communicate. Never click
   Send, Reply, Post, Share, Accept, or Submit, or press Enter in a compose
   field, unless the operator approved that specific message.
-- Everything you capture can reach your model provider. Prefer one window
-  over the full screen, and never capture a visible password manager or a
-  sign-in form with a filled field.
+- Everything you capture can reach your model provider. Before the first
+  capture, check what is on screen; if something the person would not want
+  sent is open (a private document or mail, a password manager, a filled
+  sign-in form), ask them to close it first. Prefer one window over the
+  full screen.
 - Only close apps you launched (cua \`kill_app\`, agent-desktop \`close-app\`).
 
 ## One desktop, one holder
@@ -757,7 +812,7 @@ export const SKILLS: SkillTemplate[] = [
       buildOwnedSkill({
         name: "harn-computer",
         description:
-          "Drive a native desktop app or a real browser through the project's two pinned desktop drivers (agent-desktop snapshots and refs; cua tools, screenshots and isolated browser), as the default whenever work needs a visible window (a page shown to the person, their real browser, a desktop app); APIs, CLIs and headless browser tools come first for reading and checking data. Covers the setup check, which driver to pick, asking the person for approval, each driver's read / act / read back loop, safety rules, and the shared desktop lease.",
+          "Choose how to work with web pages and desktop programs, and drive a native desktop app or a real browser through the project's two pinned desktop drivers (agent-desktop snapshots and refs; cua tools, screenshots and isolated browser). Covers the routing (invisible work first, results in the chat, the desktop only when a window is unavoidable), the three separate approvals, the setup check, which driver to pick, each driver's read / act / read back loop, safety rules, and the shared desktop lease.",
         binName,
         body: computerBody(binName),
       }),
