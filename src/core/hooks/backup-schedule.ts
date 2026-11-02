@@ -2,37 +2,18 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { parseBackupDuration, readHostSnapshotCache } from "../backup/host-snapshot.ts";
+import { harnCliEntry } from "../cli-entry.ts";
 import { backupConfig } from "../config.ts";
-
-/**
- * Detached runner for the scheduled snapshot. It owns no inherited stdio: a
- * hook that hands its stderr pipe to a background child keeps the harness
- * waiting until restic and the remote provider finish, which is the delay the
- * schedule exists to avoid. Output goes to the log; the exit code goes to the
- * status file the next session start reads.
- */
-const RUNNER = `
-harn_bin="$1"
-if_stale="$2"
-log_file="$3"
-status_file="$4"
-shift 4
-stamp() { date -u +%Y-%m-%dT%H:%M:%SZ; }
-if [ -f "$log_file" ] && [ "$(wc -c <"$log_file")" -gt 262144 ]; then
-  tail -c 65536 "$log_file" >"$log_file.rotating" && mv "$log_file.rotating" "$log_file"
-fi
-printf '%s scheduled snapshot start (if-stale %s)\\n' "$(stamp)" "$if_stale" >>"$log_file"
-"$harn_bin" backup snapshot --if-stale "$if_stale" "$@" >>"$log_file" 2>&1
-status=$?
-printf '%s scheduled snapshot exit %s\\n' "$(stamp)" "$status" >>"$log_file"
-printf '{"exit_code":%s,"finished_at":"%s"}\\n' "$status" "$(stamp)" >"$status_file.tmp" && mv "$status_file.tmp" "$status_file"
-exit "$status"
-`.trim();
+import {
+  SCHEDULED_BACKUP_WORKER_FLAG,
+  SCHEDULED_BACKUP_WORKER_PATH,
+  type ScheduledBackupWorkerSpec,
+} from "./backup-schedule-worker.ts";
 
 export interface ScheduledBackupInvocation {
-  harnBin: string;
+  /** The harn CLI entry script the worker runs with `process.execPath`. */
+  cliEntry: string;
   ifStale: string;
   tags: readonly string[];
   logFile: string;
@@ -52,13 +33,15 @@ export interface ScheduledBackupPlan {
   invocation: ScheduledBackupInvocation | null;
 }
 
-export function scheduledBackupInvocation(coordRoot: string): ScheduledBackupInvocation | null {
+export function scheduledBackupInvocation(
+  coordRoot: string,
+  cliEntry: string = harnCliEntry(),
+): ScheduledBackupInvocation | null {
   const schedule = backupConfig(coordRoot).schedule;
   if (!schedule) return null;
-  const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
   const logsDir = join(resolve(coordRoot), ".harnery", "logs");
   return {
-    harnBin: join(packageRoot, "bin", "harn"),
+    cliEntry,
     ifStale: schedule.ifStale,
     tags: schedule.tags,
     logFile: join(logsDir, "backup-schedule.log"),
@@ -89,8 +72,12 @@ export function readScheduledBackupStatus(statusFile: string): ScheduledBackupSt
  * previous run always relaunches so a transient error heals on the next
  * session instead of waiting out the freshness window.
  */
-export function planScheduledBackup(coordRoot: string, now = Date.now()): ScheduledBackupPlan {
-  const invocation = scheduledBackupInvocation(coordRoot);
+export function planScheduledBackup(
+  coordRoot: string,
+  now = Date.now(),
+  cliEntry?: string,
+): ScheduledBackupPlan {
+  const invocation = scheduledBackupInvocation(coordRoot, cliEntry);
   if (!invocation) return { action: "disabled", cue: null, invocation: null };
   const status = readScheduledBackupStatus(invocation.statusFile);
   const failed = status !== null && status.exitCode !== 0;
@@ -108,29 +95,34 @@ export function planScheduledBackup(coordRoot: string, now = Date.now()): Schedu
   return { action: fresh ? "fresh" : "launch", cue, invocation };
 }
 
-/** Launch the configured SessionStart snapshot without extending hook latency. */
-export function scheduleBackupSnapshot(coordRoot: string): {
+/**
+ * Launch the configured SessionStart snapshot without extending hook latency.
+ * `options.cliEntry` replaces the harn CLI entry the worker runs.
+ */
+export function scheduleBackupSnapshot(
+  coordRoot: string,
+  options: { cliEntry?: string } = {},
+): {
   launched: boolean;
   cue: string | null;
 } {
-  const plan = planScheduledBackup(coordRoot);
+  const plan = planScheduledBackup(coordRoot, Date.now(), options.cliEntry);
   if (plan.cue) process.stderr.write(`${plan.cue}\n`);
   if (plan.action !== "launch" || !plan.invocation) return { launched: false, cue: plan.cue };
   const invocation = plan.invocation;
   mkdirSync(dirname(invocation.logFile), { recursive: true });
-  const tagArgs = invocation.tags.flatMap((tag) => ["--tag", tag]);
+  const spec: ScheduledBackupWorkerSpec = {
+    cliEntry: invocation.cliEntry,
+    ifStale: invocation.ifStale,
+    tags: invocation.tags,
+    logFile: invocation.logFile,
+    statusFile: invocation.statusFile,
+  };
+  // The worker runs on this process's own runtime, so the launch needs no
+  // shell and works the same on Windows, macOS and Linux.
   const child = spawn(
-    "bash",
-    [
-      "-c",
-      RUNNER,
-      "harnery-backup",
-      invocation.harnBin,
-      invocation.ifStale,
-      invocation.logFile,
-      invocation.statusFile,
-      ...tagArgs,
-    ],
+    process.execPath,
+    [SCHEDULED_BACKUP_WORKER_PATH, SCHEDULED_BACKUP_WORKER_FLAG, JSON.stringify(spec)],
     {
       cwd: resolve(coordRoot),
       detached: true,
