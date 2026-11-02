@@ -50,25 +50,33 @@ function regionName(event: GitHookEvent): string {
  *
  * pre-commit propagates a blocking exit code; post-commit / post-checkout are
  * best-effort and never fail the git operation.
+ *
+ * The body is the same on every platform, so a checkout reached from two
+ * systems (a Windows folder opened from WSL) does not flip between two
+ * "current" forms that each report the other as stale. It runs the `.mjs`
+ * launcher with Node when Node is on PATH, which works on Windows, Linux and
+ * macOS alike, and the POSIX launcher otherwise.
  */
 export function renderGitHookBody(event: GitHookEvent): string {
   const blocking = event === "pre-commit";
-  const native = process.platform === "win32";
-  const command = `${native ? "node " : ""}"$harnery_hook_bin"`;
-  const extension = native ? ".mjs" : "";
-  const invoke = blocking
-    ? `  ${command} git-hook ${event} "$@"\n` +
-      `  harnery_hook_rc=$?\n` +
-      `  [ "$harnery_hook_rc" -ne 0 ] && exit "$harnery_hook_rc"\n`
-    : `  ${command} git-hook ${event} "$@" >/dev/null 2>&1 || true\n`;
+  const quiet = blocking ? "" : " >/dev/null 2>&1 || true";
+  const after = blocking
+    ? `  harnery_hook_rc=$?\n` + `  [ "$harnery_hook_rc" -ne 0 ] && exit "$harnery_hook_rc"\n`
+    : "";
   return (
     `# Coordination for this hook lives in harnery (agent-coord git-hook ${event});\n` +
     `# upgrading harnery upgrades the behavior. Managed region: do not edit by hand.\n` +
     `harnery_hook_root=$(git rev-parse --show-superproject-working-tree 2>/dev/null)\n` +
     `[ -n "$harnery_hook_root" ] || harnery_hook_root=$(git rev-parse --show-toplevel 2>/dev/null)\n` +
-    `for harnery_hook_bin in "$harnery_hook_root/harnery/bin/agent-coord${extension}" "$harnery_hook_root/node_modules/harnery/bin/agent-coord${extension}"; do\n` +
-    `  [ -${native ? "f" : "x"} "$harnery_hook_bin" ] || continue\n` +
-    invoke +
+    `for harnery_hook_bin in "$harnery_hook_root/harnery/bin/agent-coord" "$harnery_hook_root/node_modules/harnery/bin/agent-coord"; do\n` +
+    `  if [ -f "$harnery_hook_bin.mjs" ] && command -v node >/dev/null 2>&1; then\n` +
+    `    node "$harnery_hook_bin.mjs" git-hook ${event} "$@"${quiet}\n` +
+    `  elif [ -x "$harnery_hook_bin" ]; then\n` +
+    `    "$harnery_hook_bin" git-hook ${event} "$@"${quiet}\n` +
+    `  else\n` +
+    `    continue\n` +
+    `  fi\n` +
+    after +
     `  break\n` +
     `done`
   );

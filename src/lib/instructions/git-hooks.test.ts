@@ -144,6 +144,43 @@ describe("renderGitHookBody", () => {
     expect(body).toContain("/harnery/bin/agent-coord");
     expect(body).toContain("/node_modules/harnery/bin/agent-coord");
   });
+
+  test("is identical on every platform, so a shared checkout never flips", () => {
+    const real = process.platform;
+    const bodies = ["win32", "linux", "darwin"].map((platform) => {
+      Object.defineProperty(process, "platform", { value: platform });
+      try {
+        return renderGitHookBody("pre-commit");
+      } finally {
+        Object.defineProperty(process, "platform", { value: real });
+      }
+    });
+    expect(new Set(bodies).size).toBe(1);
+    expect(bodies[0]).toContain('node "$harnery_hook_bin.mjs"');
+  });
+
+  test("the region runs the guard through sh with node or the POSIX launcher", () => {
+    // Execute the rendered region against a fake project whose agent-coord
+    // launchers record how they were called.
+    const project = join(repo, "project");
+    const bin = join(project, "harnery", "bin");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(
+      join(bin, "agent-coord.mjs"),
+      'import { writeFileSync } from "node:fs"; writeFileSync(process.env.HOOK_OUT, "mjs " + process.argv.slice(2).join(" "));\n',
+    );
+    sh(["git", "init", "--quiet", "-b", "main"], project);
+    const script = join(project, "hook.sh");
+    writeFileSync(script, `#!/bin/sh\n${renderGitHookBody("post-commit")}\n`);
+    const out = join(repo, "hook-out.txt");
+    const r = spawnSync("sh", [script], {
+      cwd: project,
+      env: { ...process.env, HOOK_OUT: out },
+      encoding: "utf8",
+    });
+    expect(r.status).toBe(0);
+    expect(readFileSync(out, "utf8")).toBe("mjs git-hook post-commit");
+  });
 });
 
 describe("adoption-aware check (upgrade safety)", () => {
