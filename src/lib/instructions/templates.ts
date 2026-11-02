@@ -561,10 +561,11 @@ coming.
 3. Changing something in a web app or outside system: prepare it in the
    chat first, then make the change through its API or headless
    \`${b} browse\` once the person approved it (below).
-4. A sign-in is missing or expired: say a separate browser window is coming,
-   run \`${b} browse --login <url>\` for the person to sign in, and continue
-   when it closes. After a bot check or an unusual-sign-in warning, stop and
-   tell them; never retry it automatically.
+4. A sign-in is missing or expired: run \`${b} browse --login --detach <url>\`,
+   which returns once a separate Chrome window is open, and pass its
+   sentence on to the person. When they say they are done, read the log it
+   named and continue. After a bot check or an unusual-sign-in warning, stop
+   and tell them; never retry it automatically.
 5. The desktop (\`${b} computer\`) only for a desktop program with no file or
    API route, a site that refuses the headless browser even when signed in,
    or work the person will continue in a state no link can hand them.

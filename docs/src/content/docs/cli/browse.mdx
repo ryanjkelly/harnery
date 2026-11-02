@@ -64,6 +64,7 @@ signals are outside the identity override. See [ADR 0186](/decisions/0186-consis
 | `--sync-login` | WSL only: copy the URL's site cookies from the Windows sign-in profile into the cookie store now, then exit without loading the page. Refuses while Chrome is open on that profile. Prints `{"loginSync":{"domain","store","status","cookies","merged","sessionCookies","names"}}`. |
 | `--attached` | With `--login`: open an automation-controlled Chrome that this process and `--control-file` can drive. Sites can detect it and may disable the account, so use it only for agent-driven headed sessions on sites you own, never to sign in to a third-party account. |
 | `--login-close-file <path>` | With `--login`, keep the process open until another process creates this signal file, then remove it and close cleanly. |
+| `--detach` | With plain `--login`: return as soon as the sign-in window is open. A background process waits for the window to close, copies the cookies as usual, and writes its report to a log. The command prints a sentence to tell the person, the close file, and the log path. |
 | `--control-file <path>` | With `--login --attached`, publish an owner-only descriptor for repeated [`harn browse-session`](/cli/browse-session/) control. |
 | `--headed` | Headed mode for a one-off (no auth-flow framing). |
 | `--browser-channel <name>` | Browser to launch: `chrome`, `chrome-beta`, `msedge`, or `chromium`. Headed launches default to the installed Google Chrome with automation signals hidden; `chromium` forces the bundled build. `HARNERY_BROWSER_CHANNEL` sets the machine-wide default. |
@@ -108,6 +109,24 @@ Sign-in uses plain `--login`. Nothing is attached to that window, so the site
 sees the same browser a person uses every day. An automation-controlled window
 is detectable no matter which launch flags hide it, and some sites answer one
 by disabling the account that signed in through it.
+
+An agent signs a person in with `--login --detach`. A plain `--login` waits
+until the window closes, so an agent's command would sit silent while the
+person signs in, and a command time limit could stop it before the cookies
+are copied. `--detach` returns within a few seconds:
+
+```bash
+harn browse --login --detach https://example.com/login
+# [--login --detach] The sign-in window is open. Tell the person: "A separate Chrome window is open at example.com. Sign in there, then close that window and tell me when you're done."
+```
+
+Its JSON (`login.status`, `tellPerson`, `closeFile`, `log`) carries the same
+facts. The background process is an ordinary `--login` run on the same profile
+and cookie store. When the person closes the window, it copies the site's
+cookies and writes the result to the log. Creating the close file ends the
+sign-in from the agent's side. If the background process stops before its
+window opens (no Chrome installed, for example), `--detach` exits 1 with the
+log's last lines.
 
 For an agent-driven visible flow on a site you own, pair `--login --attached`
 with either `--control-file` or `--login-close-file`. The owner-only control descriptor lets

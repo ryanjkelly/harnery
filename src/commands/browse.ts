@@ -1,11 +1,21 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { Command } from "commander";
 import { chromium } from "playwright";
 import { PNG } from "pngjs";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
+import { harnCliEntry } from "../core/cli-entry.ts";
 import { resolveBinName } from "../core/config.ts";
 import { splitBatchSteps } from "../lib/browser/batch-steps.ts";
 import {
@@ -230,6 +240,7 @@ interface BrowseOpts {
   syncLogin?: boolean;
   attached?: boolean;
   loginCloseFile?: string;
+  detach?: boolean;
   controlFile?: string;
   headed?: boolean;
   browserArg?: string[];
@@ -508,6 +519,13 @@ export function registerBrowseCommand(
     .option(
       "--login-close-file <path>",
       "With --login, wait for this file instead of terminal Enter, then remove it and close cleanly",
+    )
+    .option(
+      "--detach",
+      "With --login: return as soon as the sign-in window is open, printing a sentence to tell the " +
+        "person, a close file, and a log. A background process waits for the window to close, copies " +
+        "the cookies as usual, and writes its report to the log. For agents, whose commands must not " +
+        "wait on a person.",
     )
     .option(
       "--control-file <path>",
@@ -1110,6 +1128,12 @@ async function runBrowse(
   }
 
   const collectPlan = opts.collect ? buildCollectPlan(opts) : null;
+
+  if (opts.detach) {
+    if (loginMode !== "plain") throw new Error("--detach requires --login without --attached.");
+    await runDetachedLogin(url, opts, loginCloseFile);
+    return;
+  }
 
   const pace = commandPaceGate(opts.pace !== false, (message) => emit.log(message, "info"));
   if (loginMode === "plain") {
@@ -3918,6 +3942,149 @@ async function waitForLoginCloseFile(path: string, signal?: AbortSignal): Promis
   }
   if (signal?.aborted) return;
   unlinkSync(path);
+}
+
+/** Both sign-in paths print this once their window is open. */
+const LOGIN_WINDOW_OPEN = "is open with nothing attached";
+/** How long `--detach` waits for the background sign-in to report its window. */
+const DETACHED_LOGIN_READY_MS = 30_000;
+
+/**
+ * What a detached `--login` runs in the background, and where it keeps its
+ * close file and log. The background process is an ordinary `--login` run
+ * that waits on the close file instead of the terminal, with the store and
+ * profile passed explicitly so it writes where this run would have.
+ */
+export function detachedLoginPlan(input: {
+  url: string;
+  store: string;
+  profile: string;
+  userAgent?: string;
+  cookies: boolean;
+  pace: boolean;
+  closeFile: string | null;
+  dir: string;
+  stamp: string;
+}): { args: string[]; closeFile: string; logFile: string } {
+  const closeFile = input.closeFile ?? join(input.dir, `login-${input.stamp}.close`);
+  const logFile = join(input.dir, `login-${input.stamp}.log`);
+  const args = [
+    "browse",
+    input.url,
+    "--login",
+    "--login-close-file",
+    closeFile,
+    "--store",
+    input.store,
+    "--profile",
+    input.profile,
+  ];
+  if (input.userAgent) args.push("--user-agent", input.userAgent);
+  if (!input.cookies) args.push("--no-cookies");
+  if (!input.pace) args.push("--no-pace");
+  return { args, closeFile, logFile };
+}
+
+/** The sentence an agent passes on to the person while the sign-in window is open. */
+export function loginRelaySentence(url: string): string {
+  let site = url;
+  try {
+    site = harvestDomain(url);
+  } catch {
+    // An address with no registrable domain is shown as given.
+  }
+  return `A separate Chrome window is open at ${site}. Sign in there, then close that window and tell me when you're done.`;
+}
+
+/**
+ * `--login --detach`: start the sign-in in a background process and return
+ * once its window is open, so an agent can tell the person what to do
+ * instead of waiting, silent, on a command a time limit may stop. The
+ * background process copies the cookies when the window closes and writes
+ * its report to the log.
+ */
+async function runDetachedLogin(
+  url: string,
+  opts: BrowseOpts,
+  loginCloseFile: string | null,
+): Promise<void> {
+  const dir = dirname(FALLBACK_OUT_PREFIX);
+  mkdirSync(dir, { recursive: true });
+  const plan = detachedLoginPlan({
+    url,
+    store: resolve(opts.store ?? DEFAULT_STORE),
+    profile: resolve(opts.profile ?? DEFAULT_PROFILE),
+    userAgent: opts.userAgent,
+    cookies: opts.cookies !== false,
+    pace: opts.pace !== false,
+    closeFile: loginCloseFile,
+    dir,
+    stamp: new Date().toISOString().replace(/[:.]/g, "-"),
+  });
+  const logFd = openSync(plan.logFile, "a");
+  const child = spawn(process.execPath, [harnCliEntry(), ...plan.args], {
+    detached: true,
+    stdio: ["ignore", logFd, logFd],
+    windowsHide: true,
+  });
+  closeSync(logFd);
+  let exitCode: number | null | undefined;
+  child.once("exit", (code) => {
+    exitCode = code;
+  });
+  child.once("error", () => {
+    exitCode = -1;
+  });
+  const readLog = () => {
+    try {
+      return readFileSync(plan.logFile, "utf8");
+    } catch {
+      return "";
+    }
+  };
+  const deadline = Date.now() + DETACHED_LOGIN_READY_MS;
+  let open = false;
+  while (Date.now() < deadline) {
+    const text = readLog();
+    if (text.includes(LOGIN_WINDOW_OPEN)) {
+      open = true;
+      break;
+    }
+    if (exitCode !== undefined) {
+      const tail = text.trim().split(/\r?\n/).slice(-5).join("\n");
+      throw new Error(
+        `The sign-in stopped before its window opened (exit ${exitCode ?? "signal"}).${tail ? `\n${tail}` : ""}`,
+      );
+    }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  child.unref();
+  const tellPerson = loginRelaySentence(url);
+  if (open) {
+    emit.log(
+      `[--login --detach] The sign-in window is open. Tell the person: "${tellPerson}"`,
+      "info",
+    );
+  } else {
+    emit.log(
+      `[--login --detach] The sign-in did not report its window within ${DETACHED_LOGIN_READY_MS / 1000} seconds; read ${plan.logFile} before telling the person anything.`,
+      "warn",
+    );
+  }
+  emit.log(
+    `[--login --detach] When they are done, read ${plan.logFile}: it ends with the cookies copied. To close the window from here, create ${plan.closeFile}.`,
+    "info",
+  );
+  emit.data({
+    login: {
+      status: open ? "open" : "unconfirmed",
+      detached: true,
+      pid: child.pid ?? null,
+      tellPerson,
+      closeFile: plan.closeFile,
+      log: plan.logFile,
+    },
+  });
 }
 
 async function waitForTerminalEnter(signal: AbortSignal): Promise<void> {
