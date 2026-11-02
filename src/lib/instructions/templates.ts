@@ -570,11 +570,14 @@ coming.
    API route, a site that refuses the headless browser even when signed in,
    or work the person will continue in a state no link can hand them.
 6. Your agent app's own browser, last: a browser pane built into the app,
-   or the app's connection that drives the person's Chrome. Use it only
-   after every route above failed, and say so in the chat first. Driving the
-   person's Chrome this way needs their agreement, like any use of their
-   running browser, and never serves a sign-in: a sign-in goes through
-   step 4.
+   or the app's connection that drives the person's Chrome. In the Codex app
+   that means its browser and computer-use tools (tabs in the connected
+   Chrome, and opening a page beside the chat); in Claude Desktop, its
+   browser pane tools. Use one only after every route above failed. Before
+   the first call, ask in the chat and wait for a yes: listing or reading
+   the person's open tabs already counts as using their browser, and a tab
+   left open by earlier work is no exception. Never use one for a sign-in;
+   a sign-in goes through step 4.
 7. Nothing worked: stop, deliver what you found, and say plainly what could
    not be done. Never climb to a riskier tool on your own.
 
