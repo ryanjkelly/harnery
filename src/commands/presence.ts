@@ -319,8 +319,15 @@ export function formatRelayStatus(s: RelayStatus): string {
   lines.push(`last idle exit: ${when(s.log.last_idle_exit)}`);
   if (s.log.since_daemon_start) {
     const { connects, disconnects } = s.log.since_daemon_start;
-    lines.push(`since daemon start: ${connects} connects, ${disconnects} disconnects logged`);
+    const partial =
+      s.log.history_complete === false
+        ? ` (incomplete: log history reaches back only to ${s.log.oldest_record_at ?? "nothing"})`
+        : "";
+    lines.push(
+      `since daemon start: ${connects} connects, ${disconnects} disconnects logged${partial}`,
+    );
   }
+  if (s.log.truncated) lines.push("log: read stopped at its size limit; older events not shown");
   if (s.log.error) lines.push(`log: unreadable (${s.log.error})`);
   const peers = (label: string, rows: RelayStatus["relay_cache"]): void => {
     if (rows.length === 0) {

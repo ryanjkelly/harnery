@@ -9,13 +9,25 @@
  * count and timestamps; task text and file lists are left out.
  */
 
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  lstatSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readSync,
+  statSync,
+} from "node:fs";
 import { join } from "node:path";
+import { gunzipSync } from "node:zlib";
 import { coordEnv } from "../../lib/env.ts";
 import { resolveMachineLabel } from "../../lib/machine.ts";
 import { presenceEnabled, presenceRelayUrl } from "../config.ts";
 import { createStorageCatalog } from "../storage/catalog.ts";
+import { type HarneryLogRecordV1, parseLogRecord } from "../storage/jsonl.ts";
 import { readRecentActiveLogs } from "../storage/query.ts";
+import { familyLogDirectory, readSegmentManifest } from "../storage/segments.ts";
 import type { PresenceBlob } from "./blob.ts";
 import {
   originUrl,
@@ -29,8 +41,9 @@ import { deriveRoomCredentials } from "./relay-protocol.ts";
 
 /** Matches readRemoteMachines' window: older blobs render as offline. */
 const REMOTE_STALE_SECS = 900;
-const LOG_TAIL_BYTES = 256 * 1_024;
-const LOG_TAIL_RECORDS = 1_000;
+/** Bounds on the newest-first log walk (uncompressed bytes, files). */
+const HISTORY_MAX_BYTES = 4 * 1_024 * 1_024;
+const HISTORY_MAX_FILES = 64;
 
 export interface RelayLogEvent {
   at: string;
@@ -67,7 +80,12 @@ export interface RelayStatus {
   log: {
     source: "shared" | "legacy";
     error?: string;
+    /** A size or file cap stopped the walk before it had what it needed. */
     truncated: boolean;
+    /** Whether `since_daemon_start` covers the daemon's whole life; null with no running daemon. */
+    history_complete: boolean | null;
+    oldest_record_at: string | null;
+    files_read: number;
     last_connected: RelayLogEvent | null;
     last_disconnected: RelayLogEvent | null;
     last_idle_exit: RelayLogEvent | null;
@@ -143,23 +161,35 @@ async function roomSummary(coordRoot: string): Promise<RelayStatus["room"]> {
   }
 }
 
-/** Classify a relay log record. New records carry `phase`; older ones only
- * a lifecycle message, so the message prefix is the fallback. */
+/** Classify a relay log record. Shared-log records carry `phase`; older
+ * records and legacy text lines carry only a message, so its prefix decides. */
 export function relayLogPhase(event: string, fields: Record<string, unknown>): string {
   if (typeof fields.phase === "string" && fields.phase) return fields.phase;
-  if (event === "relay.disconnected") return "disconnected";
-  if (event.includes("error")) return "error";
   const message = typeof fields.message === "string" ? fields.message : "";
   if (message.startsWith("connected")) return "connected";
+  if (message.startsWith("disconnected")) return "disconnected";
+  if (message.startsWith("connect failed")) return "connect_failed";
   if (message.startsWith("no live sessions")) return "idle_exit";
   if (message.startsWith("pid file superseded")) return "superseded";
+  if (event === "relay.disconnected") return "disconnected";
+  if (event.includes("error")) return "error";
   return "other";
 }
+
+type RelayLogSummary = Pick<
+  RelayStatus["log"],
+  | "last_connected"
+  | "last_disconnected"
+  | "last_idle_exit"
+  | "last_superseded"
+  | "last_error"
+  | "since_daemon_start"
+>;
 
 export function summarizeRelayLog(
   events: readonly RelayLogEvent[],
   daemonStartedAt: string | null,
-): Omit<RelayStatus["log"], "source" | "error" | "truncated"> {
+): RelayLogSummary {
   const last = (pred: (e: RelayLogEvent) => boolean): RelayLogEvent | null => {
     for (let i = events.length - 1; i >= 0; i--) {
       const e = events[i];
@@ -187,43 +217,242 @@ export function summarizeRelayLog(
   };
 }
 
+/** One log file, in newest-first walk order. */
+export interface HistorySource {
+  /** Uncompressed size when known up front (sealed segments). */
+  bytes?: number;
+  read(maxBytes: number): { events: RelayLogEvent[]; bytes: number; truncated: boolean };
+}
+
+export interface RelayHistory {
+  events: RelayLogEvent[];
+  truncated: boolean;
+  history_complete: boolean | null;
+  oldest_record_at: string | null;
+  files_read: number;
+}
+
+/**
+ * Walk log files newest first until the history answers every question: the
+ * walk has passed the daemon's start (so lifetime counts are whole) and found
+ * each kind of lifecycle event, or it ran out of files. A size or file cap
+ * ends it early and sets `truncated`. `history_complete` says whether the
+ * counts since daemon start cover the daemon's whole life (null with no
+ * running daemon); retention that pruned records after the start makes it
+ * false even when the walk read every retained file.
+ */
+export function walkRelayHistory(
+  sources: readonly HistorySource[],
+  opts: { daemonStartedAt: string | null; pruned: boolean; maxBytes?: number; maxFiles?: number },
+): RelayHistory {
+  const maxBytes = opts.maxBytes ?? HISTORY_MAX_BYTES;
+  const maxFiles = opts.maxFiles ?? HISTORY_MAX_FILES;
+  const startMs = opts.daemonStartedAt ? Date.parse(opts.daemonStartedAt) : Number.NaN;
+  const chunks: RelayLogEvent[][] = [];
+  let bytes = 0;
+  let filesRead = 0;
+  let truncated = false;
+  let stoppedEarly = false;
+  for (const source of sources) {
+    if (filesRead >= maxFiles || (source.bytes !== undefined && bytes + source.bytes > maxBytes)) {
+      truncated = true;
+      break;
+    }
+    const r = source.read(maxBytes - bytes);
+    bytes += r.bytes;
+    filesRead++;
+    chunks.unshift(r.events);
+    if (r.truncated) {
+      truncated = true;
+      break;
+    }
+    const events = chunks.flat();
+    const oldest = events[0];
+    const passedStart =
+      !Number.isFinite(startMs) || (oldest !== undefined && Date.parse(oldest.at) < startMs);
+    const sum = summarizeRelayLog(events, null);
+    if (
+      passedStart &&
+      sum.last_connected &&
+      sum.last_disconnected &&
+      sum.last_idle_exit &&
+      sum.last_superseded &&
+      sum.last_error
+    ) {
+      stoppedEarly = true;
+      break;
+    }
+  }
+  const events = chunks.flat();
+  const oldestAt = events[0]?.at ?? null;
+  const exhausted = !truncated && !stoppedEarly;
+  let complete: boolean | null = null;
+  if (Number.isFinite(startMs)) {
+    const passedStart = oldestAt !== null && Date.parse(oldestAt) < startMs;
+    complete = passedStart || (exhausted && !opts.pruned);
+  }
+  return {
+    events,
+    truncated,
+    history_complete: complete,
+    oldest_record_at: oldestAt,
+    files_read: filesRead,
+  };
+}
+
 function readRelayLog(coordRoot: string, daemonStartedAt: string | null): RelayStatus["log"] {
   const shared = coordEnv("SHARED_LOGS") !== "0";
-  let events: RelayLogEvent[] = [];
-  let truncated = false;
+  let history: RelayHistory = {
+    events: [],
+    truncated: false,
+    history_complete: daemonStartedAt ? false : null,
+    oldest_record_at: null,
+    files_read: 0,
+  };
   let error: string | undefined;
   try {
-    if (shared) {
-      const catalog = createStorageCatalog({ coord_root: coordRoot, project_root: coordRoot });
-      const family = catalog.families.find((f) => f.id === "presence-relay-log");
-      if (family) {
-        const tail = readRecentActiveLogs(family, {
-          max_records: LOG_TAIL_RECORDS,
-          max_bytes: LOG_TAIL_BYTES,
-        });
-        truncated = tail.truncated;
-        events = tail.records
-          .filter((r) => r.kind === "record")
-          .map((r) => toEvent(r.emitted_at, r.event, r.fields as Record<string, unknown>));
-      }
-    } else {
-      events = readLegacyLog(relayLegacyLogPath(coordRoot));
-    }
+    const { sources, pruned } = shared
+      ? sharedLogSources(coordRoot)
+      : legacyLogSources(relayLegacyLogPath(coordRoot));
+    history = walkRelayHistory(sources, { daemonStartedAt, pruned });
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
   }
   return {
     source: shared ? "shared" : "legacy",
     ...(error ? { error } : {}),
-    truncated,
-    ...summarizeRelayLog(events, daemonStartedAt),
+    truncated: history.truncated,
+    history_complete: history.history_complete,
+    oldest_record_at: history.oldest_record_at,
+    files_read: history.files_read,
+    ...summarizeRelayLog(history.events, daemonStartedAt),
   };
 }
 
-function readLegacyLog(path: string): RelayLogEvent[] {
-  if (!existsSync(path)) return [];
+/** The shared family's active file, then its sealed segments, newest first. */
+function sharedLogSources(coordRoot: string): { sources: HistorySource[]; pruned: boolean } {
+  const catalog = createStorageCatalog({ coord_root: coordRoot, project_root: coordRoot });
+  const family = catalog.families.find((f) => f.id === "presence-relay-log");
+  if (!family) return { sources: [], pruned: false };
+  const directory = familyLogDirectory(family);
+  const manifest = readSegmentManifest(directory, family);
+  const sources: HistorySource[] = [
+    {
+      read(maxBytes) {
+        const tail = readRecentActiveLogs(family, {
+          max_records: Number.MAX_SAFE_INTEGER,
+          max_bytes: Math.max(1, maxBytes),
+        });
+        return {
+          events: recordEvents(tail.records),
+          bytes: tail.bytes_examined,
+          truncated: tail.truncated,
+        };
+      },
+    },
+  ];
+  for (const segment of [...manifest.segments].reverse()) {
+    sources.push({
+      bytes: segment.bytes,
+      read(maxBytes) {
+        const path = join(directory, segment.file);
+        if (!lstatSync(path).isFile()) {
+          throw new Error(`log segment is not a regular file: ${segment.file}`);
+        }
+        let text: string;
+        try {
+          text = gunzipSync(readFileSync(path), { maxOutputLength: maxBytes }).toString("utf8");
+        } catch (e) {
+          if (e instanceof RangeError) return { events: [], bytes: maxBytes, truncated: true };
+          throw e;
+        }
+        const records: HarneryLogRecordV1[] = [];
+        for (const line of text.split("\n")) {
+          if (!line.trim()) continue;
+          try {
+            records.push(parseLogRecord(line));
+          } catch {
+            /* skip a damaged record */
+          }
+        }
+        return { events: recordEvents(records), bytes: Buffer.byteLength(text), truncated: false };
+      },
+    });
+  }
+  return { sources, pruned: (manifest.pruned_through_sequence ?? 0) > 0 };
+}
+
+function recordEvents(records: readonly HarneryLogRecordV1[]): RelayLogEvent[] {
+  return records
+    .filter((r) => r.kind === "record")
+    .map((r) => toEvent(r.emitted_at, r.event, r.fields as Record<string, unknown>));
+}
+
+/**
+ * The legacy text log and its rotated backups, newest first. With shared logs
+ * off, the daemon's stdout is redirected here, so most lines are its
+ * `[ISO time] message` console lines (relayDaemonLogLine); the occasional JSON
+ * line comes from appendPresenceRelayDiagnostic's fallback.
+ */
+function legacyLogSources(path: string): { sources: HistorySource[]; pruned: boolean } {
+  const paths = [path, ...[1, 2, 3].map((i) => `${path}.${i}`)].filter((p) => existsSync(p));
+  return {
+    // The last backup existing means rotation may already have dropped older text.
+    pruned: existsSync(`${path}.3`),
+    sources: paths.map((p) => ({
+      read(maxBytes) {
+        const { text, bytes, truncated } = readTail(p, maxBytes);
+        return { events: parseLegacyLog(text), bytes, truncated };
+      },
+    })),
+  };
+}
+
+function readTail(
+  path: string,
+  maxBytes: number,
+): { text: string; bytes: number; truncated: boolean } {
+  const st = lstatSync(path);
+  if (!st.isFile()) throw new Error("legacy relay log is not a regular file");
+  const length = Math.min(st.size, Math.max(0, maxBytes));
+  const fd = openSync(path, "r");
+  try {
+    const buf = Buffer.alloc(length);
+    const read = length > 0 ? readSync(fd, buf, 0, length, st.size - length) : 0;
+    let text = buf.subarray(0, read).toString("utf8");
+    const truncated = st.size > length;
+    // A tail that starts mid-line drops the partial first line.
+    if (truncated) text = text.slice(text.indexOf("\n") + 1);
+    return { text, bytes: read, truncated };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+const LEGACY_LINE = /^\[(\d{4}-\d{2}-\d{2}T[^\]]+)\] (.+)$/;
+
+/** Parse legacy text log content: daemon console lines and JSON fallback lines. */
+export function parseLegacyLog(text: string): RelayLogEvent[] {
   const out: RelayLogEvent[] = [];
-  for (const line of readFileSync(path, "utf8").split("\n")) {
+  for (const raw of text.split("\n")) {
+    const line = raw.trimEnd();
+    const m = LEGACY_LINE.exec(line);
+    if (m?.[1] && m[2]) {
+      const at = m[1];
+      const message = m[2];
+      if (!Number.isFinite(Date.parse(at))) continue;
+      const phase = relayLogPhase("relay.lifecycle", { message });
+      const isDrop = phase === "disconnected" || phase === "connect_failed";
+      const fields: Record<string, unknown> = { message };
+      if (isDrop) {
+        const code = /\bcode=(\d+)/.exec(message)?.[1];
+        const clean = /\bclean=(true|false)/.exec(message)?.[1];
+        fields.code = code ? Number(code) : null;
+        if (clean) fields.clean = clean === "true";
+      }
+      out.push(toEvent(at, isDrop ? "relay.disconnected" : "relay.lifecycle", fields));
+      continue;
+    }
     if (!line.startsWith("{")) continue;
     try {
       const {

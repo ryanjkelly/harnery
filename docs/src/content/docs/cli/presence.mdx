@@ -148,7 +148,10 @@ from local files alone; it makes no network calls. It prints one JSON document
   matches the config.
 - `log`: the latest connect, disconnect (with close code), idle exit, takeover
   and error from the presence-relay log, plus connect and disconnect counts
-  since the running daemon started.
+  since the running daemon started. It reads the log newest first, including
+  older sealed files, until it has passed the daemon's start. `truncated`
+  means a size limit stopped it early, and `history_complete: false` means the
+  counts do not cover the daemon's whole life.
 - `relay_cache` and `git_refs`: the other machines this clone has heard
   from over each transport, with agent counts, publish times, ages and a
   `stale` flag. Task text and file lists are left out.

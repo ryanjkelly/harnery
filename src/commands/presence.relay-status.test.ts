@@ -19,6 +19,9 @@ const status: RelayStatus = {
   log: {
     source: "shared",
     truncated: false,
+    history_complete: true,
+    oldest_record_at: "2025-12-31T00:00:00.000Z",
+    files_read: 1,
     last_connected: {
       at: "2026-01-01T00:59:00.000Z",
       event: "relay.lifecycle",
@@ -66,6 +69,17 @@ describe("formatRelayStatus", () => {
     expect(text).toContain("git refs: none");
     expect(text).toContain("last git publish: never");
     expect(text.endsWith("\n")).toBeTrue();
+  });
+
+  test("incomplete or capped history is called out", () => {
+    const text = formatRelayStatus({
+      ...status,
+      log: { ...status.log, truncated: true, history_complete: false },
+    });
+    expect(text).toContain(
+      "(incomplete: log history reaches back only to 2025-12-31T00:00:00.000Z)",
+    );
+    expect(text).toContain("log: read stopped at its size limit; older events not shown");
   });
 
   test("an unconfigured relay says so", () => {

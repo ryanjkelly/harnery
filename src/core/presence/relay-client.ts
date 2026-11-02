@@ -218,7 +218,7 @@ export async function runRelayDaemon(coordRoot: string): Promise<number> {
     event = "relay.lifecycle",
     extra: Record<string, unknown> = {},
   ) => {
-    console.log(`[${new Date().toISOString()}] ${msg}`);
+    console.log(relayDaemonLogLine(new Date(), msg));
     if (coordEnv("SHARED_LOGS") !== "0") {
       appendPresenceRelayDiagnostic(coordRoot, event, { phase, message: msg, ...extra });
     }
@@ -414,4 +414,13 @@ export function relayDaemonStatus(coordRoot: string): {
     return { running: true, pid: rec.pid, url: rec.url, started_at: rec.started_at };
   }
   return { running: false };
+}
+
+/**
+ * The daemon's stdout line. With shared logs off (`HARNERY_SHARED_LOGS=0`),
+ * stdout is redirected to the legacy text log and this line is the only
+ * record of the event, so `presence relay-status` parses this exact shape.
+ */
+export function relayDaemonLogLine(at: Date, message: string): string {
+  return `[${at.toISOString()}] ${message}`;
 }
