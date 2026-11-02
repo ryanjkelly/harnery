@@ -8,6 +8,7 @@ import {
   type AutoUpdateDeps,
   autoUpdateTick,
   checkForUpdate,
+  GIT_HOOK_ENV,
   isHookConfigPath,
   isInstructionPath,
   parseNoticeLines,
@@ -79,10 +80,17 @@ function cfg(overrides: Partial<AutoUpdateConfig> = {}): AutoUpdateConfig {
   };
 }
 
+/** The test process's env without the variables Git sets for hooks, so a tick here is not "inside a hook". */
+function outsideHookEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, [AUTOUPDATE_CHILD_ENV]: "" };
+  for (const name of GIT_HOOK_ENV) delete env[name];
+  return env;
+}
+
 function deps(config: AutoUpdateConfig | null, extra: AutoUpdateDeps = {}): AutoUpdateDeps {
   return {
     readConfig: () => config,
-    env: { ...process.env, [AUTOUPDATE_CHILD_ENV]: "" },
+    env: outsideHookEnv(),
     binName: "harn",
     ...extra,
   };
@@ -95,6 +103,13 @@ describe("autoUpdateTick", () => {
     );
     expect(autoUpdateTick(work, deps(null)).action).toBe("disabled");
     expect(autoUpdateTick(work, deps(cfg({ enabled: false }))).action).toBe("disabled");
+  });
+
+  test("disabled inside a Git hook, so a commit never starts a pull", () => {
+    for (const name of GIT_HOOK_ENV) {
+      const result = autoUpdateTick(work, deps(cfg(), { env: { [name]: "/repo/.git/x" } }));
+      expect(result).toEqual({ action: "disabled", detail: "inside a Git hook" });
+    }
   });
 
   test("claims the stamp before launching, then throttles", () => {

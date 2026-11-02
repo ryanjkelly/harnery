@@ -186,6 +186,19 @@ function isChild(env: NodeJS.ProcessEnv): boolean {
   return env[AUTOUPDATE_CHILD_ENV] === "1";
 }
 
+/**
+ * Git sets these for the hooks it runs (`GIT_INDEX_FILE` during a commit,
+ * `GIT_EXEC_PATH` for every hook). A self-update launched from a hook would
+ * run the project's update steps, typically a pull, in the middle of a commit
+ * or push, or write its state into a hook's temporary snapshot as the hook
+ * deletes it, so activity inside a hook never fires one.
+ */
+export const GIT_HOOK_ENV = ["GIT_INDEX_FILE", "GIT_EXEC_PATH"] as const;
+
+function insideGitHook(env: NodeJS.ProcessEnv): boolean {
+  return GIT_HOOK_ENV.some((name) => Boolean(env[name]));
+}
+
 function dailyDue(cfg: AutoUpdateConfig, state: AutoUpdateState, now: number): boolean {
   if (cfg.dailySteps.length === 0) return false;
   if (!state.dailyAt) return true;
@@ -266,6 +279,7 @@ export function autoUpdateTick(coordRoot: string, deps: AutoUpdateDeps = {}): Ti
   try {
     const d = resolveDeps(deps);
     if (isChild(d.env)) return { action: "disabled", detail: "inside an auto-update run" };
+    if (insideGitHook(d.env)) return { action: "disabled", detail: "inside a Git hook" };
     const cfg = d.readConfig(coordRoot);
     if (!cfg?.enabled) return { action: "disabled" };
     const now = d.now();

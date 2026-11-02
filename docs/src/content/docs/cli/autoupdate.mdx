@@ -51,6 +51,11 @@ Each step is an argv array (no shell) run from the project root with
 `HARNERY_AUTOUPDATE_CHILD=1` in its environment, so a step that calls the host
 CLI does not trigger another check.
 
+Activity inside a Git hook never triggers a check either. Git sets
+`GIT_INDEX_FILE` or `GIT_EXEC_PATH` for the hooks it runs, and a pull started
+from a pre-commit or pre-push hook would change the checkout in the middle of
+that commit or push.
+
 - A line on stdout or stderr that starts with `harnery-notice:` becomes a
   notice for the agents in this checkout. Each agent session sees it once, on
   its next prompt or session start, as a line starting with `Auto-update:`.
