@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { createHarneryProgram, type EmitContext } from "../commander.ts";
 import { stripJsonComments } from "../core/config.ts";
 import { initializeEventLedgerV3, sha256V3 } from "../core/events/v3/index.ts";
@@ -33,6 +33,9 @@ const HOOK = "harnery/bin/agent-hook";
 // Claude Code exports CLAUDE_PROJECT_DIR to hook processes; init anchors the
 // path on it so hooks survive the session shell `cd`ing away from the root.
 const CLAUDE_HOOK = `"\${CLAUDE_PROJECT_DIR:-.}"/${HOOK}`;
+// The wiring tests below assert the POSIX command form; on Windows init writes
+// a native `node ".../run.mjs"` form instead, so they pin the platform.
+const POSIX = { platform: "linux" } as const;
 const CLAUDE = ADAPTER_SPECS["claude-code"];
 const CURSOR = ADAPTER_SPECS.cursor;
 const CODEX = ADAPTER_SPECS.codex;
@@ -309,7 +312,7 @@ describe("init --adapter opencode", () => {
 describe("wireHooks: Claude Code", () => {
   test("wires every event into an empty settings object", () => {
     const settings: Record<string, unknown> = {};
-    const { wired, already } = wireHooks(settings as never, CLAUDE, HOOK, "claude-code");
+    const { wired, already } = wireHooks(settings as never, CLAUDE, HOOK, "claude-code", POSIX);
     expect(wired).toBe(CLAUDE.events.length);
     expect(already).toBe(0);
     const hooks = (settings as { hooks: Record<string, unknown[]> }).hooks;
@@ -321,8 +324,8 @@ describe("wireHooks: Claude Code", () => {
 
   test("is idempotent: second pass wires nothing", () => {
     const settings: Record<string, unknown> = {};
-    wireHooks(settings as never, CLAUDE, HOOK, "claude-code");
-    const second = wireHooks(settings as never, CLAUDE, HOOK, "claude-code");
+    wireHooks(settings as never, CLAUDE, HOOK, "claude-code", POSIX);
+    const second = wireHooks(settings as never, CLAUDE, HOOK, "claude-code", POSIX);
     expect(second.wired).toBe(0);
     expect(second.upgraded).toBe(0);
     expect(second.already).toBe(CLAUDE.events.length);
@@ -341,7 +344,13 @@ describe("wireHooks: Claude Code", () => {
         Notification: [{ hooks: [{ type: "command", command: "echo keep-me" }] }],
       },
     };
-    const { wired, already, upgraded } = wireHooks(settings as never, CLAUDE, HOOK, "claude-code");
+    const { wired, already, upgraded } = wireHooks(
+      settings as never,
+      CLAUDE,
+      HOOK,
+      "claude-code",
+      POSIX,
+    );
     expect(already).toBe(1); // Stop
     expect(upgraded).toBe(0); // already canonical
     expect(wired).toBe(CLAUDE.events.length - 1);
@@ -357,7 +366,7 @@ describe("wireHooks: Claude Code", () => {
         ],
       },
     };
-    const { already, upgraded } = wireHooks(settings as never, CLAUDE, HOOK, "claude-code");
+    const { already, upgraded } = wireHooks(settings as never, CLAUDE, HOOK, "claude-code", POSIX);
     expect(already).toBe(1);
     expect(upgraded).toBe(1);
     expect(settings.hooks.Stop.length).toBe(1);
@@ -376,7 +385,7 @@ describe("wireHooks: Claude Code", () => {
         ],
       },
     };
-    wireHooks(settings as never, CLAUDE, HOOK, "claude-code");
+    wireHooks(settings as never, CLAUDE, HOOK, "claude-code", POSIX);
     const sf = (settings as never as { hooks: Record<string, unknown[]> }).hooks.StopFailure;
     expect(sf.length).toBe(1); // stop-failure was still wired
   });
@@ -395,7 +404,7 @@ describe("wireHooks: adapters without declared timeouts", () => {
         ],
       },
     };
-    wireHooks(settings as never, CLAUDE, HOOK, "claude-code");
+    wireHooks(settings as never, CLAUDE, HOOK, "claude-code", POSIX);
     expect(settings.hooks.Stop[0]!.hooks[0]!.timeout).toBe(45);
     const fresh = (settings.hooks as Record<string, { hooks: { timeout?: number }[] }[]>)
       .SessionStart;
@@ -406,7 +415,7 @@ describe("wireHooks: adapters without declared timeouts", () => {
 describe("wireHooks: Cursor", () => {
   test("uses the flat entry shape, sets version, and installs shell fallbacks without StopFailure", () => {
     const settings: Record<string, unknown> = {};
-    const { wired, already } = wireHooks(settings as never, CURSOR, HOOK, "cursor");
+    const { wired, already } = wireHooks(settings as never, CURSOR, HOOK, "cursor", POSIX);
     expect(wired).toBe(CURSOR.events.length);
     expect(already).toBe(0);
     expect((settings as { version: number }).version).toBe(1);
@@ -431,8 +440,8 @@ describe("wireHooks: Cursor", () => {
 
   test("is idempotent with the flat shape", () => {
     const settings: Record<string, unknown> = {};
-    wireHooks(settings as never, CURSOR, HOOK, "cursor");
-    const second = wireHooks(settings as never, CURSOR, HOOK, "cursor");
+    wireHooks(settings as never, CURSOR, HOOK, "cursor", POSIX);
+    const second = wireHooks(settings as never, CURSOR, HOOK, "cursor", POSIX);
     expect(second.wired).toBe(0);
     expect(second.already).toBe(CURSOR.events.length);
     const hooks = (settings as { hooks: Record<string, unknown[]> }).hooks;
@@ -449,7 +458,7 @@ describe("wireHooks: Cursor", () => {
         ],
       },
     };
-    const result = wireHooks(settings as never, CURSOR, HOOK, "cursor");
+    const result = wireHooks(settings as never, CURSOR, HOOK, "cursor", POSIX);
     expect(result.removed).toBe(0);
     expect(settings.hooks.beforeShellExecution).toEqual([
       { command: `bash ${HOOK} before-shell-execution --adapter cursor` },
@@ -469,7 +478,7 @@ describe("wireHooks: Codex", () => {
 
   test("uses the Claude entry shape with PascalCase keys and no version", () => {
     const settings: Record<string, unknown> = {};
-    const { wired } = wireHooks(settings as never, CODEX, HOOK, "codex");
+    const { wired } = wireHooks(settings as never, CODEX, HOOK, "codex", POSIX);
     expect(wired).toBe(CODEX.events.length);
     expect((settings as { version?: number }).version).toBeUndefined();
     const hooks = (settings as { hooks: Record<string, unknown[]> }).hooks;
@@ -491,7 +500,7 @@ describe("wireHooks: Codex", () => {
 
   test("bounds every hook with a timeout, shorter for SessionEnd", () => {
     const settings: Record<string, unknown> = {};
-    wireHooks(settings as never, CODEX, HOOK, "codex");
+    wireHooks(settings as never, CODEX, HOOK, "codex", POSIX);
     const hooks = (settings as { hooks: Record<string, { hooks: { timeout?: number }[] }[]> })
       .hooks;
     for (const { settingsKey, subcommand } of CODEX.events) {
@@ -512,7 +521,7 @@ describe("wireHooks: Codex", () => {
         ],
       },
     };
-    const first = wireHooks(settings as never, CODEX, HOOK, "codex");
+    const first = wireHooks(settings as never, CODEX, HOOK, "codex", POSIX);
     expect(first.upgraded).toBe(1);
     expect(settings.hooks.PreToolUse[0]!.hooks[0]).toEqual({
       type: "command",
@@ -523,10 +532,11 @@ describe("wireHooks: Codex", () => {
       type: "command",
       command: "echo keep-me",
     });
-    const second = wireHooks(settings as never, CODEX, HOOK, "codex");
+    const second = wireHooks(settings as never, CODEX, HOOK, "codex", POSIX);
     expect(second).toMatchObject({ wired: 0, upgraded: 0, removed: 0 });
     expect(
-      diffWiring(settings as never, CODEX, { agentHookPath: HOOK, adapter: "codex" }).stale,
+      diffWiring(settings as never, CODEX, { agentHookPath: HOOK, adapter: "codex", ...POSIX })
+        .stale,
     ).toEqual([]);
   });
 
@@ -543,7 +553,7 @@ describe("wireHooks: Codex", () => {
         ],
       },
     };
-    const { removed } = wireHooks(settings as never, CODEX, HOOK, "codex");
+    const { removed } = wireHooks(settings as never, CODEX, HOOK, "codex", POSIX);
     expect(removed).toBe(1);
     expect(settings.hooks.SessionEnd).toHaveLength(2);
     expect(settings.hooks.SessionEnd[0]!.hooks[0]!.command).toContain(
@@ -591,7 +601,7 @@ describe("wireHooks: Codex", () => {
         ],
       },
     } as { hooks: { Stop: ClaudeHookGroup[] } };
-    const result = wireHooks(settings as never, CODEX, HOOK, "codex");
+    const result = wireHooks(settings as never, CODEX, HOOK, "codex", POSIX);
     expect(result.upgraded).toBe(1);
     expect(settings.hooks.Stop[0]!.hooks[0]).toEqual({
       type: "command",
@@ -667,7 +677,7 @@ describe("wireHooks: Codex", () => {
 
   test("wires the current SessionEnd lifecycle event", () => {
     const settings: Record<string, unknown> = {};
-    wireHooks(settings as never, CODEX, HOOK, "codex");
+    wireHooks(settings as never, CODEX, HOOK, "codex", POSIX);
     const hooks = (settings as { hooks: Record<string, unknown[]> }).hooks;
     expect(hooks.SessionEnd).toHaveLength(1);
   });
@@ -690,7 +700,7 @@ describe("wireHooks: migration cleanup", () => {
         ],
       },
     };
-    const result = wireHooks(settings as never, CLAUDE, HOOK, "claude-code");
+    const result = wireHooks(settings as never, CLAUDE, HOOK, "claude-code", POSIX);
     expect(result.removed).toBe(2);
     expect(settings.hooks.SessionStart).toHaveLength(1);
     expect(settings.hooks.SessionStart[0]!.hooks.map((hook) => hook.command)).toEqual([
@@ -712,7 +722,7 @@ describe("wireHooks: migration cleanup", () => {
         ],
       },
     };
-    const result = wireHooks(settings as never, CLAUDE, HOOK, "claude-code");
+    const result = wireHooks(settings as never, CLAUDE, HOOK, "claude-code", POSIX);
     expect(result.removed).toBe(1);
     expect(settings.hooks.Stop[0]!.hooks[0]!.command).toBe("echo host-stop");
     expect((settings.hooks as Record<string, unknown[]>).PreCompact).toHaveLength(1);
@@ -728,7 +738,7 @@ describe("wireHooks: migration cleanup", () => {
         ],
       },
     };
-    const result = wireHooks(settings as never, CURSOR, HOOK, "cursor");
+    const result = wireHooks(settings as never, CURSOR, HOOK, "cursor", POSIX);
     expect(result.removed).toBe(1);
     expect(settings.hooks.stop).toEqual([
       { command: `bash ${HOOK} stop --adapter cursor`, loop_limit: 2 },
@@ -745,12 +755,12 @@ describe("wireHooks: migration cleanup", () => {
         stop: [{ command: `bash ${HOOK} stop --adapter cursor` }],
       },
     };
-    const result = wireHooks(settings as never, CURSOR, HOOK, "cursor");
+    const result = wireHooks(settings as never, CURSOR, HOOK, "cursor", POSIX);
     expect(result.upgraded).toBeGreaterThan(0);
     expect(settings.hooks.stop).toEqual([
       { command: `bash ${HOOK} stop --adapter cursor`, loop_limit: 2 },
     ]);
-    const second = wireHooks(settings as never, CURSOR, HOOK, "cursor");
+    const second = wireHooks(settings as never, CURSOR, HOOK, "cursor", POSIX);
     expect(second.upgraded).toBe(0);
     expect(second.already).toBe(CURSOR.events.length);
   });
@@ -949,7 +959,8 @@ describe("init adapter set", () => {
 
     const result = await withoutInstalledHarnesses(() => runInit(root, []));
     expect(result.exitCode).toBe(0);
-    expect(result.text).toContain(".claude/settings.json");
+    // init prints the settings path with the platform's separator.
+    expect(result.text).toMatch(/\.claude[\\/]settings\.json/);
     expect(result.text).toContain("refreshed the opencode plugin");
     expect(readFileSync(entry, "utf8")).not.toContain("// edited");
   });
@@ -971,13 +982,18 @@ describe("init adapter set", () => {
     const root = fixture();
     const bin = mkdtempSync(join(tmpdir(), "harnery-init-shims-"));
     try {
+      const windows = process.platform === "win32";
       for (const name of ["claude", "opencode"]) {
-        const shim = join(bin, name);
-        writeFileSync(shim, "#!/bin/sh\nexit 0\n");
-        chmodSync(shim, 0o755);
+        // Windows finds a `.cmd` shim through PATHEXT; elsewhere an executable script.
+        const shim = join(bin, windows ? `${name}.cmd` : name);
+        writeFileSync(shim, windows ? "@exit /b 0\r\n" : "#!/bin/sh\nexit 0\n");
+        if (!windows) chmodSync(shim, 0o755);
       }
       const previous = process.env.PATH;
-      process.env.PATH = `${bin}:/usr/bin:/bin`;
+      const system = windows
+        ? [join(process.env.SystemRoot ?? "C:\\Windows", "System32")]
+        : ["/usr/bin", "/bin"];
+      process.env.PATH = [bin, ...system].join(delimiter);
       let result: { text: string; exitCode: number };
       try {
         result = await runInit(root, []);
