@@ -57,6 +57,7 @@ import { ArtifactLockBusyError, withArtifactLock } from "./mutation-lock.ts";
 import {
   containsTrackedPath,
   readTrackedPaths,
+  refreshTrackedPaths,
   type TrackedPathSnapshot,
 } from "./tracked-paths.ts";
 
@@ -820,7 +821,9 @@ function cleanArtifactsUnlocked(
   // The inventory may have used a listing read before the lock. One fresh
   // listing covers every recheck below, so a path Git started tracking
   // since then still blocks its deletion without one Git process per entry.
-  const fresh = readTrackedPaths(repoRoot, artifactsRoot(repoRoot));
+  // The lock does not serialize Git staging, so each removal below first
+  // confirms the index is unchanged and lists again when it is not.
+  let fresh = readTrackedPaths(repoRoot, artifactsRoot(repoRoot));
   // The budget bounds deletion work. Inventory cost scales with the store, so
   // counting it here would leave room for only the one guaranteed deletion.
   const started = performance.now();
@@ -869,6 +872,22 @@ function cleanArtifactsUnlocked(
           reason: "entry changed before deletion",
           action: "keep",
         };
+      }
+      fresh = refreshTrackedPaths(repoRoot, fresh);
+      if (containsTrackedPath(repoRoot, current.path, fresh)) {
+        return fresh.entries === null
+          ? {
+              ...current,
+              classification: "unknown",
+              reason: "Git could not list tracked paths before deletion",
+              action: "keep",
+            }
+          : {
+              ...current,
+              classification: "managed-tracked",
+              reason: "Git began tracking a path inside this artifact before deletion",
+              action: "keep",
+            };
       }
       rmSync(current.path, { recursive: true, force: false });
       recordArtifactDeletion(repoRoot, current, now);

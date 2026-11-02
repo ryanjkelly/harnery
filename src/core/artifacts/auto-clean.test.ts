@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import * as childProcess from "node:child_process";
 import { spawnSync } from "node:child_process";
+import * as fsModule from "node:fs";
 import {
   chmodSync,
   existsSync,
@@ -15,7 +16,7 @@ import {
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { processStartToken } from "../agents/state/proc-start.ts";
-import { autoCleanArtifacts, createArtifact } from "./index.ts";
+import { autoCleanArtifacts, cleanArtifacts, createArtifact } from "./index.ts";
 
 const roots: string[] = [];
 const savedEnv: Record<string, string | undefined> = {};
@@ -139,6 +140,9 @@ describe("autoCleanArtifacts", () => {
     for (let i = 0; i < 4; i++) seedExpired(root, T0, `expired-${i}`);
     const kept = createArtifact(root, { slug: "current", purpose: "fresh", retentionDays: 30 });
     writeFileSync(join(kept.path, "payload.txt"), "keep\n");
+    // A real index file, so the per-deletion index check compares an existing file.
+    writeFileSync(join(root, "README.md"), "tracked\n");
+    expect(spawnSync("git", ["add", "README.md"], { cwd: root, windowsHide: true }).status).toBe(0);
     const { result, calls } = countLsFiles(() => autoCleanArtifacts(root, { now: T0_PLUS_3D }));
     expect(result).toMatchObject({ reason: "swept", deleted: 4 });
     expect(calls).toBe(2);
@@ -175,6 +179,46 @@ describe("autoCleanArtifacts", () => {
     expect(existsSync(tracked)).toBe(true);
     expect(existsSync(other)).toBe(false);
   });
+
+  for (const [label, sweep] of [
+    ["autoCleanArtifacts", (root: string) => autoCleanArtifacts(root, { now: T0_PLUS_3D })],
+    [
+      "cleanArtifacts --yes",
+      (root: string) => cleanArtifacts(root, { yes: true, now: T0_PLUS_3D }),
+    ],
+  ] as const) {
+    test(`${label}: a payload staged while an earlier workspace is removed survives`, () => {
+      const root = makeRoot();
+      const first = seedExpired(root, T0, "a-first");
+      const later = seedExpired(root, T0, "b-second");
+      const original = fsModule.rmSync;
+      let staged = false;
+      // Stage the later payload after the locked listing, at the moment the
+      // earlier workspace is being removed. Its size and times do not change.
+      const spy = spyOn(fsModule, "rmSync").mockImplementation(((
+        path: fsModule.PathLike,
+        options?: fsModule.RmOptions,
+      ) => {
+        if (!staged && String(path) === first) {
+          staged = true;
+          const added = spawnSync("git", ["add", "-f", join(later, "payload.txt")], {
+            cwd: root,
+            windowsHide: true,
+          });
+          expect(added.status).toBe(0);
+        }
+        return original(path, options);
+      }) as typeof fsModule.rmSync);
+      try {
+        sweep(root);
+      } finally {
+        spy.mockRestore();
+      }
+      expect(staged).toBe(true);
+      expect(existsSync(first)).toBe(false);
+      expect(existsSync(join(later, "payload.txt"))).toBe(true);
+    });
+  }
 
   test("when Git cannot answer, nothing is deleted", () => {
     const root = mkdtempSync(join(tmpdir(), "harnery-autoclean-nogit-"));
