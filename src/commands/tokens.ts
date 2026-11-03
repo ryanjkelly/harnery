@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import type { Command } from "commander";
+import { type Command, InvalidArgumentError } from "commander";
 import { countTokens } from "gpt-tokenizer/model/gpt-4o";
 import type { EmitContext } from "../commander.ts";
 
@@ -33,7 +33,7 @@ export function registerTokensCommand(program: Command, emit: EmitContext): void
     .option("--limit <n>", "Flag files exceeding N tokens; exit non-zero if any exceed", (v) =>
       Number.parseInt(v, 10),
     )
-    .option("--format <type>", "Output format: table, json, plain", "table")
+    .option("--format <type>", "Output format: table, json, plain", tokensFormat, "table")
     .action((files: string[], opts: TokensOpts) => {
       if (opts.format === "json") emit.config({ format: "json" });
 
@@ -55,6 +55,22 @@ export function registerTokensCommand(program: Command, emit: EmitContext): void
             : null,
       }));
 
+      if (opts.format === "plain") {
+        // One line per file, count first, like `wc`: easy to sort and cut.
+        emit.text(
+          enriched
+            .map((r) =>
+              r.error
+                ? `error\t${r.path}\t${r.error}`
+                : `${r.tokens}\t${r.path}${r.over_limit ? "\tover limit" : ""}`,
+            )
+            .join("\n")
+            .concat("\n"),
+        );
+        if (over.length > 0) emit.setExitCode(1);
+        return;
+      }
+
       emit.data({
         ok: true,
         tokenizer: "o200k_base",
@@ -66,6 +82,15 @@ export function registerTokensCommand(program: Command, emit: EmitContext): void
 
       if (over.length > 0) emit.setExitCode(1);
     });
+}
+
+const TOKENS_FORMATS = ["table", "json", "plain"];
+
+function tokensFormat(value: string): string {
+  if (!TOKENS_FORMATS.includes(value)) {
+    throw new InvalidArgumentError(`expected one of ${TOKENS_FORMATS.join(", ")}`);
+  }
+  return value;
 }
 
 function countFile(path: string): TokenResult {
