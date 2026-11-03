@@ -119,7 +119,7 @@ When more than one host checks out harnery (e.g. two separate monorepos each car
 
 This `AGENTS.md` is the canonical instructions file; `CLAUDE.md` is a verbatim mirror for Claude Code. Edit `AGENTS.md`, then copy it across.
 
-<!-- harnery:begin instructions v=57f656f3 -->
+<!-- harnery:begin instructions v=f7a056e0 -->
 ## harnery coordination
 
 This project runs [harnery](https://harnery.com) for multi-agent coordination.
@@ -136,8 +136,8 @@ widely-shared files.
 **Task lifecycle.** Beside the activity peers already see, declare whether your
 objective is still open: `harn agents lifecycle blocked --reason "<why>"` when
 it cannot proceed, `harn agents lifecycle done` when it is complete, and
-`harn agents lifecycle active` to reopen. `done` requires a current task, a passing Git finalization check, and no held file claims (dirty or unpushed work or a held claim refuses, and nothing is
-written; `harn agents release-claim --all` drops remaining claims). Ordinary `set-task` calls never change lifecycle, and a transition
+`harn agents lifecycle active` to reopen. `done` requires a current task, no held file claims, and a passing Git finalization check (dirty or unpushed work refuses, and nothing is
+written). Ordinary `set-task` calls never change lifecycle, and a transition
 that re-mints the session title tells you the new name to copy. When the whole session is genuinely finished, use the `harn-end` skill as the final workflow.
 
 **Dispatching a team.** Everything else here coordinates the agents already
