@@ -327,6 +327,25 @@ describe.if(posix)("createOpClient against a fake op", () => {
     }
   });
 
+  test("interprets a relative link target against the link's physical folder", async () => {
+    const mock = installMockOp({});
+    execFileSync("git", ["init", "-q"], { cwd: work });
+    execFileSync("mkdir", ["-p", join(work, "subdir")]);
+    symlinkSync("../new-secret.env", join(work, "subdir", "secret.env"));
+    const outside = mkdtempSync(join(tmpdir(), "harn-op-physical-"));
+    try {
+      symlinkSync(join(work, "subdir"), join(outside, "alias"));
+      const op = client();
+      await expect(
+        op.getDocument({ item: "Doc" }, join(outside, "alias", "secret.env")),
+      ).rejects.toThrow("new-secret.env is tracked or not ignored");
+      expect(mock.calls()).toEqual([]);
+      expect(existsSync(join(work, "new-secret.env"))).toBe(false);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
   test("a host may opt out of the ignored-output check", async () => {
     installMockOp({});
     execFileSync("git", ["init", "-q"], { cwd: work });
