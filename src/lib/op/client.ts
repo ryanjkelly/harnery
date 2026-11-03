@@ -303,7 +303,7 @@ function canonicalPath(path: string, hops = 0): string {
   let current = abs;
   for (;;) {
     try {
-      return join(realpathSync(current), ...[...rest].reverse());
+      return join(realpathSync.native(current), ...[...rest].reverse());
     } catch {
       let target: string | undefined;
       try {
@@ -312,10 +312,10 @@ function canonicalPath(path: string, hops = 0): string {
         // current does not exist; climb to its parent.
       }
       if (target !== undefined) {
-        return canonicalPath(
-          join(resolve(dirname(current), target), ...[...rest].reverse()),
-          hops + 1,
-        );
+        // Interpret the target against the link's physical parent, so ".."
+        // means what the filesystem will do, not what the alias path says.
+        const parent = realpathSync.native(dirname(current));
+        return canonicalPath(join(resolve(parent, target), ...[...rest].reverse()), hops + 1);
       }
       const parent = dirname(current);
       if (parent === current) return abs;
@@ -433,17 +433,17 @@ export function createOpClient(config: OpHostConfig) {
 
   /**
    * Refuse to write a secret to a path inside the host repository that Git
-   * would not ignore, so a key cannot be committed by accident.
+   * would not ignore, so a key cannot be committed by accident. Returns the
+   * real destination with every symlink resolved. Callers must write to that
+   * returned path, so the place checked and the place written are the same.
    */
   function assertIgnoredOutput(path: string): string {
-    const abs = resolve(path);
-    if (!requireIgnoredOutput) return abs;
-    // Compare real paths: a symlink outside the repository can point into it,
-    // and the later write follows the link.
+    const destination = canonicalPath(path);
+    if (!requireIgnoredOutput) return destination;
     const repo = canonicalPath(config.repoRoot);
-    const rel = relative(repo, canonicalPath(abs));
+    const rel = relative(repo, destination);
     const outside = rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel);
-    if (outside) return abs;
+    if (outside) return destination;
     // Without --no-index, check-ignore treats a tracked file as not ignored
     // even when a rule matches it, because Git keeps tracking its changes.
     const check = runProcessSync(["git", "-C", repo, "check-ignore", "-q", "--", rel || "."]);
@@ -452,7 +452,7 @@ export function createOpClient(config: OpHostConfig) {
         `${rel || "."} is tracked or not ignored by Git, so a secret written there could be committed. Write it to an ignored, untracked path instead.`,
       );
     }
-    return abs;
+    return destination;
   }
 
   async function getItem(t: OpTarget): Promise<OpItem> {
@@ -757,10 +757,10 @@ export function createOpClient(config: OpHostConfig) {
   ): Promise<{ content?: string; path?: string }> {
     const args = ["document", "get", t.item, ...targetArgs(t)];
     if (out) {
-      assertIgnoredOutput(out);
+      const destination = assertIgnoredOutput(out);
       // --force: op would otherwise prompt before overwriting, which cannot be
       // answered with stdin ignored.
-      args.push("--out-file", out, "--force");
+      args.push("--out-file", destination, "--force");
       await run(args, "op document get");
       return { path: out };
     }
