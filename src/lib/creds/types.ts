@@ -23,6 +23,11 @@ export interface CredentialFileSpec {
   repo?: string | null;
   /** Keys that must be present with a usable value (dotenv, YAML, or JSON files). */
   requiredKeys?: string[];
+  /**
+   * At least one of these keys must hold a usable value, for a file that may
+   * carry either of two shapes (an OAuth client's "installed" or "web" form).
+   */
+  anyOfKeys?: string[];
   /** What the file holds; defaults to its source's description. */
   description?: string;
   /**

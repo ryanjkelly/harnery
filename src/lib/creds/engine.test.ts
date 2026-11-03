@@ -110,6 +110,14 @@ describe("fileReady", () => {
     writeFile(join(root, "h.password"), "");
     expect(e.fileReady(spec("h.password"))).toBe(false);
     expect(e.fileReady(spec("absent.env"))).toBe(false);
+    writeFile(join(root, "i.env"), "# only a comment\n");
+    expect(e.fileReady(spec("i.env"))).toBe(false);
+    writeFile(join(root, "oauth.json"), '{"web":{"client_id":"x"}}');
+    expect(e.fileReady({ path: "oauth.json", anyOfKeys: ["installed", "web"] })).toBe(true);
+    writeFile(join(root, "oauth2.json"), '{"other":1}');
+    expect(e.fileReady({ path: "oauth2.json", anyOfKeys: ["installed", "web"] })).toBe(false);
+    writeFile(join(root, "key.password"), "s3cret\n");
+    expect(e.fileReady(spec("key.password"))).toBe(true);
   });
 
   test("resolves repository and home-relative paths", () => {

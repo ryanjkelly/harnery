@@ -156,6 +156,10 @@ export function createCredsEngine(config: CredsHostConfig, deps: CredsEngineDeps
       const text = readFileSync(abs, "utf8").trim();
       if (!usableCredentialValue(text)) return false;
       const required = spec.requiredKeys ?? [];
+      const anyOf = spec.anyOfKeys ?? [];
+      const keysOk = (values: Record<string, unknown>) =>
+        required.every((key) => usableCredentialValue(values[key])) &&
+        (anyOf.length === 0 || anyOf.some((key) => usableCredentialValue(values[key])));
       if (abs.endsWith(".json")) {
         const value = JSON.parse(text);
         return (
@@ -163,20 +167,18 @@ export function createCredsEngine(config: CredsHostConfig, deps: CredsEngineDeps
           typeof value === "object" &&
           !Array.isArray(value) &&
           Object.keys(value).length > 0 &&
-          required.every((key) => usableCredentialValue(value[key]))
+          keysOk(value)
         );
       }
       // Check the effective value: a later empty assignment overrides an
       // earlier usable one, and YAML rejects duplicate keys outright.
-      const values = /\.ya?ml$/i.test(abs)
-        ? loadYaml(text, { schema: JSON_SCHEMA })
-        : parseEnv(text);
-      return (
-        values !== null &&
-        typeof values === "object" &&
-        !Array.isArray(values) &&
-        required.every((key) => usableCredentialValue((values as Record<string, unknown>)[key]))
-      );
+      const yaml = /\.ya?ml$/i.test(abs);
+      const values = yaml ? loadYaml(text, { schema: JSON_SCHEMA }) : parseEnv(text);
+      if (values === null || typeof values !== "object" || Array.isArray(values)) return false;
+      // An env or YAML file with no settings at all (only comments) is not a credential.
+      const settingsFile = yaml || /(^|[./])env$/i.test(abs);
+      if (settingsFile && Object.keys(values).length === 0) return false;
+      return keysOk(values as Record<string, unknown>);
     } catch {
       return false;
     }
