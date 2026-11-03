@@ -774,6 +774,7 @@ export function createOpClient(config: OpHostConfig) {
         const unsafe = destination
           .split("/")
           .filter(Boolean)
+          // biome-ignore lint/suspicious/noControlCharactersInRegex: Windows rejects control characters in file names, so they must be matched here.
           .find((part) => /[ .]$/.test(part) || /[<>:"\\|?*\x00-\x1f]/.test(part));
         const windows = unsafe === undefined ? wslPathToWindowsVerified(destination) : null;
         if (!windows) {
