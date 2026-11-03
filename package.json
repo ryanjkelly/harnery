@@ -197,6 +197,16 @@
       "types": "./dist/lib/http/index.d.ts",
       "import": "./dist/lib/http/index.js"
     },
+    "./lib/op": {
+      "bun": "./src/lib/op/index.ts",
+      "types": "./dist/lib/op/index.d.ts",
+      "import": "./dist/lib/op/index.js"
+    },
+    "./lib/creds": {
+      "bun": "./src/lib/creds/index.ts",
+      "types": "./dist/lib/creds/index.d.ts",
+      "import": "./dist/lib/creds/index.js"
+    },
     "./lib/pace": {
       "bun": "./src/lib/pace/index.ts",
       "types": "./dist/lib/pace/index.d.ts",
