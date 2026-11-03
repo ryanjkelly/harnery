@@ -379,7 +379,11 @@ export function createCredsEngine(config: CredsHostConfig, deps: CredsEngineDeps
         missing: needs.length,
         unrecoverable,
         backed_off: backedOff,
-        rows: [] as { pull_key: string; status: "healed" | "refreshed" | "failed"; detail?: string }[],
+        rows: [] as {
+          pull_key: string;
+          status: "healed" | "refreshed" | "failed";
+          detail?: string;
+        }[],
       };
     }
 
