@@ -370,10 +370,11 @@ describe("admissionBaseDir", () => {
 
 describe("waitForMemoryPressure", () => {
   test("returns at once when pressure is low or unavailable", async () => {
-    expect(await waitForMemoryPressure({ threshold: 40, maxWaitMs: 1_000, read: () => 3 })).toBe(0);
-    expect(
-      await waitForMemoryPressure({ threshold: 40, maxWaitMs: 1_000, read: () => undefined }),
-    ).toBe(0);
+    // A poll would sleep a full minute, so anything under a second proves no
+    // poll ran. Exact 0 failed whenever the clock ticked during the call.
+    const once = { threshold: 40, pollMs: 60_000, maxWaitMs: 120_000 };
+    expect(await waitForMemoryPressure({ ...once, read: () => 3 })).toBeLessThan(1_000);
+    expect(await waitForMemoryPressure({ ...once, read: () => undefined })).toBeLessThan(1_000);
   });
 
   test("waits while pressure is high and returns once it drops", async () => {
