@@ -183,6 +183,29 @@ describe.if(posix)("pull", () => {
     expect(runs()).toEqual(["b", "a", "b"]);
   });
 
+  test("a failed refresh restores the usable files it started with", async () => {
+    writeFile(join(root, "a.env"), "A=good\n");
+    writeFile(join(root, "b.env"), "B=good\n");
+    const abs = join(root, "scripts", "pull-ab.sh");
+    writeFileSync(
+      abs,
+      `#!/usr/bin/env bash\nprintf 'A=' > "${join(root, "a.env")}"\necho broke >&2\nexit 4\n`,
+    );
+    chmodSync(abs, 0o700);
+    const e = engine([
+      {
+        key: "ab",
+        script: "scripts/pull-ab.sh",
+        description: "AB",
+        files: [{ path: "a.env", requiredKeys: ["A"] }, { path: "b.env" }],
+      },
+    ]);
+    const report = await e.pull("ab", { refresh: true });
+    expect(report.ok).toBe(false);
+    expect(readFileSync(join(root, "a.env"), "utf8")).toBe("A=good\n");
+    expect(readFileSync(join(root, "b.env"), "utf8")).toBe("B=good\n");
+  });
+
   test("a pull that exits 0 but leaves files unusable fails", async () => {
     const e = engine([
       {

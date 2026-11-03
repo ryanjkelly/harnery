@@ -10,7 +10,16 @@
  *   age alone, because a file's age is not evidence that it needs a new read.
  */
 
-import { existsSync, lstatSync, readFileSync, statSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import {
+  existsSync,
+  lstatSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { parseEnv } from "node:util";
@@ -265,8 +274,35 @@ export function createCredsEngine(config: CredsHostConfig, deps: CredsEngineDeps
     const abs = scriptPath(source);
     if (!existsSync(abs))
       return { ok: false, detail: "registered pull script is missing", transport: false };
-    const r = await runScript(abs, repoRoot(source.repo));
+    // Keep every usable output, so a failed run cannot leave a broken copy
+    // behind (a multi-file pull may overwrite one file before it fails).
+    const prior = source.files.flatMap((spec) => {
+      if (!fileReady(spec)) return [];
+      const file = filePath(spec);
+      return [{ file, bytes: readFileSync(file), mode: statSync(file).mode & 0o777 }];
+    });
+    let r: { exitCode: number; stdout: string; stderr: string };
+    try {
+      r = await runScript(abs, repoRoot(source.repo));
+    } catch (error) {
+      r = {
+        exitCode: 1,
+        stdout: "",
+        stderr: error instanceof Error ? error.message : String(error),
+      };
+    }
     if (r.exitCode === 0 && sourceReady(source)) return { ok: true, transport: false };
+    for (const { file, bytes, mode } of prior) {
+      const temporary = `${file}.restore-${randomUUID()}`;
+      try {
+        writeFileSync(temporary, bytes, { mode, flag: "wx" });
+        renameSync(temporary, file);
+      } catch {
+        // Leave whatever is there; the failure is reported either way.
+      } finally {
+        rmSync(temporary, { force: true });
+      }
+    }
     const output = `${r.stderr}\n${r.stdout}`;
     const detail =
       r.exitCode === 0
