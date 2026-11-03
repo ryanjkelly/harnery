@@ -78,10 +78,13 @@ export function instanceLockEndpoint(
   const paths = platform === "win32" ? win32 : posix;
   // One lock per directory, however it is spelled: a symlink, junction or
   // differently cased path to the same root must pick the same endpoint, or
-  // two daemons could each hold a lock for one project.
-  const resolved = canonicalScope(paths.resolve(scope), platform);
+  // two daemons could each hold a lock for one project. The real path already
+  // carries the on-disk case, so it is used as is: folding case would merge
+  // distinct roots on a case-sensitive volume. Only an unresolvable Windows
+  // spelling is folded, since Windows paths are case-insensitive by default.
+  const canonical = canonicalScope(paths.resolve(scope), platform);
   const normalized =
-    platform === "win32" || platform === "darwin" ? resolved.toLowerCase() : resolved;
+    canonical.real || platform !== "win32" ? canonical.path : canonical.path.toLowerCase();
   const hash = createHash("sha256").update(`${name}\0${normalized}`).digest("hex");
   const id = hash.slice(0, 16);
   if (platform === "win32") {
@@ -93,12 +96,15 @@ export function instanceLockEndpoint(
 }
 
 /** The real path of an existing scope on this platform; the resolved spelling otherwise. */
-function canonicalScope(resolved: string, platform: NodeJS.Platform): string {
-  if (platform !== process.platform) return resolved;
+function canonicalScope(
+  resolved: string,
+  platform: NodeJS.Platform,
+): { path: string; real: boolean } {
+  if (platform !== process.platform) return { path: resolved, real: false };
   try {
-    return realpathSync.native(resolved);
+    return { path: realpathSync.native(resolved), real: true };
   } catch {
-    return resolved;
+    return { path: resolved, real: false };
   }
 }
 

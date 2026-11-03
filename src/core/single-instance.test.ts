@@ -10,7 +10,7 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -69,6 +69,31 @@ if (process.platform === "win32") {
 }
 
 describe("instanceLockEndpoint", () => {
+  test("case is kept on POSIX, so distinct roots on a case-sensitive volume stay distinct", () => {
+    expect(instanceLockEndpoint("relay", "/Volumes/Work/Repo", "darwin")).not.toEqual(
+      instanceLockEndpoint("relay", "/Volumes/Work/repo", "darwin"),
+    );
+    expect(instanceLockEndpoint("relay", "/srv/Repo", "linux")).not.toEqual(
+      instanceLockEndpoint("relay", "/srv/repo", "linux"),
+    );
+  });
+
+  test("an existing root spelled in another case maps to its on-disk name where paths ignore case", () => {
+    if (process.platform !== "win32" && process.platform !== "darwin") return;
+    const real = join(scope(), "Repo");
+    mkdirSync(real);
+    const respelled = join(real, "..", "REPO");
+    let sameDirectory = true;
+    try {
+      sameDirectory = realpathSync.native(respelled) === realpathSync.native(real);
+    } catch {
+      sameDirectory = false;
+    }
+    // A case-sensitive volume has no such alias; nothing to compare there.
+    if (!sameDirectory) return;
+    expect(instanceLockEndpoint("relay", respelled)).toEqual(instanceLockEndpoint("relay", real));
+  });
+
   test("a symlink or junction to the project root picks the same endpoint as the real path", () => {
     const base = scope();
     const real = join(base, "repo");
