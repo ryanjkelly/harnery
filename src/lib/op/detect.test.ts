@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { detectOp, isWslRuntime, opEnvironment } from "./detect.ts";
+import { detectOp, isWslRuntime, opEnvironment, windowsLocalAppData } from "./detect.ts";
 
 function runtime(options: {
   env?: Record<string, string | undefined>;
@@ -166,5 +166,96 @@ describe("opEnvironment", () => {
 
   test("does not change non-macOS environments", () => {
     expect(opEnvironment({ PATH: "/bin" }, "linux")).toEqual({ PATH: "/bin" });
+  });
+});
+
+describe("WSL runtime detection (marker and kernel order)", () => {
+  test("recognizes scrubbed Linux environments from the kernel", () => {
+    expect(isWslRuntime({}, "linux", () => true)).toBe(true);
+    expect(isWslRuntime({}, "linux", () => false)).toBe(false);
+  });
+
+  test("recognizes either environment marker without reading the kernel", () => {
+    const kernel = () => {
+      throw new Error("Unexpected kernel read");
+    };
+    expect(isWslRuntime({ WSL_INTEROP: "/run/WSL/123_interop" }, "linux", kernel)).toBe(true);
+    expect(isWslRuntime({ WSL_DISTRO_NAME: "Ubuntu" }, "linux", kernel)).toBe(true);
+  });
+
+  test("does not probe the Linux kernel on other platforms", () => {
+    for (const platform of ["darwin", "win32"]) {
+      expect(
+        isWslRuntime({}, platform, () => {
+          throw new Error("Unexpected kernel read");
+        }),
+      ).toBe(false);
+    }
+  });
+});
+
+describe("windowsLocalAppData", () => {
+  test("resolves cmd.exe when WSL has a Linux-only PATH", () => {
+    const calls: string[][] = [];
+    const results = [
+      "/mnt/c/Windows/System32/cmd.exe",
+      "C:\\Users\\fixture\\AppData\\Local",
+      "/mnt/c/Users/fixture/AppData/Local",
+    ];
+    expect(
+      windowsLocalAppData({
+        wsl: true,
+        which: () => null,
+        run: (args) => {
+          calls.push(args);
+          return results.shift() ?? null;
+        },
+      }),
+    ).toEqual({
+      win: "C:\\Users\\fixture\\AppData\\Local",
+      wsl: "/mnt/c/Users/fixture/AppData/Local",
+    });
+    expect(calls).toEqual([
+      ["wslpath", "-u", "C:\\Windows\\System32\\cmd.exe"],
+      ["/mnt/c/Windows/System32/cmd.exe", "/c", "echo %LOCALAPPDATA%"],
+      ["wslpath", "-u", "C:\\Users\\fixture\\AppData\\Local"],
+    ]);
+  });
+
+  test("uses cmd.exe already on PATH", () => {
+    const calls: string[][] = [];
+    const results = ["C:\\Users\\fixture\\AppData\\Local", "/mnt/c/Users/fixture/AppData/Local"];
+    const paths = windowsLocalAppData({
+      wsl: true,
+      which: () => "/windows/cmd.exe",
+      run: (args) => {
+        calls.push(args);
+        return results.shift() ?? null;
+      },
+    });
+    expect(paths?.wsl).toBe("/mnt/c/Users/fixture/AppData/Local");
+    expect(calls[0]).toEqual(["/windows/cmd.exe", "/c", "echo %LOCALAPPDATA%"]);
+    expect(calls).toHaveLength(2);
+  });
+
+  test("does not launch Windows commands off WSL", () => {
+    expect(
+      windowsLocalAppData({
+        wsl: false,
+        run: () => {
+          throw new Error("unexpected subprocess");
+        },
+      }),
+    ).toBeNull();
+  });
+
+  test("fails closed when interop cannot resolve cmd.exe", () => {
+    expect(
+      windowsLocalAppData({
+        wsl: true,
+        which: () => null,
+        run: () => null,
+      }),
+    ).toBeNull();
   });
 });
