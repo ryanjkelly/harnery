@@ -10,7 +10,7 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -69,6 +69,19 @@ if (process.platform === "win32") {
 }
 
 describe("instanceLockEndpoint", () => {
+  test("a symlink or junction to the project root picks the same endpoint as the real path", () => {
+    const base = scope();
+    const real = join(base, "repo");
+    mkdirSync(real);
+    const alias = join(base, "repo-link");
+    // A junction needs no privilege on Windows; elsewhere it is an ordinary directory symlink.
+    symlinkSync(real, alias, process.platform === "win32" ? "junction" : "dir");
+    expect(instanceLockEndpoint("relay", alias)).toEqual(instanceLockEndpoint("relay", real));
+    expect(instanceLockEndpoint("relay", join(alias, "."))).toEqual(
+      instanceLockEndpoint("relay", real),
+    );
+  });
+
   test("is a named pipe on Windows and one loopback port on every POSIX system", () => {
     const pipe = instanceLockEndpoint("relay", "C:\\Work\\Repo", "win32");
     expect(pipe.kind).toBe("pipe");

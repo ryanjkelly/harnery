@@ -18,6 +18,7 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { createConnection, createServer, type Server } from "node:net";
 import { posix, win32 } from "node:path";
 
@@ -75,8 +76,12 @@ export function instanceLockEndpoint(
   platform: NodeJS.Platform = process.platform,
 ): InstanceLockEndpoint {
   const paths = platform === "win32" ? win32 : posix;
-  const resolved = paths.resolve(scope);
-  const normalized = platform === "win32" ? resolved.toLowerCase() : resolved;
+  // One lock per directory, however it is spelled: a symlink, junction or
+  // differently cased path to the same root must pick the same endpoint, or
+  // two daemons could each hold a lock for one project.
+  const resolved = canonicalScope(paths.resolve(scope), platform);
+  const normalized =
+    platform === "win32" || platform === "darwin" ? resolved.toLowerCase() : resolved;
   const hash = createHash("sha256").update(`${name}\0${normalized}`).digest("hex");
   const id = hash.slice(0, 16);
   if (platform === "win32") {
@@ -85,6 +90,16 @@ export function instanceLockEndpoint(
   const span = INSTANCE_LOCK_PORT_MAX - INSTANCE_LOCK_PORT_MIN + 1;
   const port = INSTANCE_LOCK_PORT_MIN + (Number.parseInt(hash.slice(16, 24), 16) % span);
   return { kind: "tcp", id, host: "127.0.0.1", port };
+}
+
+/** The real path of an existing scope on this platform; the resolved spelling otherwise. */
+function canonicalScope(resolved: string, platform: NodeJS.Platform): string {
+  if (platform !== process.platform) return resolved;
+  try {
+    return realpathSync.native(resolved);
+  } catch {
+    return resolved;
+  }
 }
 
 function bannerFor(endpoint: InstanceLockEndpoint, nonce: string): string {
