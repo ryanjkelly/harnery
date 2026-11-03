@@ -18,7 +18,13 @@ import {
 import { readLedgerV3 } from "../../src/core/events/v3/reader.ts";
 
 const HARNERY_DIR = path.resolve(import.meta.dir, "../..");
-const HARN = path.join(HARNERY_DIR, "bin", "harn");
+// The `.mjs` launcher through the running runtime, not the bash wrapper, which
+// Windows cannot spawn directly.
+const HARN = path.join(HARNERY_DIR, "bin", "harn.mjs");
+// The codex-wsl bridge forwards a Windows Codex session into a Linux writer,
+// and the V3 contract rejects a bridged event from any other platform. Off
+// Linux the Codex fixtures run as a plain, unbridged Codex session instead.
+const BRIDGE = process.platform === "linux" ? "codex-wsl" : undefined;
 const OWNER = "01a04561-bb62-7432-a885-32005d8aceb7";
 const FOREIGN_OWNER = "019f30c1-4ccd-78bc-9216-40a69a3c7128";
 const CURSOR_OWNER = "019f31a2-95d1-7a0f-801f-74db61328160";
@@ -50,20 +56,20 @@ function makeSandbox(): string {
     payload: { session_id: OWNER, raw: {}, source: "resume" },
     adapter: "codex",
     instanceId: OWNER,
-    bridge: "codex-wsl",
+    ...(BRIDGE ? { bridge: BRIDGE } : {}),
   });
   if (recorded.state !== "recorded") throw new Error(`session start was ${recorded.state}`);
   return root;
 }
 
 function harn(root: string, args: string[], extraEnv: Record<string, string> = {}) {
-  return spawnSync("bash", [HARN, ...args], {
+  return spawnSync(process.execPath, [HARN, ...args], {
     cwd: root,
     encoding: "utf8",
     env: {
       ...process.env,
       HARNERY_COORD_ROOT_OVERRIDE: root,
-      HARNERY_AGENT_COORD_BRIDGE: "codex-wsl",
+      HARNERY_AGENT_COORD_BRIDGE: BRIDGE ?? "",
       HARNERY_AGENT_COORD_SESSION_ID: OWNER,
       CODEX_THREAD_ID: OWNER,
       ...extraEnv,
@@ -137,64 +143,69 @@ afterEach(() => {
 });
 
 describe("harn agents heal", () => {
-  test("onboards a fresh forwarded Codex identity once, repairs its cache, and passes whoami", () => {
-    const root = makeLedgerSandbox();
-    expect(readHookProducerStateV3(root, "codex", OWNER)).toBeUndefined();
-    expect(readHeartbeat(root, OWNER)).toBeNull();
+  // Heal onboards a Codex identity from the environment only when it arrives
+  // through the bridge, which needs the Linux writer.
+  test.skipIf(!BRIDGE)(
+    "onboards a fresh forwarded Codex identity once, repairs its cache, and passes whoami",
+    () => {
+      const root = makeLedgerSandbox();
+      expect(readHookProducerStateV3(root, "codex", OWNER)).toBeUndefined();
+      expect(readHeartbeat(root, OWNER)).toBeNull();
 
-    const first = harn(root, ["agents", "heal", "--json"]);
+      const first = harn(root, ["agents", "heal", "--json"]);
 
-    expect(first.status).toBe(0);
-    expect(JSON.parse(first.stdout)).toMatchObject({
-      rows: [
-        {
-          instance_id: OWNER,
-          action: "repair-coordination-cache",
-          outcome: "cache_present",
-          after: { instance_id: OWNER, platform: "codex" },
+      expect(first.status).toBe(0);
+      expect(JSON.parse(first.stdout)).toMatchObject({
+        rows: [
+          {
+            instance_id: OWNER,
+            action: "repair-coordination-cache",
+            outcome: "cache_present",
+            after: { instance_id: OWNER, platform: "codex" },
+          },
+        ],
+        meta: {
+          kind: "cache",
+          automatic: true,
+          authority: "event-ledger-v3",
+          adapter: "codex",
+          bootstrap: "created",
         },
-      ],
-      meta: {
-        kind: "cache",
-        automatic: true,
-        authority: "event-ledger-v3",
-        adapter: "codex",
-        bootstrap: "created",
-      },
-    });
-    const firstState = readHookProducerStateV3(root, "codex", OWNER);
-    if (!firstState) throw new Error("heal did not onboard the Codex generation");
-    const firstCache = readHeartbeat(root, OWNER);
-    expect(firstCache).toMatchObject({
-      instance_id: OWNER,
-      platform: "codex",
-      v3_generation_id: firstState.generation_id,
-    });
-    expect(
-      ledgerEvents(root).filter((event) => event.event_type === "session.started"),
-    ).toHaveLength(1);
-    expectNoInventedTurn(root);
+      });
+      const firstState = readHookProducerStateV3(root, "codex", OWNER);
+      if (!firstState) throw new Error("heal did not onboard the Codex generation");
+      const firstCache = readHeartbeat(root, OWNER);
+      expect(firstCache).toMatchObject({
+        instance_id: OWNER,
+        platform: "codex",
+        v3_generation_id: firstState.generation_id,
+      });
+      expect(
+        ledgerEvents(root).filter((event) => event.event_type === "session.started"),
+      ).toHaveLength(1);
+      expectNoInventedTurn(root);
 
-    const whoami = harn(root, ["agents", "whoami", "--json"]);
-    expect(whoami.status).toBe(0);
-    expect(JSON.parse(whoami.stdout)).toMatchObject({
-      instance_id: OWNER,
-      platform: "codex",
-      resolution_source: "session_env",
-    });
+      const whoami = harn(root, ["agents", "whoami", "--json"]);
+      expect(whoami.status).toBe(0);
+      expect(JSON.parse(whoami.stdout)).toMatchObject({
+        instance_id: OWNER,
+        platform: "codex",
+        resolution_source: "session_env",
+      });
 
-    const repeated = harn(root, ["agents", "heal", "--json"]);
+      const repeated = harn(root, ["agents", "heal", "--json"]);
 
-    expect(repeated.status).toBe(0);
-    const repeatedState = readHookProducerStateV3(root, "codex", OWNER);
-    const repeatedCache = readHeartbeat(root, OWNER);
-    expect(repeatedState?.generation_id).toBe(firstState.generation_id);
-    expect(repeatedCache?.v3_generation_id).toBe(firstCache?.v3_generation_id);
-    expect(
-      ledgerEvents(root).filter((event) => event.event_type === "session.started"),
-    ).toHaveLength(1);
-    expectNoInventedTurn(root);
-  });
+      expect(repeated.status).toBe(0);
+      const repeatedState = readHookProducerStateV3(root, "codex", OWNER);
+      const repeatedCache = readHeartbeat(root, OWNER);
+      expect(repeatedState?.generation_id).toBe(firstState.generation_id);
+      expect(repeatedCache?.v3_generation_id).toBe(firstCache?.v3_generation_id);
+      expect(
+        ledgerEvents(root).filter((event) => event.event_type === "session.started"),
+      ).toHaveLength(1);
+      expectNoInventedTurn(root);
+    },
+  );
 
   test("onboards a fresh Claude Code identity from its native session environment", () => {
     const root = makeLedgerSandbox();

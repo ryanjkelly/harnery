@@ -175,13 +175,24 @@ export function loadHarneryOpenCodeConfig(pluginDir: string): HarneryOpenCodeCon
   return { schema: HARNERY_OPENCODE_CONFIG_SCHEMA, agentHook, projectRoot, timeoutMs };
 }
 
-/** argv for one bridge call, mirroring `hookCommand` in `src/core/hooks/adapter/wiring.ts`. */
-export function agentHookArgv(config: HarneryOpenCodeConfig, subcommand: string): string[] {
+/**
+ * argv for one bridge call, mirroring `hookCommand` in `src/core/hooks/adapter/wiring.ts`.
+ * Windows cannot run the POSIX launcher script, so there a launcher path runs its
+ * sibling `run.mjs` through Node, as init's native hook command does.
+ */
+export function agentHookArgv(
+  config: HarneryOpenCodeConfig,
+  subcommand: string,
+  platform: NodeJS.Platform = process.platform,
+): string[] {
   const tail = [subcommand, "--adapter", ADAPTER];
   if (config.agentHook === "agent-hook") return ["agent-hook", ...tail];
   const launcher = isAbsolute(config.agentHook)
     ? config.agentHook
     : resolve(config.projectRoot, config.agentHook);
+  if (platform === "win32") {
+    return ["node", join(dirname(launcher), "run.mjs"), "agent-hook", ...tail];
+  }
   return ["bash", launcher, ...tail];
 }
 
@@ -193,8 +204,9 @@ export function agentHookArgv(config: HarneryOpenCodeConfig, subcommand: string)
  */
 export function shellPathDirs(projectRoot: string, home = homedir()): string[] {
   const dirs = [join(projectRoot, "bin")];
+  const bun = process.platform === "win32" ? "bun.exe" : "bun";
   for (const bin of [join(home, ".bun", "bin"), "/usr/local/bin", "/opt/homebrew/bin"]) {
-    if (existsSync(join(bin, "bun"))) dirs.push(bin);
+    if (existsSync(join(bin, bun))) dirs.push(bin);
   }
   return dirs.filter((dir) => existsSync(dir));
 }

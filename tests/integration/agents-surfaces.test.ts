@@ -32,7 +32,9 @@ import { readLedgerV3 } from "../../src/core/events/v3/reader.ts";
 import { peerInbox } from "../../src/core/inbox/peer-messages.ts";
 
 const HARNERY_DIR = path.resolve(import.meta.dir, "../..");
-const HARN = path.join(HARNERY_DIR, "bin", "harn");
+// The `.mjs` launcher through the running runtime, not the bash wrapper, which
+// Windows cannot spawn directly.
+const HARN = path.join(HARNERY_DIR, "bin", "harn.mjs");
 const OWNER = "surface-owner";
 const sandboxes: string[] = [];
 
@@ -86,7 +88,7 @@ function makeSandbox(): string {
 }
 
 function harn(root: string, args: string[], extraEnv: Record<string, string> = {}) {
-  return spawnSync("bash", [HARN, ...args], {
+  return spawnSync(process.execPath, [HARN, ...args], {
     cwd: root,
     encoding: "utf8",
     env: {
@@ -107,6 +109,12 @@ function failingCoordBinDir(root: string): string {
   const binary = path.join(binDir, "agent-coord");
   writeFileSync(binary, "#!/bin/sh\nprintf 'forced emit failure\\n' >&2\nexit 73\n", "utf8");
   chmodSync(binary, 0o755);
+  // Windows runs the sibling `.mjs` launcher through the runtime instead.
+  writeFileSync(
+    `${binary}.mjs`,
+    "process.stderr.write('forced emit failure\\n');\nprocess.exit(73);\n",
+    "utf8",
+  );
   return binDir;
 }
 

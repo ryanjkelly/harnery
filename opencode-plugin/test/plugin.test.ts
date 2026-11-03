@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import {
   agentHookArgv,
   type Bridge,
@@ -74,9 +74,16 @@ describe("pure translation helpers", () => {
       "--adapter",
       "opencode",
     ]);
-    expect(agentHookArgv({ ...base, agentHook: "harnery/bin/agent-hook" }, "stop")).toEqual([
-      "bash",
-      "/repo/harnery/bin/agent-hook",
+    const launcher = resolve("/repo", "harnery/bin/agent-hook");
+    expect(
+      agentHookArgv({ ...base, agentHook: "harnery/bin/agent-hook" }, "stop", "linux"),
+    ).toEqual(["bash", launcher, "stop", "--adapter", "opencode"]);
+    expect(
+      agentHookArgv({ ...base, agentHook: "harnery/bin/agent-hook" }, "stop", "win32"),
+    ).toEqual([
+      "node",
+      join(dirname(launcher), "run.mjs"),
+      "agent-hook",
       "stop",
       "--adapter",
       "opencode",
@@ -272,17 +279,18 @@ describe("Harnery OpenCode plugin", () => {
     try {
       mkdirSync(join(root, "bin"));
       mkdirSync(join(home, ".bun", "bin"), { recursive: true });
-      writeFileSync(join(home, ".bun", "bin", "bun"), "");
+      const bun = process.platform === "win32" ? "bun.exe" : "bun";
+      writeFileSync(join(home, ".bun", "bin", bun), "");
       expect(shellPathDirs(root, home)).toEqual([join(root, "bin"), join(home, ".bun", "bin")]);
       const env: Record<string, string | undefined> = { PATH: "/usr/bin" };
       prependShellPath(env, root, home);
-      expect(env.PATH?.split(":")).toEqual([
+      expect(env.PATH?.split(delimiter)).toEqual([
         join(root, "bin"),
         join(home, ".bun", "bin"),
         "/usr/bin",
       ]);
       prependShellPath(env, root, home);
-      expect(env.PATH?.split(":").filter((dir) => dir === join(root, "bin")).length).toBe(1);
+      expect(env.PATH?.split(delimiter).filter((dir) => dir === join(root, "bin")).length).toBe(1);
     } finally {
       rmSync(root, { recursive: true, force: true });
       rmSync(home, { recursive: true, force: true });
