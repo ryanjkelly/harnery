@@ -57,6 +57,7 @@ import {
   acquireInstanceLock,
   type InstanceLock,
   instanceLockEndpoint,
+  instanceLockFileEndpoint,
 } from "../single-instance.ts";
 import { closeProcessLoggers, legacyLogFields, processLogger } from "../storage/logger.ts";
 import { RotatingTextSink } from "../storage/process-log.ts";
@@ -370,6 +371,11 @@ export function relayInstanceLockEndpoint(coordRoot: string): string {
   return instanceLockEndpoint("relay", coordRoot, presenceDir(coordRoot));
 }
 
+/** The socket file used where the runtime refuses an abstract address (Linux). */
+export function relayInstanceLockFallback(coordRoot: string): string {
+  return instanceLockFileEndpoint("relay", coordRoot, presenceDir(coordRoot));
+}
+
 /**
  * Decide whether this daemon may connect. Exclusivity comes from the relay
  * instance lock, which the operating system releases when its holder exits
@@ -409,7 +415,10 @@ export async function relayStartupGate(
   const wait = options.wait ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
   const token = options.reservationToken ?? inheritedReservationToken();
   const endpoint = options.lockEndpoint ?? relayInstanceLockEndpoint(coordRoot);
-  const acquire = options.acquire ?? ((path: string) => acquireInstanceLock(path));
+  const acquire =
+    options.acquire ??
+    ((path: string) =>
+      acquireInstanceLock(path, { fallback: relayInstanceLockFallback(coordRoot) }));
   const log =
     options.log ??
     ((phase: string, message: string) =>

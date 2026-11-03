@@ -90,12 +90,22 @@ and an unknown build counts as "restart needed", which would loop if acted on.
   must hold the project's relay instance lock before it opens the relay
   socket or starts watching the ledger, and it holds the lock for its whole
   life. The lock is a local IPC server: a named pipe on Windows
-  (`\\.\pipe\harnery-relay-<hash of the project root>`), a Unix socket in
-  `.harnery/presence/` elsewhere (in the system temp directory when that
-  path would be too long). Only one process can listen on it, and the
-  operating system closes it when that process exits or crashes. A Unix
-  socket file left by a crash is detected by a refused connection, removed,
-  and the listen retried once.
+  (`\\.\pipe\harnery-relay-<hash of the project root>`), an
+  abstract-namespace Unix socket on Linux (no file at all), and a Unix
+  socket file in `.harnery/presence/` on macOS (in the system temp directory
+  when that path would be too long; Linux also falls back to this file when
+  the runtime refuses an abstract address). Only one process can listen on
+  it, and the operating system closes it when that process exits or crashes.
+  A socket file left by a crash is recovered only by the starter that
+  atomically creates a `<socket>.recover` guard directory, and only after
+  probing the socket again under the guard and finding it still refuses
+  connections; any other starter treats it as held. Without the guard, two
+  starters that both probed the file stale could each unlink and bind, and
+  unlinking does not close the first listener. A guard older than ten
+  seconds is removed as left by a recoverer that crashed. That leaves one
+  residual window: a recoverer that crashes mid-recovery, then two starters
+  that both find its guard expired at the same moment. Windows and Linux
+  have no stale state, so the window exists only for socket files.
 - **Replacement waits for the lock.** A successor that finds the lock held
   by a live daemon on older code marks the pid file `handover`, which that
   daemon sees as superseded within five seconds; it closes its socket and
