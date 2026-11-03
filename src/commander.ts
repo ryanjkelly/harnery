@@ -555,6 +555,9 @@ function harneryCommandBundles({
     lazy("files", "Mint browser links for files served by the local dashboard", async (program) =>
       (await import("./commands/files.ts")).registerFilesCommand(program, emit, context),
     ),
+    lazy("open", "Open a web page in the person's default browser", async (program) =>
+      (await import("./commands/open.ts")).registerOpenCommand(program, emit),
+    ),
     lazy(
       "read [html-file]",
       `Extract clean readable markdown from HTML. Reads from file or stdin (use '-'). Pair with \`${binName} fetch\` or \`${binName} browse\` for scrape-to-markdown.`,

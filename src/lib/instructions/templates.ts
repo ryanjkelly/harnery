@@ -595,9 +595,9 @@ viewport emulation, and never on an outside account.
 - An answer in plain words, or the headline plus a link to the full result.
 - A web page as a link, one that reproduces the state (search terms,
   filters) when the site allows. Open it in their browser only when they
-  ask to open or see it now; "show me" counts as asking. Open it with the
-  operating system's default-browser command, not a browser pane in your
-  app.
+  ask to open or see it now; "show me" counts as asking. Open it with
+  \`${b} open <url>\`, which uses the default browser, not a browser pane in
+  your app.
 - A state no link can reproduce as a picture of just that part, checked
   before sending, with a sentence saying what it shows. Some chat apps show
   a local picture only as a link (Claude Desktop's Code tab does; the Codex

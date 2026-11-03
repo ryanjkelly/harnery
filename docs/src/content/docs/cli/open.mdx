@@ -1,0 +1,37 @@
+---
+title: harn open
+description: Open a web page in the person's default browser when they ask to see it.
+sidebar:
+  order: 49
+---
+
+```
+harn open <url> [--dry-run]
+```
+
+`harn open` opens an http or https address in the operating system's default
+browser and returns at once. Nothing is attached to the browser, so the page
+opens in the person's own browser with their own sign-ins, exactly as if they
+had clicked the link.
+
+Agents deliver a page as a link and open it only when the person asks to see
+it ("show me" counts). Agent apps launch browsers in different ways, and some
+approval reviews refuse a bare shell launch of an address, so this one command
+gives every adapter the same path. The
+[`harn-computer` skill](/cli/computer/) routes to it.
+
+| Host | How it opens |
+|---|---|
+| Windows | The URL protocol handler (`rundll32.exe url.dll,FileProtocolHandler`), which takes the whole address as one argument |
+| WSL | The same handler on the Windows host, so the page opens in the Windows default browser |
+| macOS | `open` |
+| Linux desktop | `xdg-open` |
+
+Any address that is not http or https, such as `file:` or `javascript:`, is
+refused with exit 1. `--dry-run` prints the command it would run and opens
+nothing.
+
+```bash
+harn open "https://example.com/search?q=manufacturing&state=MN"
+harn open --dry-run https://example.com
+```
