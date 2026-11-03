@@ -305,6 +305,28 @@ describe.if(posix)("createOpClient against a fake op", () => {
     }
   });
 
+  test("follows a dangling symlink into the repository and refuses a symlink loop", async () => {
+    const mock = installMockOp({});
+    execFileSync("git", ["init", "-q"], { cwd: work });
+    const outside = mkdtempSync(join(tmpdir(), "harn-op-dangling-"));
+    try {
+      symlinkSync(join(work, "new-secret.env"), join(outside, "alias.env"));
+      symlinkSync(join(outside, "loop-b"), join(outside, "loop-a"));
+      symlinkSync(join(outside, "loop-a"), join(outside, "loop-b"));
+      const op = client();
+      await expect(op.getDocument({ item: "Doc" }, join(outside, "alias.env"))).rejects.toThrow(
+        "tracked or not ignored",
+      );
+      await expect(op.getDocument({ item: "Doc" }, join(outside, "loop-a"))).rejects.toThrow(
+        "too many symbolic links",
+      );
+      expect(mock.calls()).toEqual([]);
+      expect(existsSync(join(work, "new-secret.env"))).toBe(false);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
   test("a host may opt out of the ignored-output check", async () => {
     installMockOp({});
     execFileSync("git", ["init", "-q"], { cwd: work });

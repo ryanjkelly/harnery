@@ -15,7 +15,16 @@
  *    and no secret appears in argv.
  */
 
-import { mkdtempSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  lstatSync,
+  mkdtempSync,
+  readdirSync,
+  readlinkSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { detectOp, isWindowsOp, opEnvironment, wslPathToWindows } from "./detect.ts";
@@ -282,17 +291,32 @@ function verifyReturnedField(
 }
 
 /**
- * The real path of `path`, following symlinks. For a path that does not
- * exist yet, the deepest existing ancestor is resolved and the rest appended.
+ * The real path of `path`, following every symlink, including a dangling one
+ * whose target does not exist yet. For a path that does not exist, the
+ * deepest existing ancestor is resolved and the rest appended. Throws on a
+ * symlink loop, so the caller refuses the path.
  */
-function canonicalPath(path: string): string {
+function canonicalPath(path: string, hops = 0): string {
+  if (hops > 40) throw new Error(`too many symbolic links while resolving ${path}`);
   const abs = resolve(path);
   const rest: string[] = [];
   let current = abs;
   for (;;) {
     try {
-      return join(realpathSync(current), ...rest.reverse());
+      return join(realpathSync(current), ...[...rest].reverse());
     } catch {
+      let target: string | undefined;
+      try {
+        if (lstatSync(current).isSymbolicLink()) target = readlinkSync(current);
+      } catch {
+        // current does not exist; climb to its parent.
+      }
+      if (target !== undefined) {
+        return canonicalPath(
+          join(resolve(dirname(current), target), ...[...rest].reverse()),
+          hops + 1,
+        );
+      }
       const parent = dirname(current);
       if (parent === current) return abs;
       rest.push(basename(current));
