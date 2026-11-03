@@ -758,9 +758,15 @@ export function createOpClient(config: OpHostConfig) {
     const args = ["document", "get", t.item, ...targetArgs(t)];
     if (out) {
       const destination = assertIgnoredOutput(out);
+      // The Windows op.exe (or a helper forwarding to it) cannot read a Linux
+      // path, so translate the checked destination on WSL.
+      const outFile =
+        isWindowsOp(requireOp()) && destination.startsWith("/")
+          ? (wslPathToWindows(destination) ?? destination)
+          : destination;
       // --force: op would otherwise prompt before overwriting, which cannot be
       // answered with stdin ignored.
-      args.push("--out-file", destination, "--force");
+      args.push("--out-file", outFile, "--force");
       await run(args, "op document get");
       return { path: out };
     }

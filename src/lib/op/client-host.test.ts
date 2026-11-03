@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createOpClient, OpWriteRefusedError, PASSWORD_PLACEHOLDER } from "./client.ts";
 import { isWslRuntime } from "./detect.ts";
+import { which as whichSync } from "./process.ts";
 import type { OpHostConfig } from "./types.ts";
 
 const posix = process.platform !== "win32";
@@ -345,6 +346,25 @@ describe.if(posix)("createOpClient against a fake op", () => {
       rmSync(outside, { recursive: true, force: true });
     }
   });
+
+  test.if(Boolean(whichSync("wslpath")))(
+    "hands a Windows op.exe the checked destination as a Windows path",
+    async () => {
+      const log = join(work, "exe-calls.log");
+      const exe = join(work, "op.exe");
+      writeFileSync(exe, `#!/usr/bin/env bash\nprintf '%s\\n' "$@" > "${log}"\n`);
+      chmodSync(exe, 0o700);
+      process.env.OP_BIN = exe;
+      execFileSync("git", ["init", "-q"], { cwd: work });
+      writeFileSync(join(work, ".gitignore"), ".credentials/\n");
+      execFileSync("mkdir", ["-p", join(work, ".credentials")]);
+      const out = join(work, ".credentials", "doc.txt");
+      await client().getDocument({ item: "Doc" }, out);
+      const args = readFileSync(log, "utf8").trim().split("\n");
+      const windowsPath = execFileSync("wslpath", ["-w", out], { encoding: "utf8" }).trim();
+      expect(args[args.indexOf("--out-file") + 1]).toBe(windowsPath);
+    },
+  );
 
   test("a host may opt out of the ignored-output check", async () => {
     installMockOp({});
