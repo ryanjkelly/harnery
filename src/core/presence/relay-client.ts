@@ -53,6 +53,11 @@ import {
 } from "../code-identity.ts";
 import { presenceRelayUrl } from "../config.ts";
 import { eventV3ActiveWatchPath } from "../events/v3/reader.ts";
+import {
+  acquireInstanceLock,
+  type InstanceLock,
+  instanceLockEndpoint,
+} from "../single-instance.ts";
 import { closeProcessLoggers, legacyLogFields, processLogger } from "../storage/logger.ts";
 import { RotatingTextSink } from "../storage/process-log.ts";
 import { buildPresenceBlob, type PresenceBlob } from "./blob.ts";
@@ -97,13 +102,6 @@ export interface RelayPidRecord {
    * has not connected; `connected` after. Absent on older daemons.
    */
   state?: "handover" | "connected";
-  /** While `handover`: the daemon this one is waiting for, which may hold the socket. */
-  predecessor?: RelayPredecessor;
-}
-
-export interface RelayPredecessor {
-  pid: number;
-  started_at: string;
 }
 
 export function readRelayPidRecord(coordRoot: string): RelayPidRecord | null {
@@ -187,21 +185,6 @@ function reservationBody(token: string, nowMs: number): string {
   return JSON.stringify(body);
 }
 
-/** Create the file with `body` only if nothing is there. */
-function createExclusive(path: string, body: string): boolean {
-  try {
-    const fd = openSync(path, "wx");
-    try {
-      writeFileSync(fd, body);
-    } finally {
-      closeSync(fd);
-    }
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 function reservationToken(raw: string | null): string | undefined {
   if (raw === null) return undefined;
   try {
@@ -213,82 +196,59 @@ function reservationToken(raw: string | null): string | undefined {
 }
 
 /**
- * Remove the reservation only when its content passes `accept`. The file is
- * first renamed to a name unique to this call, so only one process can hold
- * that exact file; when it turns out to be someone else's, it is put back
- * (unless a newer one already took its place). A reservation is never
- * removed on the strength of an earlier read.
+ * Reserve the right to launch a relay daemon. This only saves duplicate
+ * spawns when hooks race: correctness (at most one connected daemon per
+ * project) comes from the instance lock each daemon must hold before it
+ * connects, and a duplicate that slips through exits on its own. Returns the
+ * reservation's token, which the launched daemon inherits, or null while an
+ * unexpired reservation exists. An expired one is simply overwritten.
  */
-function removeReservationIf(path: string, accept: (raw: string | null) => boolean): boolean {
-  const claimed = `${path}.claim.${process.pid}.${randomUUID()}`;
-  try {
-    renameSync(path, claimed);
-  } catch {
-    return false;
-  }
-  let raw: string | null = null;
-  try {
-    raw = readFileSync(claimed, "utf8");
-  } catch {
-    // Judged as unreadable below.
-  }
-  const removed = accept(raw);
-  if (!removed && raw !== null) createExclusive(path, raw);
-  try {
-    rmSync(claimed, { force: true });
-  } catch {
-    /* a stray claim file is inert */
-  }
-  return removed;
-}
-
-/**
- * Atomically reserve the right to launch a relay daemon, so concurrent hooks
- * start one process between them. Returns the reservation's token, which the
- * launched daemon carries so it alone can renew and release it, or null when
- * another launch holds it. An expired reservation (a launch that died early)
- * is reclaimed atomically: only the exact expired file that was read is ever
- * removed.
- */
-export function reserveRelayLaunch(
-  coordRoot: string,
-  nowMs = Date.now(),
-  hooks: { beforeReclaim?: () => void } = {},
-): string | null {
+export function reserveRelayLaunch(coordRoot: string, nowMs = Date.now()): string | null {
   const path = launchReservationPath(coordRoot);
   mkdirSync(presenceDir(coordRoot), { recursive: true });
   const token = randomUUID();
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    if (createExclusive(path, reservationBody(token, nowMs))) return token;
-    if (!existsSync(path)) continue;
-    let raw: string;
+  const body = reservationBody(token, nowMs);
+  try {
+    const fd = openSync(path, "wx");
     try {
-      raw = readFileSync(path, "utf8");
-    } catch {
-      continue;
+      writeFileSync(fd, body);
+    } finally {
+      closeSync(fd);
     }
-    let expiresAt = Number.NaN;
-    try {
-      expiresAt = Date.parse((JSON.parse(raw) as { expires_at?: string }).expires_at ?? "");
-    } catch {
-      // An unreadable reservation is judged by its age instead.
-      try {
-        expiresAt = statSync(path).mtimeMs + RELAY_LAUNCH_RESERVATION_MS;
-      } catch {
-        continue;
-      }
-    }
-    if (Number.isFinite(expiresAt) && expiresAt > nowMs) return null;
-    hooks.beforeReclaim?.();
-    removeReservationIf(path, (current) => current === raw);
+    return token;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") return null;
   }
-  return null;
+  let expiresAt = Number.NaN;
+  try {
+    expiresAt = Date.parse(
+      (JSON.parse(readFileSync(path, "utf8")) as { expires_at?: string }).expires_at ?? "",
+    );
+  } catch {
+    try {
+      expiresAt = statSync(path).mtimeMs + RELAY_LAUNCH_RESERVATION_MS;
+    } catch {
+      // Gone meanwhile: treat as expired.
+    }
+  }
+  if (Number.isFinite(expiresAt) && expiresAt > nowMs) return null;
+  try {
+    atomicWriteJson(path, JSON.parse(body));
+    return token;
+  } catch {
+    return null;
+  }
 }
 
-/** Release the reservation, but only if it is still the one `token` names. */
+/** Release the reservation if it is still the one `token` names. */
 export function releaseRelayLaunchReservation(coordRoot: string, token: string | undefined): void {
   if (!token) return;
-  removeReservationIf(launchReservationPath(coordRoot), (raw) => reservationToken(raw) === token);
+  const path = launchReservationPath(coordRoot);
+  try {
+    if (reservationToken(readFileSync(path, "utf8")) === token) rmSync(path, { force: true });
+  } catch {
+    /* it expires on its own */
+  }
 }
 
 /** Extend the reservation `token` names while its handover is still running. */
@@ -364,30 +324,6 @@ export function ensureRelayDaemon(
   }
 }
 
-/**
- * Wait for the daemon this one replaced to exit, so two daemons never hold
- * sockets for the same machine at once. Returns false when the wait timed out
- * or this daemon was itself superseded meanwhile.
- */
-export async function awaitPreviousRelayExit(input: {
-  previousPid: number;
-  stillOwner: () => boolean;
-  isAlive?: (pid: number) => boolean;
-  wait?: (milliseconds: number) => Promise<void>;
-  timeoutMs?: number;
-  nowMs?: () => number;
-}): Promise<boolean> {
-  const isAlive = input.isAlive ?? pidAlive;
-  const wait = input.wait ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
-  const now = input.nowMs ?? Date.now;
-  const deadline = now() + (input.timeoutMs ?? RELAY_HANDOVER_WAIT_MS);
-  while (isAlive(input.previousPid)) {
-    if (!input.stillOwner() || now() >= deadline) return false;
-    await wait(250);
-  }
-  return input.stillOwner();
-}
-
 function launchRelayDaemon(coordRoot: string, token: string): boolean {
   try {
     // The runtime itself runs the CLI entry, so the daemon starts on Windows
@@ -421,18 +357,39 @@ function launchRelayDaemon(coordRoot: string, token: string): boolean {
   }
 }
 
-export type RelayHandoverOutcome = "connect" | "superseded" | "gave_up" | "busy";
+export type RelayStartupOutcome = "connect" | "duplicate" | "superseded" | "gave_up";
+
+export interface RelayStartup {
+  outcome: RelayStartupOutcome;
+  /** Held only when `outcome` is `connect`; the daemon keeps it for life. */
+  lock?: InstanceLock;
+}
+
+/** The project's relay instance lock: one per resolved project root. */
+export function relayInstanceLockEndpoint(coordRoot: string): string {
+  return instanceLockEndpoint("relay", coordRoot, presenceDir(coordRoot));
+}
 
 /**
- * Take the pid file for `record`. When a live daemon held it, mark the pid
- * file `handover`, keep the launch reservation alive, and wait for that
- * daemon to exit before connecting. If it outlives the wait, hand the pid
- * file back to it, log once, and report `gave_up`: the caller must exit
- * without connecting, and the next launcher call tries again. A live owner
- * that is itself mid-handover is never superseded (`busy`). The reservation
- * is released when the handover ends. Two daemons never hold sockets at once.
+ * Decide whether this daemon may connect. Exclusivity comes from the relay
+ * instance lock, which the operating system releases when its holder exits
+ * or crashes: no daemon opens the relay socket without holding it.
+ *
+ * - The lock is free and no other live daemon owns the pid file: take the pid
+ *   file and connect.
+ * - The lock is held and the pid file's live owner runs older code (this is
+ *   its replacement): mark the pid file `handover`, which the owner sees as
+ *   superseded within seconds, then poll for the lock until the owner exits.
+ *   A live pid-file owner from before the lock existed is waited out the
+ *   same way while holding the lock.
+ * - The lock is held otherwise: a duplicate launch; exit quietly.
+ * - Waiting longer than the handover limit: hand the pid file back, log once,
+ *   and exit without connecting. The next launcher call tries again.
+ *
+ * The pid file and launch reservation are bookkeeping for status and spawn
+ * dedupe; they never decide on their own that a daemon may connect.
  */
-export async function takeOverRelayPidFile(
+export async function relayStartupGate(
   coordRoot: string,
   record: RelayPidRecord,
   options: {
@@ -442,83 +399,69 @@ export async function takeOverRelayPidFile(
     nowMs?: () => number;
     /** The launch reservation this daemon was started under. */
     reservationToken?: string;
+    lockEndpoint?: string;
+    acquire?: (endpoint: string) => Promise<InstanceLock | null>;
+    log?: (phase: string, message: string) => void;
   } = {},
-): Promise<RelayHandoverOutcome> {
+): Promise<RelayStartup> {
   const isAlive = options.isAlive ?? pidAlive;
   const now = options.nowMs ?? Date.now;
+  const wait = options.wait ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
   const token = options.reservationToken ?? inheritedReservationToken();
+  const endpoint = options.lockEndpoint ?? relayInstanceLockEndpoint(coordRoot);
+  const acquire = options.acquire ?? ((path: string) => acquireInstanceLock(path));
+  const log =
+    options.log ??
+    ((phase: string, message: string) =>
+      appendPresenceRelayDiagnostic(coordRoot, "relay.lifecycle", { phase, message }));
+  // A Unix socket lock lives in this directory.
+  mkdirSync(presenceDir(coordRoot), { recursive: true });
+  const deadline = now() + (options.timeoutMs ?? RELAY_HANDOVER_WAIT_MS);
   const previous = readRelayPidRecord(coordRoot);
   const ownsPidFile = () => readRelayPidRecord(coordRoot)?.pid === record.pid;
-  const owner = relaySocketOwner(previous, record.pid, isAlive);
-  if (owner === null) {
+  const previousLive = previous !== null && previous.pid !== record.pid && isAlive(previous.pid);
+  let lock = await acquire(endpoint);
+  if (!lock) {
+    const replacing =
+      previousLive &&
+      previous.state !== "handover" &&
+      record.code !== undefined &&
+      codeIdentityReplacementNeeded(previous.code, record.code);
+    if (!replacing) {
+      log("duplicate", "another relay daemon holds the instance lock; exiting");
+      releaseRelayLaunchReservation(coordRoot, token);
+      return { outcome: "duplicate" };
+    }
+  }
+  if (!previousLive) {
     atomicWriteJson(pidFilePath(coordRoot), { ...record, state: "connected" });
     releaseRelayLaunchReservation(coordRoot, token);
-    return "connect";
+    return { outcome: "connect", ...(lock ? { lock } : {}) };
   }
-  // Another successor is mid-handover: leave it to finish (its own
-  // predecessor may still hold a socket), and do not connect.
-  if (owner === "busy") return "busy";
-  // Mark the pid file as mid-handover, naming the daemon that still holds the
-  // socket, and keep the launch reservation alive until the handover ends.
-  // If this daemon dies while waiting, the next successor reads the
-  // predecessor from here and waits for it too.
-  atomicWriteJson(pidFilePath(coordRoot), {
-    ...record,
-    state: "handover",
-    predecessor: owner,
-  });
-  const baseWait =
-    options.wait ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
-  const released = await awaitPreviousRelayExit({
-    previousPid: owner.pid,
-    stillOwner: ownsPidFile,
-    isAlive,
-    wait: async (ms) => {
-      refreshRelayLaunchReservation(coordRoot, token, now());
-      await baseWait(ms);
-    },
-    ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
-    nowMs: now,
-  });
-  try {
-    if (released) {
+  atomicWriteJson(pidFilePath(coordRoot), { ...record, state: "handover" });
+  for (;;) {
+    if (lock && !isAlive(previous.pid)) {
       atomicWriteJson(pidFilePath(coordRoot), { ...record, state: "connected" });
-      return "connect";
+      releaseRelayLaunchReservation(coordRoot, token);
+      return { outcome: "connect", lock };
     }
-    if (!ownsPidFile()) return "superseded";
-    // The daemon holding the socket is still alive (stalled, or too old to
-    // notice): give the pid file back rather than connect beside it.
-    if (previous) atomicWriteJson(pidFilePath(coordRoot), previous);
-    appendPresenceRelayDiagnostic(coordRoot, "relay.lifecycle", {
-      phase: "handover_timeout",
-      message: `previous daemon pid ${owner.pid} did not exit; not connecting`,
-    });
-    return "gave_up";
-  } finally {
-    releaseRelayLaunchReservation(coordRoot, token);
+    if (!ownsPidFile()) {
+      await lock?.close();
+      releaseRelayLaunchReservation(coordRoot, token);
+      return { outcome: "superseded" };
+    }
+    if (now() >= deadline) break;
+    refreshRelayLaunchReservation(coordRoot, token, now());
+    await wait(250);
+    lock ??= await acquire(endpoint);
   }
-}
-
-/**
- * Who may still hold this machine's relay socket, judged from the pid file:
- * a live connected (or older, stateless) owner; for a live successor still
- * handing over, `busy`; for a successor that died mid-handover, the
- * predecessor it was waiting for, while that one lives. Null when nobody does.
- */
-export function relaySocketOwner(
-  previous: RelayPidRecord | null,
-  selfPid: number,
-  isAlive: (pid: number) => boolean,
-): RelayPredecessor | "busy" | null {
-  if (!previous || previous.pid === selfPid) return null;
-  if (isAlive(previous.pid)) {
-    return previous.state === "handover"
-      ? "busy"
-      : { pid: previous.pid, started_at: previous.started_at };
-  }
-  const predecessor = previous.state === "handover" ? previous.predecessor : undefined;
-  if (predecessor && predecessor.pid !== selfPid && isAlive(predecessor.pid)) return predecessor;
-  return null;
+  await lock?.close();
+  // The previous daemon still runs (stalled, or too old to notice): give its
+  // pid file back rather than connect beside it.
+  if (ownsPidFile()) atomicWriteJson(pidFilePath(coordRoot), previous);
+  log("handover_timeout", `previous daemon pid ${previous.pid} did not exit; not connecting`);
+  releaseRelayLaunchReservation(coordRoot, token);
+  return { outcome: "gave_up" };
 }
 
 /** Same daemon generation: the same pid started at the same moment, or both absent. */
@@ -584,18 +527,20 @@ export async function runRelayDaemon(
     return 2;
   }
 
-  // Take (or take over) the pid file. A superseded daemon notices and exits;
-  // this one connects only after it has gone.
-  const handover = await takeOverRelayPidFile(coordRoot, {
+  // Hold the project's relay instance lock before opening the socket or the
+  // watcher, for this daemon's whole life. The operating system releases it
+  // when the process exits, so at most one daemon is ever connected.
+  const startup = await relayStartupGate(coordRoot, {
     pid: process.pid,
     url,
     started_at: new Date().toISOString(),
     code: codeWatch.initial,
   });
-  if (handover !== "connect") {
+  if (startup.outcome !== "connect") {
     await closeProcessLoggers();
     return 0;
   }
+  const instanceLock = startup.lock;
 
   const creds = await deriveRoomCredentials({
     rootCommitSha: sha,
@@ -746,7 +691,9 @@ export async function runRelayDaemon(
     } catch {
       /* ignore */
     }
-    void closeProcessLoggers().finally(() => process.exit(0));
+    void Promise.allSettled([instanceLock?.close(), closeProcessLoggers()]).finally(() =>
+      process.exit(0),
+    );
   };
 
   // A successor takes the pid file and waits for this process to go; notice
@@ -791,7 +738,9 @@ export async function runRelayDaemon(
       // once this process has exited, and the launch reservation keeps a
       // racing hook from starting a second one.
       ensureRelayDaemon(coordRoot);
-      void closeProcessLoggers().finally(() => process.exit(0));
+      void Promise.allSettled([instanceLock?.close(), closeProcessLoggers()]).finally(() =>
+        process.exit(0),
+      );
       return;
     }
     // Idle machine (no live sessions for a while) → exit; hooks restart us.
@@ -806,7 +755,9 @@ export async function runRelayDaemon(
       } catch {
         /* ignore */
       }
-      void closeProcessLoggers().finally(() => process.exit(0));
+      void Promise.allSettled([instanceLock?.close(), closeProcessLoggers()]).finally(() =>
+        process.exit(0),
+      );
     }
   }, KEEPALIVE_MS);
 

@@ -4,19 +4,19 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startRelayServer } from "../../commands/relay.ts";
+import { acquireInstanceLock } from "../single-instance.ts";
 import { closeProcessLoggers } from "../storage/logger.ts";
 import { readRemoteMachines } from "./index.ts";
 import {
   appendPresenceRelayDiagnostic,
-  awaitPreviousRelayExit,
   ensureRelayDaemon,
   RELAY_LAUNCH_RESERVATION_MS,
   relayDaemonStatus,
-  relaySocketOwner,
+  relayInstanceLockEndpoint,
+  relayStartupGate,
   relayTickDecision,
   releaseRelayLaunchReservation,
   reserveRelayLaunch,
-  takeOverRelayPidFile,
 } from "./relay-client.ts";
 import { computeSenderId, deriveRoomCredentials, encryptPayload } from "./relay-protocol.ts";
 
@@ -252,96 +252,6 @@ describe("relay daemon code changes", () => {
   // Stands in for the launched daemon releasing the reservation it inherited.
   const clearReservation = () => rmSync(reservationPath(), { force: true });
 
-  test("an expired reservation is reclaimed by exactly one launcher (F2)", () => {
-    mkdirSync(join(root, ".harnery", "presence"), { recursive: true });
-    writeFileSync(
-      reservationPath(),
-      JSON.stringify({
-        token: "died-early",
-        pid: 1,
-        created_at: new Date(0).toISOString(),
-        expires_at: new Date(1).toISOString(),
-      }),
-    );
-    let inner: string | null = null;
-    // Both launchers read the same expired reservation; the second reclaims it
-    // and reserves while the first is between its read and its reclaim.
-    const outer = reserveRelayLaunch(root, Date.now(), {
-      beforeReclaim: () => {
-        inner = reserveRelayLaunch(root, Date.now());
-      },
-    });
-    expect(inner).toBeTruthy();
-    expect(outer).toBeNull();
-    expect(JSON.parse(readFileSync(reservationPath(), "utf8")).token).toBe(inner);
-    // Only the holder's token releases it.
-    releaseRelayLaunchReservation(root, "someone-else");
-    expect(existsSync(reservationPath())).toBe(true);
-    releaseRelayLaunchReservation(root, inner ?? undefined);
-    expect(existsSync(reservationPath())).toBe(false);
-  });
-
-  test("a successor that died mid-handover still makes the next wait for the original owner (F3)", async () => {
-    const pidPath = join(root, ".harnery", "presence", "relay-daemon.json");
-    const originalStart = "2026-11-02T01:00:00.000Z";
-    // B (pid 5151) was waiting for the original owner (pid 4242), then crashed.
-    const deadSuccessor = {
-      ...pidRecord(),
-      pid: 5151,
-      code: current,
-      state: "handover",
-      predecessor: { pid: 4242, started_at: originalStart },
-    };
-    writePid(deadSuccessor);
-    let originalAlive = true;
-    const isAlive = (pid: number) => pid === 4242 && originalAlive;
-    expect(relaySocketOwner(deadSuccessor as never, process.pid, isAlive)).toEqual({
-      pid: 4242,
-      started_at: originalStart,
-    });
-
-    // C waits for the original owner, recording it as its own predecessor.
-    const seen: unknown[] = [];
-    let waits = 0;
-    const outcome = await takeOverRelayPidFile(
-      root,
-      { ...pidRecord(), code: current },
-      {
-        isAlive,
-        wait: async () => {
-          waits += 1;
-          seen.push(JSON.parse(readFileSync(pidPath, "utf8")).predecessor);
-          if (waits === 2) originalAlive = false;
-        },
-      },
-    );
-    expect(outcome).toBe("connect");
-    expect(waits).toBe(2);
-    expect(seen[0]).toEqual({ pid: 4242, started_at: originalStart });
-
-    // If the original owner never exits, C gives the pid file back unchanged,
-    // so the next successor waits for the original owner again.
-    writePid(deadSuccessor);
-    let nowMs = 0;
-    expect(
-      await takeOverRelayPidFile(
-        root,
-        { ...pidRecord(), code: current },
-        {
-          isAlive: (pid) => pid === 4242,
-          wait: async (ms) => {
-            nowMs += ms;
-          },
-          nowMs: () => nowMs,
-          timeoutMs: 1_000,
-        },
-      ),
-    ).toBe("gave_up");
-    expect(JSON.parse(readFileSync(pidPath, "utf8")).predecessor.pid).toBe(4242);
-    // With both gone, nobody holds the socket.
-    expect(relaySocketOwner(deadSuccessor as never, process.pid, () => false)).toBeNull();
-  });
-
   const pidRecord = () => ({
     pid: process.pid,
     url: "ws://relay.test",
@@ -386,161 +296,104 @@ describe("relay daemon code changes", () => {
     expect(existsSync(reservationPath())).toBe(false);
     expect(reserveRelayLaunch(root)).toBeTruthy();
     expect(reserveRelayLaunch(root)).toBeNull();
+    // An expired reservation is simply overwritten; only its token releases it.
+    const late = reserveRelayLaunch(root, Date.now() + RELAY_LAUNCH_RESERVATION_MS + 1);
+    expect(late).toBeTruthy();
+    releaseRelayLaunchReservation(root, "someone-else");
+    expect(existsSync(reservationPath())).toBe(true);
+    releaseRelayLaunchReservation(root, late ?? undefined);
+    expect(existsSync(reservationPath())).toBe(false);
   });
 
-  test("an unfinished handover stays exclusive while the original owner lives (F11)", async () => {
-    const pidPath = join(root, ".harnery", "presence", "relay-daemon.json");
-    const original = { ...pidRecord(), pid: 4242, code: { id: "1.0.0@old", root: "/pkg" } };
-    let originalAlive = true;
-    const isAlive = (pid: number) => pid === process.pid || (pid === 4242 && originalAlive);
-    writePid(original);
+  const sleep = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
+  const pidPath = () => join(root, ".harnery", "presence", "relay-daemon.json");
+  const daemon = (pid: number, code = current) => ({ ...pidRecord(), pid, code });
 
-    // Hook 1 and hook 2 both read the original owner. Hook 1 reserves first
-    // and launches successor B, which starts waiting for the original owner.
-    let b: Promise<string> | undefined;
-    const bRecord = { ...pidRecord(), started_at: "2026-11-02T00:00:00.000Z", code: current };
-    const hook = (onReserve?: () => void, launch?: (token: string) => void) => {
-      let launches = 0;
-      const result = ensureRelayDaemon(root, {
-        relayUrl: () => "ws://relay.test",
-        isAlive,
-        currentCode: () => current,
-        launch: (_root, token) => {
-          launches += 1;
-          launch?.(token);
-          return true;
-        },
-        ...(onReserve ? { beforeReserve: onReserve } : {}),
-      });
-      return { result, launches };
-    };
-    const hook2 = hook(() => {
-      // Runs after hook 2 read the original owner, before it reserves.
-      expect(
-        hook(undefined, (token) => {
-          b = takeOverRelayPidFile(root, bRecord, {
-            reservationToken: token,
-            isAlive,
-            wait: () => new Promise((done) => setTimeout(done, 2)),
-          });
+  test("exactly one of several concurrent daemons connects (F4)", async () => {
+    // Every daemon opens its socket only after the gate says connect, so the
+    // gate outcome is the connection count.
+    const live = new Set([7001, 7002, 7003]);
+    const logs: string[] = [];
+    const outcomes = await Promise.all(
+      [7001, 7002, 7003].map((pid) =>
+        relayStartupGate(root, daemon(pid), {
+          isAlive: (p) => live.has(p),
+          wait: () => sleep(5),
+          timeoutMs: 300,
+          log: (phase) => logs.push(phase),
         }),
-      ).toEqual({ result: "replaced", launches: 1 });
-    });
-    // Hook 2 launches nothing: B holds the reservation for its whole handover.
-    expect(hook2).toEqual({ result: "pending", launches: 0 });
-    expect(JSON.parse(readFileSync(pidPath, "utf8")).state).toBe("handover");
-
-    // Even with the reservation gone, a mid-handover owner is never superseded.
-    clearReservation();
-    expect(hook()).toEqual({ result: "pending", launches: 0 });
-
-    // A successor C launched anyway refuses to supersede B mid-handover.
-    expect(
-      await takeOverRelayPidFile(root, { ...pidRecord(), pid: 5151, code: current }, { isAlive }),
-    ).toBe("busy");
-    expect(JSON.parse(readFileSync(pidPath, "utf8")).pid).toBe(process.pid);
-
-    // Only once the original owner exits does B connect, and it then gives
-    // the reservation back.
-    originalAlive = false;
-    expect(await b).toBe("connect");
-    expect(JSON.parse(readFileSync(pidPath, "utf8")).state).toBe("connected");
-    expect(existsSync(reservationPath())).toBe(false);
-
-    // A stale owner snapshot is rechecked under the reservation: another
-    // launcher started a daemon after this one read the owner.
-    writePid(original);
-    const recheck = hook(() => {
-      writeFileSync(
-        pidPath,
-        JSON.stringify({ ...bRecord, started_at: "other", state: "connected" }),
-      );
-    });
-    expect(recheck).toEqual({ result: "pending", launches: 0 });
-    expect(existsSync(reservationPath())).toBe(false);
+      ),
+    );
+    const connected = outcomes.filter((outcome) => outcome.outcome === "connect");
+    expect(connected).toHaveLength(1);
+    expect(outcomes.filter((outcome) => outcome.outcome === "duplicate")).toHaveLength(2);
+    // A duplicate exits with one log line each.
+    expect(logs).toEqual(["duplicate", "duplicate"]);
+    await connected[0]?.lock?.close();
   });
 
-  test("a successor never connects while the daemon it replaces is still alive (F8)", async () => {
-    const previous = { ...pidRecord(), pid: 4242, code: { id: "1.0.0@old", root: "/pkg" } };
-    const mine = { ...pidRecord(), code: current };
-    const pidPath = join(root, ".harnery", "presence", "relay-daemon.json");
+  test("the F4 interleaving cannot produce two connections", async () => {
+    // O holds the lock and runs older code. B and C are both launched (the
+    // reservation was lost) and both read O as the owner before either writes.
+    const owner = await acquireInstanceLock(relayInstanceLockEndpoint(root));
+    expect(owner).not.toBeNull();
+    writePid(daemon(4242, { id: "1.0.0@old", root: "/pkg" }));
+    const live = new Set([4242, 5001, 5002]);
+    const gate = (pid: number) =>
+      relayStartupGate(root, daemon(pid), {
+        isAlive: (p) => live.has(p),
+        wait: () => sleep(10),
+        timeoutMs: 3_000,
+        log: () => {},
+      });
+    const b = gate(5001);
+    const c = gate(5002);
+    await sleep(100);
+    // Nobody connects while O still holds the lock.
+    expect(JSON.parse(readFileSync(pidPath(), "utf8")).state).toBe("handover");
+    live.delete(4242);
+    await owner?.close();
+    const outcomes = await Promise.all([b, c]);
+    const connected = outcomes.filter((outcome) => outcome.outcome === "connect");
+    expect(connected).toHaveLength(1);
+    await connected[0]?.lock?.close();
+  });
 
-    // The previous daemon outlives the wait: hand its pid file back, drop the
-    // reservation, and do not connect.
+  test("a successor that cannot get the lock in time gives the pid file back (F8)", async () => {
+    const owner = await acquireInstanceLock(relayInstanceLockEndpoint(root));
+    const previous = daemon(4242, { id: "1.0.0@old", root: "/pkg" });
     writePid(previous);
     const token = reserveRelayLaunch(root) ?? undefined;
-    expect(token).toBeTruthy();
     let nowMs = 0;
-    expect(
-      await takeOverRelayPidFile(root, mine, {
-        reservationToken: token,
-        isAlive: (pid) => pid === 4242,
-        wait: async (ms) => {
-          nowMs += ms;
-        },
-        nowMs: () => nowMs,
-        timeoutMs: 1_000,
-      }),
-    ).toBe("gave_up");
-    expect(JSON.parse(readFileSync(pidPath, "utf8")).pid).toBe(4242);
+    const phases: string[] = [];
+    const startup = await relayStartupGate(root, daemon(5001), {
+      isAlive: (p) => p === 4242 || p === 5001,
+      wait: async (ms) => {
+        nowMs += ms;
+      },
+      nowMs: () => nowMs,
+      timeoutMs: 1_000,
+      reservationToken: token,
+      log: (phase) => phases.push(phase),
+    });
+    expect(startup.outcome).toBe("gave_up");
+    expect(startup.lock).toBeUndefined();
+    expect(JSON.parse(readFileSync(pidPath(), "utf8")).pid).toBe(4242);
     expect(existsSync(reservationPath())).toBe(false);
-
-    // Once the previous daemon exits, the successor keeps the pid file and connects.
-    let alive = true;
-    expect(
-      await takeOverRelayPidFile(root, mine, {
-        isAlive: (pid) => pid === 4242 && alive,
-        wait: async () => {
-          alive = false;
-        },
-      }),
-    ).toBe("connect");
-    expect(JSON.parse(readFileSync(pidPath, "utf8")).pid).toBe(process.pid);
-
-    // No previous owner: connect at once.
-    expect(await takeOverRelayPidFile(root, mine, { isAlive: () => false })).toBe("connect");
+    expect(phases).toEqual(["handover_timeout"]);
+    await owner?.close();
   });
 
-  test("a replacement waits for the daemon it replaces to exit before connecting (F5)", async () => {
-    let alive = true;
-    let waits = 0;
-    const released = await awaitPreviousRelayExit({
-      previousPid: 4242,
-      stillOwner: () => true,
-      isAlive: () => alive,
-      wait: async () => {
-        waits += 1;
-        if (waits === 3) alive = false;
-      },
+  test("a current daemon holding the lock is never superseded by a duplicate", async () => {
+    const owner = await acquireInstanceLock(relayInstanceLockEndpoint(root));
+    writePid(daemon(4242));
+    const startup = await relayStartupGate(root, daemon(5001), {
+      isAlive: (p) => p === 4242 || p === 5001,
+      log: () => {},
     });
-    expect(released).toBe(true);
-    expect(waits).toBe(3);
-
-    // A successor of its own ends the wait without connecting.
-    expect(
-      await awaitPreviousRelayExit({
-        previousPid: 4242,
-        stillOwner: () => false,
-        isAlive: () => true,
-        wait: async () => {},
-      }),
-    ).toBe(false);
-
-    // A previous daemon that never exits is waited on only until the deadline.
-    let nowMs = 0;
-    expect(
-      await awaitPreviousRelayExit({
-        previousPid: 4242,
-        stillOwner: () => true,
-        isAlive: () => true,
-        wait: async (ms) => {
-          nowMs += ms;
-        },
-        nowMs: () => nowMs,
-        timeoutMs: 1_000,
-      }),
-    ).toBe(false);
-    expect(nowMs).toBeGreaterThanOrEqual(1_000);
+    expect(startup.outcome).toBe("duplicate");
+    expect(JSON.parse(readFileSync(pidPath(), "utf8")).pid).toBe(4242);
+    await owner?.close();
   });
 
   test("the lifecycle tick exits on a confirmed code change unless superseded", () => {

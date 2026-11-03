@@ -86,33 +86,37 @@ and an unknown build counts as "restart needed", which would loop if acted on.
   A launcher that finds a stopped daemon with a stop request pending reports
   it as stopped and starts nothing. Only the explicit `start` command clears
   a stop or pause, so a daemon an operator stopped stays stopped.
-- **One relay at a time.** Starting a relay daemon first takes a launch
-  reservation (`relay-launch.json`, created atomically, expiring after 20
-  seconds), so concurrent hooks start one process between them. The
-  reservation carries a token that the launched daemon inherits; only the
-  holder of that token renews or releases it. An expired reservation is
-  reclaimed by renaming that exact file to a name unique to the reclaimer
-  and checking it is still the expired content that was read; a fresh one
-  renamed by mistake is put back. A reservation is never deleted on the
-  strength of an earlier read. A launcher rereads the pid file after taking
-  the reservation and launches nothing if the owner changed since it
-  decided. A replacement takes over the pid file marked `handover`, naming
-  the predecessor (pid and start time) that still holds the socket, and the
-  old daemon, which now checks every five seconds whether it was superseded,
-  closes its socket and exits. Until the handover ends, the new daemon keeps
-  renewing the reservation, and no launcher or successor supersedes a live
-  pid file marked `handover`, so a third daemon can never wait on the
-  successor alone while the original owner still holds its socket. If the
-  successor dies mid-handover, the next one treats the recorded predecessor
-  as the owner and waits for it. The new daemon connects only after the old
-  process has exited,
-  waiting at most 75 seconds, then marks the pid file `connected` and
-  releases the reservation. If the old process is still alive at the end of
-  the wait,
-  the new daemon hands the pid file back, gives up the reservation, logs once,
-  and exits without connecting; the next launcher call tries again. A daemon
-  that sees its own code change keeps its pid file and launches its successor
-  through the same handover, so the two never connect at once.
+- **One relay at a time, held by the operating system.** A relay daemon
+  must hold the project's relay instance lock before it opens the relay
+  socket or starts watching the ledger, and it holds the lock for its whole
+  life. The lock is a local IPC server: a named pipe on Windows
+  (`\\.\pipe\harnery-relay-<hash of the project root>`), a Unix socket in
+  `.harnery/presence/` elsewhere (in the system temp directory when that
+  path would be too long). Only one process can listen on it, and the
+  operating system closes it when that process exits or crashes. A Unix
+  socket file left by a crash is detected by a refused connection, removed,
+  and the listen retried once.
+- **Replacement waits for the lock.** A successor that finds the lock held
+  by a live daemon on older code marks the pid file `handover`, which that
+  daemon sees as superseded within five seconds; it closes its socket and
+  exits, releasing the lock. The successor polls for the lock for up to 75
+  seconds and connects only once it holds it. If time runs out it hands the
+  pid file back, logs once, and exits without connecting; the next launcher
+  call tries again. A daemon that sees its own code change launches its
+  successor and exits, so the same handover applies. A daemon that finds the
+  lock held in any other case is a duplicate launch: it logs one line and
+  exits.
+- **The reservation and pid file are bookkeeping.** A launch reservation
+  (`relay-launch.json`, expiring after 20 seconds and overwritten once
+  expired) saves duplicate spawns when hooks race, and the pid file feeds
+  status and tells a stale daemon it was superseded. Neither decides that a
+  daemon may connect.
+- **The guarantee covers daemons that take the lock.** Relay daemons from
+  before the lock hold none. They are never replaced while they run (no code
+  identity), and a successor that holds the lock still waits for a live
+  pid-file owner to exit before connecting, but at most one connected daemon
+  per project is guaranteed only once every daemon on the machine runs this
+  code.
 - **Operator stops win.** A daemon stopped by its stop command never
   relaunches itself, whatever the code did.
 
@@ -130,6 +134,16 @@ and an unknown build counts as "restart needed", which would loop if acted on.
   are what a pull or an upgrade changes.
 - **Only report it.** Status already said "restart needed" for two of these
   services, and the problem still needed a person to notice and act.
+- **A file-based exclusive reservation as the correctness guarantee.** An
+  atomically created reservation file, reclaimed by rename when expired, with
+  a handover record naming the predecessor, was built and reviewed through
+  several rounds. Every repair opened another window: a reclaimer could
+  displace a fresh reservation, a crashed successor could lose its
+  predecessor, and a stale snapshot could launch a second successor. A file
+  cannot be released by the operating system when its holder dies, so
+  ownership always rested on reads that could be out of date. The
+  reservation stays only as spawn dedupe; an operating-system-held lock
+  carries the guarantee.
 - **Imitate an operator stop for pre-change daemons.** A daemon from before
   this change understands only the operator's stop request, so the launcher
   could write one, wait, and withdraw it. Rejected: the launcher cannot tell
