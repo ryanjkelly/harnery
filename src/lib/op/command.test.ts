@@ -172,7 +172,7 @@ describe.if(posix)("registerOpCommand", () => {
     await h.run("get", "--item", "X", "--field", "a", "--reveal");
     expect(h.out.data.at(-1)).toEqual({ ok: true, value: "secret" });
     await h.run("get", "--item", "X", "--field", "a", "--out", join(work, "tracked.txt"));
-    expect(h.out.errors.at(-1)?.message).toContain("is not ignored by Git");
+    expect(h.out.errors.at(-1)?.message).toContain("tracked or not ignored");
     const out = join(work, ".credentials", "a.txt");
     await h.run("get", "--item", "X", "--field", "a", "--out", out);
     expect(readFileSync(out, "utf8")).toBe("secret\n");

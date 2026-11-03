@@ -92,6 +92,8 @@ export interface ItemGroup {
    * field that is not provisioned yet can share an item with live fields.
    */
   pendingFields: string[];
+  /** Every entry naming this item is pending (an unprovisioned document, for example). */
+  pending: boolean;
   kind: "fields" | "document";
 }
 

@@ -340,6 +340,35 @@ describe("check", () => {
   });
 });
 
+describe("verify pending documents", () => {
+  test("an absent document that every entry marks pending is pending, not a problem", async () => {
+    const client = op({
+      getItemFields: (async () => {
+        throw new Error('"Future doc" isn\'t an item');
+      }) as unknown as OpClient["getItemFields"],
+    });
+    const e = engine(
+      [],
+      {
+        manifest: [
+          {
+            vault: "V",
+            item: "Future doc",
+            fields: [],
+            scripts: ["a"],
+            kind: "document",
+            pending: true,
+          },
+        ],
+      },
+      client,
+    );
+    const report = await e.verify();
+    expect(report.ok).toBe(true);
+    expect(report.counts).toMatchObject({ pending: 1, problems: 0 });
+  });
+});
+
 describe("verify", () => {
   test("reports missing items, missing and pending fields, and unreadable items", async () => {
     const client = op({

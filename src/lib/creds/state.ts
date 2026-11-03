@@ -120,6 +120,7 @@ export function groupByItem(entries: CredManifestEntry[]): ItemGroup[] {
         fields: [],
         scripts: [],
         pendingFields: [],
+        pending: true,
         kind: e.kind ?? "fields",
       };
       map.set(key, g);
@@ -127,6 +128,7 @@ export function groupByItem(entries: CredManifestEntry[]): ItemGroup[] {
     for (const f of e.fields) if (!g.fields.includes(f)) g.fields.push(f);
     for (const s of e.scripts) if (!g.scripts.includes(s)) g.scripts.push(s);
     if (e.kind === "document") g.kind = "document";
+    if (e.pending !== true) g.pending = false;
   }
   for (const g of map.values()) {
     for (const f of g.fields) {

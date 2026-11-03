@@ -549,7 +549,7 @@ export function createCredsEngine(config: CredsHostConfig, deps: CredsEngineDeps
           vault: g.vault,
           item: g.item,
           field: "(item exists)",
-          status: present ? "ok" : "item_missing",
+          status: present ? "ok" : g.pending ? "pending" : "item_missing",
           scripts,
         });
         continue;

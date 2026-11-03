@@ -241,7 +241,7 @@ describe.if(posix)("createOpClient against a fake op", () => {
     writeFileSync(join(work, ".gitignore"), ".credentials/\n");
     const op = client();
     await expect(op.getDocument({ item: "Doc" }, join(work, "tracked.txt"))).rejects.toThrow(
-      "is not ignored by Git",
+      "tracked or not ignored",
     );
     expect(mock.calls()).toEqual([]);
     const out = join(work, ".credentials", "doc.txt");
@@ -254,6 +254,25 @@ describe.if(posix)("createOpClient against a fake op", () => {
     } finally {
       rmSync(outside, { force: true });
     }
+  });
+
+  test("refuses a tracked file even when an ignore rule matches it, and a '..'-named file inside", async () => {
+    const mock = installMockOp({});
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: work, stdio: "ignore" });
+    git("init", "-q");
+    writeFileSync(join(work, ".gitignore"), "secrets/\n..secrets.env\n");
+    execFileSync("mkdir", ["-p", join(work, "secrets")]);
+    writeFileSync(join(work, "secrets", "tracked.env"), "x");
+    git("add", "-f", "secrets/tracked.env");
+    const op = client();
+    await expect(
+      op.getDocument({ item: "Doc" }, join(work, "secrets", "tracked.env")),
+    ).rejects.toThrow("tracked or not ignored");
+    writeFileSync(join(work, ".gitignore"), "secrets/\n");
+    await expect(op.getDocument({ item: "Doc" }, join(work, "..secrets.env"))).rejects.toThrow(
+      "tracked or not ignored",
+    );
+    expect(mock.calls()).toEqual([]);
   });
 
   test("a host may opt out of the ignored-output check", async () => {

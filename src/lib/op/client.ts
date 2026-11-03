@@ -17,7 +17,7 @@
 
 import { mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { detectOp, isWindowsOp, opEnvironment, wslPathToWindows } from "./detect.ts";
 import { runProcess, runProcessSync } from "./process.ts";
 import type {
@@ -395,19 +395,14 @@ export function createOpClient(config: OpHostConfig) {
     const abs = resolve(path);
     if (!requireIgnoredOutput) return abs;
     const rel = relative(config.repoRoot, abs);
-    if (rel.startsWith("..") || isAbsolute(rel)) return abs;
-    const check = runProcessSync([
-      "git",
-      "-C",
-      config.repoRoot,
-      "check-ignore",
-      "-q",
-      "--no-index",
-      rel,
-    ]);
+    const outside = rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel);
+    if (outside) return abs;
+    // Without --no-index, check-ignore treats a tracked file as not ignored
+    // even when a rule matches it, because Git keeps tracking its changes.
+    const check = runProcessSync(["git", "-C", config.repoRoot, "check-ignore", "-q", "--", rel]);
     if (check.exitCode !== 0) {
       throw new Error(
-        `${rel} is not ignored by Git, so a secret written there could be committed. Write it to an ignored path instead.`,
+        `${rel} is tracked or not ignored by Git, so a secret written there could be committed. Write it to an ignored, untracked path instead.`,
       );
     }
     return abs;

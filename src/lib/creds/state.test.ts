@@ -88,6 +88,7 @@ describe("groupByItem", () => {
         fields: ["key", "id", "future"],
         scripts: ["one", "two"],
         pendingFields: ["future"],
+        pending: false,
         kind: "fields",
       },
       {
@@ -96,6 +97,7 @@ describe("groupByItem", () => {
         fields: [],
         scripts: ["three"],
         pendingFields: [],
+        pending: false,
         kind: "document",
       },
     ]);
