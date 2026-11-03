@@ -93,6 +93,8 @@ const SCAN_EXTENSIONS = new Set([
 ]);
 const SKIP_DIRECTORIES = new Set([
   ".astro",
+  // Gitignored build and custody caches record absolute checkout paths.
+  ".cache",
   ".git",
   ".next",
   // Alternate dashboard bundles are gitignored runtime output, like .next.

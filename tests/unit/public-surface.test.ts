@@ -11,7 +11,7 @@ import {
 } from "../../scripts/check-public-surface.ts";
 
 describe("public-surface provenance guard", () => {
-  test("ignores alternate local bundles but scans them if added to Git", () => {
+  test("ignores local bundles and caches but scans them if added to Git", () => {
     const repo = mkdtempSync(join(tmpdir(), "harnery-public-bundles-"));
     const git = (...args: string[]) =>
       execFileSync("git", args, { cwd: repo, encoding: "utf8" }).trim();
@@ -19,20 +19,26 @@ describe("public-surface provenance guard", () => {
       git("init", "-q");
       git("config", "user.email", "test@example.com");
       git("config", "user.name", "Test");
-      writeFileSync(join(repo, ".gitignore"), ".next-staging/\n.next-previous/\n");
+      writeFileSync(join(repo, ".gitignore"), ".next-staging/\n.next-previous/\n.cache/\n");
       git("add", ".gitignore");
       git("commit", "-qm", "base");
       const base = git("rev-parse", "HEAD");
-      for (const directory of [".next-staging", ".next-previous"]) {
+      for (const directory of [".next-staging", ".next-previous", ".cache"]) {
         const bundle = join(repo, "web", directory);
         mkdirSync(bundle, { recursive: true });
         writeFileSync(join(bundle, "bundle.js"), "private fixture sentinel\n");
       }
       expect(scanPublicSurface(repo)).toEqual([]);
-      git("add", "-f", "web/.next-staging/bundle.js", "web/.next-previous/bundle.js");
-      expect(scanPublicIndex(repo)).toHaveLength(2);
+      git(
+        "add",
+        "-f",
+        "web/.next-staging/bundle.js",
+        "web/.next-previous/bundle.js",
+        "web/.cache/bundle.js",
+      );
+      expect(scanPublicIndex(repo)).toHaveLength(3);
       git("commit", "-qm", "include generated bundles");
-      expect(scanPublicHistory(repo, `${base}..HEAD`)).toHaveLength(2);
+      expect(scanPublicHistory(repo, `${base}..HEAD`)).toHaveLength(3);
     } finally {
       rmSync(repo, { recursive: true, force: true });
     }
