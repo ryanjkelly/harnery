@@ -41,9 +41,30 @@ export function windowsPathToWsl(value: string): string | null {
   return commandText(["wslpath", "-u", value.trim()]);
 }
 
-/** Translate a WSL path to its Windows path with `wslpath -w`. */
+/**
+ * Stdout of a successful `wslpath` call with only its final line ending
+ * removed, so a filename's own leading or trailing spaces survive.
+ */
+function exactPathOutput(argv: string[]): string | null {
+  const result = runProcessSync(argv);
+  if (result.exitCode !== 0) return null;
+  return result.stdout.replace(/\r?\n$/, "") || null;
+}
+
+/** Translate a WSL path to its Windows path with `wslpath -w`, keeping every character of the name. */
 export function wslPathToWindows(value: string): string | null {
-  return commandText(["wslpath", "-w", value]);
+  return exactPathOutput(["wslpath", "-w", value]);
+}
+
+/**
+ * The Windows form of a WSL path, or null unless translating it back with
+ * `wslpath -u` yields exactly the same path. Use it before handing a checked
+ * destination to a Windows program, so the file written is the file checked.
+ */
+export function wslPathToWindowsVerified(value: string): string | null {
+  const windows = wslPathToWindows(value);
+  if (!windows) return null;
+  return exactPathOutput(["wslpath", "-u", windows]) === value ? windows : null;
 }
 
 /**

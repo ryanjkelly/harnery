@@ -27,7 +27,13 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { detectOp, isWindowsOp, opEnvironment, wslPathToWindows } from "./detect.ts";
+import {
+  detectOp,
+  isWindowsOp,
+  opEnvironment,
+  wslPathToWindows,
+  wslPathToWindowsVerified,
+} from "./detect.ts";
 import { runProcess, runProcessSync } from "./process.ts";
 import type {
   OpField,
@@ -758,9 +764,28 @@ export function createOpClient(config: OpHostConfig) {
     const args = ["document", "get", t.item, ...targetArgs(t)];
     if (out) {
       const destination = assertIgnoredOutput(out);
+      // The Windows op.exe (or a helper forwarding to it) cannot read a Linux
+      // path, so translate the checked destination on WSL.
+      let outFile = destination;
+      if (isWindowsOp(requireOp()) && destination.startsWith("/")) {
+        // Windows strips a trailing space or dot from each name and rejects
+        // some characters, so op.exe could write a different file from the
+        // one checked. Refuse any such name rather than guess.
+        const unsafe = destination
+          .split("/")
+          .filter(Boolean)
+          .find((part) => /[ .]$/.test(part) || /[<>:"\\|?*\x00-\x1f]/.test(part));
+        const windows = unsafe === undefined ? wslPathToWindowsVerified(destination) : null;
+        if (!windows) {
+          throw new Error(
+            `cannot hand ${destination} to the Windows op.exe unchanged${unsafe === undefined ? "" : ` (Windows would alter the name "${unsafe}")`}; choose a simpler output path`,
+          );
+        }
+        outFile = windows;
+      }
       // --force: op would otherwise prompt before overwriting, which cannot be
       // answered with stdin ignored.
-      args.push("--out-file", destination, "--force");
+      args.push("--out-file", outFile, "--force");
       await run(args, "op document get");
       return { path: out };
     }
