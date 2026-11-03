@@ -1,19 +1,34 @@
+/**
+ * The instance lock has no stale state to recover: binding a named pipe or a
+ * loopback TCP port is atomic, and the kernel releases it with its holder.
+ * The earlier socket-file design needed probe-then-unlink recovery, and a
+ * starter that paused between its probe and its unlink could displace a live
+ * holder; with nothing to unlink, that interleaving cannot occur, so it has
+ * no test here. These tests run the real TCP path on every platform by
+ * computing a POSIX endpoint, and the real named pipe on Windows.
+ */
+
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
+import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   acquireInstanceLock,
-  type InstanceProbe,
+  INSTANCE_LOCK_PORT_MAX,
+  INSTANCE_LOCK_PORT_MIN,
+  type InstanceLockEndpoint,
   instanceLockEndpoint,
   probeInstanceEndpoint,
 } from "./single-instance.ts";
 
 const roots: string[] = [];
+const servers: Server[] = [];
 
-afterEach(() => {
+afterEach(async () => {
+  for (const server of servers.splice(0)) await new Promise((done) => server.close(done));
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -29,197 +44,158 @@ function addressInUse(): Error {
   return Object.assign(new Error("in use"), { code: "EADDRINUSE" });
 }
 
+/** The real TCP endpoint, usable on this machine whatever its platform. */
+function tcpEndpoint(): Extract<InstanceLockEndpoint, { kind: "tcp" }> {
+  const endpoint = instanceLockEndpoint("test", scope(), "linux");
+  if (endpoint.kind !== "tcp") throw new Error("expected a tcp endpoint");
+  return endpoint;
+}
+
+function occupy(port: number, reply: string | null): Promise<void> {
+  return new Promise((done, fail) => {
+    const server = createServer((socket) => {
+      socket.on("error", () => {});
+      if (reply !== null) socket.end(reply);
+    });
+    servers.push(server);
+    server.once("error", fail);
+    server.listen({ host: "127.0.0.1", port }, () => done());
+  });
+}
+
+const endpoints: Array<[string, () => InstanceLockEndpoint]> = [["loopback tcp", tcpEndpoint]];
+if (process.platform === "win32") {
+  endpoints.push(["named pipe", () => instanceLockEndpoint("test", scope(), "win32")]);
+}
+
 describe("instanceLockEndpoint", () => {
-  test("is a named pipe on Windows and one socket file on every POSIX system (F3)", () => {
-    const pipe = instanceLockEndpoint(
-      "relay",
-      "C:\\Work\\Repo",
-      "C:\\Work\\Repo\\.harnery",
-      "win32",
-    );
-    expect(pipe).toMatch(/^\\\\\.\\pipe\\harnery-relay-[0-9a-f]{24}$/);
+  test("is a named pipe on Windows and one loopback port on every POSIX system", () => {
+    const pipe = instanceLockEndpoint("relay", "C:\\Work\\Repo", "win32");
+    expect(pipe.kind).toBe("pipe");
+    if (pipe.kind === "pipe")
+      expect(pipe.path).toMatch(/^\\\\\.\\pipe\\harnery-relay-[0-9a-f]{24}$/);
     // Windows paths compare without regard to case.
-    expect(instanceLockEndpoint("relay", "c:\\work\\repo", "x", "win32")).toBe(pipe);
-    // Linux and macOS, under any runtime, use the same socket file.
-    for (const platform of ["linux", "darwin", "freebsd"] as const) {
-      expect(instanceLockEndpoint("relay", "/srv/repo", "/srv/repo/.harnery", platform)).toBe(
-        "/srv/repo/.harnery/relay.sock",
-      );
+    expect(instanceLockEndpoint("relay", "c:\\work\\repo", "win32")).toEqual(pipe);
+    const linux = instanceLockEndpoint("relay", "/srv/repo", "linux");
+    expect(linux).toMatchObject({ kind: "tcp", host: "127.0.0.1" });
+    if (linux.kind === "tcp") {
+      expect(linux.port).toBeGreaterThanOrEqual(INSTANCE_LOCK_PORT_MIN);
+      expect(linux.port).toBeLessThanOrEqual(INSTANCE_LOCK_PORT_MAX);
     }
-    // A path too long for a socket moves to a fixed directory, never the
-    // runtime's own temp directory, so every runtime agrees on it.
-    const deep = `/${"d".repeat(120)}`;
-    const linux = instanceLockEndpoint("relay", deep, `${deep}/.harnery`, "linux");
-    expect(linux).toMatch(/^\/tmp\/harnery-relay-[0-9a-f]{24}\.sock$/);
-    expect(instanceLockEndpoint("relay", deep, `${deep}/.harnery`, "darwin")).toBe(linux);
+    // Every POSIX system and runtime derives the same port for the same lock.
+    expect(instanceLockEndpoint("relay", "/srv/repo", "darwin")).toEqual(linux);
+    expect(instanceLockEndpoint("relay", "/srv/other", "linux")).not.toEqual(linux);
   });
 });
 
 describe("acquireInstanceLock", () => {
-  test("admits one holder at a time, identifies it to probes, and frees on close", async () => {
-    const endpoint = instanceLockEndpoint("test", scope(), scope());
-    expect(await probeInstanceEndpoint(endpoint)).toEqual({ kind: "stale" });
-    const first = await acquireInstanceLock(endpoint);
-    expect(first).not.toBeNull();
-    expect(await probeInstanceEndpoint(endpoint)).toEqual({ kind: "held", nonce: first?.nonce });
-    expect(await first?.verify()).toBe(true);
-    const second = await Promise.all([
-      acquireInstanceLock(endpoint),
-      acquireInstanceLock(endpoint),
-    ]);
-    expect(second).toEqual([null, null]);
-    await first?.close();
-    const third = await acquireInstanceLock(endpoint);
-    expect(third).not.toBeNull();
-    await third?.close();
-  });
-
-  test("is released when the holding process is killed", async () => {
-    const endpoint = instanceLockEndpoint("crash", scope(), scope());
-    const moduleUrl = pathToFileURL(join(import.meta.dir, "single-instance.ts")).href;
-    const script = `
-      const { acquireInstanceLock } = await import(${JSON.stringify(moduleUrl)});
-      const lock = await acquireInstanceLock(${JSON.stringify(endpoint)});
-      console.log(lock ? "held" : "busy");
-      setInterval(() => {}, 1000);
-    `;
-    const child = spawn(process.execPath, ["-e", script], {
-      windowsHide: true,
-      stdio: ["ignore", "pipe", "inherit"],
-    });
-    try {
-      const first = await new Promise<string>((done) => {
-        child.stdout?.once("data", (chunk) => done(String(chunk).trim()));
+  for (const [label, make] of endpoints) {
+    test(`admits exactly one of three concurrent acquirers (${label})`, async () => {
+      const endpoint = make();
+      expect(await probeInstanceEndpoint(endpoint)).toEqual({ kind: "refused" });
+      const results = await Promise.all([
+        acquireInstanceLock(endpoint),
+        acquireInstanceLock(endpoint),
+        acquireInstanceLock(endpoint),
+      ]);
+      const held = results.filter((result) => result.status === "acquired");
+      expect(held).toHaveLength(1);
+      expect(results.filter((result) => result.status === "busy")).toHaveLength(2);
+      const lock = held[0]?.status === "acquired" ? held[0].lock : undefined;
+      // The banner names the lock and its holder, nothing else.
+      expect(await probeInstanceEndpoint(endpoint)).toEqual({
+        kind: "banner",
+        id: endpoint.id,
+        nonce: lock?.nonce ?? "",
       });
-      expect(first).toBe("held");
-      expect(await acquireInstanceLock(endpoint)).toBeNull();
-      child.kill("SIGKILL");
-      await new Promise((done) => child.once("exit", done));
-      let lock = null;
-      for (let attempt = 0; attempt < 50 && lock === null; attempt += 1) {
-        lock = await acquireInstanceLock(endpoint);
-        if (lock === null) await sleep(100);
-      }
-      expect(lock).not.toBeNull();
       await lock?.close();
-    } finally {
-      if (child.exitCode === null) child.kill("SIGKILL");
-    }
-  });
-
-  test("treats an in-use named pipe as held without probing", async () => {
-    let probes = 0;
-    const lock = await acquireInstanceLock("\\\\.\\pipe\\x", {
-      platform: "win32",
-      listen: async () => {
-        throw addressInUse();
-      },
-      probe: async () => {
-        probes += 1;
-        return { kind: "stale" };
-      },
+      const again = await acquireInstanceLock(endpoint);
+      expect(again.status).toBe("acquired");
+      if (again.status === "acquired") await again.lock.close();
     });
-    expect(lock).toBeNull();
-    expect(probes).toBe(0);
-  });
-});
 
-/**
- * An in-memory socket-file table with real POSIX semantics: listen fails
- * while a file exists at the path, unlinking a file does not close the
- * listener bound to it, and a probe reaches whoever is bound to the path now.
- */
-function socketTable() {
-  const bound = new Map<string, { banner: string; open: boolean } | "stale">();
-  const listeners: Array<{ banner: string; open: boolean }> = [];
-  let unlinks = 0;
-  const starter = (nonce: string) => ({
-    platform: "darwin" as const,
-    nonce: () => nonce,
-    settle: () => sleep(1),
-    listen: async (path: string, banner: string) => {
-      if (bound.has(path)) throw addressInUse();
-      const listener = { banner, open: true };
-      listeners.push(listener);
-      bound.set(path, listener);
-      return {
-        close: async () => {
-          listener.open = false;
-        },
-      };
-    },
-    probe: async (path: string): Promise<InstanceProbe> => {
-      const entry = bound.get(path);
-      if (!entry || entry === "stale" || !entry.open) return { kind: "stale" };
-      return { kind: "held", nonce: entry.banner.slice("harnery-lock:".length) };
-    },
-    unlink: (path: string) => {
-      unlinks += 1;
-      bound.delete(path);
-    },
-  });
-  return {
-    bound,
-    starter,
-    openListeners: () => listeners.filter((listener) => listener.open).length,
-    unlinks: () => unlinks,
-  };
-}
-
-describe("POSIX double bind resolves by self-verification (F2)", () => {
-  test("two starters recovering one crash-left socket end with one verified holder", async () => {
-    const table = socketTable();
-    table.bound.set("/p/relay.sock", "stale");
-    // Both fail to listen and both probe the file stale before either
-    // unlinks; then both unlink and bind in turn. B's unlink displaces A's
-    // socket without closing A's listener.
-    const a = table.starter("A");
-    const b = table.starter("B");
-    let probes = 0;
-    let release: () => void = () => {};
-    const bothProbed = new Promise<void>((done) => {
-      release = done;
-    });
-    const gatedProbe = (base: typeof a.probe) => async (path: string) => {
-      const result = await base(path);
-      if (result.kind === "stale" && probes < 2) {
-        probes += 1;
-        if (probes === 2) release();
-        await bothProbed;
+    test(`is released when the holding process is killed (${label})`, async () => {
+      const endpoint = make();
+      const moduleUrl = pathToFileURL(join(import.meta.dir, "single-instance.ts")).href;
+      const script = `
+        const { acquireInstanceLock } = await import(${JSON.stringify(moduleUrl)});
+        const result = await acquireInstanceLock(${JSON.stringify(endpoint)});
+        console.log(result.status);
+        setInterval(() => {}, 1000);
+      `;
+      const child = spawn(process.execPath, ["-e", script], {
+        windowsHide: true,
+        stdio: ["ignore", "pipe", "inherit"],
+      });
+      try {
+        const first = await new Promise<string>((done) => {
+          child.stdout?.once("data", (chunk) => done(String(chunk).trim()));
+        });
+        expect(first).toBe("acquired");
+        expect((await acquireInstanceLock(endpoint)).status).toBe("busy");
+        child.kill("SIGKILL");
+        await new Promise((done) => child.once("exit", done));
+        let result = await acquireInstanceLock(endpoint);
+        for (let attempt = 0; attempt < 50 && result.status !== "acquired"; attempt += 1) {
+          await sleep(100);
+          result = await acquireInstanceLock(endpoint);
+        }
+        expect(result.status).toBe("acquired");
+        if (result.status === "acquired") await result.lock.close();
+      } finally {
+        if (child.exitCode === null) child.kill("SIGKILL");
       }
-      return result;
-    };
-    const [lockA, lockB] = await Promise.all([
-      acquireInstanceLock("/p/relay.sock", { ...a, probe: gatedProbe(a.probe) }),
-      acquireInstanceLock("/p/relay.sock", { ...b, probe: gatedProbe(b.probe) }),
-    ]);
-    expect(table.unlinks()).toBe(2);
-    const holders = [lockA, lockB].filter((lock) => lock !== null);
-    expect(holders).toHaveLength(1);
-    // The displaced starter closed its listener instead of keeping the lock.
-    expect(table.openListeners()).toBe(1);
-    expect(await holders[0]?.verify()).toBe(true);
-  });
-
-  test("a holder displaced later sees verify() fail", async () => {
-    const table = socketTable();
-    const lock = await acquireInstanceLock("/p/relay.sock", table.starter("A"));
-    expect(await lock?.verify()).toBe(true);
-    // A stalled starter unlinks the file and binds its own socket.
-    table.bound.delete("/p/relay.sock");
-    const intruder = await acquireInstanceLock("/p/relay.sock", table.starter("B"));
-    expect(intruder).not.toBeNull();
-    expect(await lock?.verify()).toBe(false);
-  });
-
-  test("a socket that answers without a harnery banner is held and never unlinked", async () => {
-    const table = socketTable();
-    table.bound.set("/p/relay.sock", "stale");
-    const lock = await acquireInstanceLock("/p/relay.sock", {
-      ...table.starter("A"),
-      probe: async () => ({ kind: "held" }),
     });
-    expect(lock).toBeNull();
-    expect(table.unlinks()).toBe(0);
+  }
+
+  test("a foreign program on the port makes the lock unavailable", async () => {
+    const endpoint = tcpEndpoint();
+    await occupy(endpoint.port, "HTTP/1.1 400 Bad Request\r\n\r\n");
+    expect(await acquireInstanceLock(endpoint)).toEqual({
+      status: "unavailable",
+      reason: "port_in_use_by_other_program",
+      port: endpoint.port,
+    });
+    // A silent listener is foreign too.
+    const silent = tcpEndpoint();
+    await occupy(silent.port, null);
+    expect((await acquireInstanceLock(silent)).status).toBe("unavailable");
+  });
+
+  test("another project's lock on a colliding port makes this one unavailable", async () => {
+    const endpoint = tcpEndpoint();
+    await occupy(endpoint.port, "harnery-lock:0123456789abcdef:other-holder\n");
+    expect(await acquireInstanceLock(endpoint)).toEqual({
+      status: "unavailable",
+      reason: "port_in_use_by_other_lock",
+      port: endpoint.port,
+    });
+  });
+
+  test("a holder that exits between the failed listen and the probe frees the port", async () => {
+    let listens = 0;
+    const result = await acquireInstanceLock(tcpEndpoint(), {
+      listen: async () => {
+        listens += 1;
+        if (listens === 1) throw addressInUse();
+        return { close: async () => {} };
+      },
+      probe: async () => ({ kind: "refused" }),
+    });
+    expect(result.status).toBe("acquired");
+    expect(listens).toBe(2);
+  });
+
+  test("a port the system refuses to bind is unavailable, never retried elsewhere", async () => {
+    const tried: number[] = [];
+    const endpoint = tcpEndpoint();
+    const result = await acquireInstanceLock(endpoint, {
+      listen: async (target) => {
+        if (target.kind === "tcp") tried.push(target.port);
+        throw Object.assign(new Error("denied"), { code: "EACCES" });
+      },
+    });
+    expect(result).toEqual({ status: "unavailable", reason: "listen_failed", port: endpoint.port });
+    expect(tried).toEqual([endpoint.port]);
   });
 });

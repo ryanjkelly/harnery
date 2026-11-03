@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startRelayServer } from "../../commands/relay.ts";
-import { acquireInstanceLock } from "../single-instance.ts";
+import { acquireInstanceLock, instanceLockEndpoint } from "../single-instance.ts";
 import { closeProcessLoggers } from "../storage/logger.ts";
 import { readRemoteMachines } from "./index.ts";
 import {
@@ -12,6 +13,7 @@ import {
   closeRelaySocket,
   ensureRelayDaemon,
   RELAY_LAUNCH_RESERVATION_MS,
+  readRelayLockState,
   relayDaemonStatus,
   relayInstanceLockEndpoint,
   relayStartupGate,
@@ -20,6 +22,7 @@ import {
   reserveRelayLaunch,
 } from "./relay-client.ts";
 import { computeSenderId, deriveRoomCredentials, encryptPayload } from "./relay-protocol.ts";
+import { relayStatus } from "./relay-status.ts";
 
 /**
  * Relay client-side coverage without spawning the real daemon process:
@@ -307,6 +310,11 @@ describe("relay daemon code changes", () => {
   });
 
   const sleep = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
+  const holdLock = async () => {
+    const result = await acquireInstanceLock(relayInstanceLockEndpoint(root));
+    if (result.status !== "acquired") throw new Error(`lock not acquired: ${result.status}`);
+    return result.lock;
+  };
   const pidPath = () => join(root, ".harnery", "presence", "relay-daemon.json");
   const daemon = (pid: number, code = current) => ({ ...pidRecord(), pid, code });
 
@@ -336,8 +344,7 @@ describe("relay daemon code changes", () => {
   test("the F4 interleaving cannot produce two connections", async () => {
     // O holds the lock and runs older code. B and C are both launched (the
     // reservation was lost) and both read O as the owner before either writes.
-    const owner = await acquireInstanceLock(relayInstanceLockEndpoint(root));
-    expect(owner).not.toBeNull();
+    const owner = await holdLock();
     writePid(daemon(4242, { id: "1.0.0@old", root: "/pkg" }));
     const live = new Set([4242, 5001, 5002]);
     const gate = (pid: number) =>
@@ -361,7 +368,7 @@ describe("relay daemon code changes", () => {
   });
 
   test("a successor that cannot get the lock in time gives the pid file back (F8)", async () => {
-    const owner = await acquireInstanceLock(relayInstanceLockEndpoint(root));
+    const owner = await holdLock();
     const previous = daemon(4242, { id: "1.0.0@old", root: "/pkg" });
     writePid(previous);
     const token = reserveRelayLaunch(root) ?? undefined;
@@ -389,10 +396,8 @@ describe("relay daemon code changes", () => {
     // O predates the lock: it holds none, so B gets the lock at once and must
     // wait for O's pid, recording O as the original owner.
     const freeLock = async () => ({
-      endpoint: "fake",
-      nonce: "n",
-      verify: async () => true,
-      close: async () => {},
+      status: "acquired" as const,
+      lock: { endpoint: relayInstanceLockEndpoint(root), nonce: "n", close: async () => {} },
     });
     writePid({ ...pidRecord(), pid: 4242 });
     // B crashes during its first wait, leaving its handover record behind.
@@ -428,28 +433,58 @@ describe("relay daemon code changes", () => {
     expect(JSON.parse(readFileSync(pidPath(), "utf8")).state).toBe("connected");
   });
 
-  test("the gate never connects when its socket is displaced during the settle check (F2)", async () => {
-    // The settle verification runs inside the lock acquisition, before the
-    // gate returns: a displaced bind yields no lock and no connection.
-    const startup = await relayStartupGate(root, daemon(5001), {
-      isAlive: (p) => p === 5001,
+  test("a foreign program on the lock port stops the relay from connecting and shows in status", async () => {
+    // The real loopback TCP lock, as on Linux and macOS.
+    const endpoint = instanceLockEndpoint("relay", root, "linux");
+    if (endpoint.kind !== "tcp") throw new Error("expected a tcp endpoint");
+    const foreign = createServer((socket) => socket.end("SSH-2.0-something\r\n"));
+    await new Promise<void>((done) =>
+      foreign.listen({ host: "127.0.0.1", port: endpoint.port }, done),
+    );
+    try {
+      writePid(daemon(4242, { id: "1.0.0@old", root: "/pkg" }));
+      const token = reserveRelayLaunch(root) ?? undefined;
+      const phases: string[] = [];
+      const startup = await relayStartupGate(root, daemon(5001), {
+        isAlive: (p) => p === 5001,
+        lockEndpoint: endpoint,
+        reservationToken: token,
+        log: (phase) => phases.push(phase),
+      });
+      expect(startup.outcome).toBe("unavailable");
+      expect(startup.lock).toBeUndefined();
+      // Logged once; the pid file was not taken; the reservation is free for
+      // the next launcher call to retry.
+      expect(phases).toEqual(["lock_unavailable"]);
+      expect(JSON.parse(readFileSync(pidPath(), "utf8")).pid).toBe(4242);
+      expect(existsSync(reservationPath())).toBe(false);
+      expect(readRelayLockState(root)).toMatchObject({
+        state: "unavailable",
+        reason: "port_in_use_by_other_program",
+        port: endpoint.port,
+      });
+      const status = await relayStatus(root);
+      expect(status.lock).toMatchObject({
+        state: "unavailable",
+        reason: "port_in_use_by_other_program",
+        port: endpoint.port,
+      });
+    } finally {
+      await new Promise((done) => foreign.close(done));
+    }
+    // Once the port is free, a daemon takes the lock and clears the report.
+    const startup = await relayStartupGate(root, daemon(5002), {
+      isAlive: (p) => p === 5002,
+      lockEndpoint: endpoint,
       log: () => {},
-      acquire: (path) =>
-        acquireInstanceLock(path, {
-          platform: "darwin",
-          listen: async () => ({ close: async () => {} }),
-          settle: async () => {},
-          // Another starter now answers on the path.
-          probe: async () => ({ kind: "held", nonce: "someone-else" }),
-        }),
     });
-    expect(startup.outcome).toBe("duplicate");
-    expect(startup.lock).toBeUndefined();
+    expect(startup.outcome).toBe("connect");
+    expect(readRelayLockState(root)).toBeNull();
+    await startup.lock?.close();
   });
 
   test("an exiting daemon keeps the lock until its relay socket has closed (F4)", async () => {
-    const lock = await acquireInstanceLock(relayInstanceLockEndpoint(root));
-    expect(lock).not.toBeNull();
+    const lock = await holdLock();
     let onClose: () => void = () => {};
     let closeCalls = 0;
     const socket = {
@@ -469,12 +504,12 @@ describe("relay daemon code changes", () => {
     expect(closeCalls).toBe(1);
     expect(closed).toBe(false);
     // Still held while the socket is closing.
-    expect(await acquireInstanceLock(relayInstanceLockEndpoint(root))).toBeNull();
+    expect((await acquireInstanceLock(relayInstanceLockEndpoint(root))).status).toBe("busy");
     onClose();
     await shutdown;
     expect(closed).toBe(true);
     // Shutdown never releases the lock itself; process exit does.
-    expect(await acquireInstanceLock(relayInstanceLockEndpoint(root))).toBeNull();
+    expect((await acquireInstanceLock(relayInstanceLockEndpoint(root))).status).toBe("busy");
     await lock?.close();
     // A socket that never reports closing is waited for only until the bound.
     const silent = { ...socket, addEventListener: () => {} };
@@ -485,7 +520,7 @@ describe("relay daemon code changes", () => {
   });
 
   test("a current daemon holding the lock is never superseded by a duplicate", async () => {
-    const owner = await acquireInstanceLock(relayInstanceLockEndpoint(root));
+    const owner = await holdLock();
     writePid(daemon(4242));
     const startup = await relayStartupGate(root, daemon(5001), {
       isAlive: (p) => p === 4242 || p === 5001,

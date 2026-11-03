@@ -36,7 +36,14 @@ import {
   rootCommitSha,
   sanitizeRefComponent,
 } from "./git.ts";
-import { pidAlive, readRelayPidRecord, readRoomSalt, relayLegacyLogPath } from "./relay-client.ts";
+import {
+  pidAlive,
+  readRelayLockState,
+  readRelayPidRecord,
+  readRoomSalt,
+  relayInstanceLockEndpoint,
+  relayLegacyLogPath,
+} from "./relay-client.ts";
 import { deriveRoomCredentials } from "./relay-protocol.ts";
 
 /** Matches readRemoteMachines' window: older blobs render as offline. */
@@ -76,6 +83,18 @@ export interface RelayStatus {
     url_matches_config: boolean | null;
     started_at: string | null;
     uptime_secs: number | null;
+  };
+  /**
+   * The relay instance lock. `unavailable` means something other than this
+   * project's relay daemon occupies the lock's endpoint, so no daemon will
+   * connect until it goes away; git-ref presence continues meanwhile.
+   */
+  lock: {
+    state: "held" | "unavailable" | "none";
+    endpoint: "named_pipe" | "loopback_tcp";
+    port?: number;
+    reason?: string;
+    at?: string;
   };
   log: {
     source: "shared" | "legacy";
@@ -131,11 +150,31 @@ export async function relayStatus(
       started_at: startedAt,
       uptime_secs: alive && startedAt ? ageSecs(startedAt, now) : null,
     },
+    lock: lockSummary(coordRoot, alive),
     log,
     relay_cache: readRelayCache(coordRoot, now, machine),
     git_refs: readGitRefs(coordRoot, now, machine),
     publish_state: readPublishState(coordRoot, now),
   };
+}
+
+function lockSummary(coordRoot: string, daemonAlive: boolean): RelayStatus["lock"] {
+  const endpoint = relayInstanceLockEndpoint(coordRoot);
+  const base = {
+    endpoint: endpoint.kind === "pipe" ? ("named_pipe" as const) : ("loopback_tcp" as const),
+    ...(endpoint.kind === "tcp" ? { port: endpoint.port } : {}),
+  };
+  const failure = readRelayLockState(coordRoot);
+  if (failure) {
+    return {
+      ...base,
+      state: "unavailable",
+      reason: failure.reason,
+      at: failure.at,
+      ...(failure.port !== undefined ? { port: failure.port } : {}),
+    };
+  }
+  return { ...base, state: daemonAlive ? "held" : "none" };
 }
 
 async function roomSummary(coordRoot: string): Promise<RelayStatus["room"]> {

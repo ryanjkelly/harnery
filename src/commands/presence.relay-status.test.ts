@@ -16,6 +16,7 @@ const status: RelayStatus = {
     started_at: "2026-01-01T00:00:00.000Z",
     uptime_secs: 3600,
   },
+  lock: { state: "held", endpoint: "loopback_tcp", port: 23456 },
   log: {
     source: "shared",
     truncated: false,
@@ -90,5 +91,22 @@ describe("formatRelayStatus", () => {
     });
     expect(text).toContain("relay: not configured (git-refs transport only)");
     expect(text).toContain("daemon: not running\n");
+  });
+
+  test("an unavailable instance lock names its reason and port", () => {
+    const text = formatRelayStatus({
+      ...status,
+      lock: {
+        state: "unavailable",
+        endpoint: "loopback_tcp",
+        port: 23456,
+        reason: "port_in_use_by_other_program",
+        at: "2026-01-01T00:59:30.000Z",
+      },
+    });
+    expect(text).toContain(
+      "instance lock: unavailable (port_in_use_by_other_program, port 23456); the relay will not connect",
+    );
+    expect(formatRelayStatus(status)).not.toContain("instance lock");
   });
 });

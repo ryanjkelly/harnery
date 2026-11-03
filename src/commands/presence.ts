@@ -311,6 +311,11 @@ export function formatRelayStatus(s: RelayStatus): string {
         ? `daemon: not running (stale pid ${d.pid_record.pid})`
         : "daemon: not running",
   );
+  if (s.lock.state === "unavailable") {
+    lines.push(
+      `instance lock: unavailable (${s.lock.reason}${s.lock.port !== undefined ? `, port ${s.lock.port}` : ""}); the relay will not connect, git-ref presence continues`,
+    );
+  }
   const disc = s.log.last_disconnected;
   lines.push(`last connect: ${when(s.log.last_connected)}`);
   lines.push(

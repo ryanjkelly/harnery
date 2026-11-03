@@ -89,33 +89,26 @@ and an unknown build counts as "restart needed", which would loop if acted on.
 - **One relay at a time, held by the operating system.** A relay daemon
   must hold the project's relay instance lock before it opens the relay
   socket or starts watching the ledger, and it holds the lock for its whole
-  life. The lock is a local IPC server: a named pipe on Windows
-  (`\\.\pipe\harnery-relay-<hash of the project root>`), and on every POSIX
-  system one Unix socket file, `.harnery/presence/relay.sock` (or
-  `/tmp/harnery-relay-<hash of the project root>.sock` when that path would
-  be too long, a fixed directory so every runtime picks the same file). Only
-  one process can listen on it, and the operating system closes it when that
-  process exits or crashes. Each holder answers every connection with a
-  banner carrying a random per-process nonce. A probe reads it: a refused
-  connection means the file is stale, a harnery banner names the holder, and
-  anything else counts as held, so a probe never licenses unlinking a live
-  socket.
-- **Self-verification on POSIX.** A socket file left by a crash is unlinked
-  and rebound by the starter that finds it refusing connections. Two
-  starters can both do that, and unlinking does not close the first
-  listener, so a bind is never trusted on its own. After binding, the holder
-  waits 250 ms and probes the path; it keeps the lock only if the banner is
-  its own, and this check runs inside the lock acquisition, before the
-  startup gate can return "connect". A connected daemon re-verifies every
-  five seconds and, if displaced, closes its relay socket and exits. The
-  precise bound: two bindings of the same path can coexist only when one
-  starter stalls for more than the 250 ms settle between probing the stale
-  file and unlinking it. Then the first holder may already have connected,
-  and the two relay connections overlap for at most one five-second
-  verification interval, after which the displaced daemon leaves. Without
-  such a stall, the displaced holder fails its settle check and never
-  connects. No recovery guard file is used: the verification makes the
-  outcome correct, and a guard that can itself go stale only added windows.
+  life. On Windows the lock is a named pipe
+  (`\\.\pipe\harnery-relay-<hash of the project root>`). On every POSIX
+  system it is a TCP listener bound to 127.0.0.1 only, at a port derived
+  from a hash of the lock name and the resolved project root, in 20000 to
+  32767, below the Linux (32768 and up) and macOS (49152 and up) ephemeral
+  ranges. Binding is atomic and the kernel releases it when the holder exits
+  or crashes: there is no file, nothing to unlink, no stale state to
+  recover, and every runtime on the machine computes the same endpoint.
+  Another port is never tried, because a second port would be a second lock.
+- **Who holds the port.** Each holder answers every connection with a
+  banner carrying only the lock's id (a hash of its name and project root)
+  and a random per-process nonce. A starter whose bind fails reads it: the
+  same lock id means a live peer holds the lock, the normal case. Anything
+  else (another program on the port, or another project's harnery lock
+  whose port collided) makes the lock unavailable. The daemon then does not
+  connect, logs the reason and port once, records them for
+  `presence relay-status` (`lock: { state: "unavailable", reason, port }`),
+  and exits; git-ref presence carries on, and the next launcher call tries
+  again. With an exclusive bind there is nothing for a holder to be
+  displaced by, so there is no periodic re-verification.
 - **Replacement waits for the lock.** A successor that finds the lock held
   by a live daemon on older code marks the pid file `handover`, which that
   daemon sees as superseded within five seconds; it closes its socket and
@@ -139,8 +132,8 @@ and an unknown build counts as "restart needed", which would loop if acted on.
   it dead and the original still alive waits for the original too, and
   records it in turn. At most one connected daemon per project is guaranteed
   only once every daemon on the machine runs this code.
-- **The lock outlives the socket.** Every exit (superseded, code change,
-  idle, displaced) closes the relay socket and waits up to five seconds for
+- **The lock outlives the socket.** Every exit (superseded, code change, or
+  idle) closes the relay socket and waits up to five seconds for
   its close event before the process exits. The lock is never released by
   hand; process exit releases it, so no successor can connect while the old
   socket is still open.
@@ -161,6 +154,15 @@ and an unknown build counts as "restart needed", which would loop if acted on.
   are what a pull or an upgrade changes.
 - **Only report it.** Status already said "restart needed" for two of these
   services, and the problem still needed a person to notice and act.
+- **A Unix socket file with self-verification.** The holder bound a socket
+  file, answered with a nonce banner, waited a short settle, and probed its
+  own path to confirm it had not been displaced, re-verifying every few
+  seconds. Rejected: a socket file left by a crash can only be recovered by
+  probing it and then unlinking it, and that gap cannot be closed. Starter B
+  probes the stale file and pauses; starter A recovers it, passes its settle
+  check, and connects; B resumes, unlinks A's live socket, binds, passes its
+  own check, and connects too, so two relay connections overlap until the
+  next verification. A loopback TCP port has no file to unlink.
 - **A file-based exclusive reservation as the correctness guarantee.** An
   atomically created reservation file, reclaimed by rename when expired, with
   a handover record naming the predecessor, was built and reviewed through

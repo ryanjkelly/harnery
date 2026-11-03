@@ -56,6 +56,9 @@ import { eventV3ActiveWatchPath } from "../events/v3/reader.ts";
 import {
   acquireInstanceLock,
   type InstanceLock,
+  type InstanceLockEndpoint,
+  type InstanceLockResult,
+  type InstanceLockUnavailableReason,
   instanceLockEndpoint,
 } from "../single-instance.ts";
 import { closeProcessLoggers, legacyLogFields, processLogger } from "../storage/logger.ts";
@@ -72,6 +75,8 @@ import {
 import { initialReconnectState, planReconnect, type ReconnectState } from "./relay-reconnect.ts";
 
 const KEEPALIVE_MS = 60_000;
+/** Held instance locks, referenced so nothing can collect their listeners. */
+const heldInstanceLocks: InstanceLock[] = [];
 const WATCH_DEBOUNCE_MS = 500;
 const IDLE_EXIT_MS = 5 * 60_000;
 
@@ -174,8 +179,6 @@ export const RELAY_LAUNCH_RESERVATION_MS = 20_000;
 export const RELAY_HANDOVER_WAIT_MS = 75_000;
 /** How often a running daemon checks whether a successor took its pid file. */
 const SUPERSEDE_CHECK_MS = 5_000;
-/** How often a connected daemon re-verifies it still holds the instance lock. */
-export const LOCK_VERIFY_MS = 5_000;
 /** How long an exiting daemon waits for its relay socket to close. */
 export const SOCKET_CLOSE_WAIT_MS = 5_000;
 
@@ -372,7 +375,12 @@ function launchRelayDaemon(coordRoot: string, token: string): boolean {
   }
 }
 
-export type RelayStartupOutcome = "connect" | "duplicate" | "superseded" | "gave_up";
+export type RelayStartupOutcome =
+  | "connect"
+  | "duplicate"
+  | "superseded"
+  | "gave_up"
+  | "unavailable";
 
 export interface RelayStartup {
   outcome: RelayStartupOutcome;
@@ -381,8 +389,29 @@ export interface RelayStartup {
 }
 
 /** The project's relay instance lock: one per resolved project root. */
-export function relayInstanceLockEndpoint(coordRoot: string): string {
-  return instanceLockEndpoint("relay", coordRoot, presenceDir(coordRoot));
+export function relayInstanceLockEndpoint(coordRoot: string): InstanceLockEndpoint {
+  return instanceLockEndpoint("relay", coordRoot);
+}
+
+/** Why the last daemon could not take the relay instance lock, for relay-status. */
+export interface RelayLockState {
+  state: "unavailable";
+  reason: InstanceLockUnavailableReason;
+  port?: number;
+  at: string;
+}
+
+function relayLockStatePath(coordRoot: string): string {
+  return join(presenceDir(coordRoot), "relay-lock.json");
+}
+
+export function readRelayLockState(coordRoot: string): RelayLockState | null {
+  try {
+    const value = JSON.parse(readFileSync(relayLockStatePath(coordRoot), "utf8")) as RelayLockState;
+    return value?.state === "unavailable" && typeof value.reason === "string" ? value : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -414,8 +443,8 @@ export async function relayStartupGate(
     nowMs?: () => number;
     /** The launch reservation this daemon was started under. */
     reservationToken?: string;
-    lockEndpoint?: string;
-    acquire?: (endpoint: string) => Promise<InstanceLock | null>;
+    lockEndpoint?: InstanceLockEndpoint;
+    acquire?: (endpoint: InstanceLockEndpoint) => Promise<InstanceLockResult>;
     log?: (phase: string, message: string) => void;
   } = {},
 ): Promise<RelayStartup> {
@@ -424,13 +453,51 @@ export async function relayStartupGate(
   const wait = options.wait ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
   const token = options.reservationToken ?? inheritedReservationToken();
   const endpoint = options.lockEndpoint ?? relayInstanceLockEndpoint(coordRoot);
-  const acquire = options.acquire ?? ((path: string) => acquireInstanceLock(path));
+  const acquire =
+    options.acquire ?? ((target: InstanceLockEndpoint) => acquireInstanceLock(target));
   const log =
     options.log ??
     ((phase: string, message: string) =>
       appendPresenceRelayDiagnostic(coordRoot, "relay.lifecycle", { phase, message }));
-  // A Unix socket lock lives in this directory.
   mkdirSync(presenceDir(coordRoot), { recursive: true });
+  let unavailable: Extract<InstanceLockResult, { status: "unavailable" }> | undefined;
+  // The lock, null while a live peer holds it, or undefined once something
+  // other than this lock turned out to occupy its endpoint.
+  const take = async (): Promise<InstanceLock | null | undefined> => {
+    const result = await acquire(endpoint);
+    if (result.status === "acquired") {
+      rmSync(relayLockStatePath(coordRoot), { force: true });
+      return result.lock;
+    }
+    if (result.status === "busy") return null;
+    unavailable = result;
+    return undefined;
+  };
+  // Something that is not this lock holds its endpoint: never connect, say
+  // why once, and leave it to the next launcher call to try again.
+  const giveUpUnavailable = (restorePidFile: boolean): RelayStartup => {
+    const reason = unavailable?.reason ?? "listen_failed";
+    const port = unavailable?.port;
+    const state: RelayLockState = {
+      state: "unavailable",
+      reason,
+      ...(port !== undefined ? { port } : {}),
+      at: new Date(now()).toISOString(),
+    };
+    try {
+      atomicWriteJson(relayLockStatePath(coordRoot), state);
+    } catch {
+      /* status reporting is best-effort */
+    }
+    if (restorePidFile && ownsPidFile() && previous)
+      atomicWriteJson(pidFilePath(coordRoot), previous);
+    log(
+      "lock_unavailable",
+      `relay instance lock unavailable (${reason}${port !== undefined ? ` on port ${port}` : ""}); not connecting`,
+    );
+    releaseRelayLaunchReservation(coordRoot, token);
+    return { outcome: "unavailable" };
+  };
   const deadline = now() + (options.timeoutMs ?? RELAY_HANDOVER_WAIT_MS);
   const previous = readRelayPidRecord(coordRoot);
   const ownsPidFile = () => readRelayPidRecord(coordRoot)?.pid === record.pid;
@@ -442,7 +509,9 @@ export async function relayStartupGate(
     previous?.original && previous.original.pid !== record.pid && isAlive(previous.original.pid)
       ? previous.original
       : undefined;
-  let lock = await acquire(endpoint);
+  const first = await take();
+  if (first === undefined) return giveUpUnavailable(false);
+  let lock: InstanceLock | null = first;
   if (!lock) {
     const replacing =
       previousLive &&
@@ -488,7 +557,11 @@ export async function relayStartupGate(
     if (now() >= deadline) break;
     refreshRelayLaunchReservation(coordRoot, token, now());
     await wait(250);
-    lock ??= await acquire(endpoint);
+    if (!lock) {
+      const next = await take();
+      if (next === undefined) return giveUpUnavailable(true);
+      lock = next;
+    }
   }
   await lock?.close();
   // The previous daemon still runs (stalled, or too old to notice): give its
@@ -575,7 +648,8 @@ export async function runRelayDaemon(
     await closeProcessLoggers();
     return 0;
   }
-  const instanceLock = startup.lock;
+  // The lock stays held for the life of the process; exit releases it.
+  if (startup.lock) heldInstanceLocks.push(startup.lock);
 
   const creds = await deriveRoomCredentials({
     rootCommitSha: sha,
@@ -721,7 +795,6 @@ export async function runRelayDaemon(
     shuttingDown = true;
     clearInterval(interval);
     clearInterval(supersedeCheck);
-    clearInterval(lockCheck);
     void closeRelaySocket(ws, closeReason)
       .then(() => beforeExit?.())
       .then(() => closeProcessLoggers())
@@ -740,18 +813,6 @@ export async function runRelayDaemon(
     if (shuttingDown) return;
     if (readRelayPidRecord(coordRoot)?.pid !== process.pid) exitSuperseded();
   }, SUPERSEDE_CHECK_MS);
-
-  // On POSIX another starter can unlink and rebind the lock's socket file.
-  // Re-verify that the endpoint still answers with this daemon's nonce, and
-  // leave at once if it was displaced.
-  const lockCheck = setInterval(() => {
-    if (shuttingDown || !instanceLock) return;
-    void instanceLock.verify().then((held) => {
-      if (held || shuttingDown) return;
-      log("instance lock displaced by another daemon; exiting", "lock_displaced");
-      shutdown("lock displaced");
-    });
-  }, LOCK_VERIFY_MS);
 
   // Keepalive + lifecycle checks.
   const interval = setInterval(() => {

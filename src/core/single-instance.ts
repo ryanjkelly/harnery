@@ -1,114 +1,140 @@
 /**
  * An operating-system-held, single-instance lock (ADR 0232).
  *
- * The lock is a local IPC server listening on a per-scope endpoint: a named
- * pipe on Windows, a Unix domain socket file elsewhere. Only one process can
- * listen on an endpoint at a time, and the operating system closes it when
- * that process exits or crashes, so a holder can never leak the lock the way
- * a lock file can.
+ * The lock is a local listener on a per-scope endpoint: a named pipe on
+ * Windows, and elsewhere a TCP listener on 127.0.0.1 at a port derived from
+ * the lock's name and scope. Binding either is atomic, only one process can
+ * hold it, and the operating system releases it when that process exits or
+ * crashes. There is no file to go stale, nothing to unlink, and every
+ * runtime on the machine computes the same endpoint.
  *
- * Every holder answers each connection with a banner carrying a random
- * per-process nonce, so a probe can tell who holds the endpoint. A Unix
- * socket file outlives a crashed holder; a starter that finds it refusing
- * connections unlinks it and binds. Two starters can both do that, and
- * unlinking does not close a listener, so on POSIX a bind is never trusted
- * on its own: after binding, the holder waits a short settle and probes the
- * path, and keeps the lock only if the banner it reads is its own. A holder
- * displaced later finds out from `verify()`, which long-lived holders call
- * periodically.
+ * Every holder answers each connection with a banner carrying the lock's id
+ * (a hash of its name and scope) and a random per-process nonce, nothing
+ * else. A starter that finds the endpoint taken reads the banner: the same
+ * lock id means a live peer holds it; anything else (another program, or
+ * another harnery lock whose port collided) makes the lock unavailable, and
+ * the caller must not proceed as if it held it. Ports are never retried
+ * elsewhere, because a second port would be a second lock.
  */
 
 import { createHash, randomUUID } from "node:crypto";
-import { rmSync } from "node:fs";
 import { createConnection, createServer, type Server } from "node:net";
 import { posix, win32 } from "node:path";
 
+export type InstanceLockEndpoint =
+  | { kind: "pipe"; id: string; path: string }
+  | { kind: "tcp"; id: string; host: "127.0.0.1"; port: number };
+
 export interface InstanceLock {
-  readonly endpoint: string;
+  readonly endpoint: InstanceLockEndpoint;
   /** This holder's banner nonce. */
   readonly nonce: string;
-  /** Does the endpoint still answer with this holder's nonce? */
-  verify(): Promise<boolean>;
   /** Release the lock. Process exit releases it as well. */
   close(): Promise<void>;
 }
 
-/** What a probe found: nobody (`stale`), or a holder and its nonce when it identified itself. */
-export type InstanceProbe = { kind: "stale" } | { kind: "held"; nonce?: string };
+export type InstanceLockUnavailableReason =
+  | "port_in_use_by_other_program"
+  | "port_in_use_by_other_lock"
+  | "listen_failed";
+
+export type InstanceLockResult =
+  | { status: "acquired"; lock: InstanceLock }
+  /** A live holder of this same lock answered. */
+  | { status: "busy" }
+  /** The endpoint is taken by something that is not this lock, or unusable. */
+  | { status: "unavailable"; reason: InstanceLockUnavailableReason; port?: number };
+
+/** What answered on the endpoint. */
+export type InstanceProbe =
+  | { kind: "refused" }
+  | { kind: "banner"; id: string; nonce: string }
+  | { kind: "foreign" };
 
 export interface InstanceLockDependencies {
-  platform: NodeJS.Platform;
-  listen: (endpoint: string, banner: string) => Promise<{ close: () => Promise<void> }>;
-  probe: (endpoint: string) => Promise<InstanceProbe>;
-  unlink: (endpoint: string) => void;
-  settle: (milliseconds: number) => Promise<void>;
+  listen: (
+    endpoint: InstanceLockEndpoint,
+    banner: string,
+  ) => Promise<{ close: () => Promise<void> }>;
+  probe: (endpoint: InstanceLockEndpoint) => Promise<InstanceProbe>;
   nonce: () => string;
 }
 
 const BANNER_PREFIX = "harnery-lock:";
-/** How long a new POSIX holder waits before checking it was not displaced. */
-export const INSTANCE_LOCK_SETTLE_MS = 250;
-/** Unix socket paths are limited to roughly 104 bytes on macOS and 108 on Linux. */
-const MAX_SOCKET_PATH_BYTES = 100;
-/**
- * The fallback directory for a socket path that would be too long. A fixed
- * path, not the runtime's temp directory, so every runtime picks the same
- * endpoint for the same project.
- */
-const POSIX_FALLBACK_DIRECTORY = "/tmp";
+/** Below the Linux (32768+) and macOS/Windows (49152+) ephemeral ranges. */
+export const INSTANCE_LOCK_PORT_MIN = 20_000;
+export const INSTANCE_LOCK_PORT_MAX = 32_767;
 
 /**
- * The endpoint for one lock: `name` says what it guards, `scope` (typically a
- * resolved project root) which instance. A named pipe on Windows; elsewhere
- * a socket file in `directory`, or in `/tmp` under a name derived from the
- * scope when that path would be too long.
+ * The endpoint for one lock: `name` says what it guards, `scope` (typically
+ * a resolved project root) which instance.
  */
 export function instanceLockEndpoint(
   name: string,
   scope: string,
-  directory: string,
   platform: NodeJS.Platform = process.platform,
-): string {
+): InstanceLockEndpoint {
   const paths = platform === "win32" ? win32 : posix;
   const resolved = paths.resolve(scope);
   const normalized = platform === "win32" ? resolved.toLowerCase() : resolved;
-  const hash = createHash("sha256").update(`${name}\0${normalized}`).digest("hex").slice(0, 24);
-  if (platform === "win32") return `\\\\.\\pipe\\harnery-${name}-${hash}`;
-  const local = paths.join(directory, `${name}.sock`);
-  return Buffer.byteLength(local) <= MAX_SOCKET_PATH_BYTES
-    ? local
-    : paths.join(POSIX_FALLBACK_DIRECTORY, `harnery-${name}-${hash}.sock`);
+  const hash = createHash("sha256").update(`${name}\0${normalized}`).digest("hex");
+  const id = hash.slice(0, 16);
+  if (platform === "win32") {
+    return { kind: "pipe", id, path: `\\\\.\\pipe\\harnery-${name}-${hash.slice(0, 24)}` };
+  }
+  const span = INSTANCE_LOCK_PORT_MAX - INSTANCE_LOCK_PORT_MIN + 1;
+  const port = INSTANCE_LOCK_PORT_MIN + (Number.parseInt(hash.slice(16, 24), 16) % span);
+  return { kind: "tcp", id, host: "127.0.0.1", port };
 }
 
-function listenWithBanner(
-  endpoint: string,
+function bannerFor(endpoint: InstanceLockEndpoint, nonce: string): string {
+  return `${BANNER_PREFIX}${endpoint.id}:${nonce}`;
+}
+
+function listenOn(
+  endpoint: InstanceLockEndpoint,
   banner: string,
 ): Promise<{ close: () => Promise<void> }> {
   return new Promise((done, fail) => {
-    const server = createServer((socket) => {
+    const server: Server = createServer((socket) => {
       socket.on("error", () => {});
       socket.end(`${banner}\n`);
     });
     server.once("error", fail);
-    server.listen(endpoint, () => {
+    const ready = () => {
       server.off("error", fail);
       // The lock never keeps a process alive on its own.
       server.unref();
-      done({ close: () => closeServer(server) });
-    });
+      done({
+        close: () =>
+          new Promise<void>((closed) => {
+            try {
+              server.close(() => closed());
+            } catch {
+              closed();
+            }
+          }),
+      });
+    };
+    if (endpoint.kind === "pipe") server.listen(endpoint.path, ready);
+    // Loopback only: the lock is never reachable from another machine.
+    else server.listen({ host: endpoint.host, port: endpoint.port, exclusive: true }, ready);
   });
 }
 
 /**
- * Probe the endpoint. A refused or missing endpoint is stale; a harnery
- * banner names its holder; anything else (silence, garbage, other errors)
- * is treated as held, so a probe never licenses unlinking a live socket.
+ * Ask whoever holds the endpoint who it is. A refused connection means
+ * nobody; a harnery banner names the lock and holder; silence, other data,
+ * or another error is foreign.
  */
-export function probeInstanceEndpoint(endpoint: string): Promise<InstanceProbe> {
+export function probeInstanceEndpoint(endpoint: InstanceLockEndpoint): Promise<InstanceProbe> {
   return new Promise((done) => {
     let settled = false;
     let received = "";
-    const socket = createConnection(endpoint);
+    const socket =
+      endpoint.kind === "pipe"
+        ? createConnection(endpoint.path)
+        : createConnection({ host: endpoint.host, port: endpoint.port });
     const finish = (result: InstanceProbe) => {
       if (settled) return;
       settled = true;
@@ -116,118 +142,80 @@ export function probeInstanceEndpoint(endpoint: string): Promise<InstanceProbe> 
       socket.destroy();
       done(result);
     };
-    const timer = setTimeout(() => finish({ kind: "held" }), 1_000);
+    const parse = (): InstanceProbe => {
+      const line = received.split("\n")[0] ?? "";
+      if (!line.startsWith(BANNER_PREFIX)) return { kind: "foreign" };
+      const [id, nonce] = line.slice(BANNER_PREFIX.length).split(":");
+      return id && nonce ? { kind: "banner", id, nonce } : { kind: "foreign" };
+    };
+    const timer = setTimeout(() => finish({ kind: "foreign" }), 1_000);
     socket.setEncoding("utf8");
     socket.on("data", (chunk: string) => {
       received += chunk;
-      const line = received.split("\n")[0] ?? "";
-      if (received.includes("\n") || received.length > 256) {
-        finish(
-          line.startsWith(BANNER_PREFIX)
-            ? { kind: "held", nonce: line.slice(BANNER_PREFIX.length) }
-            : { kind: "held" },
-        );
-      }
+      if (received.includes("\n") || received.length > 256) finish(parse());
     });
-    socket.once("end", () => {
-      const line = received.split("\n")[0] ?? "";
-      finish(
-        line.startsWith(BANNER_PREFIX)
-          ? { kind: "held", nonce: line.slice(BANNER_PREFIX.length) }
-          : { kind: "held" },
-      );
-    });
+    socket.once("end", () => finish(parse()));
     socket.once("error", (error: NodeJS.ErrnoException) =>
       finish(
         error.code === "ECONNREFUSED" || error.code === "ENOENT"
-          ? { kind: "stale" }
-          : { kind: "held" },
+          ? { kind: "refused" }
+          : { kind: "foreign" },
       ),
     );
   });
 }
 
-function closeServer(server: Server): Promise<void> {
-  return new Promise((done) => {
-    try {
-      server.close(() => done());
-    } catch {
-      done();
-    }
-  });
-}
-
 /**
- * Take the lock, or return null when another process holds it (or the
- * endpoint cannot be used). Never waits beyond the POSIX settle check;
- * callers that must wait poll.
+ * Take the lock. Never waits: `busy` means a live peer holds it (callers
+ * that must wait poll), `unavailable` that something else occupies the
+ * endpoint and the lock cannot be taken at all until it goes away.
  */
 export async function acquireInstanceLock(
-  endpoint: string,
+  endpoint: InstanceLockEndpoint,
   overrides: Partial<InstanceLockDependencies> = {},
-): Promise<InstanceLock | null> {
+): Promise<InstanceLockResult> {
   const deps: InstanceLockDependencies = {
-    platform: process.platform,
-    listen: listenWithBanner,
+    listen: listenOn,
     probe: probeInstanceEndpoint,
-    unlink: (path) => rmSync(path, { force: true }),
-    settle: (ms) => new Promise((done) => setTimeout(done, ms)),
     nonce: randomUUID,
     ...overrides,
   };
   const nonce = deps.nonce();
-  const banner = `${BANNER_PREFIX}${nonce}`;
-  let server = await tryListen(deps, endpoint, banner);
-  if (server === "failed") return null;
-  if (server === "in_use") {
-    // A named pipe disappears with its holder: in use means held.
-    if (deps.platform === "win32") return null;
-    // A socket file that refuses connections was left by a crashed holder.
-    if ((await deps.probe(endpoint)).kind !== "stale") return null;
+  const banner = bannerFor(endpoint, nonce);
+  const port = endpoint.kind === "tcp" ? { port: endpoint.port } : {};
+  // A holder that exited between a failed listen and its probe frees the
+  // endpoint; one more listen covers that.
+  for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      deps.unlink(endpoint);
-    } catch {
-      return null;
+      const server = await deps.listen(endpoint, banner);
+      let closed = false;
+      const lock: InstanceLock = {
+        endpoint,
+        nonce,
+        close: async () => {
+          if (closed) return;
+          closed = true;
+          await server.close();
+        },
+      };
+      return { status: "acquired", lock };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE") {
+        return { status: "unavailable", reason: "listen_failed", ...port };
+      }
     }
-    server = await tryListen(deps, endpoint, banner);
-    if (server === "failed" || server === "in_use") return null;
+    // A named pipe in use is held by a process that can only be a peer: no
+    // other program uses harnery's pipe names.
+    if (endpoint.kind === "pipe") return { status: "busy" };
+    const found = await deps.probe(endpoint);
+    if (found.kind === "refused") continue;
+    if (found.kind === "banner" && found.id === endpoint.id) return { status: "busy" };
+    return {
+      status: "unavailable",
+      reason:
+        found.kind === "banner" ? "port_in_use_by_other_lock" : "port_in_use_by_other_program",
+      ...port,
+    };
   }
-  const bound = server;
-  let closed = false;
-  const lock: InstanceLock = {
-    endpoint,
-    nonce,
-    verify: async () => {
-      if (closed) return false;
-      if (deps.platform === "win32") return true;
-      const found = await deps.probe(endpoint);
-      return found.kind === "held" && found.nonce === nonce;
-    },
-    close: async () => {
-      if (closed) return;
-      closed = true;
-      await bound.close();
-    },
-  };
-  if (deps.platform !== "win32") {
-    // Another starter may have unlinked and rebound the same path.
-    await deps.settle(INSTANCE_LOCK_SETTLE_MS);
-    if (!(await lock.verify())) {
-      await lock.close();
-      return null;
-    }
-  }
-  return lock;
-}
-
-async function tryListen(
-  deps: InstanceLockDependencies,
-  endpoint: string,
-  banner: string,
-): Promise<{ close: () => Promise<void> } | "in_use" | "failed"> {
-  try {
-    return await deps.listen(endpoint, banner);
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EADDRINUSE" ? "in_use" : "failed";
-  }
+  return { status: "unavailable", reason: "listen_failed", ...port };
 }
