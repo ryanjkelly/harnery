@@ -41,6 +41,7 @@ import {
   nativeSessionIdentity,
   normalizeAdapter,
   resolveOwner,
+  resolveOwnerAcrossRoots,
   resolveOwnerBySessionEnv,
   resolveOwnerWithSource,
   sessionIdentityFromEnv,
@@ -1374,7 +1375,17 @@ function runWhoami(opts: { json?: boolean }): void {
   }
 
   ensureAdapterSession(root);
-  const resolved = resolveOwnerWithSource();
+  let resolved: { owner: string | null; source: string } = resolveOwnerWithSource();
+  let sessionRoot = root;
+  if (!resolved.owner) {
+    // A session acting on another project (HARNERY_COORD_ROOT_OVERRIDE) is
+    // registered in its own project; name it from there instead of failing.
+    const across = resolveOwnerAcrossRoots();
+    if (across.owner && across.root && across.root !== root) {
+      resolved = { owner: across.owner, source: across.source };
+      sessionRoot = across.root;
+    }
+  }
   const myOwner = resolved.owner;
   if (!myOwner) {
     emit.error(
@@ -1383,7 +1394,7 @@ function runWhoami(opts: { json?: boolean }): void {
     process.exit(1);
   }
 
-  const hb = readLiveCoordinationRow(root, myOwner);
+  const hb = readLiveCoordinationRow(sessionRoot, myOwner);
   if (!hb) {
     emit.error({
       code: "no_live_generation",
@@ -1413,10 +1424,17 @@ function runWhoami(opts: { json?: boolean }): void {
     platform: hb.platform ?? "claude-code",
   };
 
-  emit.data({ ...row, resolution_source: resolved.source, note: SUBAGENT_NOTE });
+  const elsewhere = sessionRoot !== root;
+  emit.data({
+    ...row,
+    resolution_source: resolved.source,
+    ...(elsewhere ? { session_root: sessionRoot, acting_root: root } : {}),
+    note: SUBAGENT_NOTE,
+  });
 
   if (process.stdout.isTTY && !opts.json) {
     emit.text(`resolved via: ${resolved.source}\n`);
+    if (elsewhere) emit.text(`session registered in ${sessionRoot}; acting on ${root}\n`);
     emit.text(`note: ${SUBAGENT_NOTE}\n`);
   }
 }
