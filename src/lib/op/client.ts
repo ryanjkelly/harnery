@@ -15,9 +15,9 @@
  *    and no secret appears in argv.
  */
 
-import { mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { detectOp, isWindowsOp, opEnvironment, wslPathToWindows } from "./detect.ts";
 import { runProcess, runProcessSync } from "./process.ts";
 import type {
@@ -281,6 +281,26 @@ function verifyReturnedField(
   }
 }
 
+/**
+ * The real path of `path`, following symlinks. For a path that does not
+ * exist yet, the deepest existing ancestor is resolved and the rest appended.
+ */
+function canonicalPath(path: string): string {
+  const abs = resolve(path);
+  const rest: string[] = [];
+  let current = abs;
+  for (;;) {
+    try {
+      return join(realpathSync(current), ...rest.reverse());
+    } catch {
+      const parent = dirname(current);
+      if (parent === current) return abs;
+      rest.push(basename(current));
+      current = parent;
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Host-bound client
 // ---------------------------------------------------------------------------
@@ -394,15 +414,18 @@ export function createOpClient(config: OpHostConfig) {
   function assertIgnoredOutput(path: string): string {
     const abs = resolve(path);
     if (!requireIgnoredOutput) return abs;
-    const rel = relative(config.repoRoot, abs);
+    // Compare real paths: a symlink outside the repository can point into it,
+    // and the later write follows the link.
+    const repo = canonicalPath(config.repoRoot);
+    const rel = relative(repo, canonicalPath(abs));
     const outside = rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel);
     if (outside) return abs;
     // Without --no-index, check-ignore treats a tracked file as not ignored
     // even when a rule matches it, because Git keeps tracking its changes.
-    const check = runProcessSync(["git", "-C", config.repoRoot, "check-ignore", "-q", "--", rel]);
+    const check = runProcessSync(["git", "-C", repo, "check-ignore", "-q", "--", rel || "."]);
     if (check.exitCode !== 0) {
       throw new Error(
-        `${rel} is tracked or not ignored by Git, so a secret written there could be committed. Write it to an ignored, untracked path instead.`,
+        `${rel || "."} is tracked or not ignored by Git, so a secret written there could be committed. Write it to an ignored, untracked path instead.`,
       );
     }
     return abs;

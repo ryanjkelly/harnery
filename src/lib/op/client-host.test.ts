@@ -1,6 +1,14 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createOpClient, OpWriteRefusedError, PASSWORD_PLACEHOLDER } from "./client.ts";
@@ -273,6 +281,28 @@ describe.if(posix)("createOpClient against a fake op", () => {
       "tracked or not ignored",
     );
     expect(mock.calls()).toEqual([]);
+  });
+
+  test("follows symlinks: an outside alias into the repository is checked like the real path", async () => {
+    const mock = installMockOp({});
+    execFileSync("git", ["init", "-q"], { cwd: work });
+    writeFileSync(join(work, "README.md"), "tracked");
+    execFileSync("git", ["add", "README.md"], { cwd: work });
+    const outside = mkdtempSync(join(tmpdir(), "harn-op-alias-"));
+    try {
+      symlinkSync(work, join(outside, "repo"));
+      const op = client();
+      await expect(
+        op.getDocument({ item: "Doc" }, join(outside, "repo", "README.md")),
+      ).rejects.toThrow("tracked or not ignored");
+      await expect(
+        op.getDocument({ item: "Doc" }, join(outside, "repo", "new-dir", "x.txt")),
+      ).rejects.toThrow("tracked or not ignored");
+      expect(mock.calls()).toEqual([]);
+      expect(readFileSync(join(work, "README.md"), "utf8")).toBe("tracked");
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
   });
 
   test("a host may opt out of the ignored-output check", async () => {
