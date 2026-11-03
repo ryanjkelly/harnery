@@ -333,6 +333,9 @@ describe("check", () => {
     const mtime = await e.check({ live: false });
     expect(mtime.ok).toBe(false);
     expect(mtime.rows.map((r) => r.status)).toEqual(["ok", "ok", "ok", "missing"]);
+    writeFile(join(root, "c.env"), "");
+    expect((await e.check({ live: false })).rows.at(-1)?.status).toBe("unusable");
+    rmSync(join(root, "c.env"));
     const live = await e.check();
     expect(probeCalls).toBe(1);
     expect(live.rows.map((r) => r.live)).toEqual(["live", "live", "dead", "skipped"]);

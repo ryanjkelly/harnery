@@ -437,7 +437,7 @@ export function createCredsEngine(config: CredsHostConfig, deps: CredsEngineDeps
     const rows: {
       path: string;
       description: string;
-      status: "missing" | "stale" | "warning" | "ok";
+      status: "missing" | "unusable" | "stale" | "warning" | "ok";
       age_days: number | null;
       age_human: string;
       live?: ProbeStatus;
@@ -449,9 +449,9 @@ export function createCredsEngine(config: CredsHostConfig, deps: CredsEngineDeps
         rows.push({
           path: file.spec.path,
           description: file.description,
-          status: "missing",
+          status: existsSync(file.absPath) ? "unusable" : "missing",
           age_days: null,
-          age_human: "missing",
+          age_human: existsSync(file.absPath) ? "unusable" : "missing",
         });
         continue;
       }
@@ -464,7 +464,7 @@ export function createCredsEngine(config: CredsHostConfig, deps: CredsEngineDeps
         age_human: days === 0 ? "today" : days === 1 ? "1 day ago" : `${days} days ago`,
       });
     }
-    const missing = rows.some((r) => r.status === "missing");
+    const missing = rows.some((r) => r.status === "missing" || r.status === "unusable");
     if (!live) return { ok: !missing, mode: "mtime" as const, rows };
 
     // One probe per key: a source that writes two files shares one identity.
