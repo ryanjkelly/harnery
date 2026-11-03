@@ -1,7 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { stripVTControlCharacters } from "node:util";
-import { colorJson } from "./format.ts";
+import { colorJson, csv } from "./format.ts";
+
+for (const value of ["one\rtwo", "one\ntwo", "one\r\ntwo"]) {
+  test(`CSV quotes line breaks in both headers and values: ${JSON.stringify(value)}`, () => {
+    expect(csv([{ [value]: value }])).toBe(`"${value}"\n"${value}"`);
+  });
+}
 
 function rendered(value: unknown): unknown {
   return JSON.parse(stripVTControlCharacters(colorJson(value)));
