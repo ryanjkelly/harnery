@@ -386,6 +386,34 @@ describe("harn agents lifecycle on the V3 ledger", () => {
 
     spawnSync("git", ["add", "owned.txt"], { cwd: root, stdio: "ignore" });
     spawnSync("git", ["commit", "-qm", "complete"], { cwd: root, stdio: "ignore" });
+    // No post-commit hook runs in this sandbox, so the claim outlives the commit.
+    const held = harn(root, ["agents", "lifecycle", "done", "--session-id", OWNER]);
+    expect(held.status).not.toBe(0);
+    expect(outputObject(held).error).toMatchObject({ code: "claims_held" });
+    expect(String((outputObject(held).error as { message: string }).message)).toContain(
+      "agents release-claim --all",
+    );
+    expect(lifecycleEvents(root)).toHaveLength(0);
+
+    const release = (args: string[]) =>
+      spawnSync("bash", [HARN, "agents", "release-claim", ...args], {
+        cwd: root,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          HARNERY_COORD_ROOT_OVERRIDE: root,
+          HARNERY_AGENT_COORD_SESSION_ID: OWNER,
+        },
+      });
+    expect(release([]).status).not.toBe(0);
+    expect(release(["owned.txt", "--all"]).status).not.toBe(0);
+    const released = release(["--all"]);
+    expect(released.status).toBe(0);
+    expect(
+      outputObject({ stdout: released.stdout, stderr: released.stderr, status: released.status }),
+    ).toMatchObject({ instance_id: OWNER, released: ["owned.txt"], files_touched: [] });
+    expect(heartbeat(root).files_touched ?? []).toEqual([]);
+
     const completed = harn(root, [
       "agents",
       "lifecycle",

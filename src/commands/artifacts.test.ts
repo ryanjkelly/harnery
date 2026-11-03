@@ -217,6 +217,97 @@ describe("artifacts command", () => {
     }
   });
 
+  test("list --mine and --min-bytes narrow rows while totals describe the whole store", async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "harnery-artifact-list-filter-"));
+    Bun.spawnSync(["git", "init", "-q"], { cwd: repoRoot });
+    try {
+      const invoke = async (args: string[]) => {
+        const data: Record<string, unknown>[] = [];
+        const errors: { message?: string }[] = [];
+        const program = createHarneryProgram({
+          context: { repoRoot },
+          emit: {
+            config() {},
+            data: (value) => {
+              data.push(value as Record<string, unknown>);
+            },
+            rows() {},
+            text() {},
+            file() {},
+            log() {},
+            error: (value) => {
+              errors.push(value as { message?: string });
+            },
+            setExitCode() {},
+          },
+        });
+        await program.parseAsync(["artifacts", ...args], { from: "user" });
+        return { data, errors };
+      };
+      const mine = await invoke([
+        "create",
+        "mine-big",
+        "--purpose",
+        "Mine",
+        "--actor",
+        "binding_mine_123",
+      ]);
+      const small = await invoke([
+        "create",
+        "mine-small",
+        "--purpose",
+        "Mine",
+        "--actor",
+        "binding_mine_123",
+      ]);
+      const theirs = await invoke([
+        "create",
+        "theirs-big",
+        "--purpose",
+        "Theirs",
+        "--actor",
+        "binding_peer_456",
+      ]);
+      for (const created of [mine, small, theirs]) expect(created.errors).toEqual([]);
+      const bigPath = mine.data[0].path as string;
+      writeFileSync(join(bigPath, "payload.bin"), Buffer.alloc(256 * 1024, 1));
+      writeFileSync(
+        join(theirs.data[0].path as string, "payload.bin"),
+        Buffer.alloc(256 * 1024, 1),
+      );
+
+      const ids = (result: { data: Record<string, unknown>[] }) =>
+        ((result.data[0].rows as Array<{ artifact_id: string | null }>) ?? [])
+          .map((row) => row.artifact_id)
+          .sort();
+      const all = await invoke(["list"]);
+      expect(all.errors).toEqual([]);
+      expect(ids(all)).toHaveLength(3);
+      expect((all.data[0].meta as Record<string, unknown>).filters).toBeUndefined();
+
+      const owned = await invoke(["list", "--mine", "--actor", "binding_mine_123"]);
+      expect(ids(owned)).toEqual(
+        [mine.data[0].artifact_id as string, small.data[0].artifact_id as string].sort(),
+      );
+      const ownedLarge = await invoke([
+        "list",
+        "--mine",
+        "--actor",
+        "binding_mine_123",
+        "--min-bytes",
+        String(128 * 1024),
+      ]);
+      expect(ids(ownedLarge)).toEqual([mine.data[0].artifact_id as string]);
+      const meta = ownedLarge.data[0].meta as Record<string, unknown>;
+      expect(meta.filters).toEqual({ owner_instance_id: "binding_mine_123", min_bytes: 131072 });
+      expect(meta.total).toBe(3);
+
+      for (const bad of ["-1", "1.5", "1G", ""])
+        expect((await invoke(["list", "--min-bytes", bad])).errors).toHaveLength(1);
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
   test("create --big refuses below the free-disk floor unless --allow-low-disk; hold takes --days", async () => {
     const repoRoot = mkdtempSync(join(tmpdir(), "harnery-artifact-disk-"));
     Bun.spawnSync(["git", "init", "-q"], { cwd: repoRoot });

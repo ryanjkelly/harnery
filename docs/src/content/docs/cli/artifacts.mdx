@@ -19,7 +19,7 @@ Each workspace lives under `.harnery/artifacts/` with a versioned manifest.
 ```bash
 harn artifacts create <slug> --purpose <text> [--days <n> | --minutes <n>] [--big [--allow-low-disk]]
 harn artifacts adopt-unmanaged [--days <n>] [--big] [--yes]
-harn artifacts list
+harn artifacts list [--mine [--actor <instance-id>]] [--min-bytes <n>]
 harn artifacts show <ref>
 harn artifacts delivery-card <ref> [--title <text>] [--url <label=url>...] [--path <label=path>...]
 harn artifacts renew <ref> (--days <n> | --minutes <n>) --reason <text>
@@ -123,6 +123,13 @@ Applied removals append the reason and `removed_by` actor to the existing
 deletion log on a best-effort basis. `artifacts list` includes recent removals,
 and `show` explains why a removed workspace is gone when its record is available.
 The `owner_scoped_remove` capability advertises this command.
+
+To find this session's large workspaces, run
+`harn artifacts list --mine --min-bytes 1073741824`. `--mine` keeps rows owned
+by the current agent (or `--actor`), and `--min-bytes` compares allocated disk
+use (`bytes`, not `apparent_bytes`). A row whose size is unknown stays listed so
+it still gets reviewed. The `meta` totals and budget warnings always describe
+the whole store, and `meta.filters` records the filters applied.
 
 Use `discard` when a grace period is useful, or `release` to keep the existing
 retention window. `clean --yes` still applies the repository cleanup policy.

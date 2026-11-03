@@ -112,8 +112,8 @@ widely-shared files.
 **Task lifecycle.** Beside the activity peers already see, declare whether your
 objective is still open: \`${b} agents lifecycle blocked --reason "<why>"\` when
 it cannot proceed, \`${b} agents lifecycle done\` when it is complete, and
-\`${b} agents lifecycle active\` to reopen. \`done\` requires a current task and a passing Git finalization check (dirty or unpushed work refuses, and nothing is
-written). Ordinary \`set-task\` calls never change lifecycle, and a transition
+\`${b} agents lifecycle active\` to reopen. \`done\` requires a current task, a passing Git finalization check, and no held file claims (dirty or unpushed work or a held claim refuses, and nothing is
+written; \`${b} agents release-claim --all\` drops remaining claims). Ordinary \`set-task\` calls never change lifecycle, and a transition
 that re-mints the session title tells you the new name to copy. ${endPointer}
 
 **Dispatching a team.** Everything else here coordinates the agents already

@@ -539,15 +539,18 @@ export function registerAgentsCommand(
     });
 
   cmd
-    .command("release-claim <path>")
+    .command("release-claim [path]")
     .description(
       "Drop a file claim from your heartbeat. Operator escape hatch when a " +
         "PostToolUseFailure didn't fire (e.g., session ended mid-Edit) and a " +
         "peer is now blocked on a path you no longer care about. Same write " +
-        "agent-hook's auto-release uses on failed Edit.",
+        "agent-hook's auto-release uses on failed Edit. --all releases every " +
+        "claim this session still holds; durable claim history stays in the " +
+        "Git finalization check.",
     )
-    .action((path: string) => {
-      runReleaseClaim(path);
+    .option("--all", "Release every file claim this session still holds")
+    .action((path: string | undefined, opts: { all?: boolean }) => {
+      runReleaseClaim(path, opts);
     });
 
   cmd
@@ -1985,7 +1988,7 @@ function sessionResolutionFailure(
   };
 }
 
-function runReleaseClaim(path: string): void {
+function runReleaseClaim(path: string | undefined, opts: { all?: boolean } = {}): void {
   const root = monorepoRoot();
   if (!root) {
     emit.error({
@@ -1994,31 +1997,56 @@ function runReleaseClaim(path: string): void {
     });
     process.exit(1);
   }
-  const myOwner = resolveOwner();
+  if (opts.all ? path !== undefined : path === undefined) {
+    emit.error({
+      code: "invalid_arguments",
+      message: "pass exactly one of <path> or --all",
+    });
+    process.exit(2);
+  }
+  const myOwner = resolveOwner() ?? sessionIdentityFromEnv();
   if (!myOwner) {
     emit.error(
       sessionResolutionFailure(root, "not in an agent session; ppid walk found no pid-map entry"),
     );
     process.exit(1);
   }
+  const helper = agentCoordOrExit(root);
+  const releaseOne = (canonical: string): string => {
+    const result = spawnCoordBinSync(helper, ["release-claim", myOwner, canonical], {
+      encoding: "utf8",
+      ...coordHelperOpts(root),
+    });
+    if (result.status !== 0) {
+      emit.error({
+        code: "release_claim_failed",
+        message: spawnFailureMessage(result, "agent-coord"),
+      });
+      process.exit(1);
+    }
+    return String(result.stdout ?? "");
+  };
+
+  if (opts.all) {
+    const held = [...(readCurrentCoordinationRow(myOwner)?.files_touched ?? [])];
+    for (const claim of held) releaseOne(claim);
+    const remaining = readCurrentCoordinationRow(myOwner)?.files_touched ?? [];
+    if (remaining.length > 0) {
+      emit.error({
+        code: "release_claim_incomplete",
+        message: `claims still held after release: ${remaining.join(", ")}`,
+      });
+      process.exit(1);
+    }
+    emit.data({ instance_id: myOwner, released: held, files_touched: remaining });
+    return;
+  }
+
   // Canonicalize: absolute paths under coordRoot get the prefix stripped;
   // relative paths pass through unchanged.
-  let canonical = path;
-  if (path.startsWith(`${root}/`)) canonical = path.slice(root.length + 1);
-
-  const helper = agentCoordOrExit(root);
-  const result = spawnCoordBinSync(helper, ["release-claim", myOwner, canonical], {
-    encoding: "utf8",
-    ...coordHelperOpts(root),
-  });
-  if (result.status !== 0) {
-    emit.error({
-      code: "release_claim_failed",
-      message: spawnFailureMessage(result, "agent-coord"),
-    });
-    process.exit(1);
-  }
-  process.stdout.write(result.stdout); // lint-ok-emission: raw JSON pass-through from agent-coord release-claim; mirrors runSetTask which writes the same envelope
+  let canonical = path as string;
+  if (canonical.startsWith(`${root}/`)) canonical = canonical.slice(root.length + 1);
+  process.stdout.write(releaseOne(canonical)); // lint-ok-emission: raw JSON pass-through from agent-coord release-claim; mirrors runSetTask which writes the same envelope
 }
 
 function runSetTask(task: string, opts?: { sessionId?: string }): void {
@@ -2275,6 +2303,19 @@ function runLifecycle(
           "the status box was not issued",
           "lifecycle was not changed",
         ),
+      });
+      process.exitCode = 1;
+      return;
+    }
+    const heldClaims = hb.files_touched ?? [];
+    if (heldClaims.length > 0) {
+      // A done task that still holds claims blocks peers on files it finished.
+      // Durable claim history keeps released paths in the Git check above.
+      emit.error({
+        code: "claims_held",
+        message:
+          `this session still holds ${heldClaims.length} file claim(s): ${heldClaims.join(", ")}. ` +
+          `Run \`${resolveBinName(root)} agents release-claim --all\`, then mark the task done; lifecycle was not changed`,
       });
       process.exitCode = 1;
       return;

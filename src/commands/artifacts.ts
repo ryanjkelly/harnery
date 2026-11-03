@@ -175,18 +175,42 @@ export function registerArtifactsCommand(
   root
     .command("list")
     .description("Inventory every artifact workspace with its cleanup classification.")
-    .action(() => {
+    .option("--mine", "Only workspaces owned by the current agent session")
+    .option(
+      "--min-bytes <n>",
+      "Only workspaces whose allocated disk use is at least n bytes; unknown sizes stay listed",
+    )
+    .option("--actor <instance-id>", "Owner identity for --mine; defaults to the current agent")
+    .action((opts: { mine?: boolean; minBytes?: string; actor?: string }) => {
       run(emit, () => {
         const repoRoot = requireRepoRoot(context);
-        const rows = inventoryArtifacts(repoRoot, {
+        const minBytes = opts.minBytes === undefined ? undefined : parseMinBytes(opts.minBytes);
+        let owner: string | undefined;
+        if (opts.mine) {
+          owner = opts.actor ?? currentActor(repoRoot)?.instance_id;
+          if (!owner) throw new Error("--mine needs a resolvable agent session; none was found");
+        }
+        const allRows = inventoryArtifacts(repoRoot, {
           freshnessSeconds: coordFreshnessSeconds(repoRoot),
         });
+        const rows = allRows.filter(
+          (row) =>
+            (owner === undefined || row.owner_instance_id === owner) &&
+            (minBytes === undefined || row.bytes === null || row.bytes >= minBytes),
+        );
         const recentDeletions = readArtifactDeletions(repoRoot, {
           since: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
         });
+        const filtered = opts.mine === true || minBytes !== undefined;
         emit.data({
           rows,
-          meta: inventoryMeta(emit, repoRoot, rows),
+          // Totals and budget warnings always describe the whole inventory.
+          meta: {
+            ...inventoryMeta(emit, repoRoot, allRows),
+            ...(filtered
+              ? { filters: { owner_instance_id: owner ?? null, min_bytes: minBytes ?? null } }
+              : {}),
+          },
           recent_deletions: recentDeletions,
         });
       });
@@ -464,6 +488,14 @@ function parseDays(value: string): number {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 3650) {
     throw new Error("--days must be between 1 and 3650");
+  }
+  return parsed;
+}
+
+function parseMinBytes(value: string): number {
+  const parsed = Number(value);
+  if (!/^\d+$/.test(value.trim()) || !Number.isSafeInteger(parsed)) {
+    throw new Error("--min-bytes must be a non-negative whole number of bytes");
   }
   return parsed;
 }

@@ -45,6 +45,7 @@ harn agents watch               # stream peer state changes in real time
 harn agents ping <name> <msg>   # message an agent by name, live or not
 harn agents wait <name>         # block until a peer releases its files (or exits)
 harn agents release-claim <path> # drop a file claim from your own heartbeat (escape hatch)
+harn agents release-claim --all  # drop every claim your session still holds
 harn agents health              # one-screen coord-layer health rollup
 harn agents heal-events         # PIDMAP_HEAL telemetry (how often self-heal fixed drift)
 harn agents heal                # repair this session's disposable cache from V3
@@ -264,6 +265,11 @@ command fail without changing lifecycle or recording an event. The gate checks
 repository hygiene; it does not certify tests, deployment, or the business
 outcome.
 
+After the Git check passes, `done` also refuses while the session still holds
+file claims, because a finished task would otherwise keep peers blocked on its
+files. Run `harn agents release-claim --all` first. Released paths stay in the
+durable claim history, so a later Git check still covers them.
+
 A successful transition records one durable `coord.lifecycle_changed` event and
 projects it into the live heartbeat. Repeating the same state and reason is a
 no-op, with no duplicate event. Moving away from `blocked` clears the old
@@ -421,6 +427,11 @@ The coordination-in-motion commands.
 `release-claim <path>` drops a single file claim from your own heartbeat. It's
 an operator escape hatch for when an auto-release didn't fire (e.g. a session
 ended mid-edit) and a peer is now blocked on a path you no longer care about.
+
+`release-claim --all` drops every claim your session still holds and reports
+the released paths. It touches only your own session's claims and fails if any
+claim remains afterward. Pass exactly one of `<path>` or `--all`. Durable claim
+history is unchanged, so the end-turn Git check still covers released paths.
 
 ### health, heal-events
 
