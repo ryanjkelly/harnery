@@ -136,12 +136,15 @@ function readOnlyGitRootResolver(source: string): boolean {
         identifierIs(args.elements[1], "flag") &&
         !!options &&
         ts.isObjectLiteralExpression(options) &&
-        options.properties.length === 2 &&
+        options.properties.length === 3 &&
         options.properties.every(
           (property) =>
             ts.isPropertyAssignment(property) &&
             ((identifierIs(property.name, "cwd") && identifierIs(property.initializer, "start")) ||
-              (identifierIs(property.name, "encoding") && stringIs(property.initializer, "utf8"))),
+              (identifierIs(property.name, "encoding") && stringIs(property.initializer, "utf8")) ||
+              // Hides the console window on Windows; check:windows-hide requires it.
+              (identifierIs(property.name, "windowsHide") &&
+                property.initializer.kind === ts.SyntaxKind.TrueKeyword)),
         );
     }
     if (ts.isCallExpression(node) && identifierIs(node.expression, "gitRevParse")) {
@@ -240,6 +243,9 @@ describe("codec dependency boundary", () => {
       readOnlyGitRootResolver(
         source.replace('encoding: "utf8",', 'encoding: "utf8", shell: true,'),
       ),
+    ).toBe(false);
+    expect(
+      readOnlyGitRootResolver(source.replace("windowsHide: true,", "windowsHide: false,")),
     ).toBe(false);
     expect(readOnlyGitRootResolver(`${source}\nconst launch = spawnSync;`)).toBe(false);
     expect(
