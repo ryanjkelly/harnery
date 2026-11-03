@@ -87,6 +87,11 @@ export interface OpHostConfig {
    * ignore. Defaults to true.
    */
   requireIgnoredOutput?: boolean;
+  /**
+   * Called when `op` renamed a field label during a write. Defaults to a
+   * warning on stderr; the write itself still succeeds.
+   */
+  onLabelDrift?: (drift: OpLabelDrift, item: string) => void;
 }
 
 /** Field metadata as `op item get --format json` returns it. */
