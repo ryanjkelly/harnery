@@ -11,15 +11,25 @@
 
 /** A file a pull script writes. */
 export interface CredentialFileSpec {
-  /** Path relative to the repository that owns it. */
+  /**
+   * Path relative to the repository that owns it, or to the home directory
+   * when it starts with `~/`.
+   */
   path: string;
   /**
    * Owning repository when the host spans several (for example, a submodule
    * name). Null or absent means the host repository itself.
    */
   repo?: string | null;
-  /** Keys that must be present with a usable value (dotenv or YAML files). */
+  /** Keys that must be present with a usable value (dotenv, YAML, or JSON files). */
   requiredKeys?: string[];
+  /** What the file holds; defaults to its source's description. */
+  description?: string;
+  /**
+   * Bump after the secret in this file is rotated, so every clone re-pulls it.
+   * Overrides the source's revision for this file. Absent means the source's.
+   */
+  revision?: number;
 }
 
 /** One pull script and the files it produces. */
@@ -55,7 +65,6 @@ export interface CredentialSource {
  */
 export interface StandaloneCredentialFile extends CredentialFileSpec {
   description: string;
-  revision?: number;
 }
 
 /** One 1Password item a pull script reads, for `verify`. */
