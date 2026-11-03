@@ -95,6 +95,44 @@ describe("requestWithRetries", () => {
     expect(captured["content-type"]).toBe("application/vnd.api+json");
     expect(captured["Content-Type"]).toBeUndefined();
   });
+
+  for (const status of [200, 503]) {
+    test(`keeps the attempt timeout active while reading a ${status} body`, async () => {
+      const signals: AbortSignal[] = [];
+      let calls = 0;
+      let releaseBody: (() => void) | undefined;
+      globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+        calls++;
+        if (calls > 1) return new Response("recovered");
+        const signal = init!.signal!;
+        signals.push(signal);
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              releaseBody = () => controller.error(new Error("test safety deadline"));
+              signal.addEventListener("abort", () => controller.error(signal.reason), {
+                once: true,
+              });
+            },
+          }),
+          { status },
+        );
+      }) as typeof fetch;
+      const safety = setTimeout(() => releaseBody?.(), 200);
+      try {
+        const request = requestWithRetries("https://api.example.com/slow-body", {
+          timeoutMs: 10,
+          maxRetries: 1,
+          delayMs: instantDelay,
+        });
+        if (status === 200) await expect(request).rejects.toThrow();
+        else expect((await request).text).toBe("recovered");
+        expect(signals[0]!.aborted).toBe(true);
+      } finally {
+        clearTimeout(safety);
+      }
+    });
+  }
 });
 
 describe("backoffDelayMs", () => {

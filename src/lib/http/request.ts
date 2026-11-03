@@ -95,7 +95,6 @@ export async function requestWithRetries(
   let attempt = 0;
   for (;;) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
 
     const headers: Record<string, string> = { ...(opts.headers ?? {}) };
     const init: RequestInit = { method, headers, signal: controller.signal };
@@ -116,6 +115,7 @@ export async function requestWithRetries(
       }
     }
 
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     let res: Response;
     try {
       res = await fetch(url, init);
@@ -130,25 +130,28 @@ export async function requestWithRetries(
       const message = `request failed after ${maxRetries} retries: ${msg} (URL: ${url})`;
       throw opts.networkError ? opts.networkError(msg, url, maxRetries) : new Error(message);
     }
-    clearTimeout(timer);
+    try {
+      opts.onResponse?.({ method, url, status: res.status, attempt });
 
-    opts.onResponse?.({ method, url, status: res.status, attempt });
+      if (shouldRetry(res.status) && attempt < maxRetries) {
+        const retryAfter = Number(res.headers.get("retry-after"));
+        // Keep the timeout active while draining, then release it before backoff.
+        await res.text().catch(() => undefined);
+        clearTimeout(timer);
+        await sleep(delayMs(attempt, Number.isFinite(retryAfter) ? retryAfter : null));
+        attempt++;
+        continue;
+      }
 
-    if (shouldRetry(res.status) && attempt < maxRetries) {
-      const retryAfter = Number(res.headers.get("retry-after"));
-      // Drain the body so the socket is reusable before we sleep.
-      await res.text().catch(() => undefined);
-      await sleep(delayMs(attempt, Number.isFinite(retryAfter) ? retryAfter : null));
-      attempt++;
-      continue;
+      return {
+        ok: res.ok,
+        status: res.status,
+        text: await res.text(),
+        url,
+        headers: res.headers,
+      };
+    } finally {
+      clearTimeout(timer);
     }
-
-    return {
-      ok: res.ok,
-      status: res.status,
-      text: await res.text(),
-      url,
-      headers: res.headers,
-    };
   }
 }
