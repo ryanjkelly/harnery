@@ -1,9 +1,27 @@
 import { describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { stripVTControlCharacters } from "node:util";
 import { colorJson } from "./format.ts";
 
 function rendered(value: unknown): unknown {
   return JSON.parse(stripVTControlCharacters(colorJson(value)));
+}
+
+// A broken toJSON guard can loop synchronously, beyond Bun's test timeout.
+function renderedInChild(expression: string): unknown {
+  const result = spawnSync(
+    process.execPath,
+    [
+      "-e",
+      `import { colorJson } from ${JSON.stringify(new URL("./format.ts", import.meta.url).href)};
+       import { stripVTControlCharacters } from "node:util";
+       process.stdout.write(stripVTControlCharacters(colorJson(${expression})));`,
+    ],
+    { encoding: "utf8", timeout: 2000, windowsHide: true },
+  );
+  if (result.error) throw result.error;
+  expect(result.status).toBe(0);
+  return JSON.parse(result.stdout);
 }
 
 describe("colorJson reference handling", () => {
@@ -28,23 +46,19 @@ describe("colorJson reference handling", () => {
   });
 
   test("handles toJSON returning itself without overflowing the stack", () => {
-    const value = {
-      value: 1,
-      toJSON() {
-        return this;
-      },
-    };
-    Object.defineProperty(value, "toJSON", { enumerable: false });
-    expect(rendered(value)).toEqual({ value: 1 });
+    expect(
+      renderedInChild(`(() => {
+        const value = { value: 1, toJSON() { return this; } };
+        Object.defineProperty(value, "toJSON", { enumerable: false });
+        return value;
+      })()`),
+    ).toEqual({ value: 1 });
   });
 
   test("handles a cycle introduced by toJSON and keeps scalar conversions", () => {
-    const value = {
-      toJSON() {
-        return { source: this };
-      },
-    };
-    expect(rendered(value)).toEqual({ source: "[Circular]" });
+    expect(renderedInChild("({ toJSON() { return { source: this }; } })")).toEqual({
+      source: "[Circular]",
+    });
     expect(rendered(new Date("2026-01-01T00:00:00.000Z"))).toBe("2026-01-01T00:00:00.000Z");
   });
 });
