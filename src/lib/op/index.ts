@@ -13,4 +13,5 @@ export {
   windowsPathToWsl,
   wslPathToWindows,
 } from "./detect.ts";
+export * from "./local-credentials.ts";
 export type * from "./types.ts";
