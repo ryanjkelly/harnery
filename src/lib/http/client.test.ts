@@ -178,6 +178,90 @@ describe("fetchWithJar extraCookies", () => {
   });
 });
 
+describe("fetchWithJar Set-Cookie scope and expiry", () => {
+  function cookieJar(): CookieJar {
+    const root = mkdtempSync(join(tmpdir(), "harnery-set-cookie-"));
+    roots.push(root);
+    return new CookieJar({ path: join(root, "cookies.json") });
+  }
+
+  function respondWithCookie(value: string): void {
+    globalThis.fetch = (async (input: RequestInfo | URL) =>
+      responseAt(String(input), "ok", { headers: { "set-cookie": value } })) as typeof fetch;
+  }
+
+  test("Max-Age takes precedence over Expires in either attribute order", async () => {
+    for (const attributes of [
+      "Max-Age=0; Expires=Wed, 21 Oct 2099 07:28:00 GMT",
+      "Expires=Wed, 21 Oct 2099 07:28:00 GMT; Max-Age=0",
+    ]) {
+      const jar = cookieJar();
+      respondWithCookie(`session=deleted; Path=/; ${attributes}`);
+      await fetchWithJar("https://example.com/account/login", { jar });
+      expect(jar.header("https://example.com/")).toBe("");
+    }
+  });
+
+  test("positive Max-Age keeps a cookie even when Expires is in the past", async () => {
+    for (const attributes of [
+      "Max-Age=3600; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+      "Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=3600",
+    ]) {
+      const jar = cookieJar();
+      respondWithCookie(`session=kept; Path=/; ${attributes}`);
+      await fetchWithJar("https://example.com/", { jar });
+      expect(jar.header("https://example.com/")).toBe("session=kept");
+    }
+  });
+
+  test("large negative Max-Age deletes instead of becoming a session cookie", async () => {
+    const jar = cookieJar();
+    respondWithCookie("session=deleted; Path=/; Max-Age=-9999999999");
+    await fetchWithJar("https://example.com/", { jar });
+    expect(jar.header("https://example.com/")).toBe("");
+  });
+
+  test("an Expires date at the Unix epoch deletes instead of becoming a session cookie", async () => {
+    const jar = cookieJar();
+    respondWithCookie("session=deleted; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT");
+    await fetchWithJar("https://example.com/", { jar });
+    expect(jar.header("https://example.com/")).toBe("");
+  });
+
+  test("ignores malformed Max-Age rather than parsing an integer prefix", async () => {
+    const jar = cookieJar();
+    respondWithCookie("session=kept; Path=/; Max-Age=0oops");
+    await fetchWithJar("https://example.com/", { jar });
+    expect(jar.header("https://example.com/")).toBe("session=kept");
+  });
+
+  test("missing, empty and relative Path use the response URL's default path", async () => {
+    for (const attribute of ["", "; Path=", "; Path=relative"]) {
+      const jar = cookieJar();
+      respondWithCookie(`session=scoped${attribute}`);
+      await fetchWithJar("https://example.com/account/login", { jar });
+      expect(jar.header("https://example.com/account/profile")).toBe("session=scoped");
+      expect(jar.header("https://example.com/elsewhere")).toBe("");
+    }
+  });
+
+  test("combined Set-Cookie fallback separates cookies without splitting Expires dates", async () => {
+    const jar = cookieJar();
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const response = responseAt(String(input), "ok", {
+        headers: {
+          "set-cookie": "first=1; Expires=Wed, 21 Oct 2099 07:28:00 GMT, second=2",
+        },
+      });
+      Object.defineProperty(response.headers, "getSetCookie", { value: undefined });
+      return response;
+    }) as typeof fetch;
+    const result = await fetchWithJar("https://example.com/", { jar });
+    expect(result.cookiesSaved).toBe(2);
+    expect(jar.header("https://example.com/")).toBe("first=1; second=2");
+  });
+});
+
 describe("fetchWithJar client-side redirects", () => {
   test("runs the header callback and cookie persistence for every hop", async () => {
     const seen: { path: string; cookie: string | null }[] = [];

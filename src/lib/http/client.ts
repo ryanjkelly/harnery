@@ -200,9 +200,9 @@ async function fetchOnce<TResponseType extends FetchResponseType = "text">(
   if (opts.jar) {
     const setCookieHeaders = collectSetCookie(response.headers);
     if (setCookieHeaders.length > 0) {
-      const parsedHost = new URL(response.url).hostname;
+      const responseUrl = new URL(response.url);
       const cookies: Cookie[] = setCookieHeaders
-        .map((sc) => parseSetCookie(sc, parsedHost))
+        .map((sc) => parseSetCookie(sc, responseUrl))
         .filter((c): c is Cookie => c !== null);
       for (const cookie of cookies) {
         opts.jar.set(cookie);
@@ -253,11 +253,10 @@ function splitSetCookieHeader(raw: string): string[] {
   // Splits on ", " that precedes a new cookie (heuristic: a token followed
   // by `=`), avoiding date-internal commas like `Expires=Wed, 21 Oct …`.
   const parts: string[] = [];
-  let depth = 0;
   let buf = "";
   for (let i = 0; i < raw.length; i++) {
     const ch = raw[i];
-    if (ch === "," && depth === 0) {
+    if (ch === ",") {
       const ahead = raw.slice(i + 1).trimStart();
       if (/^[A-Za-z0-9_!#$%&'*+\-.^`|~]+=/.test(ahead)) {
         parts.push(buf.trim());
@@ -265,15 +264,13 @@ function splitSetCookieHeader(raw: string): string[] {
         continue;
       }
     }
-    if (ch === "=") depth++;
-    if (ch === ";") depth = 0;
     buf += ch;
   }
   if (buf.trim()) parts.push(buf.trim());
   return parts;
 }
 
-function parseSetCookie(raw: string, defaultDomain: string): Cookie | null {
+function parseSetCookie(raw: string, responseUrl: URL): Cookie | null {
   const parts = raw.split(";").map((p) => p.trim());
   if (parts.length === 0) return null;
 
@@ -285,11 +282,14 @@ function parseSetCookie(raw: string, defaultDomain: string): Cookie | null {
   const value = first.slice(eq + 1).trim();
   if (!name) return null;
 
+  const defaultDomain = responseUrl.hostname;
+  const defaultPath = responseUrl.pathname.slice(0, responseUrl.pathname.lastIndexOf("/")) || "/";
+  let maxAge: number | undefined;
   const cookie: Cookie = {
     name,
     value,
     domain: defaultDomain,
-    path: "/",
+    path: defaultPath,
     expires: -1,
     httpOnly: false,
     secure: false,
@@ -305,19 +305,18 @@ function parseSetCookie(raw: string, defaultDomain: string): Cookie | null {
       if (!d || !domainMatches(d, defaultDomain)) return null;
       cookie.domain = d.startsWith(".") ? d : `.${d}`;
     } else if (lower.startsWith("path=")) {
-      cookie.path = attr.slice(5).trim() || "/";
+      const path = attr.slice(5).trim();
+      cookie.path = path.startsWith("/") ? path : defaultPath;
     } else if (lower.startsWith("expires=")) {
       const ts = Date.parse(attr.slice(8).trim());
       if (!Number.isNaN(ts)) {
-        cookie.expires = Math.floor(ts / 1000);
+        // Nonpositive expiry values denote session cookies in the jar.
+        cookie.expires = Math.max(1, Math.floor(ts / 1000));
         cookie.session = false;
       }
     } else if (lower.startsWith("max-age=")) {
-      const seconds = Number.parseInt(attr.slice(8).trim(), 10);
-      if (!Number.isNaN(seconds)) {
-        cookie.expires = Math.floor(Date.now() / 1000) + seconds;
-        cookie.session = false;
-      }
+      const value = attr.slice(8).trim();
+      if (/^-?\d+$/.test(value)) maxAge = Number(value);
     } else if (lower === "secure") {
       cookie.secure = true;
     } else if (lower === "httponly") {
@@ -326,6 +325,13 @@ function parseSetCookie(raw: string, defaultDomain: string): Cookie | null {
       const v = attr.slice(9).trim();
       cookie.sameSite = v.charAt(0).toUpperCase() + v.slice(1).toLowerCase();
     }
+  }
+
+  // RFC 6265 gives Max-Age precedence regardless of attribute order.
+  if (maxAge !== undefined) {
+    cookie.expires =
+      maxAge <= 0 ? 1 : Math.min(Number.MAX_SAFE_INTEGER, Math.floor(Date.now() / 1000) + maxAge);
+    cookie.session = false;
   }
 
   // A cookie that breaks its name prefix is dropped, as a browser would.
