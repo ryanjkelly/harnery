@@ -9,6 +9,7 @@ import { closeProcessLoggers } from "../storage/logger.ts";
 import { readRemoteMachines } from "./index.ts";
 import {
   appendPresenceRelayDiagnostic,
+  closeRelaySocket,
   ensureRelayDaemon,
   RELAY_LAUNCH_RESERVATION_MS,
   relayDaemonStatus,
@@ -382,6 +383,105 @@ describe("relay daemon code changes", () => {
     expect(existsSync(reservationPath())).toBe(false);
     expect(phases).toEqual(["handover_timeout"]);
     await owner?.close();
+  });
+
+  test("a successor that crashed while waiting on a pre-lock owner passes that owner on (F1)", async () => {
+    // O predates the lock: it holds none, so B gets the lock at once and must
+    // wait for O's pid, recording O as the original owner.
+    const freeLock = async () => ({
+      endpoint: "fake",
+      nonce: "n",
+      verify: async () => true,
+      close: async () => {},
+    });
+    writePid({ ...pidRecord(), pid: 4242 });
+    // B crashes during its first wait, leaving its handover record behind.
+    await expect(
+      relayStartupGate(root, daemon(5001), {
+        isAlive: (p) => p === 4242 || p === 5001,
+        wait: async () => {
+          throw new Error("B crashed");
+        },
+        log: () => {},
+        acquire: freeLock,
+      }),
+    ).rejects.toThrow("B crashed");
+    const bRecord = JSON.parse(readFileSync(pidPath(), "utf8"));
+    expect(bRecord).toMatchObject({ pid: 5001, state: "handover", original: { pid: 4242 } });
+
+    // C finds B dead and O alive: it must wait for O, recording O in turn,
+    // and connect only after O exits.
+    const seen: unknown[] = [];
+    let cWaits = 0;
+    const c = await relayStartupGate(root, daemon(5002), {
+      isAlive: (p) => p === 5002 || (p === 4242 && cWaits < 3),
+      wait: async () => {
+        cWaits += 1;
+        seen.push(JSON.parse(readFileSync(pidPath(), "utf8")).original?.pid);
+      },
+      log: () => {},
+      acquire: freeLock,
+    });
+    expect(c.outcome).toBe("connect");
+    expect(cWaits).toBe(3);
+    expect(seen).toEqual([4242, 4242, 4242]);
+    expect(JSON.parse(readFileSync(pidPath(), "utf8")).state).toBe("connected");
+  });
+
+  test("the gate never connects when its socket is displaced during the settle check (F2)", async () => {
+    // The settle verification runs inside the lock acquisition, before the
+    // gate returns: a displaced bind yields no lock and no connection.
+    const startup = await relayStartupGate(root, daemon(5001), {
+      isAlive: (p) => p === 5001,
+      log: () => {},
+      acquire: (path) =>
+        acquireInstanceLock(path, {
+          platform: "darwin",
+          listen: async () => ({ close: async () => {} }),
+          settle: async () => {},
+          // Another starter now answers on the path.
+          probe: async () => ({ kind: "held", nonce: "someone-else" }),
+        }),
+    });
+    expect(startup.outcome).toBe("duplicate");
+    expect(startup.lock).toBeUndefined();
+  });
+
+  test("an exiting daemon keeps the lock until its relay socket has closed (F4)", async () => {
+    const lock = await acquireInstanceLock(relayInstanceLockEndpoint(root));
+    expect(lock).not.toBeNull();
+    let onClose: () => void = () => {};
+    let closeCalls = 0;
+    const socket = {
+      readyState: 1,
+      close: () => {
+        closeCalls += 1;
+      },
+      addEventListener: (_type: "close", listener: () => void) => {
+        onClose = listener;
+      },
+    };
+    let closed = false;
+    const shutdown = closeRelaySocket(socket, "idle", 5_000).then(() => {
+      closed = true;
+    });
+    await sleep(20);
+    expect(closeCalls).toBe(1);
+    expect(closed).toBe(false);
+    // Still held while the socket is closing.
+    expect(await acquireInstanceLock(relayInstanceLockEndpoint(root))).toBeNull();
+    onClose();
+    await shutdown;
+    expect(closed).toBe(true);
+    // Shutdown never releases the lock itself; process exit does.
+    expect(await acquireInstanceLock(relayInstanceLockEndpoint(root))).toBeNull();
+    await lock?.close();
+    // A socket that never reports closing is waited for only until the bound.
+    const silent = { ...socket, addEventListener: () => {} };
+    const started = Date.now();
+    await closeRelaySocket(silent, "idle", 50);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(45);
+    await closeRelaySocket(null, "idle");
   });
 
   test("a current daemon holding the lock is never superseded by a duplicate", async () => {

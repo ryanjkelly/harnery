@@ -1,14 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   acquireInstanceLock,
+  type InstanceProbe,
   instanceLockEndpoint,
-  instanceLockFileEndpoint,
-  RECOVERY_GUARD_STALE_MS,
+  probeInstanceEndpoint,
 } from "./single-instance.ts";
 
 const roots: string[] = [];
@@ -30,7 +30,7 @@ function addressInUse(): Error {
 }
 
 describe("instanceLockEndpoint", () => {
-  test("is a named pipe on Windows and a short local socket elsewhere", () => {
+  test("is a named pipe on Windows and one socket file on every POSIX system (F3)", () => {
     const pipe = instanceLockEndpoint(
       "relay",
       "C:\\Work\\Repo",
@@ -40,166 +40,29 @@ describe("instanceLockEndpoint", () => {
     expect(pipe).toMatch(/^\\\\\.\\pipe\\harnery-relay-[0-9a-f]{24}$/);
     // Windows paths compare without regard to case.
     expect(instanceLockEndpoint("relay", "c:\\work\\repo", "x", "win32")).toBe(pipe);
-    // Linux uses the abstract namespace: no file, nothing to go stale.
-    expect(instanceLockEndpoint("relay", "/srv/repo", "/srv/repo/.harnery", "linux")).toMatch(
-      /^\0harnery-relay-[0-9a-f]{24}$/,
-    );
-    expect(instanceLockEndpoint("relay", "/srv/repo", "/srv/repo/.harnery", "darwin")).toBe(
-      "/srv/repo/.harnery/relay.sock",
-    );
-    expect(instanceLockFileEndpoint("relay", "/srv/repo", "/srv/repo/.harnery", "linux")).toBe(
-      "/srv/repo/.harnery/relay.sock",
-    );
+    // Linux and macOS, under any runtime, use the same socket file.
+    for (const platform of ["linux", "darwin", "freebsd"] as const) {
+      expect(instanceLockEndpoint("relay", "/srv/repo", "/srv/repo/.harnery", platform)).toBe(
+        "/srv/repo/.harnery/relay.sock",
+      );
+    }
+    // A path too long for a socket moves to a fixed directory, never the
+    // runtime's own temp directory, so every runtime agrees on it.
     const deep = `/${"d".repeat(120)}`;
-    const long = instanceLockEndpoint("relay", deep, `${deep}/.harnery`, "darwin");
-    expect(long.startsWith(tmpdir())).toBe(true);
-    expect(long).toMatch(/harnery-relay-[0-9a-f]{24}\.sock$/);
-  });
-});
-
-/**
- * An in-memory socket table with real exclusivity semantics: listen fails
- * while any file (stale or bound) exists at the path, unlinking a bound
- * file does not close its listener, and a probe succeeds only against a
- * live listener.
- */
-function fakeSockets() {
-  const files = new Map<string, "stale" | string>();
-  const listeners = new Map<string, string>();
-  const guards = new Set<string>();
-  let unlinks = 0;
-  const forStarter = (who: string, hooks: { beforeGuard?: () => Promise<void> } = {}) => ({
-    platform: "darwin" as const,
-    listen: async (path: string) => {
-      if (files.has(path)) throw addressInUse();
-      files.set(path, who);
-      listeners.set(who, path);
-      return {
-        close: async () => {
-          listeners.delete(who);
-        },
-      };
-    },
-    probe: async (path: string): Promise<"live" | "stale"> => {
-      const owner = files.get(path);
-      return owner && owner !== "stale" && listeners.get(owner) === path ? "live" : "stale";
-    },
-    unlink: (path: string) => {
-      unlinks += 1;
-      files.delete(path);
-    },
-    acquireGuard: async (path: string) => {
-      await hooks.beforeGuard?.();
-      if (guards.has(path)) return false;
-      guards.add(path);
-      return true;
-    },
-    releaseGuard: (path: string) => {
-      guards.delete(path);
-    },
-  });
-  return {
-    files,
-    listeners,
-    forStarter,
-    unlinks: () => unlinks,
-  };
-}
-
-describe("stale socket recovery", () => {
-  test("two starters recovering one crash-left socket yield exactly one holder (F5)", async () => {
-    const sockets = fakeSockets();
-    sockets.files.set("/run/relay.sock", "stale");
-    // A and B both fail to listen and both probe the socket stale. A then
-    // recovers and binds before B reaches the guard: B must not unlink A's
-    // fresh socket and bind beside it.
-    let aDone: () => void = () => {};
-    const aFinished = new Promise<void>((done) => {
-      aDone = done;
-    });
-    const a = acquireInstanceLock("/run/relay.sock", sockets.forStarter("A")).then((lock) => {
-      aDone();
-      return lock;
-    });
-    const b = acquireInstanceLock(
-      "/run/relay.sock",
-      sockets.forStarter("B", { beforeGuard: () => aFinished }),
-    );
-    const [lockA, lockB] = await Promise.all([a, b]);
-    expect(lockA).not.toBeNull();
-    expect(lockB).toBeNull();
-    expect([...sockets.listeners.keys()]).toEqual(["A"]);
-    expect(sockets.unlinks()).toBe(1);
-
-    // Racing for the guard at the same moment also leaves one holder.
-    const racing = fakeSockets();
-    racing.files.set("/run/relay.sock", "stale");
-    const locks = await Promise.all(
-      ["C", "D", "E"].map((who) => acquireInstanceLock("/run/relay.sock", racing.forStarter(who))),
-    );
-    expect(locks.filter((lock) => lock !== null)).toHaveLength(1);
-    expect(racing.listeners.size).toBe(1);
-  });
-
-  test("an abstract socket in use is held, and an unsupported one falls back to the file", async () => {
-    let probes = 0;
-    const held = await acquireInstanceLock("\0harnery-relay-x", {
-      platform: "linux",
-      listen: async () => {
-        throw addressInUse();
-      },
-      probe: async () => {
-        probes += 1;
-        return "stale";
-      },
-    });
-    expect(held).toBeNull();
-    expect(probes).toBe(0);
-
-    const listened: string[] = [];
-    const fallback = await acquireInstanceLock("\0harnery-relay-x", {
-      platform: "linux",
-      fallback: "/run/relay.sock",
-      listen: async (path) => {
-        listened.push(path);
-        if (path.startsWith("\0")) throw Object.assign(new Error("bad"), { code: "EINVAL" });
-        return { close: async () => {} };
-      },
-    });
-    expect(fallback?.endpoint).toBe("/run/relay.sock");
-    expect(listened).toEqual(["\0harnery-relay-x", "/run/relay.sock"]);
-  });
-
-  test("a held guard means held; a crashed recoverer guard expires", async () => {
-    const sockets = fakeSockets();
-    sockets.files.set("/run/relay.sock", "stale");
-    const blocked = await acquireInstanceLock("/run/relay.sock", {
-      ...sockets.forStarter("A"),
-      acquireGuard: async () => false,
-    });
-    expect(blocked).toBeNull();
-    expect(sockets.unlinks()).toBe(0);
-
-    // The default guard is a directory: a fresh one blocks recovery, one
-    // older than RECOVERY_GUARD_STALE_MS (its recoverer crashed) is removed.
-    const socket = join(scope(), "relay.sock");
-    const files = fakeSockets();
-    files.files.set(socket, "stale");
-    const { acquireGuard: _a, releaseGuard: _r, ...realGuard } = files.forStarter("F");
-    mkdirSync(`${socket}.recover`);
-    expect(await acquireInstanceLock(socket, realGuard)).toBeNull();
-    const old = (Date.now() - RECOVERY_GUARD_STALE_MS - 5_000) / 1_000;
-    utimesSync(`${socket}.recover`, old, old);
-    expect(await acquireInstanceLock(socket, realGuard)).not.toBeNull();
-    expect(existsSync(`${socket}.recover`)).toBe(false);
+    const linux = instanceLockEndpoint("relay", deep, `${deep}/.harnery`, "linux");
+    expect(linux).toMatch(/^\/tmp\/harnery-relay-[0-9a-f]{24}\.sock$/);
+    expect(instanceLockEndpoint("relay", deep, `${deep}/.harnery`, "darwin")).toBe(linux);
   });
 });
 
 describe("acquireInstanceLock", () => {
-  test("admits one holder at a time and frees on close", async () => {
+  test("admits one holder at a time, identifies it to probes, and frees on close", async () => {
     const endpoint = instanceLockEndpoint("test", scope(), scope());
+    expect(await probeInstanceEndpoint(endpoint)).toEqual({ kind: "stale" });
     const first = await acquireInstanceLock(endpoint);
     expect(first).not.toBeNull();
+    expect(await probeInstanceEndpoint(endpoint)).toEqual({ kind: "held", nonce: first?.nonce });
+    expect(await first?.verify()).toBe(true);
     const second = await Promise.all([
       acquireInstanceLock(endpoint),
       acquireInstanceLock(endpoint),
@@ -244,45 +107,6 @@ describe("acquireInstanceLock", () => {
     }
   });
 
-  test("clears a stale socket file left by a crashed holder, once, under the guard", async () => {
-    let listens = 0;
-    const unlinked: string[] = [];
-    const guards: string[] = [];
-    const lock = await acquireInstanceLock("/run/x.sock", {
-      platform: "darwin",
-      listen: async () => {
-        listens += 1;
-        if (listens === 1) throw addressInUse();
-        return { close: async () => {} };
-      },
-      probe: async () => "stale",
-      unlink: (path) => unlinked.push(path),
-      acquireGuard: async (path) => {
-        guards.push(`take ${path}`);
-        return true;
-      },
-      releaseGuard: (path) => guards.push(`release ${path}`),
-    });
-    expect(lock).not.toBeNull();
-    expect(unlinked).toEqual(["/run/x.sock"]);
-    expect(listens).toBe(2);
-    expect(guards).toEqual(["take /run/x.sock.recover", "release /run/x.sock.recover"]);
-  });
-
-  test("never unlinks a socket file a live process answers on", async () => {
-    const unlinked: string[] = [];
-    const lock = await acquireInstanceLock("/run/x.sock", {
-      platform: "darwin",
-      listen: async () => {
-        throw addressInUse();
-      },
-      probe: async () => "live",
-      unlink: (path) => unlinked.push(path),
-    });
-    expect(lock).toBeNull();
-    expect(unlinked).toEqual([]);
-  });
-
   test("treats an in-use named pipe as held without probing", async () => {
     let probes = 0;
     const lock = await acquireInstanceLock("\\\\.\\pipe\\x", {
@@ -292,10 +116,110 @@ describe("acquireInstanceLock", () => {
       },
       probe: async () => {
         probes += 1;
-        return "stale";
+        return { kind: "stale" };
       },
     });
     expect(lock).toBeNull();
     expect(probes).toBe(0);
+  });
+});
+
+/**
+ * An in-memory socket-file table with real POSIX semantics: listen fails
+ * while a file exists at the path, unlinking a file does not close the
+ * listener bound to it, and a probe reaches whoever is bound to the path now.
+ */
+function socketTable() {
+  const bound = new Map<string, { banner: string; open: boolean } | "stale">();
+  const listeners: Array<{ banner: string; open: boolean }> = [];
+  let unlinks = 0;
+  const starter = (nonce: string) => ({
+    platform: "darwin" as const,
+    nonce: () => nonce,
+    settle: () => sleep(1),
+    listen: async (path: string, banner: string) => {
+      if (bound.has(path)) throw addressInUse();
+      const listener = { banner, open: true };
+      listeners.push(listener);
+      bound.set(path, listener);
+      return {
+        close: async () => {
+          listener.open = false;
+        },
+      };
+    },
+    probe: async (path: string): Promise<InstanceProbe> => {
+      const entry = bound.get(path);
+      if (!entry || entry === "stale" || !entry.open) return { kind: "stale" };
+      return { kind: "held", nonce: entry.banner.slice("harnery-lock:".length) };
+    },
+    unlink: (path: string) => {
+      unlinks += 1;
+      bound.delete(path);
+    },
+  });
+  return {
+    bound,
+    starter,
+    openListeners: () => listeners.filter((listener) => listener.open).length,
+    unlinks: () => unlinks,
+  };
+}
+
+describe("POSIX double bind resolves by self-verification (F2)", () => {
+  test("two starters recovering one crash-left socket end with one verified holder", async () => {
+    const table = socketTable();
+    table.bound.set("/p/relay.sock", "stale");
+    // Both fail to listen and both probe the file stale before either
+    // unlinks; then both unlink and bind in turn. B's unlink displaces A's
+    // socket without closing A's listener.
+    const a = table.starter("A");
+    const b = table.starter("B");
+    let probes = 0;
+    let release: () => void = () => {};
+    const bothProbed = new Promise<void>((done) => {
+      release = done;
+    });
+    const gatedProbe = (base: typeof a.probe) => async (path: string) => {
+      const result = await base(path);
+      if (result.kind === "stale" && probes < 2) {
+        probes += 1;
+        if (probes === 2) release();
+        await bothProbed;
+      }
+      return result;
+    };
+    const [lockA, lockB] = await Promise.all([
+      acquireInstanceLock("/p/relay.sock", { ...a, probe: gatedProbe(a.probe) }),
+      acquireInstanceLock("/p/relay.sock", { ...b, probe: gatedProbe(b.probe) }),
+    ]);
+    expect(table.unlinks()).toBe(2);
+    const holders = [lockA, lockB].filter((lock) => lock !== null);
+    expect(holders).toHaveLength(1);
+    // The displaced starter closed its listener instead of keeping the lock.
+    expect(table.openListeners()).toBe(1);
+    expect(await holders[0]?.verify()).toBe(true);
+  });
+
+  test("a holder displaced later sees verify() fail", async () => {
+    const table = socketTable();
+    const lock = await acquireInstanceLock("/p/relay.sock", table.starter("A"));
+    expect(await lock?.verify()).toBe(true);
+    // A stalled starter unlinks the file and binds its own socket.
+    table.bound.delete("/p/relay.sock");
+    const intruder = await acquireInstanceLock("/p/relay.sock", table.starter("B"));
+    expect(intruder).not.toBeNull();
+    expect(await lock?.verify()).toBe(false);
+  });
+
+  test("a socket that answers without a harnery banner is held and never unlinked", async () => {
+    const table = socketTable();
+    table.bound.set("/p/relay.sock", "stale");
+    const lock = await acquireInstanceLock("/p/relay.sock", {
+      ...table.starter("A"),
+      probe: async () => ({ kind: "held" }),
+    });
+    expect(lock).toBeNull();
+    expect(table.unlinks()).toBe(0);
   });
 });

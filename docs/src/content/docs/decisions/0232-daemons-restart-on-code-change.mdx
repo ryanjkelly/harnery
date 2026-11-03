@@ -90,22 +90,32 @@ and an unknown build counts as "restart needed", which would loop if acted on.
   must hold the project's relay instance lock before it opens the relay
   socket or starts watching the ledger, and it holds the lock for its whole
   life. The lock is a local IPC server: a named pipe on Windows
-  (`\\.\pipe\harnery-relay-<hash of the project root>`), an
-  abstract-namespace Unix socket on Linux (no file at all), and a Unix
-  socket file in `.harnery/presence/` on macOS (in the system temp directory
-  when that path would be too long; Linux also falls back to this file when
-  the runtime refuses an abstract address). Only one process can listen on
-  it, and the operating system closes it when that process exits or crashes.
-  A socket file left by a crash is recovered only by the starter that
-  atomically creates a `<socket>.recover` guard directory, and only after
-  probing the socket again under the guard and finding it still refuses
-  connections; any other starter treats it as held. Without the guard, two
-  starters that both probed the file stale could each unlink and bind, and
-  unlinking does not close the first listener. A guard older than ten
-  seconds is removed as left by a recoverer that crashed. That leaves one
-  residual window: a recoverer that crashes mid-recovery, then two starters
-  that both find its guard expired at the same moment. Windows and Linux
-  have no stale state, so the window exists only for socket files.
+  (`\\.\pipe\harnery-relay-<hash of the project root>`), and on every POSIX
+  system one Unix socket file, `.harnery/presence/relay.sock` (or
+  `/tmp/harnery-relay-<hash of the project root>.sock` when that path would
+  be too long, a fixed directory so every runtime picks the same file). Only
+  one process can listen on it, and the operating system closes it when that
+  process exits or crashes. Each holder answers every connection with a
+  banner carrying a random per-process nonce. A probe reads it: a refused
+  connection means the file is stale, a harnery banner names the holder, and
+  anything else counts as held, so a probe never licenses unlinking a live
+  socket.
+- **Self-verification on POSIX.** A socket file left by a crash is unlinked
+  and rebound by the starter that finds it refusing connections. Two
+  starters can both do that, and unlinking does not close the first
+  listener, so a bind is never trusted on its own. After binding, the holder
+  waits 250 ms and probes the path; it keeps the lock only if the banner is
+  its own, and this check runs inside the lock acquisition, before the
+  startup gate can return "connect". A connected daemon re-verifies every
+  five seconds and, if displaced, closes its relay socket and exits. The
+  precise bound: two bindings of the same path can coexist only when one
+  starter stalls for more than the 250 ms settle between probing the stale
+  file and unlinking it. Then the first holder may already have connected,
+  and the two relay connections overlap for at most one five-second
+  verification interval, after which the displaced daemon leaves. Without
+  such a stall, the displaced holder fails its settle check and never
+  connects. No recovery guard file is used: the verification makes the
+  outcome correct, and a guard that can itself go stale only added windows.
 - **Replacement waits for the lock.** A successor that finds the lock held
   by a live daemon on older code marks the pid file `handover`, which that
   daemon sees as superseded within five seconds; it closes its socket and
@@ -124,9 +134,16 @@ and an unknown build counts as "restart needed", which would loop if acted on.
 - **The guarantee covers daemons that take the lock.** Relay daemons from
   before the lock hold none. They are never replaced while they run (no code
   identity), and a successor that holds the lock still waits for a live
-  pid-file owner to exit before connecting, but at most one connected daemon
-  per project is guaranteed only once every daemon on the machine runs this
-  code.
+  pid-file owner to exit before connecting. It records that owner as
+  `original` in its `handover` pid record, so a later successor that finds
+  it dead and the original still alive waits for the original too, and
+  records it in turn. At most one connected daemon per project is guaranteed
+  only once every daemon on the machine runs this code.
+- **The lock outlives the socket.** Every exit (superseded, code change,
+  idle, displaced) closes the relay socket and waits up to five seconds for
+  its close event before the process exits. The lock is never released by
+  hand; process exit releases it, so no successor can connect while the old
+  socket is still open.
 - **Operator stops win.** A daemon stopped by its stop command never
   relaunches itself, whatever the code did.
 

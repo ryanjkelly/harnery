@@ -57,7 +57,6 @@ import {
   acquireInstanceLock,
   type InstanceLock,
   instanceLockEndpoint,
-  instanceLockFileEndpoint,
 } from "../single-instance.ts";
 import { closeProcessLoggers, legacyLogFields, processLogger } from "../storage/logger.ts";
 import { RotatingTextSink } from "../storage/process-log.ts";
@@ -103,6 +102,17 @@ export interface RelayPidRecord {
    * has not connected; `connected` after. Absent on older daemons.
    */
   state?: "handover" | "connected";
+  /**
+   * While `handover`: a live owner from before the instance lock that this
+   * daemon waits for. It holds no lock, so a successor that finds this daemon
+   * dead must wait for it too.
+   */
+  original?: RelayOwnerRef;
+}
+
+export interface RelayOwnerRef {
+  pid: number;
+  started_at: string;
 }
 
 export function readRelayPidRecord(coordRoot: string): RelayPidRecord | null {
@@ -164,6 +174,10 @@ export const RELAY_LAUNCH_RESERVATION_MS = 20_000;
 export const RELAY_HANDOVER_WAIT_MS = 75_000;
 /** How often a running daemon checks whether a successor took its pid file. */
 const SUPERSEDE_CHECK_MS = 5_000;
+/** How often a connected daemon re-verifies it still holds the instance lock. */
+export const LOCK_VERIFY_MS = 5_000;
+/** How long an exiting daemon waits for its relay socket to close. */
+export const SOCKET_CLOSE_WAIT_MS = 5_000;
 
 function launchReservationPath(coordRoot: string): string {
   return join(presenceDir(coordRoot), "relay-launch.json");
@@ -371,11 +385,6 @@ export function relayInstanceLockEndpoint(coordRoot: string): string {
   return instanceLockEndpoint("relay", coordRoot, presenceDir(coordRoot));
 }
 
-/** The socket file used where the runtime refuses an abstract address (Linux). */
-export function relayInstanceLockFallback(coordRoot: string): string {
-  return instanceLockFileEndpoint("relay", coordRoot, presenceDir(coordRoot));
-}
-
 /**
  * Decide whether this daemon may connect. Exclusivity comes from the relay
  * instance lock, which the operating system releases when its holder exits
@@ -415,10 +424,7 @@ export async function relayStartupGate(
   const wait = options.wait ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
   const token = options.reservationToken ?? inheritedReservationToken();
   const endpoint = options.lockEndpoint ?? relayInstanceLockEndpoint(coordRoot);
-  const acquire =
-    options.acquire ??
-    ((path: string) =>
-      acquireInstanceLock(path, { fallback: relayInstanceLockFallback(coordRoot) }));
+  const acquire = options.acquire ?? ((path: string) => acquireInstanceLock(path));
   const log =
     options.log ??
     ((phase: string, message: string) =>
@@ -429,6 +435,13 @@ export async function relayStartupGate(
   const previous = readRelayPidRecord(coordRoot);
   const ownsPidFile = () => readRelayPidRecord(coordRoot)?.pid === record.pid;
   const previousLive = previous !== null && previous.pid !== record.pid && isAlive(previous.pid);
+  // An owner from before the lock holds no lock, so only its pid shows it may
+  // still hold a relay socket. A successor that died mid-handover recorded
+  // such an owner as `original`; it is waited for in turn.
+  const recordedOriginal =
+    previous?.original && previous.original.pid !== record.pid && isAlive(previous.original.pid)
+      ? previous.original
+      : undefined;
   let lock = await acquire(endpoint);
   if (!lock) {
     const replacing =
@@ -442,14 +455,27 @@ export async function relayStartupGate(
       return { outcome: "duplicate" };
     }
   }
-  if (!previousLive) {
+  const waitFor: RelayOwnerRef[] = [];
+  if (previousLive) waitFor.push({ pid: previous.pid, started_at: previous.started_at });
+  if (recordedOriginal) waitFor.push(recordedOriginal);
+  if (waitFor.length === 0) {
     atomicWriteJson(pidFilePath(coordRoot), { ...record, state: "connected" });
     releaseRelayLaunchReservation(coordRoot, token);
     return { outcome: "connect", ...(lock ? { lock } : {}) };
   }
-  atomicWriteJson(pidFilePath(coordRoot), { ...record, state: "handover" });
+  // Holding the lock while a pid-file owner still lives means that owner
+  // predates the lock: keep it in the record until it exits.
+  const original =
+    recordedOriginal ??
+    (lock && previousLive ? { pid: previous.pid, started_at: previous.started_at } : undefined);
+  atomicWriteJson(pidFilePath(coordRoot), {
+    ...record,
+    state: "handover",
+    ...(original ? { original } : {}),
+  });
+  const owner = waitFor[0] as RelayOwnerRef;
   for (;;) {
-    if (lock && !isAlive(previous.pid)) {
+    if (lock && waitFor.every((ref) => !isAlive(ref.pid))) {
       atomicWriteJson(pidFilePath(coordRoot), { ...record, state: "connected" });
       releaseRelayLaunchReservation(coordRoot, token);
       return { outcome: "connect", lock };
@@ -467,8 +493,8 @@ export async function relayStartupGate(
   await lock?.close();
   // The previous daemon still runs (stalled, or too old to notice): give its
   // pid file back rather than connect beside it.
-  if (ownsPidFile()) atomicWriteJson(pidFilePath(coordRoot), previous);
-  log("handover_timeout", `previous daemon pid ${previous.pid} did not exit; not connecting`);
+  if (ownsPidFile() && previous) atomicWriteJson(pidFilePath(coordRoot), previous);
+  log("handover_timeout", `previous daemon pid ${owner.pid} did not exit; not connecting`);
   releaseRelayLaunchReservation(coordRoot, token);
   return { outcome: "gave_up" };
 }
@@ -688,21 +714,24 @@ export async function runRelayDaemon(
     /* keepalive interval still covers publication */
   }
 
-  // Superseded by a newer daemon → close the socket and exit, so the
-  // successor (which waits for this process to exit) can connect.
-  const exitSuperseded = (): void => {
-    log("pid file superseded; exiting", "superseded");
+  // Every exit closes the relay socket and waits (bounded) for its close
+  // event before the process exits. The instance lock is never released by
+  // hand: process exit releases it, so it is held until the socket is gone.
+  const shutdown = (closeReason: string, beforeExit?: () => void): void => {
     shuttingDown = true;
     clearInterval(interval);
     clearInterval(supersedeCheck);
-    try {
-      ws?.close(1000, "superseded");
-    } catch {
-      /* ignore */
-    }
-    void Promise.allSettled([instanceLock?.close(), closeProcessLoggers()]).finally(() =>
-      process.exit(0),
-    );
+    clearInterval(lockCheck);
+    void closeRelaySocket(ws, closeReason)
+      .then(() => beforeExit?.())
+      .then(() => closeProcessLoggers())
+      .finally(() => process.exit(0));
+  };
+
+  // Superseded by a newer daemon: the successor waits for this process to go.
+  const exitSuperseded = (): void => {
+    log("pid file superseded; exiting", "superseded");
+    shutdown("superseded");
   };
 
   // A successor takes the pid file and waits for this process to go; notice
@@ -711,6 +740,18 @@ export async function runRelayDaemon(
     if (shuttingDown) return;
     if (readRelayPidRecord(coordRoot)?.pid !== process.pid) exitSuperseded();
   }, SUPERSEDE_CHECK_MS);
+
+  // On POSIX another starter can unlink and rebind the lock's socket file.
+  // Re-verify that the endpoint still answers with this daemon's nonce, and
+  // leave at once if it was displaced.
+  const lockCheck = setInterval(() => {
+    if (shuttingDown || !instanceLock) return;
+    void instanceLock.verify().then((held) => {
+      if (held || shuttingDown) return;
+      log("instance lock displaced by another daemon; exiting", "lock_displaced");
+      shutdown("lock displaced");
+    });
+  }, LOCK_VERIFY_MS);
 
   // Keepalive + lifecycle checks.
   const interval = setInterval(() => {
@@ -728,50 +769,66 @@ export async function runRelayDaemon(
       exitSuperseded();
       return;
     }
-    // The installed code moved on → close cleanly, hand the pid file to a
-    // daemon started from the new code, and exit.
+    // The installed code moved on: launch a daemon from the new code, which
+    // takes the pid file over and connects only once this process has exited
+    // and released the lock; then close and exit.
     if (decision === "code_changed" && codeChange) {
       log(codeChangeMessage(codeChange), "code_changed", "relay.lifecycle", {
         from_code: codeChange.from,
         to_code: codeChange.to,
       });
-      shuttingDown = true;
-      clearInterval(interval);
-      clearInterval(supersedeCheck);
-      try {
-        ws?.close(1000, "code changed");
-      } catch {
-        /* ignore */
-      }
-      // Keep the pid file: the successor takes it over and connects only
-      // once this process has exited, and the launch reservation keeps a
-      // racing hook from starting a second one.
       ensureRelayDaemon(coordRoot);
-      void Promise.allSettled([instanceLock?.close(), closeProcessLoggers()]).finally(() =>
-        process.exit(0),
-      );
+      shutdown("code changed");
       return;
     }
     // Idle machine (no live sessions for a while) → exit; hooks restart us.
     if (decision === "idle_exit") {
       log("no live sessions; idle exit", "idle_exit");
-      shuttingDown = true;
-      clearInterval(interval);
-      clearInterval(supersedeCheck);
-      try {
-        rmSync(pidFilePath(coordRoot), { force: true });
-        ws?.close();
-      } catch {
-        /* ignore */
-      }
-      void Promise.allSettled([instanceLock?.close(), closeProcessLoggers()]).finally(() =>
-        process.exit(0),
-      );
+      shutdown("idle", () => {
+        try {
+          rmSync(pidFilePath(coordRoot), { force: true });
+        } catch {
+          /* ignore */
+        }
+      });
     }
   }, KEEPALIVE_MS);
 
   // Never resolves in normal operation; exits happen above.
   return await new Promise<number>(() => {});
+}
+
+/** The part of a WebSocket that a clean shutdown needs. */
+export interface ClosableSocket {
+  readonly readyState: number;
+  close(code?: number, reason?: string): void;
+  addEventListener(type: "close", listener: () => void): void;
+}
+
+/**
+ * Close the relay socket and resolve once its close event arrives, or after
+ * `timeoutMs`. A socket already closed resolves at once.
+ */
+export function closeRelaySocket(
+  socket: ClosableSocket | null,
+  reason: string,
+  timeoutMs = SOCKET_CLOSE_WAIT_MS,
+): Promise<void> {
+  // 3 is CLOSED in every WebSocket implementation.
+  if (!socket || socket.readyState === 3) return Promise.resolve();
+  return new Promise((done) => {
+    const timer = setTimeout(done, timeoutMs);
+    socket.addEventListener("close", () => {
+      clearTimeout(timer);
+      done();
+    });
+    try {
+      socket.close(1000, reason);
+    } catch {
+      clearTimeout(timer);
+      done();
+    }
+  });
 }
 
 /** Best-effort text of a WebSocket error event (Bun and Node attach `message`). */
