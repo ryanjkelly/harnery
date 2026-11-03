@@ -366,6 +366,33 @@ describe.if(posix)("createOpClient against a fake op", () => {
     },
   );
 
+  test.if(Boolean(whichSync("wslpath")))(
+    "never redirects a checked name with trailing spaces onto a tracked file",
+    async () => {
+      const log = join(work, "exe-calls.log");
+      const exe = join(work, "op.exe");
+      writeFileSync(exe, `#!/usr/bin/env bash\nprintf '%s\\n' "$@" > "${log}"\n`);
+      chmodSync(exe, 0o700);
+      process.env.OP_BIN = exe;
+      execFileSync("git", ["init", "-q"], { cwd: work });
+      writeFileSync(join(work, "AGENTS.md"), "tracked");
+      writeFileSync(join(work, ".gitignore"), "AGENTS.md[ ]\n");
+      execFileSync("git", ["add", "AGENTS.md", ".gitignore"], { cwd: work });
+      const tracked = execFileSync("wslpath", ["-w", join(work, "AGENTS.md")], {
+        encoding: "utf8",
+      }).replace(/\r?\n$/, "");
+      try {
+        await client().getDocument({ item: "Doc" }, join(work, "AGENTS.md "));
+        const args = readFileSync(log, "utf8").split("\n");
+        const outFile = args[args.indexOf("--out-file") + 1];
+        expect(outFile).not.toBe(tracked);
+        expect(outFile?.endsWith("AGENTS.md ")).toBe(true);
+      } catch (error) {
+        expect(String(error)).toContain("cannot hand");
+      }
+    },
+  );
+
   test("a host may opt out of the ignored-output check", async () => {
     installMockOp({});
     execFileSync("git", ["init", "-q"], { cwd: work });

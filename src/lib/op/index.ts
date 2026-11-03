@@ -13,6 +13,7 @@ export {
   windowsLocalAppData,
   windowsPathToWsl,
   wslPathToWindows,
+  wslPathToWindowsVerified,
 } from "./detect.ts";
 export * from "./local-credentials.ts";
 export type * from "./types.ts";

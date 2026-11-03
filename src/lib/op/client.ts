@@ -27,7 +27,13 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { detectOp, isWindowsOp, opEnvironment, wslPathToWindows } from "./detect.ts";
+import {
+  detectOp,
+  isWindowsOp,
+  opEnvironment,
+  wslPathToWindows,
+  wslPathToWindowsVerified,
+} from "./detect.ts";
 import { runProcess, runProcessSync } from "./process.ts";
 import type {
   OpField,
@@ -760,10 +766,16 @@ export function createOpClient(config: OpHostConfig) {
       const destination = assertIgnoredOutput(out);
       // The Windows op.exe (or a helper forwarding to it) cannot read a Linux
       // path, so translate the checked destination on WSL.
-      const outFile =
-        isWindowsOp(requireOp()) && destination.startsWith("/")
-          ? (wslPathToWindows(destination) ?? destination)
-          : destination;
+      let outFile = destination;
+      if (isWindowsOp(requireOp()) && destination.startsWith("/")) {
+        const windows = wslPathToWindowsVerified(destination);
+        if (!windows) {
+          throw new Error(
+            `cannot hand ${destination} to the Windows op.exe unchanged; choose a simpler output path`,
+          );
+        }
+        outFile = windows;
+      }
       // --force: op would otherwise prompt before overwriting, which cannot be
       // answered with stdin ignored.
       args.push("--out-file", outFile, "--force");
