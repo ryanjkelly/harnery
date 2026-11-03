@@ -768,10 +768,17 @@ export function createOpClient(config: OpHostConfig) {
       // path, so translate the checked destination on WSL.
       let outFile = destination;
       if (isWindowsOp(requireOp()) && destination.startsWith("/")) {
-        const windows = wslPathToWindowsVerified(destination);
+        // Windows strips a trailing space or dot from each name and rejects
+        // some characters, so op.exe could write a different file from the
+        // one checked. Refuse any such name rather than guess.
+        const unsafe = destination
+          .split("/")
+          .filter(Boolean)
+          .find((part) => /[ .]$/.test(part) || /[<>:"\\|?*\x00-\x1f]/.test(part));
+        const windows = unsafe === undefined ? wslPathToWindowsVerified(destination) : null;
         if (!windows) {
           throw new Error(
-            `cannot hand ${destination} to the Windows op.exe unchanged; choose a simpler output path`,
+            `cannot hand ${destination} to the Windows op.exe unchanged${unsafe === undefined ? "" : ` (Windows would alter the name "${unsafe}")`}; choose a simpler output path`,
           );
         }
         outFile = windows;

@@ -381,15 +381,15 @@ describe.if(posix)("createOpClient against a fake op", () => {
       const tracked = execFileSync("wslpath", ["-w", join(work, "AGENTS.md")], {
         encoding: "utf8",
       }).replace(/\r?\n$/, "");
-      try {
-        await client().getDocument({ item: "Doc" }, join(work, "AGENTS.md "));
-        const args = readFileSync(log, "utf8").split("\n");
-        const outFile = args[args.indexOf("--out-file") + 1];
-        expect(outFile).not.toBe(tracked);
-        expect(outFile?.endsWith("AGENTS.md ")).toBe(true);
-      } catch (error) {
-        expect(String(error)).toContain("cannot hand");
-      }
+      expect(tracked).toContain("AGENTS.md");
+      await expect(client().getDocument({ item: "Doc" }, join(work, "AGENTS.md "))).rejects.toThrow(
+        'Windows would alter the name "AGENTS.md "',
+      );
+      writeFileSync(join(work, ".gitignore"), "AGENTS.md[ ]\nsecrets./\n");
+      await expect(
+        client().getDocument({ item: "Doc" }, join(work, "secrets.", "x.txt")),
+      ).rejects.toThrow('Windows would alter the name "secrets."');
+      expect(existsSync(log)).toBe(false);
     },
   );
 
