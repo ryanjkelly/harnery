@@ -35,35 +35,35 @@ export function colorJson(value: unknown, indent = 0): string {
     if (typeof v === "number") return c.magenta(String(v));
     if (typeof v === "string") return c.green(JSON.stringify(v));
     if (typeof v === "bigint") return c.magenta(`${v}n`);
-    if (Array.isArray(v)) {
-      if (v.length === 0) return "[]";
+    if (typeof v === "object") {
       if (seen.has(v)) return c.dim('"[Circular]"');
       seen.add(v);
-      const pad = step.repeat(depth + 1);
-      const close = step.repeat(depth);
-      const items = v.map((x) => pad + fmt(x, depth + 1)).join(",\n");
-      return `[\n${items}\n${close}]`;
-    }
-    if (typeof v === "object") {
-      // Class instances that define toJSON() (Big.js, Decimal.js, Date, etc.)
-      // would render as their raw internal shape if we walked Object.keys
-      // directly. Unwrap once so callers see the intended representation
-      // (e.g. Big.js → "1.97" instead of its internal {s,e,c} fields).
-      const maybeJsonable = v as { toJSON?: () => unknown };
-      if (typeof maybeJsonable.toJSON === "function") {
-        return fmt(maybeJsonable.toJSON(), depth);
+      try {
+        const pad = step.repeat(depth + 1);
+        const close = step.repeat(depth);
+        if (Array.isArray(v)) {
+          if (v.length === 0) return "[]";
+          const items = v.map((x) => pad + fmt(x, depth + 1)).join(",\n");
+          return `[\n${items}\n${close}]`;
+        }
+        // Unwrap class instances (Date, decimal types, etc.) once. A toJSON
+        // returning itself still needs its own properties rendered normally.
+        const maybeJsonable = v as { toJSON?: () => unknown };
+        if (typeof maybeJsonable.toJSON === "function") {
+          const json = maybeJsonable.toJSON();
+          if (json !== v) return fmt(json, depth);
+        }
+        const obj = v as Record<string, unknown>;
+        const keys = Object.keys(obj);
+        if (keys.length === 0) return "{}";
+        const items = keys
+          .map((k) => `${pad}${c.cyan(JSON.stringify(k))}: ${fmt(obj[k], depth + 1)}`)
+          .join(",\n");
+        return `{\n${items}\n${close}}`;
+      } finally {
+        // Only ancestors are circular; a later reference may render in full.
+        seen.delete(v);
       }
-      const obj = v as Record<string, unknown>;
-      const keys = Object.keys(obj);
-      if (keys.length === 0) return "{}";
-      if (seen.has(obj)) return c.dim('"[Circular]"');
-      seen.add(obj);
-      const pad = step.repeat(depth + 1);
-      const close = step.repeat(depth);
-      const items = keys
-        .map((k) => `${pad}${c.cyan(JSON.stringify(k))}: ${fmt(obj[k], depth + 1)}`)
-        .join(",\n");
-      return `{\n${items}\n${close}}`;
     }
     return JSON.stringify(v) ?? "null";
   }
