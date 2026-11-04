@@ -29,6 +29,7 @@ describe("status box text", () => {
       "link",
     );
     expect(sanitizeStatusText("a\r\nb\rc\td")).toBe("a\nb\nc    d");
+    expect(sanitizeStatusText("a\u0085b\u2028c\u2029d")).toBe("a\nb\nc\nd");
   });
 
   test("single-line task and external labels collapse line breaks and tabs", () => {
@@ -80,6 +81,12 @@ describe("formatBox", () => {
     expect(lines[1]).toContain("task  first");
     expect(lines[2]).toMatch(/^│ +│$/);
     expect(lines[3]).toContain("second");
+  });
+
+  test("frames Unicode line separators from previously stored values", () => {
+    const box = formatBox("agent-A", [["task", "first\u2028└── injected\u2029next\u0085last"]]);
+    expect(framed(box)).toHaveLength(6);
+    expect(box).not.toMatch(/[\u0085\u2028\u2029]/u);
   });
 
   test("wraps long multiline values without splitting graphemes", () => {

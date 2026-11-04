@@ -54,6 +54,7 @@ export function statusDisplayWidth(text: string): number {
 export function sanitizeStatusText(text: string): string {
   const clean = text
     .replace(/\r\n?/g, "\n")
+    .replace(/[\u0085\u2028\u2029]/g, "\n")
     .replace(OSC, "")
     .replace(CSI, "")
     .replace(ESCAPE, "")
