@@ -112,9 +112,224 @@ describe("scanAssistantTextIncludes", () => {
       },
     ]);
     expect(scanAssistantStatusBoxPresent(toolResultOnly, undefined)).toBe(false);
-    expect(scanAssistantStatusBoxPresent(toolResultOnly, "```\n┌─ agent-Maya status\n```")).toBe(
-      true,
+    expect(
+      scanAssistantStatusBoxPresent(
+        toolResultOnly,
+        "```\n┌─ agent-Maya ─┐\n│ task fixture │\n└──────────────┘\n```",
+      ),
+    ).toBe(true);
+  });
+});
+
+describe("current-turn status-box detection", () => {
+  let dir: string;
+  const BOX = "```text\n┌─ agent-Maya ─┐\n│ task fixture │\n└──────────────┘\n```";
+  const assistant = (text: string, id?: string) => ({
+    type: "assistant",
+    message: { ...(id ? { id } : {}), role: "assistant", content: [{ type: "text", text }] },
+  });
+  const prompt = (content: unknown) => ({ type: "user", message: { role: "user", content } });
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "harn-status-transcript-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function write(rows: (object | string)[]): string {
+    const path = join(dir, "transcript.jsonl");
+    writeFileSync(
+      path,
+      `${rows.map((row) => (typeof row === "string" ? row : JSON.stringify(row))).join("\n")}\n`,
     );
+    return path;
+  }
+
+  test("the supplied completed reply overrides transcript evidence, including an empty reply", () => {
+    const path = write([prompt("Earlier prompt"), assistant(BOX)]);
+    expect(scanAssistantStatusBoxPresent(path, "Current reply without a box.")).toBe(false);
+    expect(scanAssistantStatusBoxPresent(path, "")).toBe(false);
+    expect(scanAssistantStatusBoxPresent(undefined, BOX)).toBe(true);
+  });
+
+  test("a new string or text-block operator prompt discards the earlier box", () => {
+    for (const content of ["Next prompt", [{ type: "text", text: "Next prompt" }]]) {
+      const path = write([
+        prompt("Earlier prompt"),
+        assistant(BOX),
+        prompt(content),
+        assistant("Current reply without a box."),
+      ]);
+      expect(scanAssistantStatusBoxPresent(path, undefined)).toBe(false);
+    }
+  });
+
+  test("an image-only operator prompt also starts a new turn", () => {
+    const path = write([
+      prompt("Earlier prompt"),
+      assistant(BOX),
+      prompt([{ type: "image", source: { type: "base64", media_type: "image/png", data: "" } }]),
+      assistant("Current reply without a box."),
+    ]);
+    expect(scanAssistantStatusBoxPresent(path, undefined)).toBe(false);
+  });
+
+  test("native synthetic-user shapes preserve the original turn's evidence", () => {
+    // Row types, flags, origin labels, and block types were checked against
+    // native transcripts. Message bodies and identifiers are synthetic.
+    const syntheticRows = [
+      {
+        ...prompt([{ type: "tool_result", tool_use_id: "tool_fixture", content: "Done" }]),
+        sourceToolAssistantUUID: "assistant-fixture",
+        toolUseResult: { stdout: "Done" },
+      },
+      { ...prompt([{ type: "text", text: "Hook context" }]), isMeta: true, turnCompanion: true },
+      { ...prompt("Stop hook feedback:\nContinue the turn."), isMeta: true },
+      {
+        ...prompt("Compacted context"),
+        isCompactSummary: true,
+        isVisibleInTranscriptOnly: true,
+      },
+      {
+        ...prompt("<task-notification>\n<task-id>fixture</task-id>\n</task-notification>"),
+        origin: { kind: "task-notification", producer: "fixture", runId: "fixture" },
+        promptSource: "system",
+        turnOrigin: "task_notification",
+        queueSkipAttachments: true,
+      },
+    ];
+    for (const row of syntheticRows) {
+      const path = write([
+        prompt("Current prompt"),
+        assistant(BOX),
+        row,
+        assistant("Continuation."),
+      ]);
+      expect(scanAssistantStatusBoxPresent(path, undefined)).toBe(true);
+    }
+  });
+
+  test("legacy tool results and task notifications do not create operator boundaries", () => {
+    const path = write([
+      prompt("Current prompt"),
+      assistant(BOX),
+      prompt([{ type: "tool_result", content: "Output" }]),
+      prompt("<task-notification>Completed</task-notification>"),
+      assistant("Continuation."),
+    ]);
+    expect(scanAssistantStatusBoxPresent(path, undefined)).toBe(true);
+  });
+
+  test("tool results, thinking, and tool arguments cannot supply a box", () => {
+    const path = write([
+      prompt("Current prompt"),
+      prompt([{ type: "tool_result", content: BOX }]),
+      {
+        type: "assistant",
+        message: {
+          content: [
+            { type: "thinking", thinking: BOX },
+            { type: "tool_use", name: "Bash", input: { command: BOX } },
+          ],
+        },
+      },
+    ]);
+    expect(scanAssistantStatusBoxPresent(path, undefined)).toBe(false);
+  });
+
+  test("a tail with no prompt row remains current-turn evidence", () => {
+    expect(scanAssistantStatusBoxPresent(write([assistant(BOX)]), undefined)).toBe(true);
+    expect(scanAssistantStatusBoxPresent(write([assistant("No box here.")]), undefined)).toBe(
+      false,
+    );
+  });
+
+  test("joins split assistant text from one message and successive assistant messages", () => {
+    const halfway = BOX.indexOf("nt-Maya");
+    const sameMessage = write([
+      prompt("Current prompt"),
+      assistant(BOX.slice(0, halfway), "streamed-message"),
+      assistant(BOX.slice(halfway), "streamed-message"),
+    ]);
+    expect(scanAssistantStatusBoxPresent(sameMessage, undefined)).toBe(true);
+    const lineBreak = BOX.indexOf("│");
+    const successiveMessages = write([
+      prompt("Current prompt"),
+      assistant(BOX.slice(0, lineBreak), "first-message"),
+      assistant(BOX.slice(lineBreak), "second-message"),
+    ]);
+    expect(scanAssistantStatusBoxPresent(successiveMessages, undefined)).toBe(true);
+  });
+
+  test("requires a complete fenced line structure rather than a quoted marker", () => {
+    for (const text of [
+      "The detector searches for ┌─ agent- in a reply.",
+      "```\n┌─ agent-Maya status\n```",
+      "┌─ agent-Maya ─┐\n│ task fixture │\n└──────────────┘",
+      "```\n┌─ agent-Maya ─┐\n│ task fixture │\n```",
+      "```\n┌─ agent-Maya ─┐\n│ task fixture │\n└──────────────┘",
+      "```\n┌─ agent-Maya ─┐\n└──────────────┘\n```",
+      "```invalid`info\n┌─ agent-Maya ─┐\n│ task fixture │\n└──────────────┘\n```",
+    ]) {
+      expect(scanAssistantStatusBoxPresent(undefined, text)).toBe(false);
+    }
+  });
+
+  test("does not enforce names, copied padding, or display widths", () => {
+    const text = "```\n┌─ agent-Renamed ─┐\n│ task 审查 │\n└──┘\n```";
+    expect(scanAssistantStatusBoxPresent(undefined, text)).toBe(true);
+  });
+
+  test("handles CRLF and matching Markdown fence lengths", () => {
+    expect(scanAssistantStatusBoxPresent(undefined, BOX.replaceAll("\n", "\r\n"))).toBe(true);
+    expect(scanAssistantStatusBoxPresent(undefined, BOX.replaceAll("```", "~~~"))).toBe(true);
+    expect(scanAssistantStatusBoxPresent(undefined, BOX.replace("```text", "````text"))).toBe(
+      false,
+    );
+    expect(scanAssistantStatusBoxPresent(undefined, BOX.replaceAll("```", "````"))).toBe(true);
+  });
+
+  test("survives a UTF-8 tail boundary without treating a torn JSON row as evidence", () => {
+    const path = write([
+      prompt("The prompt will be outside the tail window."),
+      { type: "progress", payload: "🌲".repeat(100_000) },
+      assistant(BOX),
+    ]);
+    expect(scanAssistantStatusBoxPresent(path, undefined)).toBe(true);
+  });
+
+  test("a partially flushed current reply cannot borrow a previous turn's box", () => {
+    const path = write([
+      prompt("Earlier prompt"),
+      assistant(BOX),
+      prompt("Current prompt"),
+      '{"type":"assistant","message":{"content":[{"type":"text","text":"```\\n┌─ agent-',
+    ]);
+    expect(scanAssistantStatusBoxPresent(path, undefined)).toBe(false);
+  });
+
+  test("recognizes Codex operator prompt boundaries in transcript fallback", () => {
+    for (const row of [
+      { type: "event_msg", payload: { type: "user_message", message: "Current prompt" } },
+      {
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "Prompt" }],
+        },
+      },
+    ]) {
+      const path = write([assistant(BOX), row, assistant("Current reply without a box.")]);
+      expect(scanAssistantStatusBoxPresent(path, undefined)).toBe(false);
+    }
+  });
+
+  test("missing, unreadable, or empty transcripts do not supply a box", () => {
+    expect(scanAssistantStatusBoxPresent(undefined, undefined)).toBe(false);
+    expect(scanAssistantStatusBoxPresent(join(dir, "missing.jsonl"), undefined)).toBe(false);
+    expect(scanAssistantStatusBoxPresent(write([]), undefined)).toBe(false);
   });
 });
 

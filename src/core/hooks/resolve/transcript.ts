@@ -79,19 +79,117 @@ export function scanAssistantTextIncludes(
 }
 
 /**
- * Strict status-box evidence shared by turn telemetry and the Stop-time
- * continuation fallback. Both inputs are assistant-only surfaces: the JSONL
- * scanner rejects tool_result rows, while lastAssistantMessage comes directly
- * from the adapter's completed assistant response.
+ * A completed adapter reply is authoritative, including an explicitly empty
+ * reply. The transcript fallback includes assistant text only after the newest
+ * operator prompt. Tool results and synthetic user rows do not start a turn.
  */
 export function scanAssistantStatusBoxPresent(
   transcriptPath: string | undefined,
   lastAssistantMessage: string | undefined,
 ): boolean {
-  return (
-    scanAssistantTextIncludes(transcriptPath, ASSISTANT_STATUS_BOX_PREFIX) ||
-    lastAssistantMessage?.includes(ASSISTANT_STATUS_BOX_PREFIX) === true
-  );
+  if (typeof lastAssistantMessage === "string") {
+    return containsFencedStatusBox(lastAssistantMessage);
+  }
+  const readablePath = resolveTranscriptPath(transcriptPath);
+  if (!readablePath) return false;
+  const text = tailText(readablePath);
+  if (!text) return false;
+
+  let reply = "";
+  let previousMessageId: unknown;
+  for (const line of text.split("\n")) {
+    const row = parseTranscriptRow(line);
+    if (!row) continue;
+    if (isOperatorPromptRow(row)) {
+      reply = "";
+      previousMessageId = undefined;
+      continue;
+    }
+    const assistantText = assistantTextFromRow(row);
+    if (!assistantText) continue;
+    const messageId = objectValue(row.message)?.id;
+    const sameMessage = typeof messageId === "string" && messageId === previousMessageId;
+    const separator =
+      reply && !sameMessage && !reply.endsWith("\n") && !assistantText.startsWith("\n") ? "\n" : "";
+    reply += separator + assistantText;
+    previousMessageId = messageId;
+  }
+  // If the prompt fell outside the tail window, every remaining row is still
+  // usable current-turn evidence. Do not turn a long turn into a fail-open.
+  return containsFencedStatusBox(reply);
+}
+
+/** Match line structure, not copied padding or terminal-specific display widths. */
+function containsFencedStatusBox(text: string): boolean {
+  let fence: { marker: string; length: number } | undefined;
+  let box: "none" | "header" | "content" | "complete" = "none";
+  for (const line of text.split(/\r?\n/)) {
+    const fenceLine = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (!fence) {
+      if (fenceLine && (fenceLine[1]![0] !== "`" || !fenceLine[2]!.includes("`"))) {
+        fence = { marker: fenceLine[1]![0]!, length: fenceLine[1]!.length };
+        box = "none";
+      }
+      continue;
+    }
+    if (
+      fenceLine &&
+      fenceLine[1]![0] === fence.marker &&
+      fenceLine[1]!.length >= fence.length &&
+      fenceLine[2]!.trim().length === 0
+    ) {
+      if (box === "complete") return true;
+      fence = undefined;
+      box = "none";
+      continue;
+    }
+    if (box === "complete") continue;
+    const value = line.trimStart();
+    if (value.startsWith(ASSISTANT_STATUS_BOX_PREFIX)) {
+      box = "header";
+    } else if ((box === "header" || box === "content") && value.startsWith("│")) {
+      box = "content";
+    } else if (box === "content" && value.startsWith("└")) {
+      box = "complete";
+    } else {
+      box = "none";
+    }
+  }
+  return false;
+}
+
+function isOperatorPromptRow(row: Record<string, unknown>): boolean {
+  if (row.type === "event_msg") {
+    return objectValue(row.payload)?.type === "user_message";
+  }
+  if (row.type === "response_item") {
+    const payload = objectValue(row.payload);
+    return payload?.type === "message" && payload.role === "user";
+  }
+  if (row.type !== "user") return false;
+  if (
+    row.isMeta === true ||
+    row.isCompactSummary === true ||
+    row.isVisibleInTranscriptOnly === true ||
+    row.promptSource === "system" ||
+    row.turnOrigin === "task_notification" ||
+    objectValue(row.origin)?.kind === "task-notification" ||
+    row.toolUseResult !== undefined ||
+    row.sourceToolAssistantUUID !== undefined
+  ) {
+    return false;
+  }
+  const content = objectValue(row.message)?.content;
+  if (
+    Array.isArray(content) &&
+    content.some((block) => objectValue(block)?.type === "tool_result")
+  ) {
+    return false;
+  }
+  const prompt = textFromContent(content).trimStart();
+  // Older notification rows lack origin metadata but keep this native wrapper.
+  if (prompt.startsWith("<task-notification>")) return false;
+  return typeof content === "string" || (Array.isArray(content) && content.length > 0);
 }
 
 /** A handoff older than this no longer defers Stop, so a lost notification cannot disable the ritual. */
