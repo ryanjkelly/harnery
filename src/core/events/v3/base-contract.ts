@@ -348,6 +348,7 @@ export const TurnStartedV3BaseSchema = eventSchema(
       Type.Literal("unknown"),
     ]),
     stop_remediation: Type.Optional(Type.Boolean()),
+    continues_turn_id: Type.Optional(Type.String({ pattern: "^tid_[a-f0-9]{64}$" })),
   }),
   "turn",
 );

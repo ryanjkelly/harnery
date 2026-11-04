@@ -18,6 +18,7 @@ import { readEventV3ControlState } from "../../events/v3/control.ts";
 import { liveInstanceIdV3 } from "../../events/v3/live-routing.ts";
 import { readLedgerV3 } from "../../events/v3/reader.ts";
 import { readLiveCoordinationRow } from "../state/live-coordination-view.ts";
+import { resolveTurnRange } from "../turn-range.ts";
 
 export type { VerdictResult } from "./verdict.ts";
 
@@ -45,8 +46,6 @@ export interface StopHookRequest {
 }
 
 export const STOP_REMEDIATION_MARKER = "[harnery:stop-remediation";
-
-const MAX_REMEDIATION_WALK_BACK = 16;
 
 export function evaluateStopHook(coordRoot: string, req: StopHookRequest): VerdictResult {
   const unconditional = unconditionalVerdict(req);
@@ -119,14 +118,24 @@ export function evaluateStopHookV3Events(
   );
   const fallbackStartMs = Math.max(0, endMs - 5 * 60 * 1000);
   const claudeContinuation = req.adapter === "claude-code" && req.stop_hook_active === true;
-  const resolvedStart = resolveTurnStart(ownerEvents, endMs, claudeContinuation);
+  const range = resolveTurnRange(ownerEvents, owner, endMs);
+  const resolvedStart = range?.start;
   const resolvedStartMs = eventTimeMs(resolvedStart);
   const startMs =
     req.turn_window?.start_ms ??
     (Number.isFinite(resolvedStartMs) ? resolvedStartMs : fallbackStartMs);
   const inTurn = ownerEvents.filter((event) => {
     const time = eventTimeMs(event);
-    return Number.isFinite(time) && time >= startMs && time <= endMs;
+    return (
+      Number.isFinite(time) &&
+      time >= startMs &&
+      time <= endMs &&
+      !(
+        "turn_id" in event.scope &&
+        typeof event.scope.turn_id === "string" &&
+        range?.ignoredTurnIds.has(event.scope.turn_id)
+      )
+    );
   });
 
   const policyEvents =
@@ -262,32 +271,6 @@ function unconditionalVerdict(req: StopHookRequest): VerdictResult | undefined {
     };
   }
   return undefined;
-}
-
-function resolveTurnStart(
-  ownerEvents: readonly EventV3[],
-  nowMs: number,
-  claudeContinuation: boolean,
-): Extract<EventV3, { event_type: "turn.started" }> | undefined {
-  const turns = ownerEvents.filter(
-    (event): event is Extract<EventV3, { event_type: "turn.started" }> =>
-      event.event_type === "turn.started" && eventTimeMs(event) <= nowMs,
-  );
-  if (turns.length === 0) return undefined;
-
-  let index = turns.length - 1;
-  let hops = 0;
-  while (index > 0 && hops < MAX_REMEDIATION_WALK_BACK) {
-    const turn = turns[index];
-    const continuesCycle = claudeContinuation
-      ? turn?.provenance.source_event === "claude-code.recovery" &&
-        turn.provenance.attestation === "derived"
-      : turn?.payload.stop_remediation === true;
-    if (!continuesCycle) break;
-    index -= 1;
-    hops += 1;
-  }
-  return turns[index];
 }
 
 function originalTurnEvents(

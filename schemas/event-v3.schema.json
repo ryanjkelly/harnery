@@ -8087,6 +8087,10 @@
             },
             "stop_remediation": {
               "type": "boolean"
+            },
+            "continues_turn_id": {
+              "pattern": "^tid_[a-f0-9]{64}$",
+              "type": "string"
             }
           }
         }

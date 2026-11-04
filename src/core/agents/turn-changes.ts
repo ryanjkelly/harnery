@@ -2,6 +2,7 @@ import type { EventV3 } from "../events/v3/contract.ts";
 import { liveInstanceIdV3 } from "../events/v3/live-routing.ts";
 import { readLedgerV3 } from "../events/v3/reader.ts";
 import type { LineChanges } from "../events/v3/tool-line-changes.ts";
+import { resolveTurnRange } from "./turn-range.ts";
 
 export interface TurnChanges extends LineChanges {
   measured_tools: number;
@@ -18,35 +19,17 @@ export function resolveTurnChanges(
   const own = events.filter(
     (event) => event.scope.instance_id === owner && Date.parse(event.time.observed_at) <= now,
   );
-  const starts = own.filter((event) => event.event_type === "turn.started");
-  const newest = starts.at(-1);
-  if (!newest || !("generation_id" in newest.scope)) return null;
-  const generation = newest.scope.generation_id;
-  let index = starts.length - 1;
-  let restarts = 0;
-  while (
-    index > 0 &&
-    restarts < 8 &&
-    starts[index]?.event_type === "turn.started" &&
-    starts[index]?.payload.stop_remediation === true
-  ) {
-    const previous = starts[index - 1]!;
-    if (!("generation_id" in previous.scope) || previous.scope.generation_id !== generation) break;
-    index--;
-    restarts++;
-  }
-  const selected = starts.slice(index);
-  const ids = new Set(
-    selected.map((event) => ("turn_id" in event.scope ? event.scope.turn_id : undefined)),
-  );
-  const from = Date.parse(selected[0]!.time.observed_at);
+  const range = resolveTurnRange(own, owner, now);
+  if (!range) return null;
+  const ids = new Set(range.starts.map((event) => event.scope.turn_id));
   const tools = own.filter(
     (event) =>
       "generation_id" in event.scope &&
-      event.scope.generation_id === generation &&
+      event.scope.generation_id === range.generationId &&
       "turn_id" in event.scope &&
+      typeof event.scope.turn_id === "string" &&
       ids.has(event.scope.turn_id) &&
-      Date.parse(event.time.observed_at) >= from,
+      Date.parse(event.time.observed_at) >= range.startMs,
   );
   const result: TurnChanges = { added: 0, removed: 0, measured_tools: 0, unmeasured_tools: 0 };
   const completed = new Set<string>();

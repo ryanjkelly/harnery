@@ -26,6 +26,9 @@ import {
   liveAuthorityBlockHintV3,
   liveAuthorityBlockV3,
 } from "../../../agents/state/live-coordination-view.ts";
+import { resolveTurnChanges } from "../../../agents/turn-changes.ts";
+import { resolveTurnElapsed } from "../../../agents/turn-elapsed.ts";
+import { resolveTurnRange } from "../../../agents/turn-range.ts";
 import { codexMidFlightDiagnosticContext } from "../../../hooks/adapter/behaviors/codex.ts";
 import { type ParsedPayload, parsePayload } from "../../../hooks/adapter/parse.ts";
 import { clearRuntimeTelemetryCachesForTest } from "../../../hooks/adapter/runtime-telemetry.ts";
@@ -87,6 +90,212 @@ afterEach(() => {
 });
 
 describe("event ledger V3 persistent hook recorder", () => {
+  test("links native-prompt retries across late recoveries without contaminating a newer open turn", () => {
+    const root = candidateRoot();
+    const session_id = "linked-recovery-session";
+    const epoch = Date.parse("2026-11-04T12:00:00.000Z");
+    const record = (
+      signal: Parameters<typeof recordHookSignalV3>[0]["signal"],
+      second: number,
+      values: Partial<ParsedPayload> = {},
+    ) =>
+      recordHookSignalV3({
+        ...baseInput(root, signal, parsed({ session_id, turn_id: "original-prompt", ...values })),
+        observed_at: new Date(epoch + second * 1000).toISOString(),
+        monotonic_ns: String(BigInt(second + 10) * 1_000_000_000n),
+      });
+    const events = () => readLedgerV3(root).events.map(({ event }) => event);
+    record("session-start", -1);
+    record("user-prompt-submit", 0);
+    record("pre-tool-use", 10, {
+      tool_use_id: "original-edit",
+      tool_name: "apply_patch",
+      tool_input: "*** Begin Patch\n*** Add File: example.txt\n+one\n+two\n*** End Patch",
+    });
+    record("post-tool-use", 11, { tool_use_id: "original-edit", tool_name: "apply_patch" });
+    record("stop", 600);
+    record("pre-tool-use", 605, { tool_use_id: "first-retry", tool_name: "Read" });
+    record("post-tool-use", 606, { tool_use_id: "first-retry", tool_name: "Read" });
+    let rows = events();
+    let starts = rows.filter((event) => event.event_type === "turn.started");
+    const turnId = (index: number) => (starts[index]!.scope as { turn_id: string }).turn_id;
+    expect(starts).toHaveLength(2);
+    expect(starts[1]?.payload.continues_turn_id).toBe(turnId(0));
+    expect(starts[1]?.payload.stop_remediation).toBeUndefined();
+    expect(resolveTurnElapsed(rows, "inst_fixture", epoch + 615_000)).toEqual({
+      secs: 615,
+      complete: false,
+      remediation_restarts: 1,
+    });
+    expect(resolveTurnChanges(rows, "inst_fixture", epoch + 615_000)).toMatchObject({
+      added: 2,
+      removed: 0,
+      measured_tools: 2,
+    });
+
+    record("stop", 620);
+    record("pre-tool-use", 625, { tool_use_id: "second-retry", tool_name: "Read" });
+    record("post-tool-use", 626, { tool_use_id: "second-retry", tool_name: "Read" });
+    rows = events();
+    starts = rows.filter((event) => event.event_type === "turn.started");
+    expect(starts[2]?.payload.continues_turn_id).toBe(turnId(1));
+    expect(resolveTurnElapsed(rows, "inst_fixture", epoch + 630_000)?.secs).toBe(630);
+    expect(resolveTurnRange(rows, "inst_fixture", epoch + 630_000)?.continuationCount).toBe(2);
+    record("stop", 640);
+
+    record("user-prompt-submit", 700, { turn_id: "new-prompt" });
+    record("pre-tool-use", 701, {
+      turn_id: "new-prompt",
+      tool_use_id: "new-prompt-edit",
+      tool_name: "apply_patch",
+      tool_input: "*** Begin Patch\n*** Add File: new.txt\n+new\n+work\n+here\n*** End Patch",
+    });
+    record("post-tool-use", 702, {
+      turn_id: "new-prompt",
+      tool_use_id: "new-prompt-edit",
+      tool_name: "apply_patch",
+    });
+    expect(
+      record("pre-tool-use", 703, {
+        tool_use_id: "late-open-edit",
+        tool_name: "apply_patch",
+        tool_input: "*** Begin Patch\n*** Add File: stale.txt\n+unrelated\n*** End Patch",
+      }).state,
+    ).toBe("ignored");
+    expect(
+      record("post-tool-use", 704, {
+        tool_use_id: "late-open-edit",
+        tool_name: "apply_patch",
+      }).state,
+    ).toBe("ignored");
+    expect(resolveTurnChanges(events(), "inst_fixture", epoch + 705_000)).toMatchObject({
+      added: 3,
+      measured_tools: 1,
+    });
+    record("stop", 710, { turn_id: "new-prompt" });
+    record("pre-tool-use", 715, {
+      turn_id: "new-prompt",
+      tool_use_id: "new-prompt-first-retry",
+      tool_name: "Read",
+    });
+    record("post-tool-use", 716, {
+      turn_id: "new-prompt",
+      tool_use_id: "new-prompt-first-retry",
+      tool_name: "Read",
+    });
+    record("stop", 720, { turn_id: "new-prompt" });
+    record("pre-tool-use", 725, { tool_use_id: "late-original", tool_name: "Read" });
+    record("post-tool-use", 726, { tool_use_id: "late-original", tool_name: "Read" });
+    record("stop", 730);
+    record("pre-tool-use", 735, {
+      turn_id: "new-prompt",
+      tool_use_id: "new-prompt-second-retry",
+      tool_name: "Read",
+    });
+    record("post-tool-use", 736, {
+      turn_id: "new-prompt",
+      tool_use_id: "new-prompt-second-retry",
+      tool_name: "Read",
+    });
+    rows = events();
+    starts = rows.filter((event) => event.event_type === "turn.started");
+    expect(starts).toHaveLength(7);
+    expect(starts[5]?.payload.continues_turn_id).toBe(turnId(2));
+    expect(starts[6]?.payload.continues_turn_id).toBe(turnId(4));
+    expect(resolveTurnRange(rows, "inst_fixture", epoch + 750_000)?.latest.scope.turn_id).toBe(
+      turnId(6),
+    );
+    expect(
+      resolveTurnRange(rows, "inst_fixture", epoch + 750_000)?.starts.map(
+        (event) => event.scope.turn_id,
+      ),
+    ).toEqual([turnId(3), turnId(4), turnId(6)]);
+    expect(resolveTurnElapsed(rows, "inst_fixture", epoch + 750_000)).toEqual({
+      secs: 50,
+      complete: false,
+      remediation_restarts: 2,
+    });
+    expect(resolveTurnChanges(rows, "inst_fixture", epoch + 750_000)).toMatchObject({
+      added: 3,
+      removed: 0,
+      measured_tools: 3,
+    });
+    const diagnosticsDir = join(root, ".harnery", "ledgers", "v3", "diagnostics");
+    const ignored = readdirSync(diagnosticsDir).filter((name) =>
+      name.startsWith("stale_native_turn_tool_ignored-"),
+    );
+    expect(ignored).toHaveLength(2);
+    expect(
+      ignored.map((name) => readFileSync(join(diagnosticsDir, name), "utf8")).join("\n"),
+    ).toContain("native_turn_origin_mismatch");
+    expect(readLedgerV3(root).complete).toBeTrue();
+  }, 30_000);
+
+  test.each([
+    false,
+    true,
+  ])("initializes format-3 origin maps with obsolete metadata=%s", (obsolete) => {
+    const root = candidateRoot();
+    const session_id = "missing-turn-origin-map";
+    recordHookSignalV3(baseInput(root, "session-start", parsed({ session_id })));
+    const record = listHookProducerStateRecordsV3(root).find(
+      ({ state }) => state.adapter === "claude-code",
+    );
+    if (!record) throw new Error("missing hook producer");
+    const existing = JSON.parse(readFileSync(record.path, "utf8")) as Record<string, unknown>;
+    expect(existing.format_version).toBe(3);
+    delete existing.closed_turn_origins;
+    if (obsolete) existing.last_closed_turn_origin_id = `tid_${"a".repeat(64)}`;
+    writeFileSync(record.path, JSON.stringify(existing));
+    const loaded = readHookProducerStateV3(root, "claude-code", session_id);
+    if (!loaded) throw new Error("missing canonical loaded state");
+    expect(loaded.closed_turn_origins).toEqual({});
+    expect(Object.hasOwn(loaded, "last_closed_turn_origin_id")).toBeFalse();
+    expect(
+      recordHookSignalV3(
+        baseInput(root, "user-prompt-submit", parsed({ session_id, turn_id: "current" })),
+      ).state,
+    ).toBe("recorded");
+    expect(
+      (JSON.parse(readFileSync(record.path, "utf8")) as Record<string, unknown>)
+        .closed_turn_origins,
+    ).toEqual({});
+    expect(
+      Object.hasOwn(JSON.parse(readFileSync(record.path, "utf8")), "last_closed_turn_origin_id"),
+    ).toBeFalse();
+  });
+
+  test("prunes closed turn origins together with the bounded closed turn IDs", () => {
+    const root = candidateRoot();
+    const session_id = "bounded-turn-origins";
+    recordHookSignalV3(baseInput(root, "session-start", parsed({ session_id })));
+    recordHookSignalV3(
+      baseInput(root, "user-prompt-submit", parsed({ session_id, turn_id: "current" })),
+    );
+    const record = listHookProducerStateRecordsV3(root).find(
+      ({ state }) => state.adapter === "claude-code",
+    );
+    if (!record) throw new Error("missing hook producer");
+    const closed = Array.from(
+      { length: 16 },
+      (_, index) => `tid_${(index + 1).toString(16).padStart(64, "0")}` as const,
+    );
+    record.state.closed_turn_ids = closed;
+    record.state.closed_turn_origins = Object.fromEntries(closed.map((turnId) => [turnId, turnId]));
+    publishHookProducerStateForTestV3(root, record.path, record.state);
+    expect(
+      recordHookSignalV3(baseInput(root, "stop", parsed({ session_id, turn_id: "current" }))).state,
+    ).toBe("recorded");
+    const after = readHookProducerStateV3(root, "claude-code", session_id);
+    if (!after) throw new Error("missing hook producer after Stop");
+    expect(after.closed_turn_ids).toHaveLength(16);
+    expect(Object.keys(after.closed_turn_origins)).toHaveLength(16);
+    expect(after.closed_turn_origins[closed[0]!]).toBeUndefined();
+    expect(
+      after.closed_turn_ids.every((turnId) => after.closed_turn_origins[turnId] !== undefined),
+    ).toBeTrue();
+  });
+
   test("never reports proposed line counts when an edit fails", () => {
     const root = candidateRoot();
     const session_id = "failed-edit-session";
@@ -817,6 +1026,9 @@ describe("event ledger V3 persistent hook recorder", () => {
     const terminals = events.filter((event) => event.event_type === "turn.completed");
     expect(starts).toHaveLength(2);
     expect(starts[1]?.payload).toMatchObject({ stop_remediation: true });
+    expect(starts[1]?.payload.continues_turn_id).toBe(
+      starts[0] && "turn_id" in starts[0].scope ? starts[0].scope.turn_id : undefined,
+    );
     expect(starts[1]?.provenance.source_event).toBe("cursor.recovery");
     expect(terminals).toHaveLength(2);
     expect(terminals[0]?.payload).toMatchObject({

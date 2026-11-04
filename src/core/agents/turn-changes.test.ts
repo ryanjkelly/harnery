@@ -75,6 +75,7 @@ test("keeps edits after completion and deduplicates repeated terminal evidence",
 test("folds remediation into the same operator turn but never across generations", () => {
   const restart = event("turn.started", 10, "turn-two");
   fixtureObject(restart.payload).stop_remediation = true;
+  fixtureObject(restart.payload).continues_turn_id = "turn-one";
   expect(
     resolve([event("turn.started", 0), tool(1, 5), restart, tool(11, 3, 1, "turn-two")]),
   ).toEqual({ added: 8, removed: 1, measured_tools: 2, unmeasured_tools: 0 });

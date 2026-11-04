@@ -209,6 +209,7 @@ describe("evaluateStopHook on the universal V3 ledger", () => {
 
     const nextHumanTurn = repaired.map((item) => structuredClone(item));
     fixtureObject(nextHumanTurn[4]!.payload).stop_remediation = false;
+    delete fixtureObject(nextHumanTurn[4]!.payload).continues_turn_id;
     expect(verdict("cursor", nextHumanTurn)).toMatchObject({
       allow: false,
       rule: "stop-hook.rule_3_3",
@@ -253,12 +254,30 @@ describe("evaluateStopHook on the universal V3 ledger", () => {
     ).toMatchObject({ allow: true, rule: "stop-hook.pure_prose_pass" });
   });
 
+  test("an explicit continuation also covers another Stop hook's retry", () => {
+    const continued = turnStarted(4);
+    fixtureObject(continued.payload).continues_turn_id = fixtureObject(continued.scope).turn_id;
+    const events = [
+      turnStarted(0),
+      event("tool.requested", 1),
+      task(2),
+      turnCompleted(3, ritual(false)),
+      continued,
+      status(5),
+      turnCompleted(6, ritual(true)),
+    ];
+    expect(verdict("claude-code", events, { stop_hook_active: true })).toMatchObject({
+      allow: true,
+      rule: "stop-hook.pass",
+    });
+  });
+
   test("ordinary Claude recovery does not inherit the preceding turn evidence", () => {
     const ordinaryRecovery = [
       turnStarted(0),
       task(1),
       turnCompleted(2, ritual(true)),
-      recoveredTurnStarted(3),
+      recoveredTurnStarted(3, false),
       event("tool.requested", 4),
       status(5),
       turnCompleted(6, ritual(true)),
@@ -456,10 +475,13 @@ function verdict(
   );
 }
 
-function recoveredTurnStarted(second: number): EventV3 {
+function recoveredTurnStarted(second: number, continues = true): EventV3 {
   const value = turnStarted(second);
   fixtureObject(value.provenance).source_event = "claude-code.recovery";
   fixtureObject(value.provenance).attestation = "derived";
+  if (continues) {
+    fixtureObject(value.payload).continues_turn_id = fixtureObject(value.scope).turn_id;
+  }
   return value;
 }
 
@@ -478,6 +500,9 @@ function event(eventType: string, second: number): EventV3 {
 function turnStarted(second: number, stopRemediation = false): EventV3 {
   const value = event("turn.started", second);
   fixtureObject(value.payload).stop_remediation = stopRemediation;
+  if (stopRemediation) {
+    fixtureObject(value.payload).continues_turn_id = fixtureObject(value.scope).turn_id;
+  }
   return value;
 }
 

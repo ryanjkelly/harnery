@@ -22,6 +22,9 @@ function event(eventType: string, second: number, generation = GENERATION): Even
 function turnStarted(second: number, stopRemediation = false, generation = GENERATION): EventV3 {
   const value = event("turn.started", second, generation);
   fixtureObject(value.payload).stop_remediation = stopRemediation;
+  if (stopRemediation) {
+    fixtureObject(value.payload).continues_turn_id = fixtureObject(value.scope).turn_id;
+  }
   return value;
 }
 
@@ -60,6 +63,27 @@ describe("resolveTurnElapsed", () => {
     ];
     const elapsed = resolveTurnElapsed(events, OWNER, at(60));
     expect(elapsed).toEqual({ secs: 10, complete: false, remediation_restarts: 0 });
+  });
+
+  test("keeps the original prompt duration for a linked Claude recovery", () => {
+    const recovery = turnStarted(605);
+    fixtureObject(recovery.provenance).source_event = "claude-code.recovery";
+    fixtureObject(recovery.provenance).attestation = "derived";
+    fixtureObject(recovery.payload).continues_turn_id = fixtureObject(recovery.scope).turn_id;
+    expect(
+      resolveTurnElapsed([turnStarted(0), event("turn.completed", 600), recovery], OWNER, at(615)),
+    ).toEqual({ secs: 615, complete: false, remediation_restarts: 1 });
+  });
+
+  test("does not infer continuation from recovery provenance or a flag alone", () => {
+    const recovery = turnStarted(50);
+    fixtureObject(recovery.provenance).source_event = "claude-code.recovery";
+    fixtureObject(recovery.payload).stop_remediation = true;
+    expect(resolveTurnElapsed([turnStarted(0), recovery], OWNER, at(60))).toEqual({
+      secs: 10,
+      complete: false,
+      remediation_restarts: 0,
+    });
   });
 
   test("ignores turns owned by another session", () => {

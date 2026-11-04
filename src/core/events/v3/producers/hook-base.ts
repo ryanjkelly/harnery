@@ -71,6 +71,7 @@ export interface HookProducerContextV3Base {
   child_generation_id?: `gen_${string}`;
   agent_role?: string;
   stop_remediation?: boolean;
+  continues_turn_id?: `tid_${string}`;
   turn_ritual?: TurnRitualEvidenceV3;
   /** Tuning read from a local runtime transcript by the recorder; hook-base
    * itself performs no I/O. */
@@ -255,6 +256,7 @@ export function normalizeHookEventV3Base(
           },
           intent_kind: "unknown",
           ...(context.stop_remediation ? { stop_remediation: true } : {}),
+          ...(context.continues_turn_id ? { continues_turn_id: context.continues_turn_id } : {}),
         },
       }) as EventV3Base;
     }
