@@ -53,6 +53,7 @@ import {
 } from "../core/agents/live-authority-v3.ts";
 import { qaSignalStatusRow } from "../core/agents/qa-signal.ts";
 import { reconcileCoordinationV3 } from "../core/agents/reconcile-coordination-v3.ts";
+import { formatBox, sanitizeStatusLabel } from "../core/agents/render/status-box.ts";
 import {
   listSessionFinalizationRequestsV3,
   observeHostDisappearedV3,
@@ -2050,6 +2051,7 @@ function runReleaseClaim(path: string | undefined, opts: { all?: boolean } = {})
 }
 
 function runSetTask(task: string, opts?: { sessionId?: string }): void {
+  task = sanitizeStatusLabel(task);
   const root = monorepoRoot();
   if (!root) {
     emit.error({
@@ -2589,7 +2591,7 @@ function runStatus(opts: {
 
   const filesHeld = hb.files_touched ?? [];
   const filesStr = formatList(
-    filesHeld.map((p) => basename(p)),
+    filesHeld.map((p) => sanitizeStatusLabel(basename(p))),
     4,
     "0 held",
   );
@@ -2850,10 +2852,10 @@ function formatPeers(
 ): string {
   if (peers.length === 0 && staleCount === 0 && remoteMachines.length === 0) return "none";
   const labels = peers.map((p) => {
-    const name = p.name || "unnamed";
-    const plat = formatPlatformLabel(p.platform);
+    const name = sanitizeStatusLabel(p.name ?? "") || "unnamed";
+    const plat = sanitizeStatusLabel(formatPlatformLabel(p.platform));
     const files = p.files_touched?.length ?? 0;
-    const relation = relations.get(p.instance_id);
+    const relation = sanitizeStatusLabel(relations.get(p.instance_id) ?? "");
     const base = relation ? `${name} (${plat}, ${relation})` : `${name} (${plat})`;
     return files > 0 ? `${base}, ${files} files` : base;
   });
@@ -2869,7 +2871,12 @@ function formatPeers(
   // Remote machines (presence transport): `Name @machine` labels, capped.
   if (remoteMachines.length > 0) {
     const remote = remoteMachines
-      .flatMap((m) => m.agents.map((a) => `${a.name || "unnamed"} @${m.machine}`))
+      .flatMap((m) =>
+        m.agents.map(
+          (a) =>
+            `${sanitizeStatusLabel(a.name ?? "") || "unnamed"} @${sanitizeStatusLabel(m.machine)}`,
+        ),
+      )
       .slice(0, cap);
     const extra = remoteMachines.reduce((n, m) => n + m.agents.length, 0) - remote.length;
     main = `${main}; ${remote.join(", ")}${extra > 0 ? `, +${extra} more` : ""}`;
@@ -6896,79 +6903,3 @@ function advanceCouncil(manifest: CouncilManifest, force: boolean): CouncilManif
 }
 
 // ──────── end council impls ────────
-
-// Hard cap on box width. Values longer than the per-row budget word-wrap to
-// continuation lines (blank key column, value resumes indented). Picked to
-// stay readable in narrow terminals + chat clients while giving long
-// Task values need room to breathe.
-const MAX_BOX_CONTENT_WIDTH = 100;
-
-function formatBox(title: string, rows: Array<[string, string]>): string {
-  const titleStr = ` ${title} `;
-  const keyWidth = Math.max(...rows.map(([k]) => k.length));
-
-  // Per-row value budget: content_width (≤ MAX_BOX_CONTENT_WIDTH) minus
-  // leading space, key + padding, two-space gap, trailing space.
-  const valueBudget = Math.max(20, MAX_BOX_CONTENT_WIDTH - 1 - keyWidth - 2 - 1);
-
-  // Expand each row into 1+ visual rows by word-wrapping long values.
-  // First wrapped row keeps the key; continuations get an empty key column.
-  const visualRows: Array<[string, string]> = [];
-  for (const [k, v] of rows) {
-    const wrapped = wrapWords(v, valueBudget);
-    for (let i = 0; i < wrapped.length; i++) {
-      visualRows.push([i === 0 ? k : "", wrapped[i]]);
-    }
-  }
-
-  const contentWidth = Math.max(
-    titleStr.length + 4,
-    ...visualRows.map(([_k, v]) => 1 + keyWidth + 2 + v.length + 1),
-  );
-  const top = `┌─${titleStr}${"─".repeat(Math.max(0, contentWidth - titleStr.length - 2))}─┐`;
-  const bottom = `└${"─".repeat(contentWidth)}┘`;
-  const lines = visualRows.map(([k, v]) => {
-    const padding = " ".repeat(keyWidth - k.length);
-    const content = ` ${k}${padding}  ${v}`;
-    const fill = " ".repeat(Math.max(0, contentWidth - content.length));
-    return `│${content}${fill}│`;
-  });
-  return [top, ...lines, bottom].join("\n");
-}
-
-// Greedy word-wrap. Preserves single-word lines that exceed maxWidth by
-// hard-breaking them (rare: overly long URLs / paths). Leaves whitespace
-// runs intact except at the wrap boundary.
-function wrapWords(text: string, maxWidth: number): string[] {
-  if (text.length <= maxWidth) return [text];
-  const lines: string[] = [];
-  let current = "";
-  // Split keeping whitespace so we can put it back between words.
-  const tokens = text.split(/(\s+)/);
-  for (const token of tokens) {
-    if (token.length === 0) continue;
-    if ((current + token).length <= maxWidth) {
-      current += token;
-      continue;
-    }
-    // Doesn't fit. Flush current line first.
-    if (current.length > 0) {
-      lines.push(current.trimEnd());
-      current = "";
-    }
-    // If the token itself is wider than the budget (e.g. a long URL/path),
-    // hard-break it across rows. Otherwise start a fresh row with it.
-    if (token.length > maxWidth) {
-      let rest = token;
-      while (rest.length > maxWidth) {
-        lines.push(rest.slice(0, maxWidth));
-        rest = rest.slice(maxWidth);
-      }
-      current = rest;
-    } else {
-      current = token.trimStart();
-    }
-  }
-  if (current.length > 0) lines.push(current.trimEnd());
-  return lines.length > 0 ? lines : [text];
-}
