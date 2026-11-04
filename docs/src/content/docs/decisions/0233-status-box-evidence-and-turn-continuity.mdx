@@ -48,6 +48,12 @@ starts in the same generation, after excluding orphan recoveries. A late
 signal for a closed turn is diagnosed and ignored while an unrelated prompt
 is open, rather than attributed to that prompt.
 
+The producer retains the latest genuine operator prompt separately from
+recovery turns. If an older recovery is still open when that prompt resumes,
+the producer closes the orphan and opens a linked continuation for the
+current prompt. This also covers a continuation that ends without using a
+tool. A genuine open operator turn is never displaced by a late signal.
+
 When the host requires Git finalization,
 [Stop rechecks](../../../../../src/core/agents/stop-finalization.ts) the same current and
 historical owned paths used by the status command. The supplemental check

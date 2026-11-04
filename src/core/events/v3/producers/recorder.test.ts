@@ -98,11 +98,13 @@ describe("event ledger V3 persistent hook recorder", () => {
       signal: Parameters<typeof recordHookSignalV3>[0]["signal"],
       second: number,
       values: Partial<ParsedPayload> = {},
+      turnRitual?: Parameters<typeof recordHookSignalV3>[0]["turn_ritual"],
     ) =>
       recordHookSignalV3({
         ...baseInput(root, signal, parsed({ session_id, turn_id: "original-prompt", ...values })),
         observed_at: new Date(epoch + second * 1000).toISOString(),
         monotonic_ns: String(BigInt(second + 10) * 1_000_000_000n),
+        turn_ritual: turnRitual,
       });
     const events = () => readLedgerV3(root).events.map(({ event }) => event);
     record("session-start", -1);
@@ -184,19 +186,29 @@ describe("event ledger V3 persistent hook recorder", () => {
       tool_name: "Read",
     });
     record("stop", 720, { turn_id: "new-prompt" });
+    const cached = listHookProducerStateRecordsV3(root).find(
+      ({ state }) => state.adapter === "claude-code",
+    )!;
+    const priorState = JSON.parse(readFileSync(cached.path, "utf8")) as Record<string, unknown>;
+    delete priorState.latest_operator_turn_id;
+    writeFileSync(cached.path, `${JSON.stringify(priorState)}\n`);
     record("pre-tool-use", 725, { tool_use_id: "late-original", tool_name: "Read" });
     record("post-tool-use", 726, { tool_use_id: "late-original", tool_name: "Read" });
-    record("stop", 730);
-    record("pre-tool-use", 735, {
-      turn_id: "new-prompt",
-      tool_use_id: "new-prompt-second-retry",
-      tool_name: "Read",
-    });
-    record("post-tool-use", 736, {
-      turn_id: "new-prompt",
-      tool_use_id: "new-prompt-second-retry",
-      tool_name: "Read",
-    });
+    expect(
+      record("pre-tool-use", 735, {
+        turn_id: "new-prompt",
+        tool_use_id: "new-prompt-second-retry",
+        tool_name: "apply_patch",
+        tool_input: "*** Begin Patch\n*** Add File: retry.txt\n+retained\n*** End Patch",
+      }).state,
+    ).toBe("recorded");
+    expect(
+      record("post-tool-use", 736, {
+        turn_id: "new-prompt",
+        tool_use_id: "new-prompt-second-retry",
+        tool_name: "apply_patch",
+      }).state,
+    ).toBe("recorded");
     rows = events();
     starts = rows.filter((event) => event.event_type === "turn.started");
     expect(starts).toHaveLength(7);
@@ -216,10 +228,39 @@ describe("event ledger V3 persistent hook recorder", () => {
       remediation_restarts: 2,
     });
     expect(resolveTurnChanges(rows, "inst_fixture", epoch + 750_000)).toMatchObject({
-      added: 3,
+      added: 4,
       removed: 0,
       measured_tools: 3,
     });
+    record("stop", 750, { turn_id: "new-prompt" });
+    record("post-tool-use", 755, { tool_use_id: "late-original-post", tool_name: "Read" });
+    record(
+      "stop",
+      760,
+      { turn_id: "new-prompt" },
+      {
+        status_box_present: true,
+        status_box_present_strict: true,
+        session_name_required: false,
+        session_name_present: false,
+      },
+    );
+    rows = events();
+    const finalRange = resolveTurnRange(rows, "inst_fixture", epoch + 765_000);
+    const finalTerminal = rows.filter((event) => event.event_type === "turn.completed").at(-1)!;
+    expect(finalRange).not.toBeNull();
+    expect((finalTerminal.scope as { turn_id: string }).turn_id).toBe(
+      finalRange!.latest.scope.turn_id,
+    );
+    expect(finalTerminal.payload).toMatchObject({
+      ritual: { status_box_present_strict: { state: "observed", value: true } },
+    });
+    expect(resolveTurnElapsed(rows, "inst_fixture", epoch + 765_000)).toEqual({
+      secs: 60,
+      complete: true,
+      remediation_restarts: 3,
+    });
+    expect(resolveTurnChanges(rows, "inst_fixture", epoch + 765_000)?.added).toBe(4);
     const diagnosticsDir = join(root, ".harnery", "ledgers", "v3", "diagnostics");
     const ignored = readdirSync(diagnosticsDir).filter((name) =>
       name.startsWith("stale_native_turn_tool_ignored-"),

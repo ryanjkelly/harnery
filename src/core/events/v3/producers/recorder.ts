@@ -207,6 +207,8 @@ export interface HookProducerStateV3 {
   current_turn_id?: `tid_${string}`;
   /** Original native turn shared by adjacent recovered continuations. */
   current_turn_origin_id?: `tid_${string}`;
+  /** Latest genuine operator prompt, retained across interleaved recoveries. */
+  latest_operator_turn_id?: `tid_${string}`;
   /** Native turn identity retained owner-only for transcript attribution. */
   current_native_turn_id?: string;
   /** Latest completed assistant response for Cursor's open turn. The response
@@ -850,33 +852,56 @@ function processHookSignalLocked(
       commitRecoveredTurnCompleted(input, state, path, rootId, fingerprintContext);
     }
 
-    const staleClosedTurnTool =
+    const closedNativeOrigin =
       recoveryEnabled &&
-      isToolSignal(input.signal) &&
       nativeTid !== undefined &&
       (state.closed_turn_ids.includes(nativeTid) ||
         Object.values(state.closed_turn_origins).includes(nativeTid)) &&
       state.current_turn_id !== nativeTid;
+    const staleClosedTurnTool = closedNativeOrigin && isToolSignal(input.signal);
+    let replacedRecovery = false;
     if (
-      staleClosedTurnTool &&
+      closedNativeOrigin &&
+      (isToolSignal(input.signal) || input.signal === "stop" || input.signal === "stop-failure") &&
       state.current_turn_id &&
       state.current_turn_origin_id !== nativeTid
     ) {
-      // A late signal from an older operator turn cannot be attributed to
-      // the currently open turn. Preserve that loss as a diagnostic instead.
-      writeProducerDiagnosticV3(input.coordRoot, "stale_native_turn_tool_ignored", {
-        adapter: input.adapter,
-        signal: input.signal,
-        instance_id: state.instance_id,
-        generation_id: state.generation_id,
-        stale_turn_id: nativeTid,
-        current_turn_id: state.current_turn_id,
-        reason: "native_turn_origin_mismatch",
-      });
-      publishProducerState(input.coordRoot, path, state);
-      return { state: "ignored" };
+      if (
+        state.current_turn_origin_id !== undefined &&
+        state.current_turn_origin_id !== state.current_turn_id &&
+        nativeTid === state.latest_operator_turn_id
+      ) {
+        // An orphan recovery must yield to the current operator prompt's
+        // continuation. A genuine open operator turn is never displaced.
+        const endingTid = state.current_turn_id;
+        closeResolvedWaits(input, state, path, rootId, fingerprintContext, nativeTid);
+        sweepOpenSpans(
+          input,
+          state,
+          path,
+          rootId,
+          (candidate) => candidate.turn_id === endingTid,
+          "completion_not_observed_before_next_turn",
+        );
+        commitRecoveredTurnCompleted(input, state, path, rootId, fingerprintContext);
+        replacedRecovery = true;
+      } else if (isToolSignal(input.signal)) {
+        // A late signal from an older operator turn cannot be attributed to
+        // the currently open turn. Preserve that loss as a diagnostic instead.
+        writeProducerDiagnosticV3(input.coordRoot, "stale_native_turn_tool_ignored", {
+          adapter: input.adapter,
+          signal: input.signal,
+          instance_id: state.instance_id,
+          generation_id: state.generation_id,
+          stale_turn_id: nativeTid,
+          current_turn_id: state.current_turn_id,
+          reason: "native_turn_origin_mismatch",
+        });
+        publishProducerState(input.coordRoot, path, state);
+        return { state: "ignored" };
+      }
     }
-    if (staleClosedTurnTool && !state.current_turn_id) {
+    if ((staleClosedTurnTool || replacedRecovery) && !state.current_turn_id) {
       const continuesTurnId =
         [...state.closed_turn_ids]
           .reverse()
@@ -887,9 +912,10 @@ function processHookSignalLocked(
         continues_turn_id: continuesTurnId,
       });
     }
-    const eventInput = staleClosedTurnTool
-      ? { ...input, payload: withoutNativeTurnId(input.payload) }
-      : input;
+    const eventInput =
+      staleClosedTurnTool || replacedRecovery
+        ? { ...input, payload: withoutNativeTurnId(input.payload) }
+        : input;
     const duplicateOpenTurnStart =
       input.signal === "user-prompt-submit" &&
       state.current_turn_span !== undefined &&
@@ -4075,6 +4101,9 @@ function applyCommittedEvent(state: HookProducerStateV3, event: EventV3): void {
   if (event.event_type === "turn.started") {
     const nextTurnId = (event.scope as { turn_id: `tid_${string}` }).turn_id;
     const continuedTurnId = event.payload.continues_turn_id as `tid_${string}` | undefined;
+    if (!continuedTurnId && !event.provenance.source_event.endsWith(".recovery")) {
+      state.latest_operator_turn_id = nextTurnId;
+    }
     state.current_turn_origin_id = continuedTurnId
       ? (state.closed_turn_origins[continuedTurnId] ?? continuedTurnId)
       : nextTurnId;
@@ -4511,6 +4540,14 @@ function validateProducerStateDocument(parsed: unknown): HookProducerStateV3 {
   state.waits ??= [];
   state.closed_turn_ids ??= [];
   state.closed_turn_origins ??= {};
+  if (state.latest_operator_turn_id === undefined && Array.isArray(state.closed_turn_ids)) {
+    state.latest_operator_turn_id =
+      state.current_turn_id && state.current_turn_id === state.current_turn_origin_id
+        ? state.current_turn_id
+        : [...state.closed_turn_ids]
+            .reverse()
+            .find((turnId) => state.closed_turn_origins[turnId] === turnId);
+  }
   // One-way removal of superseded private metadata. Its value never supplies
   // continuity; event links and the bounded origin map are authoritative.
   const loadedFormatVersion = (state as { format_version: number }).format_version;
@@ -4536,6 +4573,7 @@ function validateProducerStateDocument(parsed: unknown): HookProducerStateV3 {
     "closed_spans",
     "closed_turn_ids",
     "closed_turn_origins",
+    "latest_operator_turn_id",
     "current_turn_id",
     "current_turn_origin_id",
     "current_native_turn_id",
@@ -4666,6 +4704,8 @@ function validateProducerStateDocument(parsed: unknown): HookProducerStateV3 {
     (state.current_turn_id !== undefined && !/^tid_[a-f0-9]{64}$/.test(state.current_turn_id)) ||
     (state.current_turn_origin_id !== undefined &&
       !/^tid_[a-f0-9]{64}$/.test(state.current_turn_origin_id)) ||
+    (state.latest_operator_turn_id !== undefined &&
+      !/^tid_[a-f0-9]{64}$/.test(state.latest_operator_turn_id)) ||
     (state.current_native_turn_id !== undefined &&
       (typeof state.current_native_turn_id !== "string" ||
         state.current_native_turn_id.length === 0 ||
