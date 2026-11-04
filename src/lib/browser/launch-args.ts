@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 
 /**
@@ -82,4 +83,78 @@ export function installedChromePath(
   exists: (path: string) => boolean = existsSync,
 ): string | undefined {
   return (CHROME_PATHS[platform] ?? []).find((candidate) => exists(candidate));
+}
+
+/**
+ * Chromium sandbox policy. Playwright launches Chromium with `--no-sandbox`
+ * unless told otherwise, which leaves a renderer bug one step from the host.
+ * Every launch keeps the sandbox on; `HARNERY_BROWSER_SANDBOX=0` is the
+ * explicit opt-out for containers that cannot provide user namespaces.
+ */
+export function browserSandboxEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.HARNERY_BROWSER_SANDBOX?.trim() !== "0";
+}
+
+/** Refuse a `--no-sandbox` flag that would silently override the sandbox policy. */
+export function assertSandboxArgs(args: readonly string[], sandbox: boolean): void {
+  if (sandbox && args.some((arg) => arg === "--no-sandbox" || arg.startsWith("--no-sandbox="))) {
+    throw new Error(
+      "--no-sandbox conflicts with the Chromium sandbox policy. Set HARNERY_BROWSER_SANDBOX=0 to opt out explicitly.",
+    );
+  }
+}
+
+/**
+ * Wrap a launch failure caused by a missing sandbox with the remedy, keeping
+ * the original message. Other failures pass through unchanged.
+ */
+export function explainSandboxLaunchError(error: unknown, sandbox: boolean): unknown {
+  if (!sandbox || !(error instanceof Error)) return error;
+  if (!/sandbox|user namespace|setuid|clone\(\)/i.test(error.message)) return error;
+  return new Error(
+    `Chromium could not start its sandbox. Allow unprivileged user namespaces for this browser (for example an AppArmor profile on Ubuntu 23.10+), or set HARNERY_BROWSER_SANDBOX=0 to run without it.\n${error.message}`,
+    { cause: error },
+  );
+}
+
+/** Full `major.minor.build.patch` version a Chrome or Chromium binary reports. */
+export function chromeVersionFromExecutable(executable: string): string | undefined {
+  try {
+    const res = spawnSync(executable, ["--version"], {
+      windowsHide: true,
+      encoding: "utf8",
+      timeout: 5000,
+    });
+    return /(\d+\.\d+\.\d+\.\d+)/.exec(`${res.stdout ?? ""}${res.stderr ?? ""}`)?.[1];
+  } catch {
+    return undefined;
+  }
+}
+
+/** Numeric comparison of dotted Chrome versions; negative when `a` is older. */
+export function compareChromeVersions(a: string, b: string): number {
+  const pa = a.split(".").map(Number);
+  const pb = b.split(".").map(Number);
+  for (let i = 0; i < 4; i++) {
+    const diff = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (diff) return diff;
+  }
+  return 0;
+}
+
+/**
+ * Default channel when the caller named none: the installed stable Google
+ * Chrome when its version is at least the bundled build's. Playwright's
+ * bundled Chromium is pinned at the Playwright release and is often an early
+ * build of its milestone, while a current Chrome stable carries later security
+ * fixes. An installed Chrome older than the bundled build is not chosen.
+ */
+export function preferredChromeChannel(input: {
+  installedVersion: string | undefined;
+  bundledVersion: string | undefined;
+}): "chrome" | undefined {
+  const { installedVersion, bundledVersion } = input;
+  if (!installedVersion) return undefined;
+  if (!bundledVersion) return "chrome";
+  return compareChromeVersions(installedVersion, bundledVersion) >= 0 ? "chrome" : undefined;
 }

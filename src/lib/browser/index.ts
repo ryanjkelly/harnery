@@ -83,10 +83,16 @@ export type {
 export { buildLayoutLintCheck } from "./geometry.js";
 export {
   AUTOMATION_DEFAULT_ARGS_TO_DROP,
+  assertSandboxArgs,
   automationDisguiseArgs,
+  browserSandboxEnabled,
+  chromeVersionFromExecutable,
+  compareChromeVersions,
+  explainSandboxLaunchError,
   installedChromeChannel,
   installedChromePath,
   isWSL,
+  preferredChromeChannel,
   wslHeadedLaunchArgs,
 } from "./launch-args.js";
 export type {

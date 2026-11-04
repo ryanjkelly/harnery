@@ -48,6 +48,7 @@ import {
   Browser,
   browserProxyFromEnv,
   browserProxyGateFromEnv,
+  browserSandboxEnabled,
   type ContentAnnotationBox,
   type ContentChecksResult,
   type CritiqueCoverage,
@@ -55,6 +56,7 @@ import {
   type CritiqueTile,
   captureDevOverlay,
   chromeMajorFromExecutable,
+  chromeVersionFromExecutable,
   DEFAULT_CRITIQUE_RUBRIC,
   type DevOverlayResult,
   type Diagnostics,
@@ -78,7 +80,7 @@ import {
   writeNetscapeCookieFile,
   wslHeadedLaunchArgs,
 } from "../lib/browser/index.ts";
-import { isWSL } from "../lib/browser/launch-args.ts";
+import { isWSL, preferredChromeChannel } from "../lib/browser/launch-args.ts";
 import {
   allocateTileBudget,
   validatePageReviewAllocation,
@@ -3406,9 +3408,11 @@ function summarizeDiagnostics(diag: Diagnostics): Record<string, unknown> {
 const BROWSER_CHANNELS = new Set(["chrome", "chrome-beta", "msedge", "chromium"]);
 
 /**
- * Pick the browser channel: `--browser-channel`, then `HARNERY_BROWSER_CHANNEL`,
- * then (headed only) the installed Google Chrome when one exists. Headless runs
- * keep the bundled Chromium unless told otherwise, so QA renders stay stable.
+ * Pick the browser channel: `--browser-channel`, then `HARNERY_BROWSER_CHANNEL`.
+ * Otherwise headed runs use the installed Google Chrome when one exists (sites
+ * that screen for automation refuse the bundled build), and headless runs use
+ * it when its version is at least the bundled Chromium's: the bundled build is
+ * pinned at the Playwright release and misses later Chrome security fixes.
  */
 function resolveBrowserChannel(
   opts: BrowseOpts,
@@ -3423,7 +3427,19 @@ function resolveBrowserChannel(
     }
     return requested as "chrome" | "chrome-beta" | "msedge" | "chromium";
   }
-  return headed ? installedChromeChannel() : undefined;
+  if (headed) return installedChromeChannel();
+  const installed = installedChromePath();
+  if (!installed) return undefined;
+  let bundled: string | undefined;
+  try {
+    bundled = chromeVersionFromExecutable(chromium.executablePath());
+  } catch {
+    bundled = undefined;
+  }
+  return preferredChromeChannel({
+    installedVersion: chromeVersionFromExecutable(installed),
+    bundledVersion: bundled,
+  });
 }
 
 /**
@@ -3713,6 +3729,7 @@ async function readPlainProfileCookies(profileDir: string): Promise<Cookie[]> {
   const context = await chromium.launchPersistentContext(profileDir, {
     headless: true,
     ...(executablePath ? { executablePath } : {}),
+    chromiumSandbox: browserSandboxEnabled(),
     args: ["--restore-last-session"],
     ignoreDefaultArgs: ["--password-store=basic", "--use-mock-keychain"],
     timeout: 30_000,

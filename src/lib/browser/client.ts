@@ -36,7 +36,13 @@ import {
   type LayoutLintResult,
 } from "./geometry.js";
 import { browserIdentity, installDocumentIdentity } from "./identity.js";
-import { AUTOMATION_DEFAULT_ARGS_TO_DROP, automationDisguiseArgs } from "./launch-args.js";
+import {
+  AUTOMATION_DEFAULT_ARGS_TO_DROP,
+  assertSandboxArgs,
+  automationDisguiseArgs,
+  browserSandboxEnabled,
+  explainSandboxLaunchError,
+} from "./launch-args.js";
 import {
   buildClearLayoutAnnotationsScript,
   buildLayoutAnnotateScript,
@@ -154,12 +160,12 @@ export interface BrowserOptions {
    */
   channel?: "chrome" | "chrome-beta" | "msedge" | "chromium";
   /**
-   * Drop Playwright's `--enable-automation` default, disable Blink's
-   * AutomationControlled feature, and run with the Chromium sandbox on (no
-   * `--no-sandbox`), so pages do not see `navigator.webdriver`, the automation
-   * infobar, or the unsupported-flag banner. Headed sessions set this; sites
-   * that screen for automation otherwise refuse clicks a person makes in the
-   * window.
+   * Drop Playwright's `--enable-automation` default and disable Blink's
+   * AutomationControlled feature, so pages do not see `navigator.webdriver`,
+   * the automation infobar, or the unsupported-flag banner. Headed sessions
+   * set this; sites that screen for automation otherwise refuse clicks a
+   * person makes in the window. The Chromium sandbox is on for every launch
+   * regardless (see `browserSandboxEnabled`).
    */
   hideAutomation?: boolean;
   /**
@@ -384,10 +390,14 @@ export class Browser {
       ]),
     ];
 
+    const sandbox = browserSandboxEnabled();
+    assertSandboxArgs(launchArgs, sandbox);
+
     // Hold a launch slot only across the spawn itself, not the browser's life.
     await acquireLaunchSlot();
     try {
       this.context = await chromium.launchPersistentContext(this.profileDir, {
+        chromiumSandbox: sandbox,
         headless: !this.opts.headed,
         // Service-worker-owned navigations bypass Playwright request routes.
         ...(this.getPaceGate()?.policy.enabled ? { serviceWorkers: "block" as const } : {}),
@@ -421,13 +431,15 @@ export class Browser {
           ? { channel: this.opts.channel }
           : {}),
         ...(this.opts.hideAutomation
-          ? { ignoreDefaultArgs: [...AUTOMATION_DEFAULT_ARGS_TO_DROP], chromiumSandbox: true }
+          ? { ignoreDefaultArgs: [...AUTOMATION_DEFAULT_ARGS_TO_DROP] }
           : {}),
         ...(this.opts.proxy ? { proxy: this.opts.proxy } : {}),
         ...(this.opts.recordHarPath
           ? { recordHar: { path: this.opts.recordHarPath, mode: "full" as const } }
           : {}),
       });
+    } catch (error) {
+      throw explainSandboxLaunchError(error, sandbox);
     } finally {
       releaseLaunchSlot();
     }
