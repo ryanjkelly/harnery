@@ -6,12 +6,24 @@
  * active edits elsewhere in a shared checkout do not block this session.
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { spawnSync } from "node:child_process";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { type AgentFinalizationDisposition, agentsFinalizationRoots } from "../config.ts";
 import { readFinalizationScopeV3 } from "../events/v3/finalization-view.ts";
 import { liveInstanceIdV3, resolveLiveEventLedgerRouteV3 } from "../events/v3/live-routing.ts";
+import { nativeSessionIdentity } from "./canonical-emit.ts";
+import type { Heartbeat } from "./state/heartbeat-reader.ts";
+
+const gitDeadline = new AsyncLocalStorage<number>();
+
+export class GitFinalizationTimeout extends Error {
+  constructor() {
+    super("Git finalization check exceeded its time budget");
+    this.name = "GitFinalizationTimeout";
+  }
+}
 
 const GIT_DISCOVERY_VARS = [
   "GIT_DIR",
@@ -88,6 +100,24 @@ export interface SessionWriteClaims {
   complete: boolean;
 }
 
+/** Current and released claims use the same ownership boundary at status and Stop. */
+export function readSessionFinalizationScope(
+  coordRoot: string,
+  row: Pick<Heartbeat, "instance_id" | "files_touched" | "native_session_id" | "session_id">,
+  fallbackSessionId: string,
+  readClaims: typeof readSessionWriteClaims = readSessionWriteClaims,
+): SessionWriteClaims {
+  const history = readClaims(
+    coordRoot,
+    row.instance_id,
+    nativeSessionIdentity(row, fallbackSessionId),
+  );
+  return {
+    paths: [...new Set([...(row.files_touched ?? []), ...history.paths])],
+    complete: history.complete,
+  };
+}
+
 /**
  * Read every write claim made by this session, including claims released after
  * a commit. Current heartbeat claims describe dirty ownership; this history is
@@ -109,6 +139,9 @@ export function readSessionWriteClaims(
 }
 
 function git(args: string[], cwd: string): GitResult {
+  const deadline = gitDeadline.getStore();
+  const remaining = deadline === undefined ? 5_000 : deadline - Date.now();
+  if (remaining <= 0) throw new GitFinalizationTimeout();
   const env = { ...process.env };
   for (const name of GIT_DISCOVERY_VARS) delete env[name];
   const result = spawnSync("git", args, {
@@ -116,8 +149,15 @@ function git(args: string[], cwd: string): GitResult {
     cwd,
     env,
     encoding: "utf8",
-    timeout: 5_000,
+    timeout: Math.min(5_000, remaining),
   });
+  if (
+    deadline !== undefined &&
+    ((result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT" ||
+      Date.now() > deadline)
+  ) {
+    throw new GitFinalizationTimeout();
+  }
   return {
     status: result.status ?? 1,
     stdout: result.stdout ?? "",
@@ -374,13 +414,15 @@ function addSuperprojects(
   }
 }
 
-function repoHasRemote(repoRoot: string): boolean {
+function repoHasRemote(repoRoot: string): boolean | null {
   const result = git(["remote"], repoRoot);
-  return result.status === 0 && result.stdout.trim().length > 0;
+  return result.status === 0 ? result.stdout.trim().length > 0 : null;
 }
 
 function repoSyncState(repoRoot: string): "synced" | "unpushed" | "unverifiable" {
-  if (!repoHasRemote(repoRoot)) return "synced";
+  const hasRemote = repoHasRemote(repoRoot);
+  if (hasRemote === null) return "unverifiable";
+  if (!hasRemote) return "synced";
   if (git(["rev-parse", "--verify", "HEAD"], repoRoot).status !== 0) return "unverifiable";
 
   const upstream = git(
@@ -476,7 +518,23 @@ function gitlinkIsDirty(parentRoot: string, gitlink: string): boolean {
 export function checkGitFinalization(
   coordRoot: string,
   heldPaths: readonly string[],
-  options: { claimHistoryComplete?: boolean } = {},
+  options: {
+    claimHistoryComplete?: boolean;
+    includeRepositoryFreshness?: boolean;
+    timeoutMs?: number;
+  } = {},
+): GitFinalizationResult {
+  if (options.timeoutMs !== undefined && options.timeoutMs <= 0) throw new GitFinalizationTimeout();
+  const inspect = () => inspectGitFinalization(coordRoot, heldPaths, options);
+  return options.timeoutMs === undefined
+    ? inspect()
+    : gitDeadline.run(Date.now() + options.timeoutMs, inspect);
+}
+
+function inspectGitFinalization(
+  coordRoot: string,
+  heldPaths: readonly string[],
+  options: { claimHistoryComplete?: boolean; includeRepositoryFreshness?: boolean },
 ): GitFinalizationResult {
   const root = resolve(coordRoot);
   // Repository discovery resolves symlinks. Use the same physical base for
@@ -538,8 +596,11 @@ export function checkGitFinalization(
     if (syncState === "unverifiable") unverifiableRepos.push(label);
   }
 
-  const behindRepos = repoIsBehindUpstream(root) ? ["."] : [];
-  const submoduleFreshness = rootSubmoduleFreshness(root);
+  // The supplemental Stop check covers this session's work. Repository-wide
+  // freshness remains enforced by the closing status command.
+  const freshness = options.includeRepositoryFreshness !== false;
+  const behindRepos = freshness && repoIsBehindUpstream(root) ? ["."] : [];
+  const submoduleFreshness = freshness ? rootSubmoduleFreshness(root) : { stale: [], diverged: [] };
 
   const result: GitFinalizationResult = {
     ok: false,
@@ -570,10 +631,18 @@ export function checkGitFinalization(
   return result;
 }
 
-export function formatGitFinalizationFailure(result: GitFinalizationResult, bin: string): string {
-  const lines = ["Owned work is not finalized; the status box was not issued."];
+export function formatGitFinalizationFailure(
+  result: GitFinalizationResult,
+  bin: string,
+  phase: "status" | "stop" = "status",
+): string {
+  const lines = [
+    phase === "stop"
+      ? "Owned work is not finalized at the end of this turn."
+      : "Owned work is not finalized; the status box was not issued.",
+  ];
   if (!result.claim_history_complete) {
-    lines.push("This session's write-claim history is older than the bounded event window.");
+    lines.push("This session's full write-claim history could not be verified.");
   }
   if (result.dirty_paths.length > 0) {
     lines.push("Dirty owned paths:", ...result.dirty_paths.map((path) => `  - ${path}`));
@@ -647,6 +716,11 @@ export function formatGitFinalizationFailure(result: GitFinalizationResult, bin:
   if (result.unsupported_paths.length > 0) {
     lines.push(
       "For a legacy claim, add the containing Git repository or intentional non-Git output root to the project's `agents.finalizationRoots`, then rerun the guarded status. For new work, start the task from the target Git project or configure that root before editing.",
+    );
+  }
+  if (phase === "stop") {
+    lines.push(
+      `Finalize the owned work, run \`${bin} agents status --end-turn\` last, and paste its box in the reply.`,
     );
   }
   return lines.join("\n");

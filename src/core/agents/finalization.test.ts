@@ -7,6 +7,8 @@ import {
   checkGitFinalization,
   classifyWriteClaimFinalization,
   formatGitFinalizationFailure,
+  GitFinalizationTimeout,
+  readSessionFinalizationScope,
 } from "./finalization.ts";
 
 let temp: string;
@@ -200,6 +202,11 @@ describe("checkGitFinalization", () => {
     const result = checkGitFinalization(parent, []);
     expect(result.ok).toBe(false);
     expect(result.stale_submodules).toEqual(["child"]);
+    expect(checkGitFinalization(parent, [], { includeRepositoryFreshness: false })).toMatchObject({
+      ok: true,
+      stale_submodules: [],
+      diverged_submodules: [],
+    });
     expect(formatGitFinalizationFailure(result, "harn")).toContain(
       "Submodule checkouts behind their parent gitlinks",
     );
@@ -251,6 +258,53 @@ describe("checkGitFinalization", () => {
     const result = checkGitFinalization(repo, []);
     expect(result.ok).toBe(false);
     expect(result.behind_repos).toEqual(["."]);
+    expect(
+      checkGitFinalization(repo, ["owned.txt"], { includeRepositoryFreshness: false }),
+    ).toMatchObject({
+      ok: true,
+      behind_repos: [],
+    });
+  });
+
+  test("a supplemental check still blocks owned dirt and incomplete history", () => {
+    const repo = join(temp, "repo");
+    initRepo(repo);
+    writeFileSync(join(repo, "owned.txt"), "base\n");
+    commitAll(repo, "initial");
+    writeFileSync(join(repo, "owned.txt"), "later edit\n");
+    const result = checkGitFinalization(repo, ["owned.txt"], {
+      includeRepositoryFreshness: false,
+      claimHistoryComplete: false,
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      dirty_paths: ["owned.txt"],
+      claim_history_complete: false,
+    });
+    expect(formatGitFinalizationFailure(result, "harn", "stop")).toContain(
+      "at the end of this turn",
+    );
+    expect(formatGitFinalizationFailure(result, "harn", "stop")).toContain("paste its box");
+  });
+
+  test("an expired check budget is unavailable to the caller, never a clean result", () => {
+    expect(() => checkGitFinalization(temp, [], { timeoutMs: 0 })).toThrow(GitFinalizationTimeout);
+  });
+
+  test("status and Stop union current and released claims with the native identity", () => {
+    const row = {
+      instance_id: "operator",
+      session_id: "sid_fingerprint",
+      native_session_id: "native",
+      files_touched: ["current.ts", "both.ts"],
+    };
+    let observed: unknown;
+    const result = readSessionFinalizationScope(temp, row, "fallback", (...args) => {
+      observed = args;
+      return { paths: ["released.ts", "both.ts"], complete: false };
+    });
+    expect(observed).toEqual([temp, "operator", "native"]);
+    expect(result).toEqual({ paths: ["current.ts", "both.ts", "released.ts"], complete: false });
   });
 
   test("checks an authorized sibling Git repository through dirty, local, unpushed, and pushed states", () => {

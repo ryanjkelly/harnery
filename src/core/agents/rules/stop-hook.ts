@@ -17,7 +17,9 @@ import type { EventV3 } from "../../events/v3/contract.ts";
 import { readEventV3ControlState } from "../../events/v3/control.ts";
 import { liveInstanceIdV3 } from "../../events/v3/live-routing.ts";
 import { readLedgerV3 } from "../../events/v3/reader.ts";
+import { formatGitFinalizationFailure } from "../finalization.ts";
 import { readLiveCoordinationRow } from "../state/live-coordination-view.ts";
+import type { StopGitFinalization } from "../stop-finalization.ts";
 import { resolveTurnRange } from "../turn-range.ts";
 
 export type { VerdictResult } from "./verdict.ts";
@@ -43,6 +45,8 @@ export interface StopHookRequest {
    * does, so status and reply-box demands wait for the notification turn.
    */
   pending_background_handoff?: boolean;
+  /** Supplemental observed state; unavailable never skips the existing ritual rules. */
+  final_git_state?: StopGitFinalization;
 }
 
 export const STOP_REMEDIATION_MARKER = "[harnery:stop-remediation";
@@ -201,6 +205,22 @@ export function evaluateStopHookV3Events(
   // the ritual's own enforcement became part of the hook load it polices.
   const pending: VerdictResult[] = [];
   if (!requiredStatusChecked) pending.push(rule13Block(coordRoot, req.session_id));
+  if (
+    agentsRequireGitFinalization(coordRoot) &&
+    req.final_git_state?.state === "observed" &&
+    !req.final_git_state.result.ok
+  ) {
+    pending.push({
+      allow: false,
+      exit_code: 2,
+      rule: "stop-hook.git_not_finalized",
+      reason: formatGitFinalizationFailure(
+        req.final_git_state.result,
+        resolveBinName(coordRoot),
+        "stop",
+      ),
+    });
+  }
   if (!ackPresent) pending.push(ackBlock());
   if (!taskSet) pending.push(rule33Block(coordRoot, req.session_id));
 
@@ -224,7 +244,10 @@ export function evaluateStopHookV3Events(
   // Task and naming evidence do not depend on the task and stay enforced.
   const enforced = req.pending_background_handoff
     ? pending.filter(
-        (block) => block.rule !== "stop-hook.rule_1_3" && block.rule !== "stop-hook.rule_2_3",
+        (block) =>
+          block.rule !== "stop-hook.rule_1_3" &&
+          block.rule !== "stop-hook.rule_2_3" &&
+          block.rule !== "stop-hook.git_not_finalized",
       )
     : pending;
   const blocked = mergeStopBlocks(enforced);

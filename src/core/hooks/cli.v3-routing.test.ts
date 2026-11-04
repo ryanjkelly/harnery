@@ -771,7 +771,7 @@ describe("agent-hook V3 hard cut", () => {
       conversation_id: owner,
       generation_id: "cursor-name-response",
       hook_event_name: "afterAgentResponse",
-      text: `\`\`\`\n${name}\n\`\`\`\n\n\`\`\`\n┌─ agent-Maya status\nPRIVATE_CURSOR_REPLY_BODY\n\`\`\``,
+      text: `\`\`\`\n${name}\n\`\`\`\n\n\`\`\`\n┌─ agent-Maya status\n│ PRIVATE_CURSOR_REPLY_BODY │\n└───────────────────────────┘\n\`\`\``,
     });
     expect(response.status).toBe(0);
     expect(readLiveCoordinationRow(root, instanceId)?.session_name_seen_for).toBe(name);
@@ -1486,6 +1486,138 @@ describe("agent-hook V3 hard cut", () => {
     });
   });
 
+  test("Stop rechecks an owned path changed after guarded status and permits later clean work", () => {
+    const root = candidateRoot();
+    const owner = `stop-git-owner-${randomUUID()}`;
+    const turnId = "owned-path-finalization-turn";
+    writeFileSync(
+      join(root, ".harnery", "config.jsonc"),
+      JSON.stringify({ agents: { requireGitFinalization: true } }),
+    );
+    const hook = (event: string, payload: Record<string, unknown> = {}) =>
+      run(
+        AGENT_HOOK,
+        [event, "--adapter", "claude-code"],
+        { session_id: owner, cwd: root, turn_id: turnId, ...payload },
+        root,
+      );
+    const coord = (args: string[]) =>
+      run(HARN, args, {}, root, { HARNERY_AGENT_COORD_SESSION_ID: owner });
+    const gitChecks = () =>
+      readFileSync(join(root, ".harnery", "logs", "agent-hook-debug", "active.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => (JSON.parse(line) as { fields?: Record<string, unknown> }).fields)
+        .filter((fields) => fields?.effect === "stop-git-finalization");
+
+    try {
+      expect(hook("session-start", { source: "startup" }).status).toBe(0);
+      expect(hook("user-prompt-submit", { prompt: "Verify the owned file" }).status).toBe(0);
+      expect(
+        hook("pre-tool-use", {
+          tool_name: "Bash",
+          tool_use_id: "set-task",
+          tool_input: { command: "harn agents set-task Verify owned file" },
+        }).status,
+      ).toBe(0);
+      const task = coord(["agents", "set-task", "Verify owned file", "--session-id", owner]);
+      expect(task.status).toBe(0);
+      const name = (JSON.parse(task.stdout) as { suggested_session_name: string })
+        .suggested_session_name;
+      const transcript = join(root, "owned-path-transcript.jsonl");
+      writeFileSync(
+        transcript,
+        `${[
+          {
+            type: "user",
+            message: { content: [{ type: "tool_result", content: task.stdout }] },
+          },
+          {
+            type: "assistant",
+            message: { content: [{ type: "text", text: `\`\`\`\n${name}\n\`\`\`` }] },
+          },
+        ]
+          .map((row) => JSON.stringify(row))
+          .join("\n")}\n`,
+      );
+      expect(
+        hook("post-tool-use", {
+          transcript_path: transcript,
+          tool_name: "Bash",
+          tool_use_id: "set-task",
+          tool_response: task.stdout,
+        }).status,
+      ).toBe(0);
+
+      const seed = join(root, "seed.txt");
+      const write = {
+        transcript_path: transcript,
+        tool_name: "Write",
+        tool_use_id: "claim-clean-seed",
+        tool_input: { file_path: seed, content: "seed\n" },
+      };
+      const allowedWrite = hook("pre-tool-use", write);
+      expect(allowedWrite.status).toBe(0);
+      expect(allowedWrite.stdout).not.toContain('"permissionDecision":"deny"');
+      writeFileSync(seed, "seed\n");
+      expect(hook("post-tool-use", { ...write, tool_response: "written" }).status).toBe(0);
+      expect(readLiveCoordinationRows(root)[0]?.files_touched).toContain("seed.txt");
+
+      const statusTool = {
+        transcript_path: transcript,
+        tool_name: "Bash",
+        tool_use_id: "guarded-status",
+        tool_input: { command: "harn agents status --end-turn" },
+      };
+      expect(hook("pre-tool-use", statusTool).status).toBe(0);
+      const status = coord(["agents", "status", "--end-turn", "--session-id", owner]);
+      expect(status.status).toBe(0);
+      expect(status.stdout).toContain("┌─ agent-");
+      expect(hook("post-tool-use", { ...statusTool, tool_response: status.stdout }).status).toBe(0);
+      const earlierBox = `\`\`\`\n${status.stdout.trim()}\n\`\`\``;
+
+      // No later tool event can invalidate the earlier witness; Stop must
+      // inspect the owned path itself to catch this intervening write.
+      writeFileSync(seed, "changed after closing status\n");
+      const dirtyStop = hook("stop", {
+        transcript_path: transcript,
+        last_assistant_message: earlierBox,
+        stop_hook_active: false,
+      });
+      expect(dirtyStop.status).toBe(2);
+      expect(dirtyStop.stderr).toContain("seed.txt");
+      expect(gitChecks().at(-1)).toMatchObject({
+        effect: "stop-git-finalization",
+        state: "observed",
+        ok: false,
+      });
+
+      writeFileSync(seed, "seed\n");
+      const read = {
+        transcript_path: transcript,
+        tool_name: "Read",
+        tool_use_id: "harmless-later-read",
+        tool_input: { file_path: seed },
+      };
+      expect(hook("pre-tool-use", read).status).toBe(0);
+      expect(hook("post-tool-use", { ...read, tool_response: "seed\n" }).status).toBe(0);
+      const cleanStop = hook("stop", {
+        transcript_path: transcript,
+        last_assistant_message: earlierBox,
+        stop_hook_active: true,
+      });
+      expect(cleanStop.stderr).toBe("");
+      expect(cleanStop.status).toBe(0);
+      expect(gitChecks().at(-1)).toMatchObject({
+        effect: "stop-git-finalization",
+        state: "observed",
+        ok: true,
+      });
+    } finally {
+      clearRemediationCount(owner);
+    }
+  }, 30_000);
+
   test("Claude Stop remediation accumulates recovered status and current assistant-box evidence", () => {
     const root = candidateRoot();
     const owner = "zia-remediation-owner";
@@ -1763,7 +1895,7 @@ describe("agent-hook V3 hard cut", () => {
       ).toBe(0);
       const firstStop = hook("stop", {
         transcript_path: transcript,
-        last_assistant_message: status.stdout,
+        last_assistant_message: `\`\`\`\n${status.stdout.trim()}\n\`\`\``,
         stop_hook_active: false,
       });
       expect(firstStop).toMatchObject({ status: 2 });
@@ -1772,7 +1904,7 @@ describe("agent-hook V3 hard cut", () => {
       for (let block = 2; block <= DEFAULT_STOP_REMEDIATION_CAP; block += 1) {
         const unchanged = hook("stop", {
           transcript_path: transcript,
-          last_assistant_message: status.stdout,
+          last_assistant_message: `\`\`\`\n${status.stdout.trim()}\n\`\`\``,
           stop_hook_active: true,
         });
         expect(unchanged.status).toBe(2);
@@ -1780,7 +1912,7 @@ describe("agent-hook V3 hard cut", () => {
       }
       const exhausted = hook("stop", {
         transcript_path: transcript,
-        last_assistant_message: status.stdout,
+        last_assistant_message: `\`\`\`\n${status.stdout.trim()}\n\`\`\``,
         stop_hook_active: true,
       });
       expect(exhausted.status).toBe(0);
@@ -1836,7 +1968,7 @@ describe("agent-hook V3 hard cut", () => {
       expect(readLiveCoordinationRows(root)[0]?.session_name_seen_for).toBe(name);
       const nextStop = hook("stop", {
         transcript_path: transcript,
-        last_assistant_message: status.stdout,
+        last_assistant_message: `\`\`\`\n${status.stdout.trim()}\n\`\`\``,
         stop_hook_active: true,
       });
       expect(nextStop.status).toBe(0);

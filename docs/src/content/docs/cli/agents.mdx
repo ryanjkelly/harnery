@@ -142,10 +142,12 @@ The three orientation commands.
   likely exited without cleaning up). Its structured rows keep `activity` and
   `task_state` separate for local and remote agents. Older heartbeats read as
   `activity: unknown` and `task_state: active`.
-- **`status`** renders the end-of-turn status box: your name, session age,
-  elapsed time and recorded line changes for the current turn, current activity, task lifecycle, declared
-  task, context usage, files held, and a one-line peer roster. A blocked lifecycle includes
-  its reason. `--json` returns the same data unformatted. `--session-id <id>`
+- **`status`** renders a compact box with your name, declared task, task
+  lifecycle, files held, peer roster, and local time with the current turn's
+  elapsed time. A blocked lifecycle includes its reason. Diagnostic rows
+  appear when they report a problem. `--full` also shows session age, recorded
+  line changes, activity, parent identity, context usage, and resources.
+  `--json` returns structured data. `--session-id <id>`
   looks the heartbeat up by session id directly, for use from a hook whose
   process tree doesn't lead back to the agent's session pid. Add `--end-turn` for
   the required final call: Harnery checks the current session's held paths,
@@ -156,7 +158,7 @@ The three orientation commands.
   `--end-turn`; the status box reports `queued after this turn` while the stop
   hook finishes the sequence.
 
-  The `changes` row shows `+42 / -11 lines` for the turn being reported. It sums
+  The `--full` box's `changes` row shows `+42 / -11 lines` for the turn being reported. It sums
   successful recorded edits, including changes already committed. Repeated edits
   count again; code, tests, and documentation all count. While idle, it reports
   the latest recorded turn. Shell commands and unsupported tools make the count
@@ -472,6 +474,7 @@ harn agents lifecycle active
 
 # End-of-turn status box
 harn agents status
+harn agents status --full
 
 # Optional guarded form: require owned Git work to be committed and pushed
 harn agents status --end-turn
@@ -512,6 +515,17 @@ automatic prompt and Stop enforcement with
 `{ "agents": { "requireGitFinalization": true } }` in
 `.harnery/config.jsonc`; the default is `false`. The command-line flag remains
 available as a manual check either way.
+
+For hosts that require Git finalization, Stop also rechecks known owned work
+after the reply completes. Later dirty paths or unpushed commits cannot reuse
+an earlier clean observation. An unavailable supplemental observer leaves all
+existing Stop rules in force. The status command retains its upstream and
+submodule freshness checks. Codex's Stop hook remains observe-only.
+
+The assistant must paste a complete fenced box in its reply. When an adapter
+supplies the completed reply, that text is the evidence. Otherwise Harnery
+scans assistant text in the current operator turn. An earlier turn's box or a
+prose mention of its opening marker does not satisfy the check.
 
 The flag calls this the "final" status because it is the final status checkpoint
 for a turn, as opposed to a mid-turn coordination glance. It does not end the

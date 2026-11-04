@@ -66,6 +66,10 @@ import {
 } from "../agents/state/names.ts";
 import { writePidmapRow } from "../agents/state/pidmap.ts";
 import {
+  observeStopGitFinalization,
+  type StopGitFinalization,
+} from "../agents/stop-finalization.ts";
+import {
   agentsRequireGitFinalization,
   coordFreshnessSeconds,
   hostPromptContextConfig,
@@ -522,12 +526,15 @@ function buildEventData(
     }
 
     case "turn.completed": {
-      const lastAssistantMessage = (p?.raw.last_assistant_message as string | undefined) ?? "";
+      const lastAssistantMessage =
+        typeof p?.raw.last_assistant_message === "string"
+          ? p.raw.last_assistant_message
+          : undefined;
       const fileLinkTelemetry =
         adapterBehavior(ctx.adapter).fileLinkTelemetry?.(
           ctx.coordRoot,
           p?.cwd,
-          lastAssistantMessage,
+          lastAssistantMessage ?? "",
         ) ?? null;
       return {
         // Backfill the model for adapters that omit it at session.started
@@ -547,7 +554,8 @@ function buildEventData(
         // the verdict now sees because agent-hook emits this turn.completed itself
         // (the previous path passed those via the no-history fail-open).
         status_box_present:
-          scanStatusBoxPresent(p?.transcript_path) || lastAssistantMessage.includes("┌─ agent-"),
+          scanStatusBoxPresent(p?.transcript_path) ||
+          lastAssistantMessage?.includes("┌─ agent-") === true,
         // Assistant-text evidence for the rule-2/3 detector: the loose scan above
         // matches the box prefix ANYWHERE in the transcript tail, including
         // the tool_result row the status command itself writes, so it can
@@ -1533,6 +1541,27 @@ async function handleStop(run: HookRun): Promise<number | undefined> {
         )
       : [];
 
+  const bypass = coordEnv("AGENT_COORD_BYPASS_STOP") === "1";
+  const workflowChild = coordEnv("WORKFLOW_CHILD") === "1";
+  let finalGitState: StopGitFinalization | undefined;
+  if (
+    agentsRequireGitFinalization(coordRoot) &&
+    adapter !== "codex" &&
+    !bypass &&
+    !workflowChild &&
+    pendingBackgroundHandoffs.length === 0
+  ) {
+    finalGitState = observeStopGitFinalization(coordRoot, owner.instance_id, sessionId);
+    appendDebug(coordRoot, {
+      ...debugBase,
+      effect: "stop-git-finalization",
+      state: finalGitState.state,
+      ...(finalGitState.state === "observed"
+        ? { ok: finalGitState.result.ok }
+        : { reason: finalGitState.reason }),
+    });
+  }
+
   // Stop verdict (V3 ritual + task/status gate). Direct in-process call: the
   // rule lives in Harnery. agent-hook already emitted this turn.completed
   // with privacy-safe ritual observations, so the evidence is in the stream.
@@ -1544,9 +1573,10 @@ async function handleStop(run: HookRun): Promise<number | undefined> {
     stop_hook_active: payload?.stop_hook_active === true,
     status_box_present_strict: data.status_box_present_strict === true,
     session_name_observation_unavailable: typeof data.session_name_unavailable_reason === "string",
-    bypass: coordEnv("AGENT_COORD_BYPASS_STOP") === "1",
-    workflow_child: coordEnv("WORKFLOW_CHILD") === "1",
+    bypass,
+    workflow_child: workflowChild,
     pending_background_handoff: pendingBackgroundHandoffs.length > 0,
+    final_git_state: finalGitState,
   });
   if (verdict.rule === "stop-hook.background_handoff_deferred") {
     appendDebug(coordRoot, {

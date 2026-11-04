@@ -33,6 +33,7 @@ import {
   checkGitFinalization,
   formatGitFinalizationFailure,
   type GitFinalizationResult,
+  readSessionFinalizationScope,
   readSessionWriteClaims,
 } from "../core/agents/finalization.ts";
 import {
@@ -2490,14 +2491,9 @@ function runStatus(opts: {
 
   let finalization: GitFinalizationResult | null = null;
   if (opts.endTurn) {
-    const history = readSessionWriteClaims(
-      root,
-      hb.instance_id,
-      nativeSessionIdentity(hb, myOwner),
-    );
-    const touchedPaths = [...new Set([...(hb.files_touched ?? []), ...history.paths])];
-    finalization = checkGitFinalization(root, touchedPaths, {
-      claimHistoryComplete: history.complete,
+    const scope = readSessionFinalizationScope(root, hb, myOwner);
+    finalization = checkGitFinalization(root, scope.paths, {
+      claimHistoryComplete: scope.complete,
     });
     if (!finalization.ok) {
       emit.error({
