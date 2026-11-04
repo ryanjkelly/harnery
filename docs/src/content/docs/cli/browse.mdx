@@ -336,7 +336,7 @@ contrast. Each takes an optional selector (default: the whole body).
 
 | Flag | Description |
 | --- | --- |
-| `--check-placeholder [selector]` | Flag unrendered tells in the visible text: `{{x}}` and JS template tokens, `[object Object]`, `Invalid Date`, `NaN`, or an element whose whole text is literally "undefined" / "null". |
+| `--check-placeholder [selector]` | Flag unrendered tells in the visible text: `{{x}}` and JS template tokens, `[object Object]`, `Invalid Date`, `NaN`, or an element whose whole text is literally "undefined" / "null". Text inside `<code>`, `<pre>`, `<kbd>` or `<samp>` is literal and never flags. |
 | `--check-placeholder-fail` | Run a document-wide check when needed; exit 2 unless it passes. |
 | `--check-images [selector]` | Audit `<img>` for a failed load (naturalWidth 0), a still-loading image, or a stretched one (rendered aspect far from intrinsic, uncorrected by object-fit). |
 | `--check-images-tolerance <ratio>` | Aspect-ratio deviation above which an image counts as stretched. Default `0.1`. |

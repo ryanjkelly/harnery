@@ -108,7 +108,8 @@ describe("browse content checks", () => {
         truncation: null,
         contrast: null,
       });
-      // "$5", "100%", and the word "undefined" inside prose must NOT flag.
+      // "$5", "100%", the word "undefined" inside prose, and literal tokens
+      // inside <code>/<pre> (documented `null`, `{{click_id}}`) must NOT flag.
       expect(good.placeholder?.outcome).toBe("pass");
     } finally {
       await browser.close();

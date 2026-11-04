@@ -201,6 +201,10 @@ export function buildContentChecks(): (request: ContentChecksRequest) => Content
           return null;
         }
       };
+      // Code, preformatted, keyboard and sample elements show literal text:
+      // API docs print `null` and `{{click_id}}` on purpose, so a token
+      // inside one is content, not an unrendered binding.
+      const isLiteral = (el: Element): boolean => el.closest("code, pre, kbd, samp") !== null;
       if (root && !isHidden(root)) {
         const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
         for (let node = walker.nextNode(); node; node = walker.nextNode()) {
@@ -211,6 +215,7 @@ export function buildContentChecks(): (request: ContentChecksRequest) => Content
           const parent = node.parentElement;
           if (!parent) continue;
           if (["SCRIPT", "STYLE", "NOSCRIPT", "TEXTAREA"].includes(parent.tagName)) continue;
+          if (isLiteral(parent)) continue;
           if (isHidden(parent)) continue;
           scanned++;
           const value = node.nodeValue ?? "";
@@ -248,6 +253,7 @@ export function buildContentChecks(): (request: ContentChecksRequest) => Content
           for (let i = 0; i < leaves.length && i < NODE_CAP; i++) {
             const el = leaves[i];
             if (!el || el.children.length > 0) continue;
+            if (isLiteral(el)) continue;
             if (isHidden(el)) continue;
             const text = (el.textContent ?? "").trim();
             if (!EMPTY.has(text)) continue;
