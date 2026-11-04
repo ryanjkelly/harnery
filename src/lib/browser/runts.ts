@@ -118,6 +118,10 @@ export function buildRuntsCheck(): (args: {
       if (!el) continue;
       const text = el.textContent ?? "";
       if (text.trim().length < minChars) continue;
+      // A <pre> block holds preformatted source: a wrapped line of code cannot
+      // be reworded, so its last visual line is not a prose runt. Inline
+      // <code> in a sentence stays checked.
+      if (el.closest("pre")) continue;
       let allInline = true;
       for (const c of el.children) {
         if (!INLINE.has(c.tagName)) {

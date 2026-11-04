@@ -326,6 +326,7 @@ describe("browse layout lint", () => {
       const good = await browser.checkRunts({ scope: ".runt-good", minChars: 1 });
       const bad = await browser.checkRunts({ scope: ".runt-bad", minChars: 1 });
       const chip = await browser.checkRunts({ scope: ".runt-chip", minChars: 1 });
+      const pre = await browser.checkRunts({ scope: ".runt-pre", minChars: 1 });
       const missing = await browser.checkRunts({ scope: ".does-not-exist", minChars: 1 });
 
       expect(good).toMatchObject({ found: true, outcome: "pass", truncated: false });
@@ -334,6 +335,8 @@ describe("browse layout lint", () => {
       // a padded, boxed <code> chip alone on the last line is a UI control,
       // not a prose runt
       expect(chip).toMatchObject({ found: true, outcome: "pass", truncated: false });
+      // the same words in wrapped <pre> code are literal, not prose
+      expect(pre).toMatchObject({ found: true, outcome: "pass", truncated: false });
       expect(missing).toMatchObject({ found: false, outcome: "fail", scannedBlocks: 0 });
     } finally {
       await browser.close();

@@ -69,7 +69,7 @@
       .crowd-composite-good > .panel { margin-top: 16px; }
       .crowd-composite-deep .group p { margin: 0; height: 40px; }
       .crowd-composite-deep > .panel { margin-top: 0; }
-      .runt-good, .runt-bad, .runt-chip { width: 105px; font: 16px/20px monospace; }
+      .runt-good, .runt-bad, .runt-chip, .runt-pre { width: 105px; font: 16px/20px monospace; }
       .runt-chip code, .crowd-chips code {
         background: #eef; border: 1px solid #99c; border-radius: 4px; padding: 1px 4px;
       }
@@ -160,6 +160,7 @@
     </section>
     <section class="runt-good">alpha beta gamma delta epsilon zeta eta theta i j</section>
     <section class="runt-bad">alpha beta gamma delta epsilon zeta eta theta iota omega</section>
+    <section class="runt-pre"><pre style="margin:0;font:inherit;white-space:pre-wrap">alpha beta gamma delta epsilon zeta eta theta iota omega</pre></section>
     <!-- chip on the last line: a padded, boxed <code> token is a UI control,
          not a prose word, so the runt gate must not flag it -->
     <section class="runt-chip">alpha beta gamma delta epsilon zeta eta theta <code>omega_flag</code></section>

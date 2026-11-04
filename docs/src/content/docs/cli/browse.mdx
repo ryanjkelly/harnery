@@ -231,7 +231,7 @@ These assert on the rendered layout and surface findings in the JSON envelope; e
 | `--check-overflow` | Assert no horizontal overflow (`document.scrollWidth <= window.innerWidth`); surfaces protruding elements. |
 | `--check-overflow-fail` | Run the overflow check when needed, then exit 2 if horizontal overflow is detected. |
 | `--no-check-overflow-annotate` | Skip drawing overflow annotations. |
-| `--check-runts [selector]` | Scan text blocks for runts (a single word alone on a block's last visual line), counting words via per-word Range rects. Optional selector scopes the sweep. |
+| `--check-runts [selector]` | Scan text blocks for runts (a single word alone on a block's last visual line), counting words via per-word Range rects. Optional selector scopes the sweep. Text inside a `<pre>` block is skipped. |
 | `--check-runts-min-chars <n>` | Minimum block text length to scan. Default `40`. |
 | `--check-runts-max-findings <n>` | Maximum findings to retain: integer `1`–`5000`, default `50`. Reaching it sets `truncated: true`; the separate 5,000-block scan cap stays unchanged. More retained findings still fail the check. |
 | `--check-runts-fail` | Run a document-wide check when needed, then exit 2 for a runt, missing scope, or incomplete sweep. |
