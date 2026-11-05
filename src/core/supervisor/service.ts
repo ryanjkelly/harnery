@@ -29,7 +29,6 @@ import {
 import { resolveBinName } from "../config.ts";
 import { pressureHistoryFromSupervisor } from "../diagnostics/advice.ts";
 import { assessPressure } from "../diagnostics/pressure.ts";
-import { readEventV3ControlState } from "../events/v3/control.ts";
 import { janitorLiveDisplayV3 } from "../events/v3/live-feed.ts";
 import { installedHarneryBuild } from "../events/v3/runtime-build.ts";
 import type { ResourceSamplerState } from "../resources/contract.ts";
@@ -45,7 +44,6 @@ import {
   SUPERVISOR_PRESSURE_SCHEMA_VERSION,
   SUPERVISOR_SNAPSHOT_SCHEMA_VERSION,
   SUPERVISOR_STATUS_SCHEMA_VERSION,
-  type SupervisorCapability,
   type SupervisorPressureRecord,
   type SupervisorServiceStatusRecord,
   type SupervisorSnapshot,
@@ -57,9 +55,10 @@ import { updateSupervisorHistory } from "./history.ts";
 import { projectHookHealth } from "./hook-health.ts";
 import { writeSupervisorHookHealth } from "./hook-health-storage.ts";
 import { collectHookHealth } from "./hooks.ts";
-import type {
-  LedgerControlStateFindingInputV1,
-  LedgerControlStateObservationV1,
+import {
+  type LedgerControlStateFindingInputV1,
+  type LedgerControlStateObservationV1,
+  observeLedgerControlState,
 } from "./ledger-state.ts";
 import { SupervisorLogCollector } from "./log-feed.ts";
 import { collectServiceHealth } from "./services.ts";
@@ -667,43 +666,6 @@ export async function runSupervisor(
 }
 
 const LEDGER_OBSERVATION_LIMIT = 8;
-
-/**
- * Read the control state without letting a broken ledger break observation.
- * A failed read is reported as an unsupported capability with an `invalid`
- * state, never as a healthy `active`.
- */
-function observeLedgerControlState(
-  coordRoot: string,
-  now: Date,
-): { observation: LedgerControlStateObservationV1; capability: SupervisorCapability } {
-  const observedAt = now.toISOString();
-  try {
-    const control = readEventV3ControlState(coordRoot);
-    return {
-      observation: {
-        state: control.state,
-        ...("reason" in control && control.reason ? { reason: control.reason } : {}),
-        observed_at: observedAt,
-      },
-      capability: { source_kind: "event-ledger.control-state", state: "supported" },
-    };
-  } catch (error) {
-    return {
-      observation: {
-        state: "invalid",
-        reason: "control_state_unreadable",
-        observed_at: observedAt,
-      },
-      capability: {
-        source_kind: "event-ledger.control-state",
-        state: "error",
-        reason_code: "control-state-unreadable",
-        detail: error instanceof Error ? error.message.slice(0, 200) : "unknown error",
-      },
-    };
-  }
-}
 
 function pruneProjectionDirectory(
   directory: string,
