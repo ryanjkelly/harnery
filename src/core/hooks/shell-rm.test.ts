@@ -40,6 +40,12 @@ describe("shell rm guard", () => {
       expect(shellRmReason("Bash", { command }, "acme")).toBeNull();
     });
   }
+  test("denial names a quoted example and whole-artifact removal", () => {
+    const reason = shellRmReason("Bash", { command: "rm $A/old.txt" }, "acme") ?? "";
+    expect(reason).toContain('acme rm --root "$DIR" "$DIR/old.txt" --yes');
+    expect(reason).toContain('acme artifacts remove <id> --reason "<why>" --yes');
+    expect(reason).toContain("only shortens its retention");
+  });
   test("ignores non-shell tools", () => {
     expect(shellRmReason("Write", { command: "rm x" }, "acme")).toBeNull();
   });

@@ -91,13 +91,20 @@ export function shellRmReason(
 ): string | null {
   const command = shellCommandFromTool(toolName, toolInput);
   if (command === null || !invokesRm(command)) return null;
+  // Agents that hit this denial mostly retried with another shell rm, often
+  // deleting through a variable such as $DIR. A copyable quoted example gets
+  // the second attempt right; the guard still cannot tell where $DIR points,
+  // so it never exempts a directory.
   return (
     `Shell rm blocked: it skips the resolved-path, Git-ownership, and peer-claim checks, and an ` +
     `unquoted variable path can expand to the wrong target. Use the guarded paths instead: ` +
-    `\`${binName} rm --root <directory> <paths...>\` previews removal of untracked files (add ` +
-    `--yes to delete, -r for a directory); \`git rm\` removes tracked source; ` +
-    `\`${binName} artifacts discard <id>\` retires managed evidence. To replace a file, overwrite ` +
-    `it in place or \`mv\` the new file over the old one, so nothing needs deleting. If none of ` +
-    `these fit, prefix the command with ${OVERRIDE}.`
+    `\`${binName} rm --root <directory> <paths...>\` removes untracked files, for example ` +
+    `\`${binName} rm --root "$DIR" "$DIR/old.txt" --yes\` (quote variables; omit --yes to ` +
+    `preview; add -r for a directory). This also covers files inside your own artifact ` +
+    `workspace. \`${binName} artifacts remove <id> --reason "<why>" --yes\` deletes a whole ` +
+    `artifact you own; \`${binName} artifacts discard <id>\` only shortens its retention. ` +
+    `\`git rm\` removes tracked source. To replace a file, overwrite it in place or \`mv\` the ` +
+    `new file over the old one, so nothing needs deleting. If none of these fit, prefix the ` +
+    `command with ${OVERRIDE}.`
   );
 }
