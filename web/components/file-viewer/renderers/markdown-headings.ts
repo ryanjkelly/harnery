@@ -53,6 +53,7 @@ export function rehypeHeadingLinks() {
       // Retain the sanitizer's clobber protection rather than exposing names
       // such as location directly as document properties.
       node.properties.id = id;
+      node.properties.dataHeadingSlug = slug;
     });
 
     // Links may precede their heading, so resolve against the completed set.

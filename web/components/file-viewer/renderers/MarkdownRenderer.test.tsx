@@ -33,6 +33,20 @@ test("heading targets use rendered inline text and image alternatives", () => {
   expect(html).toMatch(/<code\b[^>]*>agents\.entries\.&lt;id&gt;<\/code>/);
 });
 
+test("entities and literal code use the docs link checker's heading slugs", () => {
+  const html = renderMarkdown(
+    "## E&#45;ATT&#45;0240\n\n## Setup &amp; recovery\n\n## Setup &amp; recovery\n\n## Setup &amp; recovery\n\n## `&amp;` and \\&amp;",
+  );
+  const ids = [...html.matchAll(/<h[1-6]\b[^>]*\bid="([^"]+)"/g)].map((match) => match[1]);
+  expect(ids).toEqual([
+    "user-content-e-att-0240",
+    "user-content-setup--recovery",
+    "user-content-setup--recovery-1",
+    "user-content-setup--recovery-2",
+    "user-content-amp-and-amp",
+  ]);
+});
+
 test("duplicate heading suffixes cannot collide and reset for each document", () => {
   const content =
     "[First](#foo) [Second](#foo-1) [Third](#foo-1-1)\n\n# Foo\n\n## Foo\n\n### Foo-1";
@@ -55,7 +69,7 @@ test("existing sanitized footnote targets survive heading-name collisions", () =
   );
   expect(html).toContain('<h2 class="sr-only" id="user-content-footnote-label">');
   expect(html).toContain('aria-describedby="user-content-footnote-label"');
-  expect(html).toContain('<h1 id="user-content-footnote-label-1">');
+  expect(html).toContain('<h1 id="user-content-footnote-label-1"');
   expect(html).toContain('href="#user-content-footnote-label-1"');
   const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]);
   expect(new Set(ids).size).toBe(ids.length);

@@ -9,11 +9,13 @@
  * dep) to match the dark dashboard theme.
  */
 
+import { useEffect, useRef } from "react";
 import Markdown from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import { markdownImageUrl } from "@/lib/file-viewer/client";
 import type { FileText } from "@/lib/file-viewer/types";
+import { bindHeadingFragments } from "./heading-fragments";
 import { rehypeHeadingLinks } from "./markdown-headings";
 import ShikiBlock from "./ShikiBlock";
 import { useWrapPref, WrapToggle } from "./WrapToggle";
@@ -38,12 +40,18 @@ const PROSE = [
 
 export default function MarkdownRenderer({ file }: { file: FileText }) {
   const [wrap, toggleWrap] = useWrapPref();
+  const root = useRef<HTMLDivElement>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: replacing the document must reapply its incoming fragment after its headings mount
+  useEffect(() => {
+    if (root.current) return bindHeadingFragments(root.current);
+  }, [file.content, file.relPath]);
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="sticky top-0 z-10 flex shrink-0 items-center justify-end border-b border-border bg-card px-3 py-1.5">
         <WrapToggle wrap={wrap} onToggle={toggleWrap} />
       </div>
       <div
+        ref={root}
         className={`overflow-auto ${PROSE}`}
         style={{
           whiteSpace: wrap ? undefined : "nowrap",
