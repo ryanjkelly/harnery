@@ -13,7 +13,7 @@
         "gpt-tokenizer": "^3.4.0",
         "js-yaml": "^4.3.0",
         "linkedom": "^0.18.0",
-        "mailparser": "^3.9.14",
+        "mailparser": "^3.9.47",
         "pixelmatch": "^7.2.0",
         "playwright": "^1.65.0",
         "pngjs": "^7.0.0",
