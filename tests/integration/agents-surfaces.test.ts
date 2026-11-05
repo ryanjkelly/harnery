@@ -518,33 +518,39 @@ describe("codex-wsl bridge ping attribution", () => {
     });
   });
 
-  test("CLI refuses a different exact generation and prints parent truth in show/status", () => {
-    const root = makeSandbox();
-    addTarget(root);
-    const refused = harn(root, [
-      "agents",
-      "ping",
-      "Target",
-      "must not deliver",
-      "--generation-id",
-      "gen_not-current",
-      "--json",
-    ]);
-    expect(refused.status).toBe(1);
-    expect(JSON.parse(refused.stdout)).toMatchObject({
-      code: "generation_mismatch",
-      complete: false,
-    });
-    expect(peerInbox(root).pending(TARGET)).toHaveLength(0);
-    for (const args of [
-      ["agents", "show", "Target", "--json"],
-      ["agents", "status", "--json"],
-    ]) {
-      const result = harn(root, args);
-      expect(result.status).toBe(0);
-      expect(JSON.parse(result.stdout)).toMatchObject({
-        parent_reference: { state: "unknown", reason: expect.any(String) },
+  // A real V3 ledger and three fresh CLI processes can exceed five seconds on
+  // a shared runner. Keep the same bounded allowance as the other CLI checks.
+  test(
+    "CLI refuses a different exact generation and prints parent truth in show/status",
+    () => {
+      const root = makeSandbox();
+      addTarget(root);
+      const refused = harn(root, [
+        "agents",
+        "ping",
+        "Target",
+        "must not deliver",
+        "--generation-id",
+        "gen_not-current",
+        "--json",
+      ]);
+      expect(refused.status).toBe(1);
+      expect(JSON.parse(refused.stdout)).toMatchObject({
+        code: "generation_mismatch",
+        complete: false,
       });
-    }
-  });
+      expect(peerInbox(root).pending(TARGET)).toHaveLength(0);
+      for (const args of [
+        ["agents", "show", "Target", "--json"],
+        ["agents", "status", "--json"],
+      ]) {
+        const result = harn(root, args);
+        expect(result.status).toBe(0);
+        expect(JSON.parse(result.stdout)).toMatchObject({
+          parent_reference: { state: "unknown", reason: expect.any(String) },
+        });
+      }
+    },
+    { timeout: 15_000 },
+  );
 });
