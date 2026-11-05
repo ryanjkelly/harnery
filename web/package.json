@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "engines": {
-    "node": "^22.23.4 || ^24.22.1 || >=26.12.1"
+    "node": "^24.22.1 || >=26.12.1"
   },
   "description": "Standalone Next.js dashboard for the harnery coord layer. Booted by `harn web up`; not published to npm.",
   "type": "module",

@@ -9,7 +9,7 @@ This document covers the basics: local dev setup, code style, commit conventions
 Requires:
 
 - [Bun](https://bun.sh) 1.4.4+: recommended for dev (zero-build TS execution; the bins run `src/` directly)
-- Node 22.23.4+, 24.22.1+, or 26.12.1+ on a supported line: the published package targets Node; only needed locally to test the built `dist/`
+- Node 24.22.1+ on the 24 line (selected by `.nvmrc`), or 26.12.1+: used for the built `dist/` checks and the private dashboard and docs tools. Run `nvm use` from the repository root before local checks. The published CLI still accepts patched Node 22 until a breaking minor release changes that contract.
 - A POSIX shell (Linux, macOS, or WSL)
 
 ```bash
@@ -78,6 +78,13 @@ uses GitHub's identity token, so an ordinary local run cannot verify or replace
 that publishing step. GitHub Actions email delivery is a separate account
 notification preference; passing local checks reduces avoidable failures but
 does not disable those emails.
+
+Node 24.22.1 is the CI default, including installers, docs and plugin acceptance.
+The package smoke matrix also retains Node 22.23.4 while the published engine
+range supports that line. Removing Node 22 is a breaking consumer change and
+must ship with a minor release while Harnery is pre-1.0, an engine and doctor
+update, and installation migration notes. A development-runtime change alone
+does not remove that published support promise.
 
 The `installers` job runs on both branches too: it packs the tarball and
 exercises the `install.sh` / `uninstall.sh` one-liners plus a `scripts/setup.sh`

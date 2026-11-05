@@ -20,6 +20,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Setup Node 24
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24.22.1"
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -63,9 +68,14 @@ jobs:
         if: github.event.pull_request.head.repo.full_name == github.repository || github.event_name == 'push'
 
   smoke:
-    name: Published-package smoke test
+    name: Published-package smoke test (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    strategy:
+      matrix:
+        # Node 24 is the default. Keep the published Node 22 promise covered
+        # until a breaking minor release removes it from engines and doctor.
+        node: ["24.22.1", "22.23.4"]
     # Builds dist/, packs the tarball, installs it with production deps only,
     # and runs the CLI via `node dist/cli.js`. This is the gate the 0.2.0 launch
     # lacked: tests/lint/typecheck/build all run against source under Bun and
@@ -84,7 +94,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v6
         with:
-          node-version: "22.23.4"
+          node-version: ${{ matrix.node }}
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -109,7 +119,7 @@ jobs:
       - name: Setup Node 24
         uses: actions/setup-node@v6
         with:
-          node-version: "24"
+          node-version: "24.22.1"
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -136,7 +146,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v6
         with:
-          node-version: "22.23.4"
+          node-version: "24.22.1"
 
       - name: Install dependencies
         run: bun install --frozen-lockfile

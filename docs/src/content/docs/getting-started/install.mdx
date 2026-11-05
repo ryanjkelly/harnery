@@ -16,6 +16,13 @@ Harnery is still pre-1.0; the API surface is settling. Pin a specific minor vers
 - **Node 22.23.4+, 24.22.1+, or 26.12.1+** on a supported line *or* [**Bun**](https://bun.sh) **1.4.4+**: either runtime works
 - A POSIX shell (Linux, macOS, or WSL)
 
+Choose **Node 24.22.1+** for a new installation. Source development, dashboard
+and docs tooling use that floor; the repository `.nvmrc` selects 24.22.1.
+The published CLI still accepts patched Node 22. Its upstream support ends
+April 30, 2027, so move existing Node 22 installations to Node 24 before then.
+Removing Node 22 from the npm engine range will ship as a breaking minor release
+with migration notes.
+
 The published npm package ships a prebuilt `dist/`, so it runs on plain Node out of the box, no Bun required. Installing Bun is optional but recommended for *developing* Harnery: Bun runs the TypeScript source directly (zero build step), so edits are live. The package's `exports` resolve to TS source under Bun and to the built `dist/` everywhere else, so the two stay in lockstep.
 
 :::note[One Bun-only command]

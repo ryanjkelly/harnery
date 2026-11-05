@@ -94,7 +94,7 @@ main() {
       method=bun
     else
       cat >&2 <<EOF
-harnery needs patched Node (22.23.4+, 24.22.1+, or 26.12.1+) or Bun 1.4.4+ to run, and neither was found.
+harnery needs Node or Bun to run, and neither was found. Choose Node 24.22.1+ or Bun 1.4.4+ for a new installation. The published CLI also supports patched Node 22.23.4+ and 26.12.1+.
 
 Install one, then re-run this installer:
   - Bun (recommended):  curl -fsSL https://bun.sh/install | bash
