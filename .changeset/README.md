@@ -2,11 +2,7 @@
 
 Each PR that changes published behavior should include a changeset file in this directory describing the change.
 
-| Pending change | Purpose |
-| --- | --- |
-| [windows-coordination-helpers.md](windows-coordination-helpers.md) | Native internal coordination calls and hook lifecycle verification |
-| [native-windows-source.md](native-windows-source.md) | Native Windows launchers, initialization, and process identity |
-| [portable-hook-commands.md](portable-hook-commands.md) | One committed adapter hook form on every OS |
+Released changesets are consumed by the release workflow. Read [CHANGELOG.md](../CHANGELOG.md) for their published changes.
 
 To add one, run:
 
