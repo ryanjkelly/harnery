@@ -49,7 +49,7 @@ harn doctor   # optional: one-time runtime + dependency check
 
 ### Native Windows source checkout
 
-For source development on Windows, install Node.js 20.19+ and Bun, then use
+For source development on Windows, install Node.js 24.22.1+ and Bun 1.4.4+, then use
 PowerShell 7:
 
 ```powershell

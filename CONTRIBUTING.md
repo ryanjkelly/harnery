@@ -8,8 +8,8 @@ This document covers the basics: local dev setup, code style, commit conventions
 
 Requires:
 
-- [Bun](https://bun.sh) 1.3+: recommended for dev (zero-build TS execution; the bins run `src/` directly)
-- Node 20.19+: the published package targets Node; only needed locally to test the built `dist/`
+- [Bun](https://bun.sh) 1.4.4+: recommended for dev (zero-build TS execution; the bins run `src/` directly)
+- Node 22.23.4+, 24.22.1+, or 26.12.1+ on a supported line: the published package targets Node; only needed locally to test the built `dist/`
 - A POSIX shell (Linux, macOS, or WSL)
 
 ```bash

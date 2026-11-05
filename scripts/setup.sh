@@ -69,7 +69,7 @@ if have bun; then
   bun install
 else
   if ! have npm; then
-    echo "harnery setup: need either Bun (https://bun.sh) or Node+npm (>=20)." >&2
+    echo "harnery setup: need either Bun >=1.4.4 (https://bun.sh) or patched Node+npm (22.23.4+, 24.22.1+, or 26.12.1+)." >&2
     exit 1
   fi
   echo "→ npm install"

@@ -446,9 +446,21 @@ export function nodeCheck(
     }
     v = runtime.node;
   }
-  const major = Number.parseInt(v.split(".")[0], 10);
-  if (Number.isNaN(major) || major < 20) {
-    return { name: "node", severity: "fail", detail: `${v} (need ≥ 20)`, hint };
+  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(v);
+  const [major, minor, patch] = match ? match.slice(1).map(Number) : [];
+  const floors: Record<number, [number, number]> = { 22: [23, 4], 24: [22, 1], 26: [12, 1] };
+  const floor = floors[major];
+  // These are the supported release lines containing the Brotli decoder fix.
+  if (
+    !match ||
+    !(major > 26 || (floor && (minor > floor[0] || (minor === floor[0] && patch >= floor[1]))))
+  ) {
+    return {
+      name: "node",
+      severity: "fail",
+      detail: `${v} (need 22.23.4+, 24.22.1+, or 26.12.1+ on a supported line)`,
+      hint,
+    };
   }
   return { name: "node", severity: "ok", detail: v };
 }
@@ -476,7 +488,21 @@ function checkBun(): Check {
       hint: "curl -fsSL https://bun.sh/install | bash",
     };
   }
-  return { name: "bun", severity: "ok", detail: r.out };
+  return bunCheck(r.out);
+}
+
+export function bunCheck(version: string): Check {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)$/.exec(version);
+  const [major, minor, patch] = match ? match.slice(1).map(Number) : [];
+  if (!match || !(major > 1 || (major === 1 && (minor > 4 || (minor === 4 && patch >= 4))))) {
+    return {
+      name: "bun",
+      severity: "fail",
+      detail: `${version} (need ≥ 1.4.4 for the Brotli decoder fix)`,
+      hint: "https://bun.sh/docs/installation",
+    };
+  }
+  return { name: "bun", severity: "ok", detail: version };
 }
 
 function checkRestic(): Check {

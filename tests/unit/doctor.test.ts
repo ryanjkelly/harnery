@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  bunCheck,
   codexAuthorizationCheck,
   codexWslBridgeCheck,
   countRecentCodexMidFlightOnboardings,
@@ -35,7 +36,7 @@ describe("harn doctor", () => {
     }
   });
 
-  test("node check does not fail on the test runner (we require ≥ 20)", () => {
+  test("node check does not fail on the patched Node on PATH", () => {
     const node = checks.find((c) => c.name === "node");
     expect(node?.severity).not.toBe("fail");
   });
@@ -43,15 +44,42 @@ describe("harn doctor", () => {
   test("node check reports the node on PATH, not the version Bun emulates", () => {
     const bun = { node: "24.3.0", bun: "1.4.0" };
     expect(nodeCheck({ ok: true, out: "v21.7.3" }, bun)).toMatchObject({
-      severity: "ok",
-      detail: "21.7.3",
+      severity: "fail",
     });
     expect(nodeCheck({ ok: true, out: "v18.20.0" }, bun).severity).toBe("fail");
     expect(nodeCheck({ ok: false, out: "" }, bun).severity).toBe("warn");
-    expect(nodeCheck({ ok: false, out: "" }, { node: "22.12.0" })).toMatchObject({
+    expect(nodeCheck({ ok: false, out: "" }, { node: "22.23.4" })).toMatchObject({
       severity: "ok",
-      detail: "22.12.0",
+      detail: "22.23.4",
     });
+  });
+
+  test("node check rejects vulnerable releases and accepts each fixed boundary", () => {
+    for (const node of [
+      "20.20.2",
+      "22.23.3",
+      "23.11.0",
+      "24.22.0",
+      "25.8.0",
+      "26.12.0",
+      "24.22.1-rc.1",
+      "bad",
+    ]) {
+      expect(nodeCheck({ ok: true, out: `v${node}` }, { node }).severity).toBe("fail");
+    }
+    for (const node of ["22.23.4", "22.24.0", "24.22.1", "24.22.2", "26.12.1", "27.0.0"]) {
+      expect(nodeCheck({ ok: true, out: `v${node}` }, { node }).severity).toBe("ok");
+    }
+    expect(nodeCheck({ ok: false, out: "" }, { node: "24.22.0" }).severity).toBe("fail");
+  });
+
+  test("bun check rejects vulnerable releases and accepts the fixed boundary", () => {
+    for (const version of ["1.3.3", "1.4.0", "1.4.3", "1.4.4-canary", "bad"]) {
+      expect(bunCheck(version).severity).toBe("fail");
+    }
+    for (const version of ["1.4.4", "1.4.5", "1.5.0", "2.0.0"]) {
+      expect(bunCheck(version).severity).toBe("ok");
+    }
   });
 
   test("git check is ok or fail (never warn, git is required)", () => {

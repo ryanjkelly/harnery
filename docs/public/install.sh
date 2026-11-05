@@ -94,11 +94,11 @@ main() {
       method=bun
     else
       cat >&2 <<EOF
-harnery needs Node 20+ or Bun to run, and neither was found.
+harnery needs patched Node (22.23.4+, 24.22.1+, or 26.12.1+) or Bun 1.4.4+ to run, and neither was found.
 
 Install one, then re-run this installer:
   - Bun (recommended):  curl -fsSL https://bun.sh/install | bash
-  - Node 20+:           https://nodejs.org  (or your OS package manager)
+  - Node 24.22.1+:           https://nodejs.org  (or your OS package manager)
 
 Or let this script install Bun for you:
   curl -fsSL https://harnery.com/install.sh | bash -s -- --install-runtime

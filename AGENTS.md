@@ -1,6 +1,6 @@
 # harnery: agent instructions
 
-Multi-agent coordination for AI coding agents: Claude Code, Cursor, Codex, and OpenCode. Pre-1.0, MIT, published to npm as `harnery` (binaries: `harn`, `agent-coord`, `agent-hook`). Bun-first for dev (zero-build TS execution); the published package targets Node ≥ 20.19. A host CLI composes the command tree via `createHarneryProgram({ binName, context })` from `harnery/commander` and adds its own commands on top. Pattern: [examples/extending-with-commander.ts](examples/extending-with-commander.ts).
+Multi-agent coordination for AI coding agents: Claude Code, Cursor, Codex, and OpenCode. Pre-1.0, MIT, published to npm as `harnery` (binaries: `harn`, `agent-coord`, `agent-hook`). Bun-first for dev (zero-build TS execution); the published package targets patched Node releases (see `package.json` `engines.node`). A host CLI composes the command tree via `createHarneryProgram({ binName, context })` from `harnery/commander` and adds its own commands on top. Pattern: [examples/extending-with-commander.ts](examples/extending-with-commander.ts).
 
 ## Portability is the prime constraint
 
@@ -117,7 +117,7 @@ When more than one host checks out harnery (e.g. two separate monorepos each car
 
 This `AGENTS.md` is the canonical instructions file; `CLAUDE.md` is a verbatim mirror for Claude Code. Edit `AGENTS.md`, then copy it across.
 
-<!-- harnery:begin instructions v=f7a056e0 -->
+<!-- harnery:begin instructions v=2e310879 -->
 ## harnery coordination
 
 This project runs [harnery](https://harnery.com) for multi-agent coordination.
@@ -159,7 +159,7 @@ It reclaims an abandoned namesake (no live process) and refuses only when anothe
 live process still holds the name; never hand-edit Harnery's history, heartbeat,
 or derived identity cache.
 
-**Declare intent on shell commands.** Every command you run is captured to the coordination ledger (`.harnery/ledgers/v3/`). Lead a shell command with a
+**Declare intent on shell commands.** Every command you run is captured to the coordination ledger (`harn events query` searches all of it). Lead a shell command with a
 `# intent: <why>` comment (or set the tool's description) so the recorded event
 carries a reason instead of `(no intent)`; the [tool-intent
 guide](https://harnery.com/guides/tool-intent/) owns the details.
