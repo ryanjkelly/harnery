@@ -212,6 +212,39 @@ describe("checkGitFinalization", () => {
     );
   });
 
+  test("tells a behind-only checkout to sync, not to commit, and names the host command", () => {
+    const behindOnly = {
+      ok: false,
+      claim_history_complete: true,
+      dirty_paths: [],
+      unpushed_repos: [],
+      behind_repos: ["."],
+      stale_submodules: [],
+      diverged_submodules: [],
+      host_output_paths: [],
+      unsupported_paths: [],
+      unverifiable_paths: [],
+      unverifiable_repos: [],
+      repos_checked: ["."],
+    };
+    const generic = formatGitFinalizationFailure(behindOnly, "harn");
+    expect(generic).not.toContain("Commit and push the owned Git work");
+    expect(generic).toContain("there is nothing of yours to commit");
+    expect(generic).toContain("safe sync command");
+    const named = formatGitFinalizationFailure(behindOnly, "harn", "status", "sync-all");
+    expect(named).toContain("Run `sync-all` to catch up");
+    expect(named).not.toContain("safe sync command");
+
+    const mixed = formatGitFinalizationFailure(
+      { ...behindOnly, dirty_paths: ["owned.txt"] },
+      "harn",
+      "status",
+      "sync-all",
+    );
+    expect(mixed).toContain("Commit and push the owned Git work");
+    expect(mixed).not.toContain("nothing of yours to commit");
+  });
+
   test("does not globally block an unrelated turn on a submodule checkout ahead of its gitlink", () => {
     const childRemote = join(temp, "child-remote.git");
     const childSeed = join(temp, "child-seed");

@@ -635,6 +635,7 @@ export function formatGitFinalizationFailure(
   result: GitFinalizationResult,
   bin: string,
   phase: "status" | "stop" = "status",
+  syncCommand: string | null = null,
 ): string {
   const lines = [
     phase === "stop"
@@ -691,26 +692,28 @@ export function formatGitFinalizationFailure(
       ...result.unverifiable_repos.map((repo) => `  - ${repo}`),
     );
   }
-  if (
+  const ownedWork =
     result.dirty_paths.length > 0 ||
     result.unpushed_repos.length > 0 ||
+    result.unverifiable_paths.length > 0 ||
+    result.unverifiable_repos.length > 0;
+  const freshness =
     result.behind_repos.length > 0 ||
     result.stale_submodules.length > 0 ||
-    result.diverged_submodules.length > 0 ||
-    result.unverifiable_paths.length > 0 ||
-    result.unverifiable_repos.length > 0
-  ) {
+    result.diverged_submodules.length > 0;
+  if (ownedWork) {
     lines.push(
       `Commit and push the owned Git work, then rerun \`${bin} agents status --end-turn\`.`,
     );
   }
-  if (
-    result.behind_repos.length > 0 ||
-    result.stale_submodules.length > 0 ||
-    result.diverged_submodules.length > 0
-  ) {
+  if (freshness) {
+    const sync = syncCommand
+      ? `Run \`${syncCommand}\` to catch up with the upstream changes`
+      : "Run the host repository's safe sync command";
     lines.push(
-      "Run the host repository's safe sync command, resolve any reported submodule state, then rerun the guarded status.",
+      ownedWork
+        ? `${sync}, resolve any reported submodule state, then rerun the guarded status.`
+        : `This checkout is behind changes another session pushed; there is nothing of yours to commit. ${sync}, resolve any reported submodule state, then rerun \`${bin} agents status --end-turn\`.`,
     );
   }
   if (result.unsupported_paths.length > 0) {

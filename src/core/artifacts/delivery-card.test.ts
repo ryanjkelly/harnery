@@ -309,6 +309,12 @@ describe("artifact delivery cards", () => {
       expect(() =>
         writeArtifactDeliveryManifest(repoRoot, created.manifest.artifact_id, {
           title: "Delivery",
+          items: [{ kind: "path", label: "Folder", path: "." }],
+        }),
+      ).toThrow("names the artifact folder itself");
+      expect(() =>
+        writeArtifactDeliveryManifest(repoRoot, created.manifest.artifact_id, {
+          title: "Delivery",
           items: [
             { kind: "url", label: "Video", target: "https://media.example/one" },
             { kind: "url", label: "video", target: "https://media.example/two" },

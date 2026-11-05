@@ -33,6 +33,10 @@
           "default": false,
           "description": "Require `agents status --end-turn` instead of plain `agents status` at the end of tool-using turns. The guarded call verifies that session-owned paths are committed and their repositories are pushed. Env override: HARNERY_AGENTS_REQUIRE_GIT_FINALIZATION=1|0."
         },
+        "gitSyncCommand": {
+          "type": "string",
+          "description": "The project's safe command for catching a checkout up with its upstream and reconciling submodules. End-turn remediation names it when the checkout is behind; without it the message refers to the host's sync command generically. Single line. Project config only: a user-global file cannot put a command into another project's prompts."
+        },
         "finalizationRoots": {
           "type": "array",
           "default": [],

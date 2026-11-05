@@ -93,6 +93,7 @@ import {
 import { turnChangesStatusRow } from "../core/agents/turn-changes.ts";
 import { turnElapsedStatusRow } from "../core/agents/turn-elapsed.ts";
 import {
+  agentsGitSyncCommand,
   coordFreshnessSeconds,
   resolveBinName,
   sessionFinalizationConfig,
@@ -821,7 +822,12 @@ function runEndSession(opts: {
   if (!finalized.ok) {
     return failCommand(
       "git_not_finalized",
-      formatGitFinalizationFailure(finalized, resolveBinName(root)),
+      formatGitFinalizationFailure(
+        finalized,
+        resolveBinName(root),
+        "status",
+        agentsGitSyncCommand(root),
+      ),
     );
   }
   const result = requestSessionEndExplicitV3({
@@ -2302,10 +2308,12 @@ function runLifecycle(
     if (!finalization.ok) {
       emit.error({
         code: "git_not_finalized",
-        message: formatGitFinalizationFailure(finalization, resolveBinName(root)).replace(
-          "the status box was not issued",
-          "lifecycle was not changed",
-        ),
+        message: formatGitFinalizationFailure(
+          finalization,
+          resolveBinName(root),
+          "status",
+          agentsGitSyncCommand(root),
+        ).replace("the status box was not issued", "lifecycle was not changed"),
       });
       process.exitCode = 1;
       return;
@@ -2498,7 +2506,12 @@ function runStatus(opts: {
     if (!finalization.ok) {
       emit.error({
         code: "git_not_finalized",
-        message: formatGitFinalizationFailure(finalization, resolveBinName(root)),
+        message: formatGitFinalizationFailure(
+          finalization,
+          resolveBinName(root),
+          "status",
+          agentsGitSyncCommand(root),
+        ),
       });
       process.exitCode = 1;
       return;

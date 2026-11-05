@@ -9,6 +9,7 @@
  */
 
 import {
+  agentsGitSyncCommand,
   agentsRequireGitFinalization,
   endOfTurnStatusCommand,
   resolveBinName,
@@ -218,6 +219,7 @@ export function evaluateStopHookV3Events(
         req.final_git_state.result,
         resolveBinName(coordRoot),
         "stop",
+        agentsGitSyncCommand(coordRoot),
       ),
     });
   }

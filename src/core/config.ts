@@ -95,6 +95,8 @@ interface HarneryConfig {
   agents?: {
     requireGitFinalization?: boolean;
     finalizationRoots?: AgentFinalizationRoot[];
+    /** Project-only; read via `agentsGitSyncCommand()`. */
+    gitSyncCommand?: unknown;
   };
   /** Admission resource defaults and the heavy-command guard. Project config only. */
   admission?: unknown;
@@ -653,6 +655,23 @@ export function agentsFinalizationRoots(coordRoot?: string | null): AgentFinaliz
     if (!path || (disposition !== "git" && disposition !== "output")) return [];
     return [{ path, disposition }];
   });
+}
+
+/**
+ * The host's safe command for catching a checkout up with its upstream and
+ * reconciling submodules, named in end-turn remediation when the shared
+ * checkout is behind. Project config only, because agents are told to run it:
+ * a user-global file cannot put a command into another project's prompts.
+ *
+ * `.harnery/config.jsonc`: `{ "agents": { "gitSyncCommand": "<command>" } }`
+ */
+export function agentsGitSyncCommand(coordRoot?: string | null): string | null {
+  const root = coordRoot ?? findCoordRoot();
+  if (!root) return null;
+  const value = readProjectConfig(root).agents?.gitSyncCommand;
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed && !/[\r\n`]/.test(trimmed) ? trimmed : null;
 }
 
 /** The status command automatic prompts and Stop remediation should request. */

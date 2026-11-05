@@ -257,7 +257,12 @@ function validateManifest(artifactPath: string, value: unknown): ArtifactDeliver
 function resolveArtifactItem(artifactPath: string, itemPath: string): string {
   const root = realpathSync(artifactPath);
   const lexical = resolve(root, itemPath);
-  if (lexical === root || !lexical.startsWith(`${root}${sep}`)) {
+  if (lexical === root) {
+    throw new Error(
+      `delivery path names the artifact folder itself: ${itemPath}. The card already links the artifact workspace; list files inside it instead.`,
+    );
+  }
+  if (!lexical.startsWith(`${root}${sep}`)) {
     throw new Error(`delivery path escapes the artifact folder: ${itemPath}`);
   }
   let target: string;
