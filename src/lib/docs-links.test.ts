@@ -114,6 +114,39 @@ describe("slugify / collectAnchors", () => {
     expect(anchors.has("bold-and-a-link")).toBe(true);
   });
 
+  test("decodes decimal and hexadecimal entities before assigning heading slugs", () => {
+    expect([
+      ...collectAnchors("## E&#45;ATT&#45;0240\n## E&#45;ATT&#45;0840\n## E&#x2D;ATT&#X2d;0240"),
+    ]).toEqual(["e-att-0240", "e-att-0840", "e-att-0240-1"]);
+  });
+
+  test("decodes named entities in ATX and Setext heading text", () => {
+    expect([...collectAnchors("## Caf&eacute; &amp; tea\n\nR&eacute;sum&eacute;\n---")]).toEqual([
+      "café--tea",
+      "résumé",
+    ]);
+  });
+
+  test("keeps entity-looking code literal and decodes surrounding text only once", () => {
+    expect([
+      ...collectAnchors("## `E&#45;ATT&#45;0240` and E&#45;ATT&#45;0240\n## `&amp;` &amp;#45;"),
+    ]).toEqual(["e45att450240-and-e-att-0240", "amp-45"]);
+  });
+
+  test("decoded markup characters stay heading text", () => {
+    expect([...collectAnchors("## &lt;id&gt; &lowbar;key&lowbar; &ast;bold&ast;")]).toEqual([
+      "id-_key_-bold",
+    ]);
+  });
+
+  test("requires valid semicolon-terminated entities and honors escaped ampersands", () => {
+    expect([...collectAnchors("## &copy &unknown; &#x;\n## \\&amp; &amp;\n## \\\\&amp;")]).toEqual([
+      "copy-unknown-x",
+      "amp-",
+    ]);
+    expect(() => collectAnchors("## &#0; &#x110000;")).not.toThrow();
+  });
+
   test("keeps literal underscores while stripping emphasis underscores", () => {
     // GitHub anchors `not_in_channel` with its underscores intact; only
     // word-boundary underscores are emphasis markup.
@@ -268,6 +301,27 @@ describe("checkFile", () => {
     const bad = check("docs/index.md", "[t](target.md#no-such-heading)");
     expect(bad.findings).toHaveLength(1);
     expect(bad.findings[0]?.rule).toBe("missing-fragment");
+  });
+
+  test("resolves entity headings while still reporting wrong fragments and missing files", () => {
+    write("docs/image-dispositions.md", "## E&#45;ATT&#45;0240\n");
+    write("docs/export-dispositions.md", "## E&#45;ATT&#45;0840\n");
+    const result = check(
+      "docs/index.md",
+      [
+        "[image](image-dispositions.md#e-att-0240)",
+        "[export](export-dispositions.md#e-att-0840)",
+        "[old spelling](image-dispositions.md#e45att450240)",
+        "[wrong heading](export-dispositions.md#e-att-9999)",
+        "[missing file](missing.md#e-att-0240)",
+      ].join("\n"),
+    );
+    expect(result.checked).toBe(5);
+    expect(result.findings.map(({ target, rule }) => ({ target, rule }))).toEqual([
+      { target: "image-dispositions.md#e45att450240", rule: "missing-fragment" },
+      { target: "export-dispositions.md#e-att-9999", rule: "missing-fragment" },
+      { target: "missing.md#e-att-0240", rule: "missing-target" },
+    ]);
   });
 
   test("validates a target heading containing literal angle-bracket code", () => {

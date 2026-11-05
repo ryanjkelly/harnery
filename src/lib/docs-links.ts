@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { parseHTML } from "linkedom";
 import { type DocKind, readDocStatusFromText } from "./docs-frontmatter.ts";
 import { sh } from "./exec.ts";
 
@@ -363,16 +364,22 @@ export function slugify(heading: string): string {
     .replace(/\s/g, "-");
 }
 
-/** Keep literal code text out of the heading's inline-markup replacements. */
+/** Keep code and escaped ampersands out of inline markup/entity decoding. */
 function shieldHeadingCode(text: string): { text: string; restore: (text: string) => string } {
   let marker = "\u0000";
   while (text.includes(marker)) marker += "\u0000";
   const spans: string[] = [];
-  const tokens = /<[^>]+>|`+/g;
+  const tokens = /<[^>]+>|\\[\\&]|`+/g;
   let masked = "";
   let copiedThrough = 0;
 
   for (let opening = tokens.exec(text); opening; opening = tokens.exec(text)) {
+    if (opening[0].startsWith("\\")) {
+      masked += text.slice(copiedThrough, opening.index) + marker + spans.length + marker;
+      spans.push(opening[0].slice(1));
+      copiedThrough = tokens.lastIndex;
+      continue;
+    }
     // An HTML tag starts before its attribute values; their backticks are not
     // code delimiters. Escaped opening backticks are literal punctuation too.
     if (!opening[0].startsWith("`")) continue;
@@ -443,7 +450,12 @@ export function collectAnchors(content: string): Set<string> {
       .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
       .replace(/[*~`]/g, "")
       .replace(/\b_+|_+\b/g, "")
-      .replace(/<[^>]+>/g, "");
+      .replace(/<[^>]+>/g, "")
+      // CommonMark requires semicolons and decodes once, after inline parsing:
+      // encoded tags/emphasis stay text, while shielded code stays literal.
+      .replace(/&(?:#[xX][\da-fA-F]{1,6}|#\d{1,7}|[A-Za-z][A-Za-z0-9]+);/g, (entity) => {
+        return parseHTML(`<span>${entity}</span>`).document.firstChild!.textContent!;
+      });
     const base = slugify(code.restore(text));
     if (!base) return;
     const n = seen.get(base) ?? 0;
