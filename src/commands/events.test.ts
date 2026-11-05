@@ -22,7 +22,11 @@ describe("events latency command", () => {
     const program = createHarneryProgram();
     await loadLazyCommand(program, "events");
     const command = program.commands.find((candidate) => candidate.name() === "events");
-    expect(command?.commands.map((candidate) => candidate.name())).toEqual(["latency"]);
+    expect(command?.commands.map((candidate) => candidate.name())).toEqual([
+      "latency",
+      "epochs",
+      "query",
+    ]);
     expect(command?.commands[0]?.options.map(({ long }) => long)).toEqual([
       "--root",
       "--candidate",

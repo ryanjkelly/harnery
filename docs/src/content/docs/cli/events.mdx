@@ -1,24 +1,80 @@
 ---
 title: harn events
-description: Inspect latency, token economics, and span attribution from Event Ledger V3.
+description: Search the retained event history across archived epochs, and inspect latency, token economics, and span attribution from Event Ledger V3.
 sidebar:
   order: 44
 ---
 
 ```
+harn events epochs [--root <path>] [--tz <zone>] [--json]
+harn events query  [--since <when>] [--until <when>] [--type <types...>] [--session <id>]
+                   [--tool <name>] [--outcome <outcome>] [--count-by <field>] [--limit <n>]
+                   [--tz <zone>] [--json] [--root <path>]
 harn events latency [--root <path>] [--candidate] [--by-tool | --by-generation] [--json]
 ```
+
+## The ledger spans several epochs
+
+`.harnery/ledgers/v3/active.ndjson` holds only the current epoch. When it
+reaches `events.rotate_active_bytes` (32 MiB by default), Harnery moves the
+whole epoch into `.harnery/ledgers/v3-archives/epoch-<stamp>/` and starts a new
+one. A busy project can rotate several times a day, so reading the active file
+alone shows a few hours of history. Archives are kept for
+`events.archive_max_age_days` (7 by default) under `events.archive_max_bytes`
+(1 GiB by default).
+
+`harn events epochs` lists every retained epoch with its first and last event
+time, event count, and size. `harn events query` reads them all as one history.
+
+## Query
+
+`query` lists matching events, keeping the most recent `--limit` rows (50 by
+default; `0` lists all), or counts them with `--count-by`. Every result ends
+with a coverage line naming how many epochs were searched and how far back the
+history reaches.
+
+| Flag | Description |
+| --- | --- |
+| `--since`, `--until` | Time window: `30d`, `12h`, `90m`, or an ISO date or time. Epochs that closed before `--since` are skipped without being read. |
+| `--type <types...>` | Event types. Exact names, or prefixes ending in `.` or `*` (`tool.`, `coord.*`). |
+| `--session <id>` | Instance id or prefix, with or without `inst_`. |
+| `--tool <name>` | Tool name or command executable. Completions are joined to their opening `tool.requested` or `command.started` event within the same epoch. |
+| `--outcome <outcome>` | Completion outcome, such as `succeeded` or `failed`. |
+| `--count-by <field>` | `type`, `session`, `subject`, `outcome`, `day`, `hour`, or `epoch`. |
+| `--tz <zone>` | IANA zone for printed times and day or hour groups. Defaults to the machine's zone. |
+| `--json` | Emit rows or counts plus per-epoch summaries. |
+
+The ledger stores commands, tool inputs, and results as fingerprints, not text,
+so `query` filters on recorded structure rather than on error messages. It reads
+the stored lines for inspection and does not validate authority; `latency` and
+other projections keep the validating reader.
+
+```bash
+# How far back does the history go?
+harn events epochs
+
+# Which tools failed most in the last week?
+harn events query --since 7d --type tool.completed --outcome failed --count-by subject
+
+# One session's recent activity
+harn events query --session 7aef7ec6 --limit 100
+
+# Failures per day
+harn events query --since 30d --outcome failed --count-by day
+```
+
+## Latency
 
 Read the canonical V3 ledger and project turn wall time, inclusive tool time,
 exclusive command time, per-kind waits, response latency, inference, harness
 overhead, residual time, context use, and token economics. The command fails
 closed when the validating reader reports an incomplete ledger.
 
-## Views
+### Views
 
 The default table shows one row per turn. `--by-tool` groups inclusive duration by tool namespace and name. `--by-generation` aggregates turns into generation totals. The two grouping flags are mutually exclusive.
 
-## Options
+### Options
 
 | Flag | Description |
 | --- | --- |
@@ -28,7 +84,7 @@ The default table shows one row per turn. `--by-tool` groups inclusive duration 
 | `--by-generation` | Aggregate latency by generation. |
 | `--json` | Emit the complete latency and economics projections plus the selected view. |
 
-## Examples
+### Examples
 
 ```bash
 # One row per completed turn
@@ -44,7 +100,7 @@ harn events latency --candidate --by-generation
 harn events latency --json
 ```
 
-## Output
+### Output
 
 Observed durations render as milliseconds. Partial observations render with a
 question mark and preserve known lower bounds. `ACTION` is the mixed interval

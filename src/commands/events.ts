@@ -1,6 +1,15 @@
 import { resolve } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
+import { resolveBinName } from "../core/config.ts";
+import {
+  countEventHistoryV3,
+  type EventHistoryGroupV3,
+  type EventHistoryRowV3,
+  localStamp,
+  parseHistoryInstantV3,
+  scanEventHistoryV3,
+} from "../core/events/v3/history.ts";
 import {
   type LatencyMetricV3,
   projectEconomicsV3,
@@ -17,6 +26,30 @@ interface LatencyOptions {
   byTool?: boolean;
   byGeneration?: boolean;
 }
+
+interface QueryOptions {
+  root?: string;
+  since?: string;
+  until?: string;
+  type?: string[];
+  session?: string;
+  tool?: string;
+  outcome?: string;
+  countBy?: string;
+  limit?: string;
+  tz?: string;
+  json?: boolean;
+}
+
+const GROUPS: EventHistoryGroupV3[] = [
+  "type",
+  "session",
+  "subject",
+  "outcome",
+  "day",
+  "hour",
+  "epoch",
+];
 
 interface GenerationLatencyRow {
   generation_id: string;
@@ -87,6 +120,151 @@ export function registerEventsCommand(
         throw error;
       }
     });
+
+  command
+    .command("epochs")
+    .description(
+      "List every retained ledger epoch (archives plus the active one) with its time span and event count",
+    )
+    .option("--root <path>", "Explicit coordination root")
+    .option("--tz <zone>", "IANA time zone for printed times (default: this machine's)")
+    .option("--json", "Emit the epoch summaries as JSON")
+    .action((options: { root?: string; tz?: string; json?: boolean }) => {
+      const root = resolve(options.root ?? coordRoot(context));
+      const scan = scanEventHistoryV3(root, {}, { collectRows: false });
+      if (options.json) {
+        emit.config({ format: "json" });
+        emit.data({ root, epochs: scan.epochs });
+        return;
+      }
+      emit.text(renderEpochs(scan.epochs, options.tz));
+    });
+
+  command
+    .command("query")
+    .description(
+      "Search or count events across the whole retained history, archives included, not only the active epoch",
+    )
+    .option("--root <path>", "Explicit coordination root")
+    .option("--since <when>", "Start: 30d, 12h, 90m, or an ISO date/time")
+    .option("--until <when>", "End (exclusive): same forms as --since")
+    .option("--type <types...>", "Event types; exact, or a prefix ending in . or * (tool. coord.*)")
+    .option("--session <id>", "Instance id or prefix, with or without inst_")
+    .option("--tool <name>", "Tool name or command executable (Bash, Edit, git, ...)")
+    .option("--outcome <outcome>", "Completion outcome (succeeded, failed, ...)")
+    .option("--count-by <field>", `Count matches instead of listing them: ${GROUPS.join(", ")}`)
+    .option("--limit <n>", "Rows to list, most recent kept (default 50; 0 = all)")
+    .option("--tz <zone>", "IANA time zone for printed times and day/hour groups")
+    .option("--json", "Emit JSON")
+    .action((options: QueryOptions) => {
+      try {
+        const root = resolve(options.root ?? coordRoot(context));
+        const countBy = options.countBy as EventHistoryGroupV3 | undefined;
+        if (countBy && !GROUPS.includes(countBy)) {
+          throw new Error(`--count-by must be one of: ${GROUPS.join(", ")}`);
+        }
+        const limit = options.limit === undefined ? 50 : Number(options.limit);
+        if (!Number.isInteger(limit) || limit < 0)
+          throw new Error("--limit must be a whole number");
+        const now = new Date();
+        const scan = scanEventHistoryV3(root, {
+          since: options.since ? parseHistoryInstantV3(options.since, now) : undefined,
+          until: options.until ? parseHistoryInstantV3(options.until, now) : undefined,
+          types: options.type,
+          session: options.session,
+          subject: options.tool,
+          outcome: options.outcome,
+        });
+        const coverage = coverageLine(scan.epochs, scan.skipped_epochs, options.tz);
+        if (countBy) {
+          const counts = countEventHistoryV3(scan.rows, countBy, options.tz);
+          if (options.json) {
+            emit.config({ format: "json" });
+            emit.data({
+              root,
+              matches: scan.rows.length,
+              count_by: countBy,
+              counts,
+              epochs: scan.epochs,
+            });
+            return;
+          }
+          emit.text(
+            `${renderTable(
+              [countBy.toUpperCase(), "COUNT"],
+              counts.map(({ key, count }) => [key, String(count)]),
+            )}${scan.rows.length} matching events. ${coverage}\n`,
+          );
+          return;
+        }
+        const shown = limit === 0 ? scan.rows : scan.rows.slice(-limit);
+        if (options.json) {
+          emit.config({ format: "json" });
+          emit.data({ root, matches: scan.rows.length, rows: shown, epochs: scan.epochs });
+          return;
+        }
+        const note =
+          shown.length < scan.rows.length
+            ? `Showing the latest ${shown.length} of ${scan.rows.length} matching events (--limit 0 for all).`
+            : `${scan.rows.length} matching events.`;
+        emit.text(`${renderHistoryRows(shown, options.tz)}${note} ${coverage}\n`);
+      } catch (error) {
+        emit.error({
+          code: "event_v3_query_failed",
+          message: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+    });
+}
+
+function coverageLine(
+  epochs: ReturnType<typeof scanEventHistoryV3>["epochs"],
+  skipped: number,
+  timeZone?: string,
+): string {
+  const first = epochs
+    .map((epoch) => epoch.first_at)
+    .filter(Boolean)
+    .sort()[0];
+  const span = first ? ` back to ${localStamp(first, timeZone)}` : "";
+  const skippedNote = skipped > 0 ? `; ${skipped} older epochs skipped by --since` : "";
+  return `Searched ${epochs.length} epochs${span}${skippedNote}.`;
+}
+
+function renderHistoryRows(rows: EventHistoryRowV3[], timeZone?: string): string {
+  return renderTable(
+    ["TIME", "TYPE", "SESSION", "SUBJECT", "OUTCOME", "MS", "EXIT"],
+    rows.map((row) => [
+      localStamp(row.recorded_at, timeZone),
+      row.event_type,
+      row.instance_id?.replace(/^inst_/, "").slice(0, 13) ?? "",
+      row.subject ?? "",
+      row.outcome ?? "",
+      row.duration_ms === null ? "" : String(row.duration_ms),
+      row.exit_code === null ? "" : String(row.exit_code),
+    ]),
+  );
+}
+
+function renderEpochs(
+  epochs: ReturnType<typeof scanEventHistoryV3>["epochs"],
+  timeZone?: string,
+): string {
+  const table = renderTable(
+    ["EPOCH", "FIRST EVENT", "LAST EVENT", "EVENTS", "MB", "MALFORMED"],
+    epochs.map((epoch) => [
+      epoch.name,
+      epoch.first_at ? localStamp(epoch.first_at, timeZone) : "",
+      epoch.last_at ? localStamp(epoch.last_at, timeZone) : "",
+      String(epoch.events),
+      (epoch.bytes / 1_048_576).toFixed(1),
+      String(epoch.malformed_lines),
+    ]),
+  );
+  const events = epochs.reduce((total, epoch) => total + epoch.events, 0);
+  const bytes = epochs.reduce((total, epoch) => total + epoch.bytes, 0);
+  return `${table}${events} events in ${epochs.length} epochs, ${(bytes / 1_048_576).toFixed(1)} MB. The active epoch rotates into the archives by size; search all of them with \`${resolveBinName()} events query\`.\n`;
 }
 
 function coordRoot(context: HarneryProgramContext | undefined): string {
