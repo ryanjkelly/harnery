@@ -137,7 +137,7 @@ It reclaims an abandoned namesake (no live process) and refuses only when anothe
 live process still holds the name; never hand-edit Harnery's history, heartbeat,
 or derived identity cache.
 
-**Declare intent on shell commands.** Every command you run is captured to the coordination ledger (\`.harnery/ledgers/v3/\`, which rotates by size into \`ledgers/v3-archives/\`; search the whole history with \`${b} events query\`). Lead a shell command with a
+**Declare intent on shell commands.** Every command you run is captured to the coordination ledger (\`${b} events query\` searches all of it). Lead a shell command with a
 \`# intent: <why>\` comment (or set the tool's description) so the recorded event
 carries a reason instead of \`(no intent)\`; the [tool-intent
 guide](https://harnery.com/guides/tool-intent/) owns the details.
