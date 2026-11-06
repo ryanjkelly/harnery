@@ -61,8 +61,8 @@ repository hygiene, not test results or business correctness.
 
 Lifecycle has one human-facing title projection: when a task becomes done, its
 original session name is re-minted with `[DONE] ` prepended. Active, blocked,
-and reopened sessions do not ask the agent to print another title. Claude
-Desktop cleanup reads the lifecycle event itself, not the editable title.
+and reopened sessions do not ask the agent to print another title. Declaring
+a task done does not archive its Claude Desktop sidebar entry.
 
 ## Where it appears
 
@@ -71,7 +71,6 @@ Desktop cleanup reads the lifecycle event itself, not the editable title.
 - cross-machine presence
 - agent cards and detail pages in `harn web`
 - suggested session titles
-- `harn claude-desktop tidy`
 
 ## Start using it
 
@@ -86,7 +85,7 @@ Run `harn agents status` to see the current session and its peers. Use
 
 <LinkCard
   title="Manage Claude Desktop sessions"
-  description="Mirror sessions across accounts and archive completed entries safely."
+  description="Keep sessions visible after switching desktop accounts."
   href="/guides/manage-claude-desktop-sessions/"
 />
 

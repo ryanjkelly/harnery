@@ -116,12 +116,9 @@ is observed, and the display latch treats it like the first session name.
 Reopening does not print another title. The title is still a projection;
 editing it does not mutate lifecycle.
 
-Claude Desktop cleanup uses the same one-way projection. `harn claude-desktop
-tidy` maps a sidebar entry to its Harnery session and checks the latest durable
-lifecycle event. It archives mapped `done` entries only when `--yes` is present.
-A `[DONE]` title without lifecycle evidence is skipped unless the operator adds
-`--include-legacy-prefix`; a `[BLOCKED]` title never qualifies. Titles remain an
-output of lifecycle, not an input to it.
+Declaring a task `done` does not archive its Claude Desktop sidebar entry.
+The former desktop cleanup command was removed during the event-ledger
+migration. Titles remain an output of lifecycle, not an input to it.
 
 ## Live state and replay
 

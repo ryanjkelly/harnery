@@ -1,18 +1,16 @@
 ---
 title: harn claude-desktop
-description: "List and mirror Claude desktop-app sessions, then archive entries backed by completed Harnery lifecycle events."
+description: "List Claude desktop-app sessions, mirror them across accounts, and share them across machines."
 sidebar:
   order: 32
 ---
 
 ```
-harn claude-desktop [accounts|sessions|mirror|tidy] [options]
+harn claude-desktop [accounts|sessions|mirror|share] [options]
 ```
 
 Use the [Claude Desktop session guide](/guides/manage-claude-desktop-sessions/)
-for the full mirror and cleanup workflow. Read the
-[Session state feature page](/features/session-state/) for the lifecycle model
-behind `tidy`.
+for the account-switching workflow.
 
 The Claude desktop app scopes its Claude Code session sidebar **per signed-in
 account**: sign out of one Claude account and into another (a common move when
@@ -32,10 +30,6 @@ directory it sits in. `harn claude-desktop mirror` copies entry files across
 account directories so each account's sidebar lists the union. Fully quit and
 relaunch the desktop app afterward; opening a mirrored session resumes it
 with full history.
-
-`harn claude-desktop tidy` handles the other side of the index. It finds
-sidebar rows whose mapped Harnery task is done and can archive them in one
-batch.
 
 ## Locating the data directory
 
@@ -62,10 +56,7 @@ harn claude-desktop mirror --session <cli-session-id> --yes  # by exact session 
 harn claude-desktop mirror --all --to 6d725f2a --yes         # only INTO one account
 harn claude-desktop mirror --all --from e6c7dc4f --yes       # only FROM one account
 
-harn claude-desktop tidy                       # dry-run: plan archives for done sessions
-harn claude-desktop tidy --account 6d725f2a    # limit the plan to one account prefix
-harn claude-desktop tidy --yes                 # archive the planned entries
-harn claude-desktop tidy --include-legacy-prefix  # include old hand-labeled [DONE] rows
+harn claude-desktop share                        # dry-run: plan cross-machine sharing
 ```
 
 `mirror` is **dry-run by default**: it prints the planned copies and exits;
@@ -76,27 +67,9 @@ skipped unless `--include-archived`.
 
 ## Archiving completed sessions
 
-`tidy` joins each desktop entry's `cliSessionId` to Harnery's canonical event
-ledger. An entry qualifies only when its latest `coord.lifecycle_changed` event is
-`done`. The command reports active, blocked, and unmatched entries, plus counts
-for each skip reason. Already archived entries appear in the counts instead of
-filling the output with old rows. A title that merely starts with `[DONE]` does
-not qualify, and `[BLOCKED]` entries are always skipped.
-
-The default is a dry-run. Add `--yes` to set `isArchived: true` in each
-qualifying entry. Each update rereads the current JSON, changes only the archive
-flag, and replaces the file atomically. Repeating the command is safe because
-already archived entries become skips.
-
-`--include-legacy-prefix` is an explicit compatibility mode for sessions
-labeled by hand before lifecycle events existed. It accepts an unmatched
-`[DONE]` title, but it never overrides a matching active or blocked lifecycle
-event. Use `--account <uuid-prefix>` to limit either a dry-run or an applied
-batch to selected account directories.
-
-After an applied batch, fully quit and relaunch the desktop app. Closing its
-window usually leaves it running, so the sidebar may not refresh until the app
-process restarts.
+The former `tidy` subcommand was removed during the event-ledger migration.
+The current CLI has no archive command. Declaring a Harnery task `done` does
+not archive its Claude Desktop sidebar entry.
 
 ## Sharing sessions across machines
 

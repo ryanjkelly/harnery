@@ -104,6 +104,11 @@ readers reconstruct their last activity and lifecycle from canonical events.
 Timestamp guards prevent an older replayed event from rolling that projection
 backward.
 
+> Historical note (2026-11-05): the desktop cleanup described below was removed
+> in commit `d47e315b` during the event-ledger migration. The current CLI has no
+> `tidy` subcommand or archive replacement. This paragraph records the earlier
+> implementation.
+
 Phase 4 added the first lifecycle consumer outside the live coordination
 surfaces. `harn claude-desktop tidy` streams the active and rotated event
 ledgers, maps desktop entries by session identity, and archives only entries
