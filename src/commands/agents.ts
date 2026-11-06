@@ -2502,6 +2502,7 @@ function runStatus(opts: {
     const scope = readSessionFinalizationScope(root, hb, myOwner);
     finalization = checkGitFinalization(root, scope.paths, {
       claimHistoryComplete: scope.complete,
+      reconcilePeerSubmodules: true,
     });
     if (!finalization.ok) {
       emit.error({

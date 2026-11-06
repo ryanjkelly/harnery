@@ -503,6 +503,119 @@ function rootSubmoduleFreshness(repoRoot: string): {
   return { stale: stale.sort(), diverged: diverged.sort() };
 }
 
+/** Heal only clean peer checkouts; touched inputs must still report their stale state. */
+function reconcilePeerSubmodules(
+  root: string,
+  stalePaths: readonly string[],
+  repos: Map<string, RepoWork>,
+): void {
+  // A locally committed parent pointer is not proof of a delivered peer change.
+  if (repoHasRemote(root) !== true || repoSyncState(root) !== "synced") return;
+  const modules = git(
+    ["config", "--blob", "HEAD:.gitmodules", "--get-regexp", "^submodule\\..*\\.path$"],
+    root,
+  );
+  if (modules.status !== 0) return;
+  for (const path of stalePaths) {
+    const child = physicalPath(join(root, path));
+    if (!child || child === physicalPath(root) || !pathInside(physicalPath(root) ?? root, child)) {
+      continue;
+    }
+    const toplevel = git(["rev-parse", "--show-toplevel"], child);
+    if (toplevel.status !== 0 || physicalPath(toplevel.stdout.trim()) !== child) continue;
+    // Include directory claims and enclosing gitlinks, not just exact filenames.
+    const owned = [...repos.values()].some((work) =>
+      [...work.paths].some((held) => {
+        const absolute = resolve(work.root, held);
+        return pathInside(absolute, child) || pathInside(child, absolute);
+      }),
+    );
+    if (owned) continue;
+    const status = git(["status", "--porcelain=v1", "--untracked-files=all"], child);
+    if (status.status !== 0 || status.stdout.length > 0) continue;
+    const module = modules.stdout.split("\n").find((line) => line.replace(/^\S+\s+/, "") === path);
+    if (!module) continue;
+    const key = module.split(/\s+/, 1)[0]!.replace(/\.path$/, ".branch");
+    const branchConfig = git(["config", "--blob", "HEAD:.gitmodules", "--get", key], root);
+    if (branchConfig.status !== 0 && branchConfig.status !== 1) continue;
+    const remoteHead =
+      branchConfig.status === 1
+        ? git(["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], child)
+        : null;
+    let declared =
+      branchConfig.status === 0
+        ? branchConfig.stdout.trim()
+        : remoteHead?.status === 0
+          ? remoteHead.stdout.trim().replace(/^origin\//, "")
+          : "";
+    if (declared === ".") {
+      declared = git(["symbolic-ref", "--quiet", "--short", "HEAD"], root).stdout.trim();
+    }
+    if (!declared || git(["check-ref-format", "--branch", declared], child).status !== 0) continue;
+    const branch = git(["symbolic-ref", "--quiet", "--short", "HEAD"], child);
+    if (branch.status !== 0 && branch.status !== 1) continue;
+    if (branch.status === 0 && branch.stdout.trim() !== declared) continue;
+    const target = git(["rev-parse", `HEAD:${path}`], root);
+    const checkout = git(["rev-parse", "HEAD"], child);
+    const index = git(["ls-files", "--stage", "--", path], root);
+    const indexSha = /^160000 ([0-9a-f]{40}) 0\t/.exec(index.stdout)?.[1];
+    if (
+      target.status !== 0 ||
+      checkout.status !== 0 ||
+      index.status !== 0 ||
+      indexSha !== target.stdout.trim()
+    )
+      continue;
+    const targetSha = target.stdout.trim();
+    const current = checkout.stdout.trim();
+    if (git(["merge-base", "--is-ancestor", current, targetSha], child).status !== 0) continue;
+    const local = git(["rev-parse", "--verify", `refs/heads/${declared}`], child);
+    // Detached HEAD must not hide unpublished commits on the declared branch.
+    if (
+      local.status === 0 &&
+      git(["merge-base", "--is-ancestor", local.stdout.trim(), targetSha], child).status !== 0
+    )
+      continue;
+    const fetched = git(
+      [
+        "fetch",
+        "--quiet",
+        "--no-tags",
+        "--no-recurse-submodules",
+        "origin",
+        `+refs/heads/${declared}:refs/remotes/origin/${declared}`,
+      ],
+      child,
+    );
+    if (fetched.status !== 0) continue;
+    const remote = git(["rev-parse", "--verify", `refs/remotes/origin/${declared}`], child);
+    if (remote.status !== 0 || remote.stdout.trim() !== targetSha) continue;
+    // Recheck the snapshot after fetching; never move a newly advanced peer HEAD.
+    if (
+      git(["rev-parse", "HEAD"], child).stdout.trim() !== current ||
+      git(["rev-parse", `HEAD:${path}`], root).stdout.trim() !== targetSha ||
+      git(["ls-files", "--stage", "--", path], root).stdout !== index.stdout
+    )
+      continue;
+    const currentBranch = git(["symbolic-ref", "--quiet", "--short", "HEAD"], child);
+    const currentLocal = git(["rev-parse", "--verify", `refs/heads/${declared}`], child);
+    if (
+      currentBranch.status !== branch.status ||
+      currentBranch.stdout !== branch.stdout ||
+      currentLocal.status !== local.status ||
+      currentLocal.stdout !== local.stdout
+    )
+      continue;
+    const clean = git(["status", "--porcelain=v1", "--untracked-files=all"], child);
+    if (clean.status !== 0 || clean.stdout.length > 0) continue;
+    const move =
+      branch.status === 0
+        ? ["merge", "--ff-only", "--quiet", "--no-overwrite-ignore", targetSha]
+        : ["checkout", "--quiet", "--detach", "--no-overwrite-ignore", targetSha];
+    git(["-c", "submodule.recurse=false", ...move], child);
+  }
+}
+
 /** Compare gitlink commits without treating dirty contents inside the child as a pointer change. */
 function gitlinkIsDirty(parentRoot: string, gitlink: string): boolean {
   const head = git(["rev-parse", `HEAD:${gitlink}`], parentRoot);
@@ -521,6 +634,8 @@ export function checkGitFinalization(
   options: {
     claimHistoryComplete?: boolean;
     includeRepositoryFreshness?: boolean;
+    /** End-turn may fast-forward clean peer submodules after owned work is finalized. */
+    reconcilePeerSubmodules?: boolean;
     timeoutMs?: number;
   } = {},
 ): GitFinalizationResult {
@@ -534,7 +649,11 @@ export function checkGitFinalization(
 function inspectGitFinalization(
   coordRoot: string,
   heldPaths: readonly string[],
-  options: { claimHistoryComplete?: boolean; includeRepositoryFreshness?: boolean },
+  options: {
+    claimHistoryComplete?: boolean;
+    includeRepositoryFreshness?: boolean;
+    reconcilePeerSubmodules?: boolean;
+  },
 ): GitFinalizationResult {
   const root = resolve(coordRoot);
   // Repository discovery resolves symlinks. Use the same physical base for
@@ -628,6 +747,27 @@ function inspectGitFinalization(
     result.unsupported_paths.length === 0 &&
     result.unverifiable_paths.length === 0 &&
     result.unverifiable_repos.length === 0;
+  if (
+    !result.ok &&
+    options.reconcilePeerSubmodules &&
+    freshness &&
+    result.claim_history_complete &&
+    result.dirty_paths.length === 0 &&
+    result.unpushed_repos.length === 0 &&
+    result.behind_repos.length === 0 &&
+    result.unsupported_paths.length === 0 &&
+    result.unverifiable_paths.length === 0 &&
+    result.unverifiable_repos.length === 0 &&
+    result.stale_submodules.length > 0
+  ) {
+    reconcilePeerSubmodules(root, result.stale_submodules, repos);
+    // Hooks or peers may change state while Git moves a checkout. Re-run every
+    // ownership and freshness check, with no second recovery pass.
+    return inspectGitFinalization(coordRoot, heldPaths, {
+      ...options,
+      reconcilePeerSubmodules: false,
+    });
+  }
   return result;
 }
 
