@@ -62,6 +62,53 @@ test("cutover refuses a busy append or publication lease without moving ready ev
   expect(refreshIncompatibleEventLedgerV3(fixture.root).state).toBe("refreshed");
 });
 
+test("a cutover cannot borrow a nested publisher's lease before its ready rename", () => {
+  const root = freshRoot();
+  const initialize = {
+    coordRoot: root,
+    harneryBuild: "fixture",
+    hostBuild: "fixture-host",
+    configDigest: sha256V3("fixture"),
+    approvalRecordId: "fixture",
+  };
+  initializeEventLedgerV3(initialize);
+  const genesis = liveGenesisIdV3(root);
+  let interrupted = false;
+  expect(
+    recordHookSignalV3({
+      coordRoot: root,
+      mode: "active",
+      signal: "user-prompt-submit",
+      payload: { session_id: "fixture-session", turn_id: "fixture-turn", raw: {} },
+      adapter: "claude-code",
+      instance_id: "inst_fixture",
+      producer_id: "prd_agent-hook",
+      build_id: "build_fixture",
+      platform: "linux",
+      writerOptions: {
+        onStep: (step) => {
+          if (step !== "ready_temp_flushed" || interrupted) return;
+          interrupted = true;
+          expect(() => initializeEventLedgerV3({ ...initialize, forceNewEpoch: true })).toThrow(
+            "event-v3-publication",
+          );
+          expect(liveGenesisIdV3(root)).toBe(genesis);
+        },
+      },
+    }).state,
+  ).toBe("recorded");
+  expect(interrupted).toBeTrue();
+  const ids = readLedgerV3(root).events.map(({ event }) => event.event_id);
+  const cutover = initializeEventLedgerV3({ ...initialize, forceNewEpoch: true });
+  const history = scanEventHistoryV3(root).rows;
+  for (const id of ids) {
+    expect(history.filter(({ event_id }) => event_id === id)).toEqual([
+      expect.objectContaining({ epoch: basename(cutover.archived_epoch!), event_id: id }),
+    ]);
+  }
+  expect(readLedgerV3(root)).toMatchObject({ complete: true, diagnostics: [] });
+});
+
 test("explicit recovery dry-runs without writes, imports an archive copy once, and preserves the source", () => {
   const original = archivedFixture();
   const before = snapshot(original.dir);

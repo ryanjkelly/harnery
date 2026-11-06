@@ -36,6 +36,7 @@ import { assertEventV3 } from "./validate.ts";
 const MAX_LINE_BYTES = 16 * 1024;
 const DEFAULT_LEASE_MS = 5_000;
 const publicationSleepCell = new Int32Array(new SharedArrayBuffer(4));
+const publishingRoots = new Set<string>();
 
 export const EVENT_V3_LEDGER_RELATIVE_ROOT = ".harnery/ledgers/v3" as const;
 
@@ -105,7 +106,7 @@ export function writeEventV3(
   const rowDigest = sha256V3(row);
   const epochTag = options.expectedGenesisId ? `-${options.expectedGenesisId}` : "";
   const readyName = `${String(event.producer.sequence).padStart(16, "0")}-${event.event_id}-${rowDigest.slice(7)}${epochTag}.ready`;
-  const readyPath = withEventV3PublicationLease(coordRoot, () => {
+  const readyPath = withReadyPublicationLease(coordRoot, () => {
     const paths = ensureEventV3Layout(coordRoot);
     if (options.expectedGenesisId && liveGenesisIdV3(coordRoot) !== options.expectedGenesisId) {
       return undefined;
@@ -183,7 +184,22 @@ export function withEventV3LedgerLease<T>(
   }
 }
 
-/** Stable across epoch renames. Cutover excludes ready publication as well as promotion. */
+function withReadyPublicationLease<T>(coordRoot: string, operation: () => T): T {
+  const root = resolve(coordRoot);
+  // Writes are synchronous. A nested publisher can borrow this stack's lease,
+  // but a cutover must acquire its own: it cannot move an unfinished temp row.
+  if (publishingRoots.has(root)) return operation();
+  return withEventV3PublicationLease(root, () => {
+    publishingRoots.add(root);
+    try {
+      return operation();
+    } finally {
+      publishingRoots.delete(root);
+    }
+  });
+}
+
+/** Stable across epoch renames. Cutovers always acquire exclusive ownership. */
 export function withEventV3PublicationLease<T>(coordRoot: string, operation: () => T): T {
   const root = resolve(coordRoot);
   let lease: ReturnType<typeof acquireNoClobberLease> | undefined;

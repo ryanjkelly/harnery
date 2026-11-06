@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -23,6 +23,100 @@ afterEach(() => {
 });
 
 describe("event ledger V3 causal append ordering", () => {
+  test("nested publishers share ownership until the outer row is published", () => {
+    const root = temporaryRoot();
+    const parent = fixture("tool.requested", 1, "prd_hook", 1);
+    const child = fixture("command.started", 2, "prd_command", 1);
+    fixtureObject(child.links).caused_by = [parent.event_id];
+    const current = join(root, ".harnery", "private", "event-v3-publication-lease", "current");
+
+    const result = writeEventV3(root, parent as unknown as EventV3, {
+      onStep: (step) => {
+        if (step !== "ready_temp_flushed") return;
+        const owner = readFileSync(current, "utf8");
+        expect(
+          writeEventV3(join(root, "."), child as unknown as EventV3, { deferDrain: true }).state,
+        ).toBe("ready");
+        expect(readFileSync(current, "utf8")).toBe(owner);
+        expect(activeEvents(root)).toEqual([]);
+      },
+    });
+
+    expect(result.state).toBe("committed");
+    expect(existsSync(current)).toBeFalse();
+    expect(activeEvents(root).map(({ event_id }) => event_id)).toEqual([
+      parent.event_id,
+      child.event_id,
+    ]);
+  });
+
+  test("nested publication failures retain outer ownership and release it on unwind", () => {
+    const root = temporaryRoot();
+    const parent = fixture("tool.requested", 1, "prd_hook", 1);
+    const child = fixture("command.started", 2, "prd_command", 1);
+    const current = join(root, ".harnery", "private", "event-v3-publication-lease", "current");
+
+    expect(() =>
+      writeEventV3(root, parent as unknown as EventV3, {
+        onStep: (step) => {
+          if (step !== "ready_temp_flushed") return;
+          const owner = readFileSync(current, "utf8");
+          expect(() =>
+            writeEventV3(root, child as unknown as EventV3, {
+              onStep: () => {
+                throw new Error("nested publication interrupted");
+              },
+            }),
+          ).toThrow("nested publication interrupted");
+          expect(readFileSync(current, "utf8")).toBe(owner);
+          throw new Error("outer publication interrupted");
+        },
+      }),
+    ).toThrow("outer publication interrupted");
+
+    expect(existsSync(current)).toBeFalse();
+    expect(readdirSync(eventV3Paths(root).spool)).toEqual([]);
+    expect(writeEventV3(root, parent as unknown as EventV3).state).toBe("committed");
+  });
+
+  test("another process cannot borrow a publisher's lease and succeeds after release", () => {
+    const root = temporaryRoot();
+    const parent = fixture("tool.requested", 1, "prd_hook", 1);
+    const child = fixture("command.started", 2, "prd_command", 1);
+    const script = `
+      import { writeEventV3 } from ${JSON.stringify(new URL("./writer.ts", import.meta.url).href)};
+      try {
+        console.log(JSON.stringify(writeEventV3(${JSON.stringify(root)}, ${JSON.stringify(child)})));
+      } catch (error) {
+        console.log(JSON.stringify({ error: error.message }));
+      }
+    `;
+    const publishFromPeer = () => {
+      const peer = Bun.spawnSync({
+        cmd: [process.execPath, "--eval", script],
+        timeout: 10_000,
+      });
+      expect(peer.exitCode).toBe(0);
+      return JSON.parse(peer.stdout.toString());
+    };
+    expect(
+      writeEventV3(root, parent as unknown as EventV3, {
+        onStep: (step) => {
+          if (step !== "ready_temp_flushed") return;
+          expect(publishFromPeer()).toMatchObject({
+            error: expect.stringContaining("lease event-v3-publication is held"),
+          });
+          expect(activeEvents(root)).toEqual([]);
+        },
+      }).state,
+    ).toBe("committed");
+    expect(publishFromPeer()).toMatchObject({ state: "committed" });
+    expect(activeEvents(root).map(({ event_id }) => event_id)).toEqual([
+      parent.event_id,
+      child.event_id,
+    ]);
+  });
+
   test("defers ready rows and drains the complete causal batch later", () => {
     const root = temporaryRoot();
     const parent = fixture("tool.requested", 1, "prd_hook", 1);
