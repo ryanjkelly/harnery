@@ -129,7 +129,7 @@ pair before rendering any continuation note. A reused provider session ID
 does not transfer another task's checkpoint. Duplicate pre-compaction
 checkpoints follow the same ownership check.
 
-[prepareContextRecovery](../../../../../src/core/context/index.ts) now returns
+[prepareContextRecovery](https://github.com/ryanjkelly/harnery/blob/next/src/core/context/index.ts) now returns
 a required checkpoint token containing the session, task instance, generation
 and capsule ID. Every completion caller passes that exact token after its
 context channel accepts the briefing. Completion compares it with the current

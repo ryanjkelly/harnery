@@ -41,10 +41,10 @@ state must remain complete when an effect is skipped.
 ## Decision
 
 Add a browser-only Codec FX runtime under
-[`web/lib/codec/effects/`](../../../../../web/lib/codec/effects/). The runtime
+[`web/lib/codec/effects/`](https://github.com/ryanjkelly/harnery/tree/next/web/lib/codec/effects/). The runtime
 accepts typed, deterministic effect cues and renders them into one fixed,
 pointer-free layer owned by
-[`CodecEffectsLayer.tsx`](../../../../../web/components/codec/CodecEffectsLayer.tsx).
+[`CodecEffectsLayer.tsx`](https://github.com/ryanjkelly/harnery/blob/next/web/components/codec/CodecEffectsLayer.tsx).
 Recipes use CSS transforms, opacity, gradients, and bounded DOM particles. No
 new dependency or transport field is required.
 

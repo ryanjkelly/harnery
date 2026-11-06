@@ -10,7 +10,7 @@ sidebar:
 
 ## Context
 
-[ADR 0213](./0213-upstream-failure-effect-evidence.mdx) allowed an automatic
+[ADR 0213](/decisions/0213-upstream-failure-effect-evidence/) allowed an automatic
 retry, or an uncharged attempt, only when a failed spawn carried positive
 no-effect evidence. No built-in adapter can produce that evidence: the only
 "none" observation is a missing binary (`ENOENT`), and a missing binary is the
@@ -29,7 +29,7 @@ the evidence, so the gate could not be satisfied.
 
 ## Decision
 
-Return to the [ADR 0046](./0046-uninformative-attempts-go-uncharged.mdx)
+Return to the [ADR 0046](/decisions/0046-uninformative-attempts-go-uncharged/)
 rules. A failed spawn retries with the original prompt unless its class is
 `environment`. A failed run is uncharged when every participant failed with
 the `environment` or `upstream` class and no agent produced a result. The

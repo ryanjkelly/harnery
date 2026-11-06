@@ -58,7 +58,7 @@ Reject any `.git` or `.harnery` path component, resolved Git administrative
 directory, rollback state/object directory, and nested repository boundary.
 The provider's control files and authority records are never source content.
 
-Rollback state follows [ADR 0190](./0190-group-shared-project-state.mdx).
+Rollback state follows [ADR 0190](/decisions/0190-group-shared-project-state/).
 The `stateFileMode()` and `stateDirMode()` policy controls the live Git index
 lock, temporary index and newly created rollback directories. New directories
 retain the configured setgid bit in group mode, even under a strict umask;

@@ -6,7 +6,7 @@ sidebar:
 ---
 
 **Date:** 2026-10-18
-**Status:** Superseded by [ADR 0221](./0221-restore-spawn-retries.mdx)
+**Status:** Superseded by [ADR 0221](/decisions/0221-restore-spawn-retries/)
 
 ## Context
 
@@ -15,7 +15,7 @@ returns a transport error. A 429 or 503 identifies a failure cause, but does not
 establish that the attempt did no work. Discarding failed output also loses
 information needed to decide whether retrying is safe.
 
-[ADR 0046](./0046-uninformative-attempts-go-uncharged.mdx) keeps positively
+[ADR 0046](/decisions/0046-uninformative-attempts-go-uncharged/) keeps positively
 uninformative attempts outside the work budget. That policy needs evidence
 across adapter normalization, retry decisions, workflow proof and durable work
 charging, rather than trust in a transport class alone.

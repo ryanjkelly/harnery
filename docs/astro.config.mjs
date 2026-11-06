@@ -19,7 +19,7 @@ export default defineConfig({
         },
       ],
       editLink: {
-        baseUrl: "https://github.com/ryanjkelly/harnery/edit/main/docs/",
+        baseUrl: "https://github.com/ryanjkelly/harnery/edit/next/docs/",
       },
       sidebar: [
         {

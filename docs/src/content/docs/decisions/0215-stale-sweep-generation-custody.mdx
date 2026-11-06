@@ -38,7 +38,7 @@ That decision retains its separate workflow terminal and authority contracts.
 
 ### Require the observed generation for provisional audit
 
-[`recordLiveSweepObservationV3`](../../../../../src/core/agents/live-lifecycle-v3.ts)
+[`recordLiveSweepObservationV3`](https://github.com/ryanjkelly/harnery/blob/next/src/core/agents/live-lifecycle-v3.ts)
 requires `expectedGenerationId: gen_${string} | null`. The caller captures it
 from the state being observed. `null` means that no usable witness is available;
 it cannot authorize joining a generation discovered later.
@@ -54,7 +54,7 @@ No event or transaction schema changes are required.
 
 ### Share publication custody for the same owner
 
-[`withGenerationCustodyV3`](../../../../../src/core/events/v3/generation-custody.ts)
+[`withGenerationCustodyV3`](https://github.com/ryanjkelly/harnery/blob/1265de3691c67e7dc6294cde8e5358ed3f90912e/src/core/events/v3/generation-custody.ts)
 serializes the sweep, generation transitions, heartbeat mutation, identity cache
 publication, materialization, repair, and pid-map healing for one instance.
 Unrelated instances retain independent progress.
@@ -63,15 +63,15 @@ The existing no-clobber lease refuses a live or uncertain competing owner.
 Elapsed lease age alone cannot authorize taking it over. Nested synchronous
 work reuses custody, so publication still rechecks the captured generation.
 
-[`heartbeat-writer.ts`](../../../../../src/core/agents/state/heartbeat-writer.ts)
+[`heartbeat-writer.ts`](https://github.com/ryanjkelly/harnery/blob/next/src/core/agents/state/heartbeat-writer.ts)
 requires a current generation witness before publishing a mutated cache.
-[`live-coordination-writer.ts`](../../../../../src/core/agents/state/live-coordination-writer.ts)
+[`live-coordination-writer.ts`](https://github.com/ryanjkelly/harnery/blob/next/src/core/agents/state/live-coordination-writer.ts)
 checks again after projection and before its atomic rename. Missing witnesses
 require V3 materialization or repair before publication can proceed.
 
 ### Delete the exact file and retain recoverable bytes
 
-[`unchanged-file.ts`](../../../../../src/core/agents/state/unchanged-file.ts)
+[`unchanged-file.ts`](https://github.com/ryanjkelly/harnery/blob/ff9342b42b4d0aa59841385ca6b66abdf8fec4cc/src/core/agents/state/unchanged-file.ts)
 captures a stable regular-file revision: bytes, device, inode, size, and change
 and modification timestamps. It rejects unsafe paths and symlinks.
 
@@ -91,14 +91,14 @@ the pin and its source identity without granting cleanup authority.
 Malformed manifests and uncertain filesystem observations preserve evidence.
 An uncertain heartbeat also preserves its dependent pid-map and hash files.
 
-[`staleSweep`](../../../../../src/core/agents/state/stale-sweep.ts) rechecks an
+[`staleSweep`](https://github.com/ryanjkelly/harnery/blob/next/src/core/agents/state/stale-sweep.ts) rechecks an
 owner after pinning a dependent file. Its earlier directory scan is not proof
 that the owner remains absent. Removal counts include confirmed deletions only.
 
 ### Keep callers and fallback evidence explicit
 
 `staleSweep` and
-[`reclaimAbandonedLocalConflict`](../../../../../src/lib/identities/assume.ts)
+[`reclaimAbandonedLocalConflict`](https://github.com/ryanjkelly/harnery/blob/next/src/lib/identities/assume.ts)
 pass their captured generation to the audit recorder. Neither caller can
 substitute the current generation when the captured one becomes unavailable.
 
@@ -131,7 +131,7 @@ maps and hashes. Unknown manifest identity protects the whole affected directory
 ## Verification and limits
 
 The seven original deterministic regressions in
-[`stale-sweep-conformance.test.ts`](../../../../../src/core/agents/state/stale-sweep-conformance.test.ts)
+[`stale-sweep-conformance.test.ts`](https://github.com/ryanjkelly/harnery/blob/next/src/core/agents/state/stale-sweep-conformance.test.ts)
 are named exactly:
 
 1. `keeps a heartbeat refreshed immediately before unlink`
