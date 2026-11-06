@@ -173,3 +173,4 @@ export {
   WORKSPACE_BINDING_SCHEMA_VERSION,
   WORKSPACE_RECEIPT_SCHEMA_VERSION,
 } from "./workspaces/index.ts";
+export { validateAgainstSchema } from "./validate.ts";
