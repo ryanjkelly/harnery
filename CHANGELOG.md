@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.49.0
+
+### Minor Changes
+
+- 2b95cd4: Browser launches keep the Chromium sandbox on by default, headed and headless. `HARNERY_BROWSER_SANDBOX=0` is the explicit opt-out for containers without user namespaces; a `--no-sandbox` launch argument is refused while the sandbox is on, and a sandbox start failure names the remedy. Headless `harn browse` now uses the installed Google Chrome when its version is at least the bundled Chromium's, because the bundled build is pinned at the Playwright release and can miss later Chrome security fixes. New toolkit helpers: `browserSandboxEnabled`, `assertSandboxArgs`, `explainSandboxLaunchError`, `chromeVersionFromExecutable`, `compareChromeVersions`, `preferredChromeChannel`.
+- 8bfc1a1: Add `harn events epochs` and `harn events query`, which read the active ledger epoch and every retained archive as one history. The active file alone covers only the time since the last size rotation. The shipped agent instructions now mention the archives and point to `events query`.
+- f9f1c79: Require Node 22.23.4, 24.22.1, or 26.12.1 and later releases on supported lines. These releases fix the Brotli decoder vulnerability. Doctor now rejects older Node versions and installed Bun versions below 1.4.4. CI and release jobs also use patched runtimes.
+
+### Patch Changes
+
+- 84d04fb: Accept an explicit `--json` option on artifact create, show, and list commands so scripts can request structured output without a parser error.
+- ab0df7b: Keep the session's task, claims, and lifecycle when epoch onboarding stops after creating a new generation. The calling command finishes restoring that state before it reports status. Session onboarding now has a 15-second limit so ledger transactions can finish on a busy machine.
+- 5cbb92c: Detect complete fenced status boxes in the current assistant reply. Keep earlier turns and tool results from satisfying the current turn's box requirement.
+- bb456e1: Decode numeric and named HTML entities in Markdown headings when checking link fragments. Preserve literal entities inside code spans and escaped ampersands so accepted anchors match the rendered heading text.
+- d1521dc: End-turn remediation no longer tells an agent to commit and push when the only problem is that its checkout is behind work another session pushed. A project can name its safe catch-up command with `agents.gitSyncCommand`, and the message then names it. `artifacts delivery-card` now explains that the artifact folder itself is already on the card when a delivery path names it, instead of saying the path escapes the folder.
+- 485c883: Link recovery turns to the closed turns they continue. Use the same turn boundaries for Stop checks, elapsed time, and recorded edits without merging late events across a new prompt.
+- 9c77218: Allow synchronous nested event publications to share their outer writer's lease. Keep epoch cutovers exclusive until every in-flight ready row has been published.
+- 872e1ce: Let a late recovery from an older prompt yield to the current prompt's retry. Preserve the retry's edits, elapsed time, and reply observations even when the older recovery has not received its own Stop signal.
+- cc52d12: Update Playwright to 1.65.0 so default browser downloads use Chromium 158.0.8127.18 with current security fixes.
+- 9af60c5: Require mailparser 3.9.47 or newer so fresh installs exclude its vulnerable Nodemailer dependency versions.
+- 31be8c6: End-turn status can fast-forward a clean peer submodule to its pushed parent pointer and complete in the same call. Recovery verifies the declared origin branch, preserves dirty files and unpublished history, and reruns every ownership and freshness check. Submodules touched by the session remain subject to the existing stale-input check.
+- cde88eb: `--check-placeholder` no longer flags text inside `<code>`, `<pre>`, `<kbd>` or `<samp>`. Those elements show literal text, so an API reference that prints `null` or a `{{click_id}}` link token now passes, while the same tokens in ordinary prose or a bound value still fail.
+- abb8d6d: Require Playwright 1.64.1 or newer. Its bundled Chromium 156 replaces the 149 build that 1.61 downloaded, which was missing about 2,600 Chromium security fixes.
+- f0a73dd: Preserve durable ready events across epoch cutovers and add a bounded archive recovery command that defaults to a dry-run and skips previously imported events.
+- f94e0ac: Correct the Claude Desktop documentation to match the supported commands.
+  Remove archive instructions for the retired `tidy` subcommand and identify
+  the earlier implementation as historical in the session-state decision.
+- 1065f1e: The shell `rm` denial now shows a copyable quoted `rm --root "$DIR" "$DIR/old.txt" --yes` example, says it covers files in the agent's own artifact workspace, and names `artifacts remove` for deleting a whole owned artifact (`artifacts discard` only shortens retention).
+- d7299b4: `--check-runts` no longer flags the last wrapped line inside a `<pre>` block. A soft-wrapped code sample cannot be reworded, so a short final line there is not a prose runt. Inline `<code>` inside a sentence is still checked.
+- e37bd9c: Fix status-box wrapping and padding for multiline and Unicode text. Normalize stored task text and render external labels without terminal control sequences.
+- a311a63: Recheck owned Git work when a guarded turn ends so later edits cannot reuse an earlier clean check. Preserve incomplete claim history and unverifiable Git state as failures, and keep unavailable observations separate from the existing Stop rules.
+- 3aefe2b: Report a supervisor schema mismatch as an unsupported observation capability. Keep incompatible authority rejected, and distinguish the observer's inability to validate it from a verified ledger or writer outage.
+- 05e847d: Frame Unicode line and paragraph separators in stored status values so they cannot draw lines outside the box.
+
 ## 0.48.0
 
 ### Minor Changes
