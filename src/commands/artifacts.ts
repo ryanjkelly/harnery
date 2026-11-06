@@ -58,6 +58,7 @@ export function registerArtifactsCommand(
     .requiredOption("--purpose <text>", "What the files are for")
     .option("--days <n>", "Retention in days (default from artifacts.default_retention_days)")
     .option("--minutes <n>", "Retention in minutes; cannot be combined with --days")
+    .option("--json", "Output as JSON")
     .option("--big", "Acknowledge that this workspace may exceed the per-bundle size ceiling")
     .option(
       "--allow-low-disk",
@@ -83,9 +84,11 @@ export function registerArtifactsCommand(
           holdReason?: string;
           holdPersistent?: boolean;
           actor?: string;
+          json?: boolean;
         },
       ) => {
         run(emit, () => {
+          if (opts.json) emit.config({ format: "json" });
           const repoRoot = requireRepoRoot(context);
           if (opts.days !== undefined && opts.minutes !== undefined)
             throw new Error("choose either --days or --minutes");
