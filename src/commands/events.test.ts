@@ -23,17 +23,16 @@ describe("events latency command", () => {
     await loadLazyCommand(program, "events");
     const command = program.commands.find((candidate) => candidate.name() === "events");
     expect(command?.commands.map((candidate) => candidate.name())).toEqual([
+      "recover-ready",
       "latency",
       "epochs",
       "query",
     ]);
-    expect(command?.commands[0]?.options.map(({ long }) => long)).toEqual([
-      "--root",
-      "--candidate",
-      "--by-tool",
-      "--by-generation",
-      "--json",
-    ]);
+    expect(
+      command?.commands
+        .find((candidate) => candidate.name() === "latency")
+        ?.options.map(({ long }) => long),
+    ).toEqual(["--root", "--candidate", "--by-tool", "--by-generation", "--json"]);
   });
 
   test("snapshots turn, generation, and tool views from one candidate ledger", async () => {

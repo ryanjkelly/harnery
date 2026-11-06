@@ -35,6 +35,7 @@ import { assertEventV3 } from "./validate.ts";
 
 const MAX_LINE_BYTES = 16 * 1024;
 const DEFAULT_LEASE_MS = 5_000;
+const publicationSleepCell = new Int32Array(new SharedArrayBuffer(4));
 
 export const EVENT_V3_LEDGER_RELATIVE_ROOT = ".harnery/ledgers/v3" as const;
 
@@ -101,15 +102,22 @@ export function writeEventV3(
   if (bytes > MAX_LINE_BYTES) {
     throw new Error(`event exceeds the V3 ${MAX_LINE_BYTES}-byte row limit`);
   }
-  const paths = ensureEventV3Layout(coordRoot);
   const rowDigest = sha256V3(row);
-  if (options.expectedGenesisId && liveGenesisIdV3(coordRoot) !== options.expectedGenesisId) {
-    return { state: "epoch_replaced", event_id: event.event_id, row_digest: rowDigest };
-  }
   const epochTag = options.expectedGenesisId ? `-${options.expectedGenesisId}` : "";
   const readyName = `${String(event.producer.sequence).padStart(16, "0")}-${event.event_id}-${rowDigest.slice(7)}${epochTag}.ready`;
-  const readyPath = join(paths.spool, readyName);
-  writeReadyRecord(paths.spool, readyPath, row, event.event_id, options.onStep);
+  const readyPath = withEventV3PublicationLease(coordRoot, () => {
+    const paths = ensureEventV3Layout(coordRoot);
+    if (options.expectedGenesisId && liveGenesisIdV3(coordRoot) !== options.expectedGenesisId) {
+      return undefined;
+    }
+    const path = join(paths.spool, readyName);
+    writeReadyRecord(paths.spool, path, row, event.event_id, options.onStep);
+    return path;
+  });
+  if (!readyPath) {
+    return { state: "epoch_replaced", event_id: event.event_id, row_digest: rowDigest };
+  }
+  options.onStep?.("ready_published", event.event_id);
 
   if (options.deferDrain) {
     return {
@@ -147,9 +155,8 @@ export function writeEventV3(
 
 /** Drain every durable ready record under the fenced append lease. */
 export function drainReadyEventsV3(coordRoot: string, options: WriteEventV3Options = {}): number {
-  const paths = ensureEventV3Layout(coordRoot);
   return withEventV3LedgerLease(coordRoot, options, () =>
-    drainReadyEventsUnderLeaseV3(paths, options),
+    drainReadyEventsUnderLeaseV3(ensureEventV3Layout(coordRoot), options),
   );
 }
 
@@ -158,12 +165,9 @@ export function withEventV3LedgerLease<T>(
   options: WriteEventV3Options,
   operation: () => T,
 ): T {
-  const paths = ensureEventV3Layout(coordRoot);
-  const authority = createHash("sha256")
-    .update(resolve(coordRoot))
-    .update("\0")
-    .update(EVENT_V3_SCHEMA_DIGEST)
-    .digest("hex");
+  const paths = eventV3Paths(coordRoot);
+  // This lock survives both epoch and schema changes.
+  const authority = createHash("sha256").update(resolve(coordRoot)).digest("hex");
   const lease = acquireNoClobberLease({
     path: paths.lease,
     scope: "event-v3-append",
@@ -172,6 +176,33 @@ export function withEventV3LedgerLease<T>(
     now: options.now,
     validateStaleOwner: (owner) => owner.host === hostname() && !pidIsAlive(owner.pid),
   });
+  try {
+    return operation();
+  } finally {
+    lease.release();
+  }
+}
+
+/** Stable across epoch renames. Cutover excludes ready publication as well as promotion. */
+export function withEventV3PublicationLease<T>(coordRoot: string, operation: () => T): T {
+  const root = resolve(coordRoot);
+  let lease: ReturnType<typeof acquireNoClobberLease> | undefined;
+  for (let attempt = 0; attempt < 20; attempt++) {
+    try {
+      lease = acquireNoClobberLease({
+        path: join(root, ".harnery", "private", "event-v3-publication-lease"),
+        scope: "event-v3-publication",
+        authoritySha256: createHash("sha256").update(root).digest("hex"),
+        staleAfterMs: DEFAULT_LEASE_MS,
+        validateStaleOwner: (owner) => owner.host === hostname() && !pidIsAlive(owner.pid),
+      });
+      break;
+    } catch (error) {
+      if (attempt === 19) throw error;
+      Atomics.wait(publicationSleepCell, 0, 0, 25);
+    }
+  }
+  if (!lease) throw new Error("event_v3_publication_lease_busy");
   try {
     return operation();
   } finally {
@@ -384,7 +415,7 @@ export function eventV3Paths(coordRoot: string) {
     diagnostics: join(root, "diagnostics"),
     segments: join(root, "segments"),
     authorityOutbox: join(root, "authority-outbox"),
-    lease: join(root, "append-lease"),
+    lease: join(resolvedCoordRoot, ".harnery", "private", "event-v3-append-lease"),
   };
 }
 
@@ -438,7 +469,6 @@ function writeReadyRecord(
     fd = undefined;
     renameSync(temporary, readyPath);
     fsyncParentDirectory(readyPath);
-    onStep?.("ready_published", eventId);
   } finally {
     if (fd !== undefined) closeSync(fd);
     if (existsSync(temporary)) unlinkSync(temporary);

@@ -123,7 +123,7 @@ describe("storage inventory", () => {
     const temporary = join(outbox, "tx_fixture.ready.json.tmp-1-fixture");
     writeFileSync(temporary, "transaction");
     linkSync(temporary, join(outbox, "tx_fixture.ready.json"));
-    mkdirSync(join(root, ".harnery", "ledgers", "v3", "append-lease"));
+    mkdirSync(join(root, ".harnery", "private", "event-v3-append-lease"), { recursive: true });
 
     const report = await inventoryStorage(createStorageCatalog({ coord_root: root }), {
       allocatedBytes: () => 4096,

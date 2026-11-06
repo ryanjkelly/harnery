@@ -1,0 +1,43 @@
+---
+title: "ADR 0234: Preserve ready history across epoch cutovers"
+description: Serialize publication and promotion with cutover, and explicitly recover archived ready rows.
+---
+
+Date: 2026-11-05
+
+Status: Accepted
+
+## Context
+
+Schema refresh moved an epoch without draining durable ready rows. Size rotation
+attempted a drain but moved the directory even when the append lease was busy.
+History queries discover ledger files rather than archived spool receipts, so
+those events survived on disk without appearing in searchable history.
+
+## Alternatives considered
+
+Reading archived spool files on every query would silently extend the history
+contract and risk duplicates. Draining only before taking the append lease
+would leave a promotion race. Reusing the current authority writer for an
+incompatible schema would fail its schema gate.
+
+## Decision
+
+Cutover holds a stable publication lease and append lease until the old epoch
+moves. Both leases live outside the renamed directory. Compatible epochs drain
+through the writer. Remaining ready rows are explicitly validated against the
+original epoch's digest and appended to its historical file before it moves.
+Validation failure or lease contention leaves the epoch in place.
+
+`events recover-ready` applies the same validation to one named archive. Its
+default is a bounded dry-run. Applying an import requires `--yes`, preserves
+spool receipts, and skips identical committed IDs on retries. It writes no
+frames into the successor epoch and leaves history discovery unchanged.
+
+## Result and limits
+
+Fixtures cover schema cutover, publication and append contention, idempotent
+copy recovery, and interrupted append. Recovery fails closed for shapes the
+installed structural validator cannot interpret. An incomplete tail is repaired
+only when a durable receipt proves its bytes. Resident older runtimes need the
+new implementation before they can participate in the new lock protocol.

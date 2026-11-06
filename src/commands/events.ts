@@ -18,6 +18,7 @@ import {
   type ToolLatencyV3,
   type TurnLatencyV3,
 } from "../core/events/v3/index.ts";
+import { importArchivedReadyEventsV3 } from "../core/events/v3/ready-history.ts";
 
 interface LatencyOptions {
   root?: string;
@@ -68,13 +69,51 @@ interface ToolLatencyRow extends ToolLatencyV3 {
   coverage: "complete" | "partial";
 }
 
-/** Read-only projections over the canonical Event Ledger V3 stream. */
+/** Historical inspection, explicit archive recovery, and canonical V3 projections. */
 export function registerEventsCommand(
   program: Command,
   emit: EmitContext,
   context?: HarneryProgramContext,
 ): void {
   const command = program.command("events").description("Inspect the canonical event ledger");
+
+  command
+    .command("recover-ready <epoch>")
+    .description("Import durable ready rows from one archived epoch into its searchable history")
+    .option("--root <path>", "Explicit coordination root")
+    .option("--max-events <n>", "Maximum spool receipts to inspect (default 1000)", "1000")
+    .option("--dry-run", "List the import without writing (default)")
+    .option("--yes", "Apply the validated import to this archive")
+    .option("--json", "Emit the import plan as JSON")
+    .action(
+      (
+        epoch: string,
+        options: {
+          root?: string;
+          maxEvents: string;
+          dryRun?: boolean;
+          yes?: boolean;
+          json?: boolean;
+        },
+      ) => {
+        if (options.yes && options.dryRun)
+          throw new Error("--yes and --dry-run are mutually exclusive");
+        const result = importArchivedReadyEventsV3(
+          resolve(options.root ?? coordRoot(context)),
+          epoch,
+          {
+            maxEvents: Number(options.maxEvents),
+            yes: options.yes,
+          },
+        );
+        if (options.json) {
+          emit.config({ format: "json" });
+          emit.data(result);
+        } else {
+          emit.text(`${JSON.stringify(result, null, 2)}\n`);
+        }
+      },
+    );
 
   command
     .command("latency")

@@ -83,9 +83,9 @@ describe("source-owned storage descriptors", () => {
   test("declares owner-protocol and managed-content link handling", () => {
     const support = catalog.require("event-v3-support-active");
     const appendLease = support.resolved_roots.find((candidate) =>
-      slash(candidate.path).endsWith("/ledgers/v3/append-lease"),
+      slash(candidate.path).endsWith("/private/event-v3-append-lease"),
     );
-    expect(appendLease).toMatchObject({ kind: "directory", match: "exact" });
+    expect(appendLease).toMatchObject({ kind: "directory", match: "subtree" });
     expect(
       support.resolved_roots
         .filter((candidate) => candidate.match === "subtree")

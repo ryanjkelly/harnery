@@ -11,6 +11,7 @@ harn events query  [--since <when>] [--until <when>] [--type <types...>] [--sess
                    [--tool <name>] [--outcome <outcome>] [--count-by <field>] [--limit <n>]
                    [--tz <zone>] [--json] [--root <path>]
 harn events latency [--root <path>] [--candidate] [--by-tool | --by-generation] [--json]
+harn events recover-ready <epoch> [--root <path>] [--max-events <n>] [--dry-run | --yes] [--json]
 ```
 
 ## The ledger spans several epochs
@@ -62,6 +63,38 @@ harn events query --session 7aef7ec6 --limit 100
 # Failures per day
 harn events query --since 30d --outcome failed --count-by day
 ```
+
+## Recover archived ready events
+
+A schema cutover previously could archive durable spool rows before promotion.
+New cutovers exclude publication and promotion while draining the old epoch.
+When its schema differs, the cutover explicitly validates and carries those
+rows into that epoch's historical file. A busy lease or an invalid ready batch
+stops the cutover before the directory moves.
+
+Use `recover-ready` for an epoch that was already archived with stranded rows.
+The command requires one exact `epoch-<stamp>` archive name. It defaults to a
+dry-run that lists event IDs and types. `--max-events` bounds the number of spool
+receipts inspected, with a default of 1000. `--yes` appends the validated missing
+rows to that archive's `active.ndjson`. It never writes the live epoch or
+changes the history reader to accept spool files.
+
+```bash
+harn events recover-ready epoch-20261104164357439 --max-events 6 --dry-run
+harn events recover-ready epoch-20261104164357439 --max-events 6 --yes
+```
+
+Recovery checks canonical frames, filename digests, epoch fences, existing event
+IDs, causal and producer order, attestations, and sealed-segment integrity. The
+original manifest supplies the explicitly accepted schema digest; frames must
+still pass this implementation's structural validator. Unsupported shapes,
+conflicts, or missing dependencies stop the import before any rows are written.
+This validates historical rows and grants no current authority.
+
+Spool receipts stay intact as evidence. Repeating an import skips identical
+event IDs already in history. After an interrupted append, recovery can repair
+a partial tail only when it matches a durable ready frame. Copy an archive
+to a disposable coordination root and pass `--root` to rehearse the operation.
 
 ## Latency
 
