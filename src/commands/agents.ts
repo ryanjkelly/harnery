@@ -51,6 +51,7 @@ import {
   bootstrapLiveCoordinationAuthorityV3,
   LiveCoordinationAuthorityV3Error,
   reopenLiveCoordinationGenerationV3,
+  restoreLiveCoordinationStateAfterEpochV3,
 } from "../core/agents/live-authority-v3.ts";
 import { qaSignalStatusRow } from "../core/agents/qa-signal.ts";
 import { reconcileCoordinationV3 } from "../core/agents/reconcile-coordination-v3.ts";
@@ -1945,6 +1946,10 @@ function ensureAdapterSession(root: string): void {
   const agentHook = coordBinPath("agent-hook", root);
   if (!agentHook) return;
 
+  // The hook can replace the epoch and materialize a fresh cache before its
+  // bounded child exits. Keep the old state here so an interrupted hook cannot
+  // leave a valid new generation with the old task and lifecycle discarded.
+  const priorCoordination = readHeartbeatCache(root, bootstrap.sessionId);
   const payload = JSON.stringify({
     ...(bootstrap.adapter === "cursor" ? { conversation_id: bootstrap.sessionId } : {}),
     session_id: bootstrap.sessionId,
@@ -1973,6 +1978,13 @@ function ensureAdapterSession(root: string): void {
           }
         : { CODEX_THREAD_ID: bootstrap.sessionId }),
     },
+  });
+  restoreLiveCoordinationStateAfterEpochV3({
+    coordRoot: root,
+    owner: bootstrap.sessionId,
+    nativeSessionId: bootstrap.sessionId,
+    adapter: bootstrap.adapter,
+    prior: priorCoordination,
   });
 }
 

@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   recordLiveLifecycleChangeV3,
   recordLiveTaskChangeV3,
@@ -174,33 +175,42 @@ describe("harn agents state surfaces", () => {
     { timeout: 15_000 },
   );
 
-  test("end-turn status fails without printing its box when the observation cannot be recorded", () => {
-    const root = makeSandbox();
-    const result = harn(root, ["agents", "status", "--end-turn", "--session-id", OWNER], {
-      HARNERY_BIN_DIR: failingCoordBinDir(root),
-    });
+  // Real ledger setup and fresh CLI processes exceed five seconds under CPU contention.
+  test(
+    "end-turn status fails without printing its box when the observation cannot be recorded",
+    () => {
+      const root = makeSandbox();
+      const result = harn(root, ["agents", "status", "--end-turn", "--session-id", OWNER], {
+        HARNERY_BIN_DIR: failingCoordBinDir(root),
+      });
 
-    expect(result.status).toBe(1);
-    expect(`${result.stdout}\n${result.stderr}`).toContain("status_event_failed");
-    expect(`${result.stdout}\n${result.stderr}`).toContain("no status box was issued");
-    expect(result.stdout).toBe("");
-  });
+      expect(result.status).toBe(1);
+      expect(`${result.stdout}\n${result.stderr}`).toContain("status_event_failed");
+      expect(`${result.stdout}\n${result.stderr}`).toContain("no status box was issued");
+      expect(result.stdout).toBe("");
+    },
+    { timeout: 15_000 },
+  );
 
-  test("trace folds durable activity and lifecycle and renders their events", () => {
-    const root = makeSandbox();
-    const traced = json(harn(root, ["agents", "trace", "Hollis", "--json"]));
-    expect(traced).toMatchObject({
-      activity: "needs_input",
-      activity_source: "event-v3-coordination-view",
-      task_state: "blocked",
-      task_state_scope: "current",
-    });
-    const entries = traced.entries as Array<Record<string, unknown>>;
-    expect(entries.some((entry) => entry.event_type === "wait.started")).toBe(true);
-    expect(entries.some((entry) => entry.event_type === "coord.lifecycle_changed")).toBe(true);
-    const human = harn(root, ["agents", "trace", "Hollis"]);
-    expect(human.stdout).toContain("activity=needs_input · session=live · lifecycle=blocked");
-  });
+  test(
+    "trace folds durable activity and lifecycle and renders their events",
+    () => {
+      const root = makeSandbox();
+      const traced = json(harn(root, ["agents", "trace", "Hollis", "--json"]));
+      expect(traced).toMatchObject({
+        activity: "needs_input",
+        activity_source: "event-v3-coordination-view",
+        task_state: "blocked",
+        task_state_scope: "current",
+      });
+      const entries = traced.entries as Array<Record<string, unknown>>;
+      expect(entries.some((entry) => entry.event_type === "wait.started")).toBe(true);
+      expect(entries.some((entry) => entry.event_type === "coord.lifecycle_changed")).toBe(true);
+      const human = harn(root, ["agents", "trace", "Hollis"]);
+      expect(human.stdout).toContain("activity=needs_input · session=live · lifecycle=blocked");
+    },
+    { timeout: 15_000 },
+  );
 
   test(
     "trace labels an ended session separately from its durable work lifecycle",
@@ -415,6 +425,65 @@ describe("codex-wsl bridge ping attribution", () => {
       });
       expect(readHookProducerStateV3(root, "codex", OWNER)?.terminal).toBe(false);
       expect(readHookProducerStateV3(root, "claude-code", TARGET)?.terminal).toBe(false);
+    },
+    { timeout: 30_000 },
+  );
+
+  test(
+    "status restores epoch state when onboarding exits after creating its generation",
+    () => {
+      const root = makeSandbox();
+      const genesisPath = path.join(root, EVENT_V3_GENESIS_MANIFEST);
+      const genesis = JSON.parse(readFileSync(genesisPath, "utf8"));
+      genesis.profile.initial_schema_digest = `sha256:${"c".repeat(64)}`;
+      writeFileSync(genesisPath, `${JSON.stringify(genesis)}\n`);
+
+      const binDir = path.join(root, "interrupted-bin");
+      mkdirSync(binDir);
+      const moduleUrl = (relative: string) => pathToFileURL(path.join(HARNERY_DIR, relative)).href;
+      const child = path.join(binDir, "agent-hook.mjs");
+      writeFileSync(
+        child,
+        `import { readFileSync } from "node:fs";
+import { recordLiveHookSignalV3, resolveLiveEventLedgerRouteV3 } from ${JSON.stringify(moduleUrl("src/core/events/v3/live-routing.ts"))};
+import { ensureLiveCoordinationHeartbeat } from ${JSON.stringify(moduleUrl("src/core/agents/state/live-coordination-writer.ts"))};
+const payload = JSON.parse(readFileSync(0, "utf8"));
+const root = payload.cwd;
+const owner = payload.session_id;
+recordLiveHookSignalV3({ coordRoot: root, route: resolveLiveEventLedgerRouteV3(root), eventName: "session-start", payload: { ...payload, raw: {} }, adapter: "codex", instanceId: owner });
+ensureLiveCoordinationHeartbeat(root, owner, owner, "codex");
+process.exit(73);
+`,
+      );
+      const binary = path.join(binDir, "agent-hook");
+      // Pass runtime and script paths as quoted shell arguments, including spaces.
+      const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+      writeFileSync(binary, `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(child)} "$@"\n`);
+      chmodSync(binary, 0o755);
+
+      const bridgeEnv = {
+        HARNERY_BIN_DIR: binDir,
+        HARNERY_AGENT_COORD_BRIDGE: "codex-wsl",
+        HARNERY_AGENT_COORD_PLATFORM: "codex",
+        HARNERY_AGENT_COORD_SESSION_ID: OWNER,
+        CODEX_THREAD_ID: OWNER,
+        HARNERY_AGENT_COORD_OWNER: "stale-owner",
+      };
+      const first = json(harn(root, ["agents", "status", "--json"], bridgeEnv));
+      const second = json(harn(root, ["agents", "status", "--json"], bridgeEnv));
+      expect(first).toMatchObject({
+        instance_id: OWNER,
+        task_state: "blocked",
+        task_state_reason: "waiting for approval",
+      });
+      expect(second).toMatchObject({ task_state: "blocked" });
+      expect(readHeartbeat(root, OWNER)?.task).toBe("Review auth");
+      const events = readLedgerV3(root).events.map(({ event }) => event);
+      expect(events.filter((event) => event.event_type === "session.started")).toHaveLength(1);
+      expect(events.filter((event) => event.event_type === "coord.lifecycle_changed")).toHaveLength(
+        1,
+      );
+      expect(JSON.stringify(events)).not.toContain("waiting for approval");
     },
     { timeout: 30_000 },
   );
