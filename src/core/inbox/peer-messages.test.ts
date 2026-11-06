@@ -24,9 +24,11 @@ import {
   recordApprovedSessionEndV3,
   recordHookSignalV3,
 } from "../events/v3/producers/recorder.ts";
+import { updateCrashSafeJsonlFile } from "../storage/durable-history.ts";
 import {
   acknowledgeEmittedPeerInbox,
   formatPeerInbox,
+  PEER_INBOX_LIMITS,
   peerInbox,
   sendPeerMessage,
 } from "./peer-messages.ts";
@@ -97,7 +99,27 @@ function routingFixture() {
 }
 
 function fill(root: string, recipient: string) {
-  for (let i = 0; i < 25; i++) send(root, `existing-${i}`, recipient);
+  send(root, "existing-0", recipient);
+  const first = peerInbox(root).pending(recipient)[0]!;
+  // Capacity routing needs a full history, not 25 separate durable sends.
+  // Seed the remaining valid records in one synced fixture transaction.
+  updateCrashSafeJsonlFile(
+    inboxPath(root, recipient),
+    { max_record_bytes: PEER_INBOX_LIMITS.max_message_body_bytes * 2 },
+    () => ({
+      append: Array.from({ length: PEER_INBOX_LIMITS.max_pending_count - 1 }, (_, index) => {
+        const body = `existing-${index + 1}`;
+        return {
+          ...first,
+          message_id: `msg_capacity_fixture_${index + 1}`,
+          body,
+          body_bytes: Buffer.byteLength(body),
+        };
+      }),
+      result: undefined,
+    }),
+  );
+  expect(peerInbox(root).pending(recipient)).toHaveLength(PEER_INBOX_LIMITS.max_pending_count);
 }
 
 function rotateChild(root: string) {
