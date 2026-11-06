@@ -19,8 +19,8 @@ Each workspace lives under `.harnery/artifacts/` with a versioned manifest.
 ```bash
 harn artifacts create <slug> --purpose <text> [--days <n> | --minutes <n>] [--big [--allow-low-disk]]
 harn artifacts adopt-unmanaged [--days <n>] [--big] [--yes]
-harn artifacts list [--mine [--actor <instance-id>]] [--min-bytes <n>]
-harn artifacts show <ref>
+harn artifacts list [--mine [--actor <instance-id>]] [--min-bytes <n>] [--json]
+harn artifacts show <ref> [--json]
 harn artifacts delivery-card <ref> [--title <text>] [--url <label=url>...] [--path <label=path>...]
 harn artifacts renew <ref> (--days <n> | --minutes <n>) --reason <text>
 harn artifacts release <ref>

@@ -175,14 +175,16 @@ export function registerArtifactsCommand(
   root
     .command("list")
     .description("Inventory every artifact workspace with its cleanup classification.")
+    .option("--json", "Output as JSON")
     .option("--mine", "Only workspaces owned by the current agent session")
     .option(
       "--min-bytes <n>",
       "Only workspaces whose allocated disk use is at least n bytes; unknown sizes stay listed",
     )
     .option("--actor <instance-id>", "Owner identity for --mine; defaults to the current agent")
-    .action((opts: { mine?: boolean; minBytes?: string; actor?: string }) => {
+    .action((opts: { mine?: boolean; minBytes?: string; actor?: string; json?: boolean }) => {
       run(emit, () => {
+        if (opts.json) emit.config({ format: "json" });
         const repoRoot = requireRepoRoot(context);
         const minBytes = opts.minBytes === undefined ? undefined : parseMinBytes(opts.minBytes);
         let owner: string | undefined;
@@ -219,8 +221,10 @@ export function registerArtifactsCommand(
   root
     .command("show <ref>")
     .description("Show one artifact by id, directory name, or direct-child path.")
-    .action((ref: string) => {
+    .option("--json", "Output as JSON")
+    .action((ref: string, opts: { json?: boolean }) => {
       run(emit, () => {
+        if (opts.json) emit.config({ format: "json" });
         const repoRoot = requireRepoRoot(context);
         try {
           emit.data(
