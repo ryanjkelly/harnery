@@ -41,6 +41,8 @@ const AGENT_HOOK = join(HARNERY_DIR, "bin", "agent-hook");
 const HARN = join(HARNERY_DIR, "bin", "harn");
 const roots: string[] = [];
 
+// Each CLI scenario includes several processes and durable ledger transactions.
+// Use one integration hang guard, including the Stop remediation scenarios.
 setDefaultTimeout(15_000);
 
 afterEach(() => {
@@ -1447,7 +1449,7 @@ describe("agent-hook V3 hard cut", () => {
       session_name: { state: "observed", value: { required: false, present: false } },
     });
     expect(ledger.events.length).toBeGreaterThan(2);
-  }, 10_000);
+  });
 
   test("Claude Code Stop enforcement blocks from structural V3 ritual evidence", () => {
     const root = candidateRoot();
@@ -1754,7 +1756,7 @@ describe("agent-hook V3 hard cut", () => {
     ).toHaveLength(1);
     expect(events.filter((event) => event.event_type === "coord.task_changed")).toHaveLength(1);
     expect(events.filter((event) => event.event_type === "coord.status_observed")).toHaveLength(1);
-  }, 10_000);
+  });
 
   test("Claude Stop remediation does not turn a pure-prose reply into a tool-policy turn", () => {
     const root = candidateRoot();
@@ -1820,7 +1822,7 @@ describe("agent-hook V3 hard cut", () => {
     expect(readLedgerV3(root).events.map(({ event }) => event.event_type)).not.toContain(
       "coord.task_changed",
     );
-  }, 10_000);
+  });
 
   test("Claude name recovery supersedes a failed display across a resumed day boundary", () => {
     const root = candidateRoot();
