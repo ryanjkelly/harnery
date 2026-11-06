@@ -1965,7 +1965,10 @@ function ensureAdapterSession(root: string): void {
     input: payload,
     cwd: root,
     encoding: "utf8",
-    timeout: 3000,
+    // A real epoch handoff takes over ten seconds on a contended runner.
+    // Killing it at three seconds can strand a producer lease mid-transaction.
+    // Keep onboarding bounded while allowing that transaction to complete.
+    timeout: 15_000,
     env: {
       ...process.env,
       HARNERY_AGENT_COORD_PLATFORM: bootstrap.adapter,
