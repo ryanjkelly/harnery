@@ -5,7 +5,9 @@ import { cn } from "@/lib/cn";
 import { coordRoot } from "@/lib/coord-reader";
 
 /**
- * Page widths. Pick by content, not by taste:
+ * Page widths. Pick by content, not by taste. Every width starts at the nav
+ * bar's left edge, so page titles line up across the dashboard; the narrower
+ * widths only cap line length.
  *
  * - `prose`   forms and single-column reading (≈768px)
  * - `narrow`  a detail page built from one column of cards (≈896px)
@@ -17,9 +19,9 @@ import { coordRoot } from "@/lib/coord-reader";
 export type PageWidth = "prose" | "narrow" | "wide" | "fill";
 
 const WIDTH_CLS: Record<PageWidth, string> = {
-  prose: "mx-auto w-full max-w-screen-md px-4 pb-10 sm:px-6",
-  narrow: "mx-auto w-full max-w-4xl px-4 pb-10 sm:px-6",
-  wide: "mx-auto w-full max-w-screen-2xl px-4 pb-10 sm:px-6",
+  prose: "w-full max-w-screen-md px-4 pb-10 sm:px-6",
+  narrow: "w-full max-w-4xl px-4 pb-10 sm:px-6",
+  wide: "w-full max-w-screen-2xl px-4 pb-10 sm:px-6",
   fill: "flex min-h-0 w-full flex-1 flex-col px-4 pb-6 sm:px-6",
 };
 

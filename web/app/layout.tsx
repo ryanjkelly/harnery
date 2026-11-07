@@ -12,6 +12,7 @@ import { ActionsRegistrar } from "@/components/palette/registrars/ActionsRegistr
 import { CatalogRegistrar } from "@/components/palette/registrars/CatalogRegistrar";
 import { RoutesRegistrar } from "@/components/palette/registrars/RoutesRegistrar";
 import { hostInfo } from "@/lib/config";
+import { THEME_INIT_SCRIPT } from "@/lib/theme";
 
 import "./globals.css";
 
@@ -25,9 +26,14 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html
       lang="en"
-      className={`${GeistSans.variable} ${GeistMono.variable} dark h-full antialiased`}
+      className={`${GeistSans.variable} ${GeistMono.variable} h-full antialiased`}
       suppressHydrationWarning
     >
+      <head>
+        {/* Sets the light or dark class before first paint; see lib/theme.ts. */}
+        {/* biome-ignore lint/security/noDangerouslySetInnerHtml: a fixed, server-authored script */}
+        <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
+      </head>
       <body className="min-h-full flex flex-col bg-background text-foreground font-sans">
         <HostInfoProvider value={host}>
           <DateTimeFormatProvider>

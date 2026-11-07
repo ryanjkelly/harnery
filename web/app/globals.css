@@ -346,3 +346,11 @@
   .log-flow-event { animation: none; }
   .log-flow-ingest span { animation: none; top: 41%; opacity: 0.65; }
 }
+
+/* Code highlighting: Shiki writes the dark colours inline (defaultColor
+ * "dark"); outside dark mode, swap in its light variables. */
+html:not(.dark) .shiki,
+html:not(.dark) .shiki span {
+  color: var(--shiki-light) !important;
+  background-color: var(--shiki-light-bg) !important;
+}

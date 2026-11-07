@@ -10,8 +10,8 @@
  * "Module not found: Can't resolve '@shikijs/langs'" and every file silently
  * falls back to plain text. Verified against the live dev server 2026-06-11.
  *
- * Dual `github-light`/`github-dark` themes: the app hardcodes `dark` today, so
- * the light vars sit dormant at zero grammar cost and a future light mode is free.
+ * Dual `github-light`/`github-dark` themes: the dark colours are inline and
+ * globals.css swaps in the `--shiki-light` vars when the page is not `.dark`.
  */
 
 import { type HighlighterCore, createHighlighterCore } from "shiki/core";

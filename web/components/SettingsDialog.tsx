@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { useDateTimeFormat } from "@/components/DateTimeFormatProvider";
+import { ThemeControl } from "@/components/ThemeControl";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -16,11 +17,11 @@ import {
   DEFAULT_PRESET_IDS,
   FORMAT_PRESETS,
   type FormatKind,
+  isValidTimezone,
   KIND_DESCRIPTIONS,
   KIND_LABELS,
   POPULAR_TIMEZONES,
   TZ_AUTO,
-  isValidTimezone,
   templateForPreset,
 } from "@/lib/format/prefs";
 import { formatTemplate } from "@/lib/format/template";
@@ -232,12 +233,20 @@ export function SettingsDialog({
       <DialogHeader>
         <DialogTitle>Display settings</DialogTitle>
         <DialogDescription>
-          Set your preferred timezone and the format used for dates, full date + time, and dense log
-          timestamps. Stored in this browser; syncs across open tabs.
+          Choose light or dark, your timezone, and the format used for dates, full date + time, and
+          dense log timestamps. Stored in this browser; syncs across open tabs.
         </DialogDescription>
       </DialogHeader>
 
       <div className="space-y-5">
+        <section>
+          <h3 className="text-sm font-semibold mb-2">Theme</h3>
+          <ThemeControl />
+          <p className="mt-1.5 text-xs text-muted-foreground">
+            Applies at once. System follows this computer&apos;s light or dark setting.
+          </p>
+        </section>
+
         {/* Timezone: compact select + optional custom input */}
         <section>
           <h3 className="text-sm font-semibold mb-2">Timezone</h3>
@@ -374,13 +383,7 @@ export function SettingsDialog({
  * Sits between the Reset button and the Revert/Cancel/Apply trio so the
  * operator's eyes land on it on the way to Apply.
  */
-function SaveStatus({
-  dirty,
-  recentlySaved,
-}: {
-  dirty: boolean;
-  recentlySaved: boolean;
-}) {
+function SaveStatus({ dirty, recentlySaved }: { dirty: boolean; recentlySaved: boolean }) {
   if (recentlySaved) {
     return (
       <span className="flex items-center gap-1.5 text-xs text-emerald-500">
