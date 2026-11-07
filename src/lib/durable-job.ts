@@ -25,6 +25,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
+import { processMayBeAlive } from "./process-alive.ts";
 
 export const DURABLE_JOB_SCHEMA_VERSION = 1;
 
@@ -129,16 +130,6 @@ export interface DurableJobListEntry {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/** Default PID liveness probe. EPERM counts as alive; only ESRCH is dead. */
-function defaultPidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err: unknown) {
-    return (err as NodeJS.ErrnoException).code !== "ESRCH";
-  }
 }
 
 /** Directory holding every job record under a base directory. */
@@ -270,7 +261,7 @@ export function readJobStatus(jobDir: string): DurableJobStatus | null {
  * outlived the process that owned it.
  */
 export function classifyJob(jobDir: string, deps: DurableJobDeps = {}): DurableJobClassification {
-  const isAlive = deps.pidAlive ?? defaultPidAlive;
+  const isAlive = deps.pidAlive ?? processMayBeAlive;
   const nowMs = deps.now ? deps.now() : Date.now();
   const abs = resolve(jobDir);
   if (!existsSync(abs)) return { ok: false, error: `no such job directory: ${abs}` };

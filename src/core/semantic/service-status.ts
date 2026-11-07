@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { hostname } from "node:os";
 import { resolve } from "node:path";
+import { processAlive } from "../../lib/process-alive.ts";
 
 import type { CodeIdentityRecord } from "../code-identity.ts";
 import type { SemanticHarness } from "./contract.ts";
@@ -192,18 +193,9 @@ function readStatusRecord(coordRoot: string): SemanticServiceStatusRecord | unde
 
 function statusOwnerIsLive(record: SemanticServiceStatusRecord): boolean {
   if (record.state === "stopped") return false;
-  if (record.host === hostname()) return pidAlive(record.pid);
+  if (record.host === hostname()) return processAlive(record.pid);
   const age = Date.now() - Date.parse(record.heartbeat_at);
   return Number.isFinite(age) && age < FOREIGN_STATUS_STALE_MS;
-}
-
-function pidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
-  }
 }
 
 function readBoundedJson<T>(path: string, label: string): T {

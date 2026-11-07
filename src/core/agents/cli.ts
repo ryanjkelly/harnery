@@ -13,6 +13,7 @@ import { appendFile, mkdir } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { coordEnv } from "../../lib/env.ts";
+import { processMayBeAlive } from "../../lib/process-alive.ts";
 import { normalizeAdapter, adapterFromPlatform as sharedAdapterFromPlatform } from "../adapter.ts";
 import { resolveBinName } from "../config.ts";
 import { closeProcessLoggers, legacyLogFields, processLogger } from "../storage/logger.ts";
@@ -185,16 +186,6 @@ function waitForCoordinationLease(): void {
   Atomics.wait(coordinationRetryCell, 0, 0, COORDINATION_RETRY_DELAY_MS);
 }
 
-function pidIsAlive(pid: number): boolean {
-  if (!Number.isSafeInteger(pid) || pid < 1) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code !== "ESRCH";
-  }
-}
-
 // The V3 producer lease begins after its caller has materialized and read the
 // disposable heartbeat. Serialize that larger registration boundary per owner
 // so overlapping first declarations cannot both derive state from an unnamed,
@@ -214,7 +205,7 @@ function acquireSetTaskLease(root: string, owner: string) {
         authoritySha256,
         staleAfterMs: 5_000,
         validateStaleOwner: (leaseOwner) =>
-          leaseOwner.host === hostname() && !pidIsAlive(leaseOwner.pid),
+          leaseOwner.host === hostname() && !processMayBeAlive(leaseOwner.pid),
       });
     } catch (error) {
       const busy =

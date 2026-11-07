@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
+import { processMayBeAlive } from "../../../lib/process-alive.ts";
 import { stateFileMode } from "../../storage/modes.ts";
 import { fsyncParentDirectory } from "../../workflow/durable-record.ts";
 import { acquireNoClobberLease } from "../../workflow/workspaces/leases.ts";
@@ -64,7 +65,7 @@ export function importArchivedReadyEventsV3(
     scope: "event-v3-ready-history-import",
     authoritySha256: createHash("sha256").update(dir).digest("hex"),
     staleAfterMs: 5000,
-    validateStaleOwner: (owner) => owner.host === hostname() && pidIsGone(owner.pid),
+    validateStaleOwner: (owner) => owner.host === hostname() && !processMayBeAlive(owner.pid),
   });
   try {
     return run();
@@ -292,12 +293,4 @@ function regularFile(path: string): void {
 function regularDirectory(path: string): void {
   if (!lstatSync(path).isDirectory())
     throw new Error("ready history requires directories without symlinks");
-}
-function pidIsGone(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return false;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "ESRCH";
-  }
 }

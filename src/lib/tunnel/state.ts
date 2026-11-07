@@ -16,6 +16,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
+import { processAlive as defaultProcessAlive } from "../process-alive.ts";
 import { isPathAllowed } from "./path-scope.ts";
 
 /** Overrides the directory that holds tunnel state and config (a host keeps it out of `.cache/`). */
@@ -193,21 +194,12 @@ export function listStates(root: string = process.cwd()): TunnelState[] {
   return out.sort((a, b) => (b.started_at ?? "").localeCompare(a.started_at ?? ""));
 }
 
-export function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 export type ProcessAliveCheck = (pid: number) => boolean;
 
 /** True when both the local gate and its provider-side process are live. */
 export function isTunnelStateLive(
   state: TunnelState,
-  processAlive: ProcessAliveCheck = isProcessAlive,
+  processAlive: ProcessAliveCheck = defaultProcessAlive,
 ): boolean {
   if (!processAlive(state.gate_pid)) return false;
   if (state.provider === "tailscale") return true;
@@ -243,7 +235,7 @@ export function findLiveTunnelForOrigin(
   port: number,
   vhost: string,
   root: string = process.cwd(),
-  processAlive: ProcessAliveCheck = isProcessAlive,
+  processAlive: ProcessAliveCheck = defaultProcessAlive,
 ): TunnelState | null {
   return (
     listStates(root).find(

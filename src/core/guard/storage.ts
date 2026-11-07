@@ -12,6 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { processAlive } from "../../lib/process-alive.ts";
 import { stateFileMode } from "../storage/modes.ts";
 import type { RunQualitySnapshot } from "./types.ts";
 
@@ -164,16 +165,6 @@ function createExclusive(path: string, value: EvaluationLock): boolean {
     return false;
   } finally {
     if (fd !== undefined) closeSync(fd);
-  }
-}
-
-function processAlive(pid: number): boolean {
-  if (!Number.isSafeInteger(pid) || pid < 1) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
   }
 }
 

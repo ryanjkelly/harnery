@@ -20,7 +20,6 @@ import {
   type AdmissionEntry,
   admissionBaseDir,
   admissionStatus,
-  pidAlive as defaultPidAlive,
   listAdmissionResources,
 } from "../lib/admission.ts";
 import {
@@ -33,6 +32,7 @@ import {
   type QaRunStage,
   type QaRunVerdict,
 } from "../lib/browser/qa-run-contracts.ts";
+import { processMayBeAlive as defaultPidAlive } from "../lib/process-alive.ts";
 import { QA_ADMISSION_RESOURCE } from "./qa-run.ts";
 
 /** A running state whose heartbeat is older than this earns a staleness

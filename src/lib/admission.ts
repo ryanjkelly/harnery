@@ -42,6 +42,7 @@ import {
   resolveAdmissionHistoryDir,
 } from "./admission-history.ts";
 import { coordEnv } from "./env.ts";
+import { processMayBeAlive } from "./process-alive.ts";
 
 export type { AdmissionReleaseResult } from "./admission-history.ts";
 
@@ -127,22 +128,6 @@ const DEFAULT_TIMEOUT_MS = 20 * 60 * 1000;
 /** An unparseable entry younger than this is left alone (it may be mid-write
  * by a non-atomic writer); older, it is torn garbage and gets pruned. */
 const UNPARSEABLE_GRACE_MS = 60 * 1000;
-
-/** Is a PID alive on this machine? EPERM counts as alive; only ESRCH counts
- * as dead (fail toward respecting holders rather than stealing slots). */
-export function pidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err: unknown) {
-    // EPERM = exists but not ours = alive. ESRCH (and anything else) = treat
-    // as dead only on ESRCH; unknown errors count as alive (fail toward
-    // respecting holders rather than stealing their slot).
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code === "ESRCH") return false;
-    return true;
-  }
-}
 
 function ticketsDir(config: AdmissionConfig): string {
   return join(config.dir, config.resource, "tickets");
@@ -231,7 +216,7 @@ function listLive(
       continue;
     }
     const age = now - Date.parse(entry.created_at);
-    const dead = !pidAlive(entry.pid);
+    const dead = !processMayBeAlive(entry.pid);
     if (dead || Number.isNaN(age) || age > ttlMs) {
       let pruned = false;
       try {

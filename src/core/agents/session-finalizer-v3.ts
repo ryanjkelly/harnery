@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
+import { processAlive } from "../../lib/process-alive.ts";
 import { sessionFinalizationConfig } from "../config.ts";
 import type { EventAdapterIdV3 } from "../events/v3/adapter-id.ts";
 import { buildEventV3 } from "../events/v3/builder.ts";
@@ -935,15 +936,6 @@ function addSeconds(timestamp: string, seconds: number): string {
   return new Date(Date.parse(timestamp) + seconds * 1_000).toISOString();
 }
 
-function pidIsAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
-  }
-}
-
 function acquireFinalizationReconcileLease(coordRoot: string) {
   return acquireNoClobberLease({
     path: join(
@@ -955,6 +947,6 @@ function acquireFinalizationReconcileLease(coordRoot: string) {
     scope: "event-v3-session-finalization-reconcile",
     authoritySha256: createHash("sha256").update(resolve(coordRoot)).digest("hex"),
     staleAfterMs: 30_000,
-    validateStaleOwner: (owner) => owner.host === hostname() && !pidIsAlive(owner.pid),
+    validateStaleOwner: (owner) => owner.host === hostname() && !processAlive(owner.pid),
   });
 }

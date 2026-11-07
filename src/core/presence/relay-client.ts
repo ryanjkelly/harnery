@@ -41,6 +41,7 @@ import {
 import { join } from "node:path";
 import { coordEnv } from "../../lib/env.ts";
 import { resolveMachineLabel } from "../../lib/machine.ts";
+import { processAlive } from "../../lib/process-alive.ts";
 import { harnCliEntry } from "../cli-entry.ts";
 import {
   type CodeChangeWatch,
@@ -125,15 +126,6 @@ export function readRelayPidRecord(coordRoot: string): RelayPidRecord | null {
     return JSON.parse(readFileSync(pidFilePath(coordRoot), "utf8")) as RelayPidRecord;
   } catch {
     return null;
-  }
-}
-
-export function pidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
   }
 }
 
@@ -306,7 +298,7 @@ export function ensureRelayDaemon(
   try {
     const deps: EnsureRelayDaemonDependencies = {
       relayUrl: presenceRelayUrl,
-      isAlive: pidAlive,
+      isAlive: processAlive,
       currentCode: currentCodeIdentity,
       launch: launchRelayDaemon,
       nowMs: Date.now,
@@ -448,7 +440,7 @@ export async function relayStartupGate(
     log?: (phase: string, message: string) => void;
   } = {},
 ): Promise<RelayStartup> {
-  const isAlive = options.isAlive ?? pidAlive;
+  const isAlive = options.isAlive ?? processAlive;
   const now = options.nowMs ?? Date.now;
   const wait = options.wait ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
   const token = options.reservationToken ?? inheritedReservationToken();
@@ -935,7 +927,7 @@ export function relayDaemonStatus(coordRoot: string): {
   started_at?: string;
 } {
   const rec = readRelayPidRecord(coordRoot);
-  if (rec && pidAlive(rec.pid)) {
+  if (rec && processAlive(rec.pid)) {
     return { running: true, pid: rec.pid, url: rec.url, started_at: rec.started_at };
   }
   return { running: false };

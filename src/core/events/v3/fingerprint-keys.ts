@@ -14,6 +14,7 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
+import { processMayBeAlive } from "../../../lib/process-alive.ts";
 import { stateDirMode, stateFileMode, stateModeTooOpen } from "../../storage/modes.ts";
 import { fsyncParentDirectory } from "../../workflow/durable-record.ts";
 import { acquireNoClobberLease } from "../../workflow/workspaces/leases.ts";
@@ -148,7 +149,7 @@ function withKeyStoreLock<T>(coordRoot: string, operation: () => T): T {
         scope: "event-v3-fingerprint-key",
         authoritySha256: authority,
         staleAfterMs: 5_000,
-        validateStaleOwner: (owner) => owner.host === hostname() && !pidIsAlive(owner.pid),
+        validateStaleOwner: (owner) => owner.host === hostname() && !processMayBeAlive(owner.pid),
       });
       break;
     } catch (error) {
@@ -161,16 +162,6 @@ function withKeyStoreLock<T>(coordRoot: string, operation: () => T): T {
     return operation();
   } finally {
     lease.release();
-  }
-}
-
-function pidIsAlive(pid: number): boolean {
-  if (!Number.isSafeInteger(pid) || pid < 1) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code !== "ESRCH";
   }
 }
 

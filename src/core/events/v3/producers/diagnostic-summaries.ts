@@ -19,6 +19,7 @@ import {
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
 import { coordEnv } from "../../../../lib/env.ts";
+import { processMayBeAlive } from "../../../../lib/process-alive.ts";
 import { stateDirMode, stateFileMode } from "../../../storage/modes.ts";
 import { fsyncParentDirectory } from "../../../workflow/durable-record.ts";
 import { acquireNoClobberLease } from "../../../workflow/workspaces/leases.ts";
@@ -215,16 +216,6 @@ function publishOwnerOnlyJson(path: string, value: unknown, durable: boolean): v
   }
 }
 
-function pidIsAlive(pid: number): boolean {
-  if (!Number.isSafeInteger(pid) || pid < 1) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code !== "ESRCH";
-  }
-}
-
 function withKeyLease<T>(root: string, digest: string, operation: () => T): T {
   const leasesDir = join(root, "leases");
   ensureOwnerOnlyDirectory(leasesDir);
@@ -238,7 +229,7 @@ function withKeyLease<T>(root: string, digest: string, operation: () => T): T {
         scope: "event-v3-diagnostic-summary",
         authoritySha256: authority,
         staleAfterMs: LEASE_STALE_AFTER_MS,
-        validateStaleOwner: (owner) => owner.host === hostname() && !pidIsAlive(owner.pid),
+        validateStaleOwner: (owner) => owner.host === hostname() && !processMayBeAlive(owner.pid),
       });
       break;
     } catch (error) {

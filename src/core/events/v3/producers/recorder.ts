@@ -15,6 +15,7 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { basename, join, resolve } from "node:path";
+import { processMayBeAlive } from "../../../../lib/process-alive.ts";
 import { normalizeAdapter } from "../../../adapter.ts";
 import { adapterBehavior } from "../../../hooks/adapter/behaviors/index.ts";
 import { extractBashCommand, type ParsedPayload } from "../../../hooks/adapter/parse.ts";
@@ -4439,7 +4440,7 @@ function acquireStateLease(coordRoot: string, statePath: string) {
       .update(statePath)
       .digest("hex"),
     staleAfterMs: 5_000,
-    validateStaleOwner: (owner) => owner.host === hostname() && !pidIsAlive(owner.pid),
+    validateStaleOwner: (owner) => owner.host === hostname() && !processMayBeAlive(owner.pid),
   });
   return {
     ...lease,
@@ -4867,14 +4868,4 @@ function validActiveRuntimeContextProbe(value: unknown): value is ActiveRuntimeC
     Number.isFinite(Date.parse(probe.attempted_at)) &&
     (probe.boundary === undefined || probe.boundary === "tool_completed")
   );
-}
-
-function pidIsAlive(pid: number): boolean {
-  if (!Number.isSafeInteger(pid) || pid < 1) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code !== "ESRCH";
-  }
 }

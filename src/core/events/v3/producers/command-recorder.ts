@@ -15,6 +15,7 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
+import { processMayBeAlive } from "../../../../lib/process-alive.ts";
 import { stateDirMode, stateFileMode, stateModeTooOpen } from "../../../storage/modes.ts";
 import { fsyncParentDirectory } from "../../../workflow/durable-record.ts";
 import { acquireNoClobberLease } from "../../../workflow/workspaces/leases.ts";
@@ -515,7 +516,7 @@ function acquireCommandLease(coordRoot: string, statePath: string) {
       .update(statePath)
       .digest("hex"),
     staleAfterMs: 5_000,
-    validateStaleOwner: (owner) => owner.host === hostname() && !pidIsAlive(owner.pid),
+    validateStaleOwner: (owner) => owner.host === hostname() && !processMayBeAlive(owner.pid),
   });
 }
 
@@ -612,16 +613,6 @@ function readCommandState(path: string): CommandRecorderStateV3 {
     throw new Error("V3 command state is invalid");
   }
   return state;
-}
-
-function pidIsAlive(pid: number): boolean {
-  if (!Number.isSafeInteger(pid) || pid < 1) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code !== "ESRCH";
-  }
 }
 
 function maybeWriteCommandLiveDisplay(

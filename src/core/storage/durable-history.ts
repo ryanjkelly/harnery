@@ -21,6 +21,7 @@ import {
 import type { FileHandle } from "node:fs/promises";
 import { open, rename, rm } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
+import { processMayBeAlive } from "../../lib/process-alive.ts";
 import { stateDirMode, stateFileMode } from "./modes.ts";
 
 export const HARNERY_DURABLE_HISTORY_SCHEMA = "harnery.durable-history/v1" as const;
@@ -616,7 +617,7 @@ function recoverStaleLease(lease: string, staleMs: number): boolean {
     !Number.isSafeInteger(owner.pid) ||
     !Number.isFinite(Date.parse(owner.acquired_at)) ||
     Date.now() - Date.parse(owner.acquired_at) < staleMs ||
-    processIsAlive(owner.pid)
+    processMayBeAlive(owner.pid)
   ) {
     return false;
   }
@@ -696,15 +697,6 @@ function retireLease(lease: string, tag: string): void {
   const retired = `${lease}.retired-${process.pid}-${tag}`;
   renameSync(lease, retired);
   rmSync(retired, { recursive: true, force: true });
-}
-
-function processIsAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code !== "ESRCH";
-  }
 }
 
 function nativeWriteSync(fd: number, buffer: Buffer, offset: number, length: number): number {

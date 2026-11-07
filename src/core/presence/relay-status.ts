@@ -23,6 +23,7 @@ import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { coordEnv } from "../../lib/env.ts";
 import { resolveMachineLabel } from "../../lib/machine.ts";
+import { processAlive } from "../../lib/process-alive.ts";
 import { presenceEnabled, presenceRelayUrl } from "../config.ts";
 import { createStorageCatalog } from "../storage/catalog.ts";
 import { type HarneryLogRecordV1, parseLogRecord } from "../storage/jsonl.ts";
@@ -37,7 +38,6 @@ import {
   sanitizeRefComponent,
 } from "./git.ts";
 import {
-  pidAlive,
   readRelayLockState,
   readRelayPidRecord,
   readRoomSalt,
@@ -132,7 +132,7 @@ export async function relayStatus(
   const rec = readRelayPidRecord(coordRoot);
   const recOk =
     rec !== null && Number.isSafeInteger(rec.pid) && rec.pid > 0 && typeof rec.url === "string";
-  const alive = recOk ? pidAlive(rec.pid) : false;
+  const alive = recOk ? processAlive(rec.pid) : false;
   const startedAt = recOk && typeof rec.started_at === "string" ? rec.started_at : null;
   const log = readRelayLog(coordRoot, alive ? startedAt : null);
 

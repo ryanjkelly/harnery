@@ -19,6 +19,7 @@ import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { coordEnv } from "../../lib/env.ts";
+import { processAlive } from "../../lib/process-alive.ts";
 import {
   type CodeChangeWatch,
   type CodeIdentityRecord,
@@ -769,16 +770,7 @@ function leaseOwnerIsLive(lease: SemanticServiceLease): boolean {
     const age = Date.now() - Date.parse(lease.created_at);
     return Number.isFinite(age) && age < FOREIGN_STATUS_STALE_MS;
   }
-  return pidAlive(lease.pid);
-}
-
-function pidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
-  }
+  return processAlive(lease.pid);
 }
 
 async function waitForLedgerWake(

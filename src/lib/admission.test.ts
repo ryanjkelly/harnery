@@ -10,7 +10,6 @@ import {
   admissionBaseDir,
   admissionStatus,
   listAdmissionResources,
-  pidAlive,
   waitForMemoryPressure,
 } from "./admission.ts";
 import {
@@ -18,6 +17,7 @@ import {
   resolveAdmissionHistoryDir,
   summarizeAdmissionHistory,
 } from "./admission-history.ts";
+import { processMayBeAlive } from "./process-alive.ts";
 
 const roots: string[] = [];
 
@@ -142,7 +142,7 @@ describe("acquireAdmission", () => {
     const spawned = spawnSync("/bin/true");
     const deadPid = spawned.pid;
     expect(deadPid).toBeGreaterThan(1);
-    expect(pidAlive(deadPid)).toBe(false);
+    expect(processMayBeAlive(deadPid)).toBe(false);
     const path = seedEntry(dir, "held", {
       pid: deadPid,
       label: "dead holder",

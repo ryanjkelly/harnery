@@ -3,7 +3,6 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
-
 import { resolveCoordRoot } from "../core/agents/coord-client.ts";
 import { resolveBinName } from "../core/config.ts";
 import {
@@ -18,6 +17,7 @@ import {
   runRotatingProcessSync,
   spawnRotatingProcess,
 } from "../core/storage/process-log.ts";
+import { processAlive } from "../lib/process-alive.ts";
 import { normalizeAllowEntry } from "../lib/tunnel/allowlist.ts";
 import {
   type DetectOptions,
@@ -36,7 +36,6 @@ import {
   DEFAULT_INSTANCE,
   ensureCloudflared,
   gateLogFile,
-  isProcessAlive,
   isTunnelStateLive,
   listStates,
   providerLogFile,
@@ -390,7 +389,7 @@ function sweepStrays(gatePort: number, alreadyKilled: Set<number>): number {
 async function allocateGatePort(preferred: number | undefined): Promise<number> {
   const used = new Set<number>(
     listStates()
-      .filter((s) => isProcessAlive(s.gate_pid))
+      .filter((s) => processAlive(s.gate_pid))
       .map((s) => s.gate_port),
   );
   // No discovery tool (null) is not "every port free": probe candidates by connecting.
@@ -561,7 +560,7 @@ function contextVhost(): string | null {
 function providerIsAlive(state: TunnelState): boolean {
   if (state.provider === "tailscale") return true;
   const pid = state.cloudflared_pid ?? state.provider_pid;
-  return typeof pid === "number" && isProcessAlive(pid);
+  return typeof pid === "number" && processAlive(pid);
 }
 
 function tunnelIsAlive(state: TunnelState): boolean {
@@ -715,7 +714,7 @@ async function up(opts: UpOpts): Promise<void> {
 
   // A host CLI that re-executes itself takes longer to load than a bare script,
   // so wait for the gate to actually listen before the provider forwards to it.
-  if (!isProcessAlive(gateProc.pid!) || !(await waitForPortBound(gatePort, 15_000))) {
+  if (!processAlive(gateProc.pid!) || !(await waitForPortBound(gatePort, 15_000))) {
     try {
       process.kill(gateProc.pid!);
     } catch {
@@ -844,7 +843,7 @@ function recordTunnelServer(state: TunnelState): void {
 /** Tear down a single instance by name. Returns the number of processes killed. */
 function portHeldByOtherLiveInstance(port: number, name: string): boolean {
   return listStates().some(
-    (s) => s.name !== name && s.gate_port === port && isProcessAlive(s.gate_pid),
+    (s) => s.name !== name && s.gate_port === port && processAlive(s.gate_pid),
   );
 }
 
@@ -855,7 +854,7 @@ export function downOne(name: string, killed: Set<number>): number {
     if (state.provider === "tailscale") stopTailscaleShare(state);
     for (const pid of [state.gate_pid, state.cloudflared_pid, state.provider_pid]) {
       if (typeof pid !== "number") continue;
-      if (isProcessAlive(pid)) {
+      if (processAlive(pid)) {
         try {
           process.kill(pid);
           killed.add(pid);
@@ -978,7 +977,7 @@ export async function reloadOne(state: TunnelState): Promise<{ ok: boolean; mess
   // matches `--url http://localhost:<port>`, which is the provider process we
   // are going out of our way to keep alive.
   const killed = new Set<number>();
-  if (isProcessAlive(state.gate_pid)) {
+  if (processAlive(state.gate_pid)) {
     try {
       process.kill(state.gate_pid);
       killed.add(state.gate_pid);
@@ -1016,7 +1015,7 @@ export async function reloadOne(state: TunnelState): Promise<{ ok: boolean; mess
   const pid = gateProc.pid;
   if (
     typeof pid !== "number" ||
-    !isProcessAlive(pid) ||
+    !processAlive(pid) ||
     !(await waitForPortBound(gatePort, 15_000))
   ) {
     return {
@@ -1095,7 +1094,7 @@ function fmtUptime(startedAt: string): string {
 
 /** Detailed single-instance block (the pre-multi-instance format). */
 function statusDetail(state: TunnelState): void {
-  const gateAlive = isProcessAlive(state.gate_pid);
+  const gateAlive = processAlive(state.gate_pid);
   const providerAlive = providerIsAlive(state);
   const providerPid = state.cloudflared_pid ?? state.provider_pid;
   const cfg = readConfig();

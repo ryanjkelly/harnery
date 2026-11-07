@@ -19,6 +19,7 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
+import { processMayBeAlive } from "../../../lib/process-alive.ts";
 import { stateDirMode, stateFileMode, stateModeTooOpen } from "../../storage/modes.ts";
 import { fsyncParentDirectory } from "../../workflow/durable-record.ts";
 import { acquireNoClobberLease } from "../../workflow/workspaces/leases.ts";
@@ -175,7 +176,7 @@ export function withEventV3LedgerLease<T>(
     authoritySha256: authority,
     staleAfterMs: options.leaseMs ?? DEFAULT_LEASE_MS,
     now: options.now,
-    validateStaleOwner: (owner) => owner.host === hostname() && !pidIsAlive(owner.pid),
+    validateStaleOwner: (owner) => owner.host === hostname() && !processMayBeAlive(owner.pid),
   });
   try {
     return operation();
@@ -210,7 +211,7 @@ export function withEventV3PublicationLease<T>(coordRoot: string, operation: () 
         scope: "event-v3-publication",
         authoritySha256: createHash("sha256").update(root).digest("hex"),
         staleAfterMs: DEFAULT_LEASE_MS,
-        validateStaleOwner: (owner) => owner.host === hostname() && !pidIsAlive(owner.pid),
+        validateStaleOwner: (owner) => owner.host === hostname() && !processMayBeAlive(owner.pid),
       });
       break;
     } catch (error) {
@@ -596,16 +597,6 @@ function requireReadSync(
 ): number {
   // Kept in one helper so the storage state machine has a single positional-read seam.
   return readSync(fd, buffer, offset, length, position);
-}
-
-function pidIsAlive(pid: number): boolean {
-  if (!Number.isSafeInteger(pid) || pid < 1) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code !== "ESRCH";
-  }
 }
 
 function assertSupportedPath(coordRoot: string): void {
