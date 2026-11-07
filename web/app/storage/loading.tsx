@@ -12,7 +12,7 @@ export default function StorageLoading() {
         <PageHeader
           className="mb-0 min-w-0 flex-1"
           title="Storage footprint"
-          description="Scanning registered roots. Large repositories can take a few moments."
+          description="Loading the last storage measurement."
         />
       </div>
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-hidden>

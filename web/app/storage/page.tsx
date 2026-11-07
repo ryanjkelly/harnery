@@ -22,6 +22,7 @@ import {
 import { FormattedDateTime } from "@/components/FormattedDateTime";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { PageShell } from "@/components/layout/PageShell";
+import { RelativeTimeAgo } from "@/components/RelativeTimeAgo";
 import { StorageHelp } from "@/components/storage/StorageHelp";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -36,9 +37,15 @@ import {
   storageStateHelp,
   storageTermHelp,
 } from "@/lib/storage-display";
-import type { StorageClassSummary, StorageFamilyView } from "@/lib/storage-reader";
-import { readStorageFootprint, summarizeStorageHealth } from "@/lib/storage-reader";
+import type {
+  StorageClassSummary,
+  StorageFamilyView,
+  StorageFootprintReport,
+  StorageFootprintState,
+} from "@/lib/storage-reader";
+import { readStorageFootprintState, summarizeStorageHealth } from "@/lib/storage-reader";
 import { TONE, type Tone } from "@/lib/tone";
+import { StorageRefreshControl } from "./StorageRefreshControl";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -76,7 +83,11 @@ const CLASS_COLOR: Record<string, string> = {
 
 export default async function StoragePage() {
   const root = coordRoot();
-  const report = await readStorageFootprint(root);
+  // Never waits for the walk: the last measurement renders at once and a
+  // background walk refreshes it (see readStorageFootprintState).
+  const state = await readStorageFootprintState(root);
+  if (state.status !== "ready") return <StorageNotMeasured state={state} />;
+  const report = state.report;
   const filesystemBytes = observed(report.inventory.filesystem_totals.logical_bytes);
   const allocatedBytes = observed(report.inventory.filesystem_totals.allocated_bytes);
   const files = observed(report.inventory.filesystem_totals.regular_files);
@@ -109,12 +120,18 @@ export default async function StoragePage() {
           </>
         }
         actions={
-          <div className="text-right">
+          <div className="flex flex-col items-end gap-1.5 text-right">
             <div>
-              <Term term="Captured" />{" "}
+              <Term term="Measured" />{" "}
               <FormattedDateTime iso={report.inventory.captured_at} kind="datetime" />
+              <RelativeTimeAgo
+                iso={report.inventory.captured_at}
+                className="before:mx-1 before:content-['·']"
+              />
             </div>
-            <div className="mt-1">
+            <MeasurementStatus state={state} />
+            <StorageRefreshControl running={state.refreshing} />
+            <div>
               <StorageHelp
                 name="inventory-schema"
                 help="The versioned machine contract for this inventory report. It lets the CLI and dashboard reject incompatible data instead of misreading it."
@@ -1080,7 +1097,7 @@ function FamilyRow({ family }: { family: StorageFamilyView }) {
   );
 }
 
-function IssuePanel({ report }: { report: Awaited<ReturnType<typeof readStorageFootprint>> }) {
+function IssuePanel({ report }: { report: StorageFootprintReport }) {
   const items = [
     ...report.inventory.issues.map((issue) => ({
       key: `issue-${issue.reason_code}`,
@@ -1186,6 +1203,93 @@ function ReasonList({ reasons }: { reasons: readonly string[] }) {
     </span>
   ) : (
     <span className="text-xs text-muted-foreground">none</span>
+  );
+}
+
+function MeasurementStatus({
+  state,
+}: {
+  state: Extract<StorageFootprintState, { status: "ready" }>;
+}) {
+  if (state.refreshing) {
+    return (
+      <Badge tone="act">
+        {state.settingsChanged ? "Settings changed; measuring again" : "Measuring again"}
+      </Badge>
+    );
+  }
+  if (state.lastFailure) {
+    return (
+      <span className={cn("max-w-sm text-xs", TONE.warn.text)}>
+        The latest measurement failed: {state.lastFailure.message.slice(0, 200)}
+      </span>
+    );
+  }
+  return null;
+}
+
+/**
+ * Shown when no measurement exists yet (or the first one failed). The page
+ * never blocks on the walk; the refresh control waits for it and re-renders.
+ */
+function StorageNotMeasured({
+  state,
+}: {
+  state: Exclude<StorageFootprintState, { status: "ready" }>;
+}) {
+  const measuring = state.status === "measuring";
+  return (
+    <PageShell id="storage-footprint" width="wide">
+      <PageHeader
+        title={<Term term="Storage footprint" />}
+        description={
+          <>
+            <Term term="Metadata only">Metadata-only</Term> inventory of Harnery files, external
+            roots, log budgets, and maintenance boundaries.
+          </>
+        }
+        actions={<StorageRefreshControl running={measuring} />}
+      />
+      <div
+        role="status"
+        aria-live="polite"
+        className={cn(
+          "flex items-start gap-3 rounded-xl border p-4",
+          measuring ? TONE.act.surface : TONE.warn.surface,
+        )}
+      >
+        {measuring ? (
+          <HardDrive className={cn("mt-0.5 size-5 animate-pulse", TONE.act.text)} aria-hidden />
+        ) : (
+          <TriangleAlert className={cn("mt-0.5 size-5", TONE.warn.text)} aria-hidden />
+        )}
+        <div className="min-w-0 text-sm">
+          {measuring ? (
+            <>
+              <div className="font-medium">Measuring storage…</div>
+              <p className="mt-1 text-muted-foreground">
+                This is the first measurement for this project. It walks every registered root and
+                can take a few minutes on a large project. Started{" "}
+                <FormattedDateTime iso={new Date(state.startedAt).toISOString()} kind="datetime" />.
+                This page updates itself when it finishes.
+              </p>
+            </>
+          ) : (
+            <>
+              <div className="font-medium">Storage could not be measured</div>
+              <p className="mt-1 break-words text-muted-foreground">
+                {state.failure.message.slice(0, 500)}
+              </p>
+              <p className="mt-1 text-muted-foreground">
+                The page tries again on its own after{" "}
+                <FormattedDateTime iso={new Date(state.retryAt).toISOString()} kind="datetime" />,
+                or choose Measure now.
+              </p>
+            </>
+          )}
+        </div>
+      </div>
+    </PageShell>
   );
 }
 

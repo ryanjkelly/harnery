@@ -79,6 +79,8 @@ const TERM_HELP: Record<string, string> = {
     "Versioned report contracts that keep the CLI, tests, and dashboard interpreting the same fields.",
   Captured:
     "When this inventory snapshot was measured. Results are cached briefly, so this is not a live byte counter.",
+  Measured:
+    "When the numbers on this page were measured. The page shows the last measurement at once and measures again in the background once it is more than five minutes old, so this is not a live byte counter.",
   Maximum: "The effective limit for this one log family, not for Harnery as a whole.",
   Age: "The oldest log data this one family should retain under its effective policy.",
 };
