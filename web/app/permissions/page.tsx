@@ -1,20 +1,33 @@
 import { headers } from "next/headers";
+import type * as React from "react";
+import { AgentChip } from "@/components/AgentChip";
 import { FormattedDateTime } from "@/components/FormattedDateTime";
 import { Notice } from "@/components/layout/Notice";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { PageShell } from "@/components/layout/PageShell";
-import { SectionHeader } from "@/components/layout/Section";
 import {
   ComputerModeControl,
   type ComputerModeOption,
 } from "@/components/permissions/ComputerModeControl";
-import { Badge } from "@/components/ui/badge";
+import {
+  claudeBypasses,
+  claudeSummary,
+  codexSummary,
+  codexWaitingHooks,
+  computerAllowed,
+  computerSummary,
+  cursorSummary,
+  sourceLabel,
+} from "@/components/permissions/levels";
+import { RuleList } from "@/components/permissions/RuleList";
+import { ToolRow } from "@/components/permissions/ToolRow";
+import { KeyValueList } from "@/components/ui/table";
+import { Tooltip } from "@/components/ui/tooltip";
 import { hostInfo } from "@/lib/config";
 import {
   COMPUTER_MODE_LABELS,
   COMPUTER_MODES,
   CONFIRM_SECONDS,
-  type ComputerModeChoice,
   type ComputerStatus,
   computerModeLooser,
   isComputerMode,
@@ -28,7 +41,7 @@ import { TONE } from "@/lib/tone";
 
 export const dynamic = "force-dynamic";
 
-/** Settings that let an agent act with no limit at all: worth a second look. */
+/** Settings that let an agent act with no limit at all: shown in amber. */
 const WIDE_OPEN = new Set([
   "on",
   "bypassPermissions",
@@ -37,119 +50,58 @@ const WIDE_OPEN = new Set([
   "run-everything",
 ]);
 
-function Setting({
-  label,
-  value,
-  meaning,
-  source,
-}: {
-  label: string;
-  value: string;
-  meaning?: string;
-  source?: string;
-}) {
-  return (
-    <div className="grid grid-cols-[10rem_1fr] gap-3 py-2 text-sm">
-      <div className="text-muted-foreground">{label}</div>
-      <div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Badge
-            variant={WIDE_OPEN.has(value) ? "warning" : "outline"}
-            className="font-mono text-[11px]"
-          >
-            {value}
-          </Badge>
-          {source ? (
-            <span className="text-xs text-muted-foreground">{`from ${source}`}</span>
-          ) : null}
-        </div>
-        {meaning ? <p className="mt-1 text-sm">{meaning}</p> : null}
-      </div>
-    </div>
+/** A setting in plain words, amber when it has no limit, with its raw value on hover. */
+function Value({ raw, children }: { raw?: string; children: React.ReactNode }) {
+  const text = (
+    <span className={raw && WIDE_OPEN.has(raw) ? TONE.warn.text : undefined}>{children}</span>
+  );
+  return raw ? (
+    <Tooltip content={`Setting: ${raw}`} triggerClassName="cursor-help">
+      {text}
+    </Tooltip>
+  ) : (
+    text
   );
 }
 
-function Rules({
-  title,
-  rules,
-  empty,
-}: {
-  title: string;
-  rules: Array<{ rule: string; source: string }>;
-  empty: string;
-}) {
-  return (
-    <div className="py-2 text-sm">
-      <div className="mb-1 text-muted-foreground">{title}</div>
-      {rules.length === 0 ? (
-        <p className="text-muted-foreground">{empty}</p>
-      ) : (
-        <ul className="space-y-1">
-          {rules.map((r) => (
-            <li key={`${r.source}:${r.rule}`} className="flex flex-wrap items-center gap-2">
-              <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{r.rule}</code>
-              <span className="text-xs text-muted-foreground">{r.source}</span>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  );
-}
-
-function Section({
-  title,
-  summary,
-  change,
-  children,
-}: {
-  title: string;
-  summary?: string;
-  change: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <section className="rounded-lg border border-border bg-card p-4">
-      <SectionHeader title={title} hint={summary} className="mb-0" />
-      <div className="mt-2 divide-y divide-border">{children}</div>
-      <p className="mt-3 border-t border-border pt-2 text-xs text-muted-foreground">{change}</p>
-    </section>
-  );
+function Code({ children }: { children: string }) {
+  return <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">{children}</code>;
 }
 
 const MODE_SOURCE: Record<string, string> = {
-  project: "the project's default",
-  "user-project": "your own choice for this project",
-  "user-default": "your own choice for all your projects",
+  project: "This is the project's default.",
+  "user-project": "You chose this for this project.",
+  "user-default": "You chose this for all your projects.",
 };
 
-/** The choices the page offers, with what each would mean for this person now. */
+// ------------------------------------------------------------ computer use
+
 function modeOptions(status: ComputerStatus): ComputerModeOption[] {
   const current = isComputerMode(status.mode) ? status.mode : "off";
-  const projectMode = isComputerMode(status.project_mode) ? status.project_mode : "off";
-  const clearMeaning =
-    status.mode_source === "user-default"
-      ? `Make no separate choice for this project, so your choice for all your projects (${status.mode}) applies.`
-      : status.mode_source === "user-project"
-        ? `Remove your choice for this project, so the project's default (${projectMode}) applies, or your choice for all your projects if you made one.`
-        : `Follow the project's default (${projectMode}).`;
-  return [
-    ...COMPUTER_MODES.map((mode) => ({
-      value: mode as ComputerModeChoice,
-      label: COMPUTER_MODE_LABELS[mode],
-      meaning: MEANINGS.computerMode[mode] ?? "",
-      looser: computerModeLooser(mode, current),
-    })),
-    {
-      value: PROJECT_DEFAULT_CHOICE,
-      label: "Use the default",
-      meaning: clearMeaning,
-      looser: status.mode_source === "user-project" && computerModeLooser(projectMode, current),
-    },
-  ];
+  return COMPUTER_MODES.map((mode) => ({
+    value: mode,
+    label: COMPUTER_MODE_LABELS[mode],
+    meaning: MEANINGS.computerMode[mode] ?? "",
+    looser: computerModeLooser(mode, current),
+    projectDefault: mode === status.project_mode,
+  }));
 }
 
-function ComputerSection({
+/** "Go back to the project's default", offered only after the person chose a mode for this project. */
+function resetOption(status: ComputerStatus): ComputerModeOption | undefined {
+  if (status.mode_source !== "user-project") return undefined;
+  const current = isComputerMode(status.mode) ? status.mode : "off";
+  const projectMode = isComputerMode(status.project_mode) ? status.project_mode : "off";
+  return {
+    value: PROJECT_DEFAULT_CHOICE,
+    label: `Go back to the project's default (${COMPUTER_MODE_LABELS[projectMode]}).`,
+    meaning:
+      "Removes your choice for this project, so the project's default applies, or your choice for all your projects if you made one.",
+    looser: computerModeLooser(projectMode, current),
+  };
+}
+
+function ComputerRow({
   status,
   error,
   report,
@@ -162,246 +114,318 @@ function ComputerSection({
   bin: string;
   local: boolean;
 }) {
-  const approvals = report?.desktopApprovals ?? [];
+  const summary = computerSummary(status, error);
   if (!status) {
     return (
-      <Section title="Computer use" change={`Run \`${bin} computer status\` for details.`}>
-        <p className="py-2 text-sm text-muted-foreground">{`Could not read the computer-use settings: ${error ?? "no answer"}`}</p>
-      </Section>
+      <ToolRow
+        id="computer"
+        name="Computer use"
+        summary={summary}
+        change={
+          <>
+            {"Run "}
+            <Code>{`${bin} computer status`}</Code>
+            {" in a terminal for details."}
+          </>
+        }
+      />
     );
   }
-  const yours = status.mode_source !== "project";
-  const projectAllows = status.project_mode !== "off";
-  const cliHint = `run \`${bin} computer mode <off | ask-each-task | ask-once-per-session | on>\` (or \`--clear\`)`;
-  const change = !projectAllows
-    ? `This project's own settings (.harnery/config.jsonc) decide whether agents may use the desktop at all; until it allows that, there is no personal mode to choose.`
-    : local
-      ? `Choose your own mode above, ask your agent (for example "set my computer-use mode to ask once per session"), or ${cliHint}. It applies to you on this computer, for this project. Loosening it shows you a confirmation pop-up first.`
-      : `Your own mode can be changed only from a browser on this computer. There, choose it on this page, ask your agent, or ${cliHint}. Loosening it shows you a confirmation pop-up first.`;
+  const allowed = computerAllowed(status);
+  const approvals = report?.desktopApprovals ?? [];
+  const drivers = status.drivers
+    .map((d) => {
+      const state = !d.installed
+        ? "not installed"
+        : d.daemon
+          ? d.daemon.running
+            ? "running"
+            : "stopped"
+          : "installed";
+      return `${d.id} ${d.version} (${state})`;
+    })
+    .join(", ");
   return (
-    <Section
-      title="Computer use (the screen, mouse and keyboard)"
-      summary={
-        projectAllows
-          ? "Whether agents may use this computer's desktop, and how they ask."
-          : "This project does not allow agents to use the desktop."
-      }
-      change={change}
-    >
-      <Setting
-        label="Your mode"
-        value={status.mode}
-        meaning={MEANINGS.computerMode[status.mode]}
-        source={MODE_SOURCE[status.mode_source] ?? status.mode_source}
-      />
-      {yours ? (
-        <Setting
-          label="Project default"
-          value={status.project_mode}
-          meaning={MEANINGS.computerMode[status.project_mode]}
-        />
-      ) : null}
-      {projectAllows && local ? (
-        <ComputerModeControl
-          options={modeOptions(status)}
-          selected={
-            status.mode_source === "user-project" && isComputerMode(status.mode)
-              ? status.mode
-              : PROJECT_DEFAULT_CHOICE
-          }
-          confirmSeconds={CONFIRM_SECONDS}
-        />
-      ) : null}
-      <div className="py-2 text-sm">
-        <div className="mb-1 text-muted-foreground">Approvals in effect</div>
-        {approvals.length === 0 ? (
-          <p className="text-muted-foreground">
-            None. No agent is currently approved to use the desktop.
-          </p>
+    <ToolRow
+      id="computer"
+      name="Computer use"
+      summary={summary}
+      defaultOpen
+      change={
+        allowed ? (
+          <>
+            {"You can also ask your agent, or run "}
+            <Code>{`${bin} computer mode --help`}</Code>
+            {". Your mode applies to you, on this computer, for this project."}
+          </>
         ) : (
-          <ul className="space-y-1">
-            {approvals.map((a) => (
-              <li key={`${a.agent}:${a.grantedAt}`}>
-                <span className="font-medium">{`agent-${a.agent}`}</span>
-                <span>{`: ${a.purpose}. Ends `}</span>
-                <FormattedDateTime iso={a.expiresAt} />
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-      <div className="py-2 text-sm">
-        <div className="mb-1 text-muted-foreground">Using the desktop now</div>
-        <p>{status.lease?.owner_label ? `agent-${status.lease.owner_label}` : "Nobody."}</p>
-      </div>
-      <div className="py-2 text-sm">
-        <div className="mb-1 text-muted-foreground">Desktop drivers</div>
-        <ul className="space-y-1">
-          {status.drivers.map((d) => (
-            <li key={d.id} className="flex flex-wrap items-center gap-2">
-              <span className="font-mono text-xs">{`${d.id} ${d.version}`}</span>
-              <Badge variant={d.installed ? "success" : "muted"} className="text-[10px]">
-                {d.installed ? "installed" : "not installed"}
-              </Badge>
-              {d.daemon ? (
-                <Badge variant={d.daemon.running ? "success" : "muted"} className="text-[10px]">
-                  {d.daemon.running ? "running" : "stopped"}
-                </Badge>
-              ) : null}
-            </li>
-          ))}
-        </ul>
-      </div>
-    </Section>
-  );
-}
-
-function ClaudeSection({ report }: { report: PermissionsReport }) {
-  const c = report.claude;
-  const found = c.sources.filter((s) => s.exists);
-  return (
-    <Section
-      title="Claude Code"
-      summary={`Read from ${found.length ? found.map((s) => s.scope).join(", ") : "no settings file"}. Settings files cannot show a mode chosen when Claude was started (a launch flag or the desktop app's own permission setting), which wins over these.`}
-      change="To change these, ask your agent to update the project's .claude/settings.json (shared with everyone) or .claude/settings.local.json (this computer only), or use /permissions inside Claude Code."
+          "The project's .harnery/config.jsonc decides whether agents may use the desktop at all."
+        )
+      }
     >
-      <Setting
-        label="Permission mode"
-        value={c.effective.defaultMode}
-        meaning={MEANINGS.claudeMode[c.effective.defaultMode]}
-        source={c.effective.defaultModeSource}
-      />
-      <Rules
-        title="Allowed without asking"
-        rules={c.effective.allow}
-        empty="Nothing beyond Claude Code's built-in safe actions."
-      />
-      <Rules title="Always asks first" rules={c.effective.ask} empty="No extra rules." />
-      <Rules title="Never allowed" rules={c.effective.deny} empty="No rules." />
-      {c.effective.additionalDirectories.length ? (
-        <Rules
-          title="Folders outside the project it may use"
-          rules={c.effective.additionalDirectories}
-          empty=""
-        />
+      {allowed ? (
+        <div className="space-y-1.5">
+          <ComputerModeControl
+            options={modeOptions(status)}
+            selected={isComputerMode(status.mode) ? status.mode : PROJECT_DEFAULT_CHOICE}
+            reset={resetOption(status)}
+            disabledReason={
+              local ? undefined : "Your mode can be changed only from a browser on this computer."
+            }
+            confirmSeconds={CONFIRM_SECONDS}
+          />
+          <p className="text-xs text-muted-foreground">
+            {MODE_SOURCE[status.mode_source] ?? ""}
+            {" Loosening it asks you to confirm in a pop-up on this computer's screen."}
+          </p>
+        </div>
       ) : null}
-      <div className="py-2 text-sm">
-        <div className="mb-1 text-muted-foreground">Safeguards</div>
-        <p>
-          {c.effective.sandboxEnabled
-            ? "Commands run in Claude Code's sandbox."
-            : "No command sandbox."}{" "}
-          {c.effective.bypassDisabled ? "The no-questions-asked mode is turned off by policy." : ""}
-        </p>
-      </div>
-      {c.sources.some((s) => s.error) ? (
-        <p className={`py-2 text-sm ${TONE.danger.text}`}>
-          {c.sources
-            .filter((s) => s.error)
-            .map((s) => `Could not read ${s.path}: ${s.error}`)
-            .join(" ")}
-        </p>
-      ) : null}
-    </Section>
+      <KeyValueList
+        className="text-xs"
+        items={[
+          [
+            "Using the desktop",
+            status.lease?.owner_label ? (
+              <AgentChip key="lease" name={status.lease.owner_label} />
+            ) : (
+              "Nobody right now."
+            ),
+          ],
+          approvals.length > 0 && [
+            "Approved",
+            <ul key="approvals" className="space-y-0.5">
+              {approvals.map((a) => (
+                <li key={`${a.agent}:${a.grantedAt}`}>
+                  <AgentChip name={a.agent} />
+                  {`: ${a.purpose}. Ends `}
+                  <FormattedDateTime iso={a.expiresAt} />
+                </li>
+              ))}
+            </ul>,
+          ],
+          drivers.length > 0 && [
+            "Drivers",
+            <span key="drivers" className="font-mono">
+              {drivers}
+            </span>,
+          ],
+        ]}
+      />
+    </ToolRow>
   );
 }
 
-function CodexSection({ report, bin }: { report: PermissionsReport; bin: string }) {
+// ------------------------------------------------------------ Claude Code
+
+function ClaudeRow({ report }: { report: PermissionsReport }) {
+  const c = report.claude;
+  const e = c.effective;
+  const bypass = claudeBypasses(c);
+  const errors = c.sources.filter((s) => s.error);
+  return (
+    <ToolRow
+      id="claude"
+      name="Claude Code"
+      summary={claudeSummary(c)}
+      change={
+        <>
+          {"To change this, ask your agent to edit "}
+          <Code>.claude/settings.json</Code>
+          {" (shared with everyone) or "}
+          <Code>.claude/settings.local.json</Code>
+          {" (this computer only), or use "}
+          <Code>/permissions</Code>
+          {" inside Claude Code."}
+        </>
+      }
+    >
+      <KeyValueList
+        items={[
+          [
+            "Mode",
+            <Value key="mode" raw={e.defaultMode}>
+              {`${MEANINGS.claudeMode[e.defaultMode] ?? e.defaultMode} Set in ${sourceLabel(e.defaultModeSource)}.`}
+            </Value>,
+          ],
+          [
+            "Safeguards",
+            `${e.sandboxEnabled ? "Commands run in Claude Code's sandbox." : "No command sandbox."}${e.bypassDisabled ? " Your organization's policy turns off the never-ask mode." : ""}`,
+          ],
+        ]}
+      />
+      <p className="text-xs text-muted-foreground">
+        {bypass
+          ? "Because Claude Code is set to never ask, the rules below do not apply right now. "
+          : ""}
+        {
+          "A mode chosen when Claude Code starts (a launch flag or the desktop app's own setting) overrides these files and does not show here."
+        }
+      </p>
+      <div className="space-y-2">
+        <RuleList title="Allowed without asking" rules={e.allow} inactive={bypass} />
+        <RuleList title="Always asks first" rules={e.ask} inactive={bypass} />
+        <RuleList title="Never allowed" rules={e.deny} />
+        <RuleList title="Folders outside the project it may use" rules={e.additionalDirectories} />
+        {e.ask.length === 0 && e.deny.length === 0 ? (
+          <p className="text-muted-foreground">
+            {"No rules make it always ask first or block anything."}
+          </p>
+        ) : null}
+      </div>
+      {errors.length ? (
+        <p className={TONE.danger.text}>
+          {errors.map((s) => `Could not read ${s.path}: ${s.error}`).join(" ")}
+        </p>
+      ) : null}
+    </ToolRow>
+  );
+}
+
+// ------------------------------------------------------------------ Codex
+
+function CodexRow({ report, bin }: { report: PermissionsReport; bin: string }) {
   const x = report.codex;
   if (!x.available) {
     return (
-      <Section title="Codex" change={`Run \`${bin} permissions\` in a terminal to retry.`}>
-        <p className="py-2 text-sm text-muted-foreground">{`Codex was not asked: ${x.error ?? "unavailable"}.`}</p>
-      </Section>
-    );
-  }
-  const waiting = x.hooks.filter((h) => h.trust === "untrusted" || h.trust === "modified");
-  return (
-    <Section
-      title="Codex"
-      summary="Codex's own answer for this project (its effective settings, not just the file)."
-      change="To change these, ask your agent to update ~/.codex/config.toml, or use Codex's settings. Hook approvals are refreshed by the project's setup."
-    >
-      <Setting
-        label="Asks before acting"
-        value={x.approvalPolicy ?? "Codex default"}
-        meaning={x.approvalPolicy ? MEANINGS.codexPolicy[x.approvalPolicy] : undefined}
-      />
-      <Setting
-        label="Sandbox"
-        value={x.sandboxMode ?? "Codex default"}
-        meaning={x.sandboxMode ? MEANINGS.codexSandbox[x.sandboxMode] : undefined}
-      />
-      <Setting
-        label="This project"
-        value={x.projectTrust ?? "not trusted"}
-        meaning={
-          x.projectTrust === "trusted"
-            ? "Codex treats this folder as trusted and runs its hooks."
-            : "Codex has not been told to trust this folder, so it ignores the project's hooks."
+      <ToolRow
+        id="codex"
+        name="Codex"
+        summary={codexSummary(x)}
+        change={
+          <>
+            {"Run "}
+            <Code>{`${bin} permissions`}</Code>
+            {" in a terminal to retry."}
+          </>
         }
       />
-      <div className="py-2 text-sm">
-        <div className="mb-1 text-muted-foreground">Coordination hooks</div>
-        {x.hooks.length === 0 ? (
-          <p className="text-muted-foreground">Codex lists no hooks for this project.</p>
-        ) : waiting.length === 0 ? (
-          <p>{`All ${x.hooks.length} hooks are approved.`}</p>
-        ) : (
-          <ul className="space-y-1">
-            {waiting.map((h) => (
-              <li
-                key={`${h.event}:${h.command ?? ""}`}
-                className="flex flex-wrap items-center gap-2"
-              >
-                <Badge variant="info" className="text-[10px]">
-                  {MEANINGS.codexHookTrust[h.trust] ?? h.trust}
-                </Badge>
-                <span className="font-mono text-xs">{h.event}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-    </Section>
+    );
+  }
+  const waiting = codexWaitingHooks(x);
+  return (
+    <ToolRow
+      id="codex"
+      name="Codex"
+      summary={codexSummary(x)}
+      change={
+        <>
+          {"To change this, ask your agent to edit "}
+          <Code>~/.codex/config.toml</Code>
+          {", or use Codex's settings. The project's setup refreshes hook approvals."}
+        </>
+      }
+    >
+      <KeyValueList
+        items={[
+          [
+            "When it asks",
+            x.approvalPolicy ? (
+              <Value key="policy" raw={x.approvalPolicy}>
+                {MEANINGS.codexPolicy[x.approvalPolicy] ?? x.approvalPolicy}
+              </Value>
+            ) : (
+              "Codex's built-in default."
+            ),
+          ],
+          [
+            "What it may change",
+            x.sandboxMode ? (
+              <Value key="sandbox" raw={x.sandboxMode}>
+                {MEANINGS.codexSandbox[x.sandboxMode] ?? x.sandboxMode}
+              </Value>
+            ) : (
+              "Codex's built-in default."
+            ),
+          ],
+          [
+            "This project",
+            x.projectTrust === "trusted"
+              ? "Trusted, so Codex runs the project's hooks."
+              : "Not trusted, so Codex ignores the project's hooks.",
+          ],
+          [
+            "Hooks",
+            x.hooks.length === 0 ? (
+              "Codex lists no hooks for this project."
+            ) : waiting.length === 0 ? (
+              `All ${x.hooks.length} coordination hooks are approved.`
+            ) : (
+              <ul key="hooks" className="space-y-0.5">
+                {waiting.map((h) => (
+                  <li key={`${h.event}:${h.command ?? ""}`}>
+                    <span className="font-mono text-xs">{h.event}</span>
+                    <span
+                      className={TONE.act.text}
+                    >{` ${MEANINGS.codexHookTrust[h.trust] ?? h.trust}`}</span>
+                  </li>
+                ))}
+              </ul>
+            ),
+          ],
+        ]}
+      />
+    </ToolRow>
   );
 }
 
-function CursorSection({ report }: { report: PermissionsReport }) {
+// ----------------------------------------------------------------- Cursor
+
+function CursorRow({ report }: { report: PermissionsReport }) {
   const c = report.cursor;
+  const e = c.effective;
+  const summary = cursorSummary(c);
   if (!c.sources.some((s) => s.exists)) {
     return (
-      <Section
-        title="Cursor"
-        change="Cursor's settings appear here once its CLI has been used on this computer."
-      >
-        <p className="py-2 text-sm text-muted-foreground">No Cursor settings on this computer.</p>
-      </Section>
+      <ToolRow
+        id="cursor"
+        name="Cursor"
+        summary={summary}
+        change="Its settings appear here once Cursor's command-line agent has been used on this computer."
+      />
     );
   }
   return (
-    <Section
-      title="Cursor"
-      summary="Cursor's command-line agent, which also runs peer reviews."
-      change="To change these, ask your agent to update ~/.cursor/cli-config.json, or use Cursor's settings."
+    <ToolRow
+      id="cursor"
+      name="Cursor"
+      summary={summary}
+      change={
+        <>
+          {"To change this, ask your agent to edit "}
+          <Code>~/.cursor/cli-config.json</Code>
+          {", or use Cursor's settings."}
+        </>
+      }
     >
-      <Setting
-        label="Running commands"
-        value={c.effective.approvalMode ?? "Cursor default"}
-        meaning={
-          c.effective.approvalMode ? MEANINGS.cursorApproval[c.effective.approvalMode] : undefined
-        }
+      <KeyValueList
+        items={[
+          [
+            "Commands",
+            e.approvalMode ? (
+              <Value key="approval" raw={e.approvalMode}>
+                {MEANINGS.cursorApproval[e.approvalMode] ?? e.approvalMode}
+              </Value>
+            ) : (
+              "Cursor's built-in default."
+            ),
+          ],
+          [
+            "Sandbox",
+            e.sandboxMode ? (
+              <Value key="sandbox" raw={e.sandboxMode}>
+                {MEANINGS.cursorSandbox[e.sandboxMode] ?? e.sandboxMode}
+              </Value>
+            ) : (
+              "Cursor's built-in default."
+            ),
+          ],
+        ]}
       />
-      <Setting
-        label="Sandbox"
-        value={c.effective.sandboxMode ?? "Cursor default"}
-        meaning={
-          c.effective.sandboxMode ? MEANINGS.cursorSandbox[c.effective.sandboxMode] : undefined
-        }
-      />
-      <Rules title="Allowed without asking" rules={c.effective.allow} empty="No rules." />
-      <Rules title="Never allowed" rules={c.effective.deny} empty="No rules." />
-    </Section>
+      <div className="space-y-2">
+        <RuleList title="Allowed without asking" rules={e.allow} />
+        <RuleList title="Never allowed" rules={e.deny} />
+      </div>
+    </ToolRow>
   );
 }
 
@@ -413,22 +437,18 @@ export default async function PermissionsPage() {
     <PageShell width="narrow">
       <PageHeader
         title="Permissions"
-        description={
-          <>
-            {
-              "What the coding agents on this computer are allowed to do, read from each tool's own settings. The one thing you can change here is your own computer-use mode, and only from a browser on this computer; each other section says how to change it. Amber marks a setting with no limits."
-            }
-            {permissions ? (
-              <p className="mt-1 text-xs">
-                {"Read "}
-                <FormattedDateTime iso={permissions.generatedAt} />
-              </p>
-            ) : null}
-          </>
+        description="What each coding agent on this computer may do without asking you. Amber marks no limits. Open a row for details and how to change it."
+        actions={
+          permissions ? (
+            <span className="text-xs text-muted-foreground">
+              {"Read "}
+              <FormattedDateTime iso={permissions.generatedAt} />
+            </span>
+          ) : null
         }
       />
-      <div className="space-y-4">
-        <ComputerSection
+      <div className="divide-y divide-border overflow-hidden rounded-lg border border-border bg-card">
+        <ComputerRow
           status={computer}
           error={computerError}
           report={permissions}
@@ -437,16 +457,17 @@ export default async function PermissionsPage() {
         />
         {permissions ? (
           <>
-            <ClaudeSection report={permissions} />
-            <CodexSection report={permissions} bin={bin} />
-            <CursorSection report={permissions} />
+            <ClaudeRow report={permissions} />
+            <CodexRow report={permissions} bin={bin} />
+            <CursorRow report={permissions} />
           </>
-        ) : (
-          <Notice tone="danger">
-            {`Could not read the coding tools' settings: ${permissionsError ?? "no answer"}`}
-          </Notice>
-        )}
+        ) : null}
       </div>
+      {permissions ? null : (
+        <Notice tone="danger" className="mt-4">
+          {`Could not read the coding tools' settings: ${permissionsError ?? "no answer"}`}
+        </Notice>
+      )}
     </PageShell>
   );
 }

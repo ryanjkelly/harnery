@@ -2,9 +2,10 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { Button } from "@/components/ui/button";
+import { Tooltip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/cn";
 import type { ComputerModeChoice, ModeChangeOutcome } from "@/lib/permissions";
+import { TONE } from "@/lib/tone";
 
 export interface ComputerModeOption {
   value: ComputerModeChoice;
@@ -12,43 +13,47 @@ export interface ComputerModeOption {
   meaning: string;
   /** True when choosing it gives agents more freedom than now, so the CLI asks first. */
   looser: boolean;
+  /** True for the project's default mode, which the control marks. */
+  projectDefault?: boolean;
 }
 
-const OUTCOME_CLS: Record<ModeChangeOutcome["outcome"], string> = {
-  changed: "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
-  declined: "border-border bg-muted/40 text-foreground",
-  "timed-out": "border-border bg-muted/40 text-foreground",
-  busy: "border-border bg-muted/40 text-foreground",
-  unavailable: "border-destructive/40 bg-destructive/10 text-destructive",
-  refused: "border-destructive/40 bg-destructive/10 text-destructive",
-  failed: "border-destructive/40 bg-destructive/10 text-destructive",
+const OUTCOME_TONE: Record<ModeChangeOutcome["outcome"], keyof typeof TONE> = {
+  changed: "done",
+  declined: "neutral",
+  "timed-out": "neutral",
+  busy: "neutral",
+  unavailable: "danger",
+  refused: "danger",
+  failed: "danger",
 };
 
 /**
- * Lets the person choose their own computer-use mode for this project. The
- * server runs `harn computer mode`; loosening it shows a confirmation pop-up
- * on this computer's screen, so the request can take up to two minutes.
+ * Your own computer-use mode for this project, as one row of buttons: a click
+ * changes it. The server runs `harn computer mode`; loosening it shows a
+ * confirmation pop-up on this computer's screen, so a change can take up to
+ * two minutes. `reset` offers a way back to the project's default when the
+ * person chose a mode of their own.
  */
 export function ComputerModeControl({
   options,
   selected,
+  reset,
+  disabledReason,
   confirmSeconds,
 }: {
   options: ComputerModeOption[];
-  /** The person's current choice for this project. */
+  /** The mode in effect for this person now. */
   selected: ComputerModeChoice;
+  /** The "follow the project's default" choice, offered only when it would change something. */
+  reset?: ComputerModeOption;
+  /** Set when this browser may not change the mode; the buttons are then read-only. */
+  disabledReason?: string;
   confirmSeconds: number;
 }) {
   const router = useRouter();
-  const [choice, setChoice] = useState<ComputerModeChoice>(selected);
   const [pending, setPending] = useState<ComputerModeOption | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [result, setResult] = useState<ModeChangeOutcome | null>(null);
-
-  // Follow the saved choice when the page data refreshes.
-  useEffect(() => {
-    if (!pending) setChoice(selected);
-  }, [selected, pending]);
 
   useEffect(() => {
     if (!pending) return;
@@ -58,9 +63,8 @@ export function ComputerModeControl({
     return () => clearInterval(timer);
   }, [pending]);
 
-  async function apply() {
-    const option = options.find((o) => o.value === choice);
-    if (!option || pending) return;
+  async function apply(option: ComputerModeOption) {
+    if (pending || disabledReason) return;
     setResult(null);
     setPending(option);
     try {
@@ -91,65 +95,63 @@ export function ComputerModeControl({
   }
 
   const left = Math.max(0, confirmSeconds - elapsed);
+  const shown = pending?.value ?? selected;
+  const locked = pending !== null || Boolean(disabledReason);
   return (
-    <div className="py-2 text-sm">
-      <div className="mb-1 text-muted-foreground">Change your mode for this project</div>
-      <fieldset disabled={pending !== null} className="space-y-1">
+    <div className="space-y-2">
+      <fieldset
+        disabled={locked}
+        className="grid grid-cols-2 gap-1 rounded-lg border border-border bg-muted/40 p-1 sm:inline-grid sm:grid-flow-col sm:grid-cols-none"
+      >
         <legend className="sr-only">Your computer-use mode for this project</legend>
-        {options.map((o) => (
-          <label
-            key={o.value}
-            className={cn(
-              "flex cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 hover:bg-muted/50",
-              choice === o.value && "bg-muted/60",
-            )}
-          >
-            <input
-              type="radio"
-              name="computer-mode"
-              value={o.value}
-              checked={choice === o.value}
-              onChange={() => setChoice(o.value)}
-              className="mt-1 size-3 shrink-0 cursor-pointer"
-            />
-            <span>
-              <span className="font-medium">{o.label}</span>
-              {o.value === selected ? (
-                <span className="text-xs text-muted-foreground">{" (current)"}</span>
-              ) : null}
-              <span className="block text-muted-foreground">{o.meaning}</span>
-            </span>
-          </label>
-        ))}
+        {options.map((o) => {
+          const active = shown === o.value;
+          const hint = `${o.meaning}${o.looser ? " Choosing it asks you to confirm in a pop-up on this computer's screen." : ""}`;
+          return (
+            <Tooltip key={o.value} content={hint} triggerClassName="flex">
+              <button
+                type="button"
+                aria-pressed={active}
+                onClick={() => (active ? undefined : apply(o))}
+                className={cn(
+                  "flex w-full flex-col items-center justify-center rounded-md border px-3 py-1.5 text-xs font-medium leading-tight transition-colors disabled:cursor-not-allowed",
+                  active
+                    ? o.value === "on"
+                      ? TONE.warn.pill
+                      : "border-border bg-background text-foreground shadow-sm"
+                    : "border-transparent text-muted-foreground enabled:hover:bg-background/60 enabled:hover:text-foreground",
+                  pending?.value === o.value && "animate-pulse",
+                )}
+              >
+                <span>{o.label}</span>
+                {o.projectDefault ? (
+                  <span className="text-[10px] font-normal opacity-75">project default</span>
+                ) : null}
+              </button>
+            </Tooltip>
+          );
+        })}
       </fieldset>
-      <div className="mt-2 flex flex-wrap items-center gap-3">
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={apply}
-          disabled={pending !== null || choice === selected}
-        >
-          {pending ? "Waiting…" : "Change my mode"}
-        </Button>
-        {choice !== selected && !pending
-          ? (() => {
-              const o = options.find((x) => x.value === choice);
-              return o?.looser ? (
-                <span className="text-xs text-muted-foreground">
-                  {"This gives agents more freedom, so a confirmation pop-up will ask you first."}
-                </span>
-              ) : null;
-            })()
-          : null}
-      </div>
+      {disabledReason ? <p className="text-xs text-muted-foreground">{disabledReason}</p> : null}
+      {reset && !disabledReason ? (
+        <p className="text-xs text-muted-foreground">
+          <button
+            type="button"
+            disabled={pending !== null}
+            onClick={() => apply(reset)}
+            className="underline underline-offset-2 hover:text-foreground disabled:cursor-not-allowed"
+          >
+            {reset.label}
+          </button>
+          {reset.looser ? " (asks you to confirm in a pop-up first)" : ""}
+        </p>
+      ) : null}
       {pending ? (
         <div
           role="status"
           className={cn(
-            "mt-2 rounded-md border px-3 py-2",
-            pending.looser
-              ? "border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-300"
-              : "border-border bg-muted/40 text-foreground",
+            "rounded-md border px-3 py-2",
+            pending.looser ? TONE.act.surface : TONE.neutral.surface,
           )}
         >
           {pending.looser
@@ -159,9 +161,9 @@ export function ComputerModeControl({
       ) : result ? (
         <div
           role="status"
-          className={cn("mt-2 rounded-md border px-3 py-2", OUTCOME_CLS[result.outcome])}
+          className={cn("rounded-md border px-3 py-2", TONE[OUTCOME_TONE[result.outcome]].surface)}
         >
-          {result.message}
+          {result.outcome === "changed" ? "Changed." : result.message}
         </div>
       ) : null}
     </div>

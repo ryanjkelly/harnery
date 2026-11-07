@@ -137,9 +137,9 @@ export type ComputerModeChoice = ComputerMode | typeof PROJECT_DEFAULT_CHOICE;
 /** Short button labels for each mode. */
 export const COMPUTER_MODE_LABELS: Record<ComputerMode, string> = {
   off: "Off",
-  "ask-each-task": "Ask before each task",
+  "ask-each-task": "Ask each task",
   "ask-once-per-session": "Ask once per session",
-  on: "On, without asking",
+  on: "On",
 };
 
 /**
