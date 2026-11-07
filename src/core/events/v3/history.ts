@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { parseDurationMs } from "../../../lib/duration.ts";
 import { eventV3ArchivesRoot } from "./archive-retention.ts";
 
 /**
@@ -224,14 +225,8 @@ export function countEventHistoryV3(
 
 /** Parse `30d`, `12h`, `90m`, or an ISO date/time into an absolute instant. */
 export function parseHistoryInstantV3(value: string, now: Date = new Date()): Date {
-  const relative = /^(\d+)([mhdw])$/.exec(value.trim());
-  if (relative) {
-    const amount = Number(relative[1]);
-    const unit = { m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000 }[
-      relative[2] as "m" | "h" | "d" | "w"
-    ];
-    return new Date(now.getTime() - amount * unit);
-  }
+  const relativeMs = parseDurationMs(value);
+  if (relativeMs !== null) return new Date(now.getTime() - relativeMs);
   const parsed = Date.parse(value);
   if (Number.isNaN(parsed)) {
     throw new Error(`cannot read "${value}" as a time; use 30d, 12h, 90m, or an ISO date`);

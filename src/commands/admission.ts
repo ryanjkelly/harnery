@@ -50,6 +50,7 @@ import {
   writeJobDocument,
   writeJobStatus,
 } from "../lib/durable-job.ts";
+import { parseDurationMs } from "../lib/duration.ts";
 import { coordEnv } from "../lib/env.ts";
 
 interface AdmissionStatusOpts {
@@ -156,11 +157,7 @@ async function runChild(
 
 /** Parse "30m", "24h", or "7d" into milliseconds; undefined means invalid. */
 function parseLookback(raw: string): number | undefined {
-  const match = /^(\d+)([mhd])$/.exec(raw.trim());
-  if (!match) return undefined;
-  const amount = Number(match[1]);
-  const unitMs = match[2] === "m" ? 60_000 : match[2] === "h" ? 3_600_000 : 86_400_000;
-  return amount > 0 ? amount * unitMs : undefined;
+  return parseDurationMs(raw) ?? undefined;
 }
 
 function describeHistoryGroup(group: AdmissionHistoryGroup): string {

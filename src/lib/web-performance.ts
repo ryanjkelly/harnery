@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { parseDurationMs } from "./duration.ts";
 
 export const WEB_PERFORMANCE_LOG = "web-performance.jsonl";
 
@@ -123,12 +124,7 @@ export interface WebPerformanceReport {
 }
 
 export function parsePerformanceWindow(input: string): number | null {
-  const match = /^(\d+(?:\.\d+)?)(m|h|d)$/.exec(input.trim().toLowerCase());
-  if (!match) return null;
-  const amount = Number(match[1]);
-  if (!Number.isFinite(amount) || amount <= 0) return null;
-  const unitMs = match[2] === "m" ? 60_000 : match[2] === "h" ? 3_600_000 : 86_400_000;
-  return Math.floor(amount * unitMs);
+  return parseDurationMs(input);
 }
 
 function performanceLogPaths(root: string): string[] {

@@ -21,6 +21,7 @@ import {
   readMaintenanceTransaction,
 } from "../core/storage/maintenance.ts";
 import { createStructuredLogMaintenanceProviders } from "../core/storage/maintenance-providers.ts";
+import { parseDurationMs } from "../lib/duration.ts";
 
 const STORAGE_CLASSES = new Set<HarneryStorageClass>([
   "canonical-authority",
@@ -255,13 +256,8 @@ async function pressureFor(
 
 function parseDuration(value: string | undefined): number {
   if (value === undefined) return DEFAULT_MAINTENANCE_BUDGET.max_duration_ms;
-  const match = /^(\d+)(ms|s|m)$/.exec(value);
-  if (!match)
-    throw new StorageCommandError("invalid_maintenance_budget", `invalid duration: ${value}`);
-  const amount = Number(match[1]);
-  const multiplier = match[2] === "ms" ? 1 : match[2] === "s" ? 1_000 : 60_000;
-  const result = amount * multiplier;
-  if (!Number.isSafeInteger(result) || result <= 0 || result > 60 * 60 * 1_000) {
+  const result = parseDurationMs(value);
+  if (result === null || result > 60 * 60 * 1_000) {
     throw new StorageCommandError("invalid_maintenance_budget", `invalid duration: ${value}`);
   }
   return result;

@@ -9,16 +9,11 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import path from "node:path";
+import { parseDurationMs } from "../../lib/duration.ts";
 
+/** Parse an `--if-stale` window such as `24h` or `7d`; null when unreadable. */
 export function parseBackupDuration(value: string): number | null {
-  const match = /^([1-9][0-9]*)(ms|s|m|h|d)$/.exec(value.trim());
-  if (!match) return null;
-  const scalar = Number(match[1]);
-  const factor = { ms: 1, s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 }[
-    match[2] as "ms" | "s" | "m" | "h" | "d"
-  ];
-  const duration = scalar * factor;
-  return Number.isSafeInteger(duration) ? duration : null;
+  return parseDurationMs(value);
 }
 
 /** Newest snapshot time (epoch ms) in `restic snapshots --json` output, or null. */

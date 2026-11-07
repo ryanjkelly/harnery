@@ -141,6 +141,7 @@ import {
 } from "../core/inbox/peer-messages.ts";
 import { type RemoteMachine, readRemoteMachines } from "../core/presence/index.ts";
 import { formatResourceSummary, readResourceStatus } from "../core/resources/status.ts";
+import { parseDurationMs } from "../lib/duration.ts";
 import { registerContextCommand } from "./context.ts";
 import { registerInboxCommand } from "./inbox.ts";
 
@@ -5056,17 +5057,6 @@ function collectPath(value: string, prev: string[]): string[] {
   return [...prev, value];
 }
 
-/** Parse "30s", "5m", "1h", "2d" into milliseconds. */
-function parseDurationToMs(input: string): number | null {
-  const match = input.trim().match(/^(\d+)([smhd])$/i);
-  if (!match) return null;
-  const n = Number.parseInt(match[1], 10);
-  if (!Number.isFinite(n) || n <= 0) return null;
-  const unit = match[2].toLowerCase();
-  const mult: Record<string, number> = { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 };
-  return n * mult[unit];
-}
-
 /** Format ms as "30s" / "5m" / "1h30m" / "2d3h". */
 function formatDuration(ms: number): string {
   if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
@@ -5248,7 +5238,7 @@ async function runWait(
   name: string,
   opts: { file: string[]; timeout: string; pollSecs: string; quiet?: boolean; json?: boolean },
 ): Promise<void> {
-  const timeoutMs = parseDurationToMs(opts.timeout);
+  const timeoutMs = parseDurationMs(opts.timeout);
   const pollSecs = Number.parseInt(opts.pollSecs, 10);
   if (timeoutMs === null) {
     emit.error({
