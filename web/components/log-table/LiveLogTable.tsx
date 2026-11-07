@@ -2,7 +2,6 @@
 
 import { useMemo } from "react";
 
-import { useHostInfo } from "@/components/HostInfoProvider";
 import { makeSessionEventRenderer } from "@/components/log-table/event-renderers";
 import { LogTable } from "@/components/log-table/LogTable";
 import type { SessionEvent } from "@/lib/session-events";
@@ -26,7 +25,6 @@ interface Props {
  * the same parse + rendering pipeline.
  */
 export function LiveLogTable({ agentNames, initialAgent, instanceToName }: Props) {
-  const { binName } = useHostInfo();
   const renderer = useMemo(() => makeSessionEventRenderer(instanceToName), [instanceToName]);
   return (
     <LogTable<SessionEvent>
@@ -36,7 +34,7 @@ export function LiveLogTable({ agentNames, initialAgent, instanceToName }: Props
       snapshotUrl="/api/session-events?lines=1000"
       agentNames={agentNames}
       initialAgent={initialAgent}
-      emptyStateHint={`No events yet. Run \`${binName} session "..." -- <cmd>\` to produce some.`}
+      emptyStateHint="No commands yet. Shell commands that agents run appear here as they start."
     />
   );
 }

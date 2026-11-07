@@ -1,5 +1,4 @@
 import { FileText } from "lucide-react";
-import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { AgentChip, AgentChipList, AgentChipProvider } from "@/components/AgentChip";
@@ -124,17 +123,8 @@ export default async function CouncilDetailPage({ params, searchParams }: PagePr
   return (
     <AgentChipProvider summaries={summaries}>
       <PageShell width="wide">
-        <nav className="mb-4 text-xs text-muted-foreground">
-          <Link href="/councils" className="hover:text-foreground">
-            ← Councils
-          </Link>
-          {" / "}
-          <Link href="/agents" className="hover:text-foreground">
-            Agents
-          </Link>
-        </nav>
-
         <PageHeader
+          back={{ href: "/councils", label: "Councils" }}
           title={<span className="font-mono text-base break-all">{manifest.council_id}</span>}
           meta={
             <>
