@@ -25,11 +25,12 @@ export function NavBar({ scannedDir, compact = false }: { scannedDir: string; co
     return () => window.removeEventListener(OPEN_SETTINGS_EVENT, onOpenSettings);
   }, []);
 
-  // OS-appropriate shortcut label, client-only to avoid a hydration mismatch.
-  const [kbd, setKbd] = useState("");
+  // OS-appropriate shortcut label. The server renders "Ctrl K" so the header
+  // never shifts after hydration; Mac browsers swap it for "⌘K" on mount.
+  const [kbd, setKbd] = useState("Ctrl K");
   useEffect(() => {
     const isMac = /Mac|iPhone|iPad/.test(navigator.platform) || /Mac/.test(navigator.userAgent);
-    setKbd(isMac ? "⌘K" : "Ctrl K");
+    if (isMac) setKbd("⌘K");
   }, []);
 
   // Routes render in registry order with a separator between groups, so
@@ -136,7 +137,7 @@ export function NavBar({ scannedDir, compact = false }: { scannedDir: string; co
           >
             {scannedDir}
           </span>
-          <Tooltip content={`Command palette (${kbd ? `${kbd} or ` : ""}/): search everything`}>
+          <Tooltip content={`Command palette (${kbd} or /): search everything`}>
             <button
               type="button"
               onClick={() => openCommandPalette()}
@@ -144,11 +145,9 @@ export function NavBar({ scannedDir, compact = false }: { scannedDir: string; co
               aria-label="Open command palette"
             >
               <Search className="size-4" aria-hidden />
-              {kbd && (
-                <kbd className="hidden rounded border border-border px-1 py-0.5 font-mono text-[10px] sm:inline">
-                  {kbd}
-                </kbd>
-              )}
+              <kbd className="hidden rounded border border-border px-1 py-0.5 font-mono text-[10px] sm:inline">
+                {kbd}
+              </kbd>
             </button>
           </Tooltip>
           <AttentionReplayBell />
