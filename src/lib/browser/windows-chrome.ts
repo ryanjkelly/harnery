@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Cookie } from "../cookies/client.ts";
+import { windowsExecutable } from "../windows-executable.ts";
 
 /**
  * Sign-in through the Windows host's Google Chrome when running under WSL.
@@ -44,7 +45,7 @@ export function windowsChromePath(
 
 /** `%LOCALAPPDATA%` as a Windows path, read through cmd.exe interop. */
 export function windowsLocalAppData(): string | undefined {
-  const result = spawnSync("cmd.exe", ["/c", "echo %LOCALAPPDATA%"], {
+  const result = spawnSync(windowsExecutable("cmd.exe"), ["/c", "echo %LOCALAPPDATA%"], {
     windowsHide: true,
     encoding: "utf8",
     timeout: 10_000,
@@ -299,7 +300,7 @@ function runPowerShellScript(
       encoding: "utf8",
     }).stdout.trim();
     const result = spawnSync(
-      "powershell.exe",
+      windowsExecutable("powershell.exe"),
       ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptWindows, ...args],
       { windowsHide: true, encoding: "utf8", timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024 },
     );

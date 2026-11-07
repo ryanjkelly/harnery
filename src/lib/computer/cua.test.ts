@@ -289,7 +289,7 @@ describe("running the driver", () => {
     let started = false;
     let clock = 0;
     const rec = recorder((c) => {
-      if (c.command === "powershell.exe") {
+      if (c.command.endsWith("powershell.exe")) {
         started = true;
         return {};
       }
@@ -306,7 +306,7 @@ describe("running the driver", () => {
     const status = await driver.startDaemon(host);
     expect(status.running).toBe(true);
     expect(status.pid).toBe(9);
-    const ps = rec.calls.find((c) => c.command === "powershell.exe");
+    const ps = rec.calls.find((c) => c.command.endsWith("powershell.exe"));
     expect(ps?.args.slice(0, 2)).toEqual(["-NoProfile", "-Command"]);
     expect(ps?.args[2]).toContain("Start-Process -FilePath 'C:\\Users\\o''neil\\cua-driver.exe'");
     expect(ps?.args[2]).toContain("-ArgumentList 'serve' -WindowStyle Hidden");

@@ -16,9 +16,11 @@
  *
  * Internal module: not exported from package.json.
  */
+
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
+import { windowsExecutable } from "../windows-executable.ts";
 import type { GrantChannel } from "./grants.ts";
 
 export type ConfirmAnswer = "approved" | "denied" | "timed-out" | "unavailable";
@@ -120,7 +122,7 @@ function runDialog(request: ConfirmRequest): ConfirmResult {
   let args: string[];
   if (process.platform === "win32" || isWsl()) {
     kind = "windows";
-    command = "powershell.exe";
+    command = windowsExecutable("powershell.exe");
     args = [
       "-NoProfile",
       "-NonInteractive",

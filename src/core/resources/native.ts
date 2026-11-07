@@ -1,6 +1,6 @@
 import { execFile, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
 import * as os from "node:os";
+import { windowsExecutable } from "../../lib/windows-executable.ts";
 import {
   RESOURCE_SNAPSHOT_SCHEMA_VERSION,
   type ResourceDiskSample,
@@ -368,9 +368,7 @@ export function createWindowsHostBackgroundCollector(): (
 export const collectWindowsHostInBackground = createWindowsHostBackgroundCollector();
 
 function windowsPowerShellExecutable(): string {
-  // A WSL toolchain may deliberately exclude Windows executables from PATH.
-  const wslPowerShell = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe";
-  return os.platform() === "linux" && existsSync(wslPowerShell) ? wslPowerShell : "powershell.exe";
+  return windowsExecutable("powershell.exe");
 }
 
 function windowsPowerShellArgs(): string[] {

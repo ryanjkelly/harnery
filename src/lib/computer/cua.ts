@@ -21,10 +21,12 @@
  *
  * Internal module: not exported from package.json.
  */
+
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { posix, win32 } from "node:path";
+import { windowsExecutable } from "../windows-executable.ts";
 import { INSTALL_MARKER, installPinnedArchive, markerMatches } from "./archive.ts";
 import {
   archLabel,
@@ -255,7 +257,7 @@ export function createCuaDriver(deps: CuaDeps = {}): DesktopDriver {
     deps.windowsUserProfile ??
     ((host: HostInfo): string | undefined => {
       if (host.kind === "windows") return baseEnv().USERPROFILE?.trim() || undefined;
-      const result = run("cmd.exe", ["/c", "echo %USERPROFILE%"], {
+      const result = run(windowsExecutable("cmd.exe"), ["/c", "echo %USERPROFILE%"], {
         timeout: STATUS_TIMEOUT_MS,
         env: baseEnv(),
       });
@@ -463,7 +465,7 @@ export function createCuaDriver(deps: CuaDeps = {}): DesktopDriver {
     if (host.kind === "wsl") {
       const windowsExe = paths.toWindows(exe).replace(/'/g, "''");
       const command = `Start-Process -FilePath '${windowsExe}' -ArgumentList 'serve' -WindowStyle Hidden`;
-      const result = run("powershell.exe", ["-NoProfile", "-Command", command], {
+      const result = run(windowsExecutable("powershell.exe"), ["-NoProfile", "-Command", command], {
         timeout: 30_000,
         env,
       });
