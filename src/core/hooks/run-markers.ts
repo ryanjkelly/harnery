@@ -11,6 +11,7 @@
 
 import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { processAlive } from "../../lib/process-alive.ts";
 
 /** Markers older than this are pruned when a new one is written. */
 const MARKER_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -115,15 +116,6 @@ function pruneHookRunMarkers(dir: string, nowMs: number): void {
     } catch {
       // Observer-only.
     }
-  }
-}
-
-function processAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    return (err as NodeJS.ErrnoException).code === "EPERM";
   }
 }
 

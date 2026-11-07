@@ -24,6 +24,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { processAlive } from "../../../lib/process-alive.ts";
 import { processStartToken, verifyProcessGeneration } from "./proc-start.ts";
 
 /**
@@ -58,7 +59,7 @@ export function parsePidmapRow(row: string): {
  * everywhere a row is believed, not only where it is swept.
  */
 function rowStillNamesItsProcess(pid: number, startToken: string | undefined): boolean {
-  if (!pidIsAlive(pid)) return false;
+  if (!processAlive(pid)) return false;
   return verifyProcessGeneration(pid, startToken) !== "different";
 }
 
@@ -67,22 +68,6 @@ function atomicWrite(path: string, content: string): void {
   const tmp = `${path}.tmp.${process.pid}`;
   writeFileSync(tmp, content, "utf8");
   renameSync(tmp, path);
-}
-
-/**
- * Is this pid a running process?
- *
- * `EPERM` means the process exists but belongs to another user, which is still
- * alive. Treating every failure as "dead" would drop a live foreign row and
- * weaken the checks that depend on knowing a claim is anchored.
- */
-function pidIsAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0); // signal 0 = liveness probe
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
-  }
 }
 
 /**

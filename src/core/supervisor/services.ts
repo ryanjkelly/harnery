@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
+import { processAlive } from "../../lib/process-alive.ts";
 import { processStartToken, verifyProcessGeneration } from "../agents/state/proc-start.ts";
 import { readGovernorServiceStatus } from "../governor/service-read.ts";
 import { writePrivateJsonAtomic } from "../storage/atomic-json.ts";
@@ -136,7 +137,7 @@ function readDetachedService(path: string, id: "semantic-reader"): ObservedServi
       state === "stale" ? "remote-heartbeat-expired" : undefined,
     );
   }
-  const state = pidAlive(record.pid) ? "running" : "stale";
+  const state = processAlive(record.pid) ? "running" : "stale";
   return projection(
     id,
     state,
@@ -173,7 +174,7 @@ function readPresenceRelay(path: string): ObservedServiceHealth {
   if (!record || !Number.isSafeInteger(record.pid) || record.pid < 1) {
     return { id: "presence-relay", state: "stopped" };
   }
-  const running = pidAlive(record.pid);
+  const running = processAlive(record.pid);
   return {
     id: "presence-relay",
     state: running ? "running" : "stale",
@@ -208,14 +209,5 @@ function readBoundedJson<T>(path: string): T | undefined {
     return value && typeof value === "object" && !Array.isArray(value) ? (value as T) : undefined;
   } catch {
     return undefined;
-  }
-}
-
-function pidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
   }
 }
