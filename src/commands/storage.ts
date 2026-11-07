@@ -45,6 +45,7 @@ interface HealthOptions {
 interface MaintainOptions {
   family?: string;
   budget?: string;
+  dryRun?: boolean;
   transaction?: string;
   yes?: boolean;
   authorizeStructuredLogDeletion?: boolean;
@@ -129,7 +130,7 @@ export function registerStorageCommand(
     .description("Plan bounded maintenance, or execute one exact transaction")
     .option("--family <id>", "Limit a new plan to one registered family")
     .option("--budget <duration>", "Wall-time budget such as 500ms, 5s, or 1m")
-    .option("--dry-run", "Plan without mutating source storage", true)
+    .option("--dry-run", "Plan without mutating source storage (the default without --transaction)")
     .option("--transaction <id>", "Execute one previously planned exact transaction")
     .option("--yes", "Confirm execution of the exact transaction")
     .option(
@@ -140,6 +141,12 @@ export function registerStorageCommand(
     .action(async (options: MaintainOptions) => {
       await run(emit, async () => {
         const catalog = catalogFor(context);
+        if (options.transaction && options.dryRun) {
+          throw new StorageCommandError(
+            "dry_run_conflicts_with_transaction",
+            "--dry-run cannot be combined with --transaction; omit --transaction to plan, or omit --dry-run to execute",
+          );
+        }
         const providers = [
           ...createStructuredLogMaintenanceProviders(catalog),
           ...(context?.storageMaintenanceProviders ?? []),

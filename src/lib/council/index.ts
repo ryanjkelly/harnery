@@ -111,11 +111,6 @@ export function normalizeAgentName(raw: string): string {
   return trimmed.startsWith("agent-") ? trimmed : `agent-${trimmed}`;
 }
 
-/** Strip the `agent-` prefix for output to lookups that expect bare name. */
-export function bareAgentName(raw: string): string {
-  return raw.startsWith("agent-") ? raw.slice("agent-".length) : raw;
-}
-
 /**
  * Derive a kebab-case slug from objective text. Keeps the first 5 words after
  * lowercasing and stripping non-alphanumeric chars.
@@ -651,33 +646,6 @@ export function stripSubmitFooter(body: string): string {
   return body.replace(new RegExp(`\\n*${SUBMIT_FOOTER_MARKER}[\\s\\S]*$`), "");
 }
 
-/** Parse a route header from a string (the inbound user message). Returns
- * null when the comment is absent or malformed. Used by the /council
- * contribute skill to detect operator misrouting before contributing. */
-export function parseRouteHeader(text: string): {
-  council_id: string;
-  council_round: number;
-  member: string;
-} | null {
-  const m = text.match(/<!--\s*council-route\s*([\s\S]*?)-->/);
-  if (!m) return null;
-  const lines = m[1].split("\n");
-  const get = (key: string): string | null => {
-    for (const line of lines) {
-      const mm = line.match(new RegExp(`^\\s*${key}:\\s*(.+)$`));
-      if (mm) return mm[1].trim();
-    }
-    return null;
-  };
-  const councilId = get("council-id");
-  const roundStr = get("council-round");
-  const member = get("member");
-  if (!councilId || !roundStr || !member) return null;
-  const round = Number.parseInt(roundStr, 10);
-  if (!Number.isFinite(round)) return null;
-  return { council_id: councilId, council_round: round, member };
-}
-
 /** Write a prompt file (atomic). Creates the prompts dir lazily. The body
  * is automatically prepended with a route header (see `buildRouteHeader`) so
  * the contributor skill can verify the operator routed the prompt to the
@@ -701,25 +669,6 @@ export function writePrompt(
   writeFileSync(tmp, `${header}${cleaned}\n\n${footer}\n`, "utf8");
   renameSync(tmp, filePath);
   return filePath;
-}
-
-/**
- * Read a member's prompt for a given round. Returns null when the file
- * doesn't exist (steward hasn't drafted one yet). Includes a `completed`
- * boolean so the UI can mark the prompt deactivated once the contribution
- * has landed.
- */
-export function readPrompt(
-  councilId: string,
-  round: number,
-  memberName: string,
-): { body: string; completed: boolean } | null {
-  const filePath = promptPath(councilId, round, memberName);
-  if (!filePath || !existsSync(filePath)) return null;
-  const body = readFileSync(filePath, "utf8");
-  const contributors = contributorsInRound(councilId, round);
-  const completed = contributors.includes(normalizeAgentName(memberName));
-  return { body, completed };
 }
 
 /**

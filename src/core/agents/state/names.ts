@@ -365,14 +365,24 @@ function historyPath(coordRoot: string): string {
 function readHistory(coordRoot: string): NameHistoryRow[] {
   const p = historyPath(coordRoot);
   if (!existsSync(p)) return [];
+  let text: string;
   try {
-    return readFileSync(p, "utf8")
-      .split("\n")
-      .filter((line) => line.length > 0)
-      .map((line) => JSON.parse(line) as NameHistoryRow);
+    text = readFileSync(p, "utf8");
   } catch {
     return [];
   }
+  // Parse row by row: one torn append or hand-edited line must cost only that
+  // row, not every agent's name binding.
+  const rows: NameHistoryRow[] = [];
+  for (const line of text.split("\n")) {
+    if (line.length === 0) continue;
+    try {
+      rows.push(JSON.parse(line) as NameHistoryRow);
+    } catch {
+      // skip the malformed row
+    }
+  }
+  return rows;
 }
 
 function appendHistory(coordRoot: string, row: NameHistoryRow): void {

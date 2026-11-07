@@ -191,24 +191,3 @@ export function renameIdentity(
   writeIdentity(next, coordRoot);
   return next;
 }
-
-/**
- * Resolve a string to an agent_id. Accepts:
- *   - A UUID (already an id), verified to exist in registry
- *   - A display name (e.g. "agent-Maya" or "Maya"), resolved via lookupByName
- * Returns null when the input is neither a known id nor a known name.
- *
- * Does NOT mint. Callers that want mint-on-miss should call ensureIdentity()
- * with a name, then use the returned agent_id.
- */
-export function resolveAgentId(input: string, coordRoot?: string): string | null {
-  const trimmed = input.trim();
-  if (!trimmed) return null;
-  // UUID shape check, relaxed; we only need the lookupById to confirm.
-  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(trimmed)) {
-    const byId = lookupById(trimmed, coordRoot);
-    if (byId) return byId.agent_id;
-  }
-  const byName = lookupByName(trimmed, coordRoot);
-  return byName ? byName.agent_id : null;
-}

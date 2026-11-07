@@ -544,7 +544,7 @@ reviewer accepts.
 If the policy returns `ASK`, preparation creates a durable approval and parks
 without applying Git changes or reporting a generic workflow failure. Text mode
 prints the run, plan, and approval IDs plus a copyable
-`workflow approvals approve` command. JSON mode emits a stable parked envelope
+`approval approve` command. JSON mode emits a stable parked envelope
 with `status`, `runId`, `planId`, and `approvalId`. Resolve the approval, then
 rerun the same prepare command. The exact plan is reused and authorized. Apply
 requires `--yes` and rereads the plan, proof, review, policy decision, approval,
@@ -661,7 +661,7 @@ idempotent, and a conflicting retry is refused. Approval does not auto-spawn
 work. Resume must be invoked explicitly, and an exclusive resume lease refuses
 concurrent attempts for the same run.
 
-`workflow resume` reuses the same run ID and transcript. It verifies the frozen
+`run resume` reuses the same run ID and transcript. It verifies the frozen
 script SHA-256, reconstructs completed agent results and committed cost, and
 reruns the deterministic script from its entry point. Engine-managed
 `agent()` calls return cached results and the matching approval decision is

@@ -2238,7 +2238,12 @@ async function runPreToolUseGuard(
       const { emitDeny } = await import("./adapter/output.ts");
       emitDeny(adapter, reason);
       return false;
-    } catch {}
+    } catch (err) {
+      // Fail open: a broken claim read must not block every edit in the
+      // project. Record it so an unreadable claim state is visible instead of
+      // silently letting writes past a peer's claim.
+      logError(coordRoot, err, { phase: "pretool-guard", path: target.path });
+    }
   }
   return true;
 }

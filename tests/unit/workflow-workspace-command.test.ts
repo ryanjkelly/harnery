@@ -161,7 +161,7 @@ describe("workflow workspace commands", () => {
     const approvalId = workflowApprovalId(report.runId, "p99999");
     expect(parkedText).toContain(`approval: ${approvalId}`);
     expect(parkedText).toContain(
-      `approve: ${resolveBinName()} workflow approvals approve ${approvalId}`,
+      `approve: ${resolveBinName()} approval approve ${approvalId}`,
     );
     expect(emitted).toHaveLength(0);
 
@@ -190,9 +190,9 @@ describe("workflow workspace commands", () => {
     );
     const approveText = output.join("\n");
     expect(approveText).toContain(
-      `prepare: ${resolveBinName()} workflow integration prepare ${report.runId}`,
+      `prepare: ${resolveBinName()} run integration prepare ${report.runId}`,
     );
-    expect(approveText).not.toContain("workflow resume");
+    expect(approveText).not.toContain("run resume");
 
     output.length = 0;
     await runCommand(prepareArgs, emit);

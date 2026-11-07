@@ -250,7 +250,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
             emit.text(
               `run ${err.runId} parked\napproval: ${err.approvalId}\n` +
                 `transcript: ${err.transcriptPath}\n` +
-                `resume after resolution: ${resolveBinName()} workflow resume ${err.runId}\n`,
+                `resume after resolution: ${resolveBinName()} run resume ${err.runId}\n`,
             );
           }
           return;
@@ -490,7 +490,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
               `source: ${plan.provider_preview.source_commit}\n` +
               `target: ${plan.provider_preview.target_ref} at ${plan.provider_preview.target_commit}\n` +
               `changes: ${plan.provider_preview.changed_paths.length}\n` +
-              `apply: ${resolveBinName()} workflow integration apply ${runId} --yes\n`,
+              `apply: ${resolveBinName()} run integration apply ${runId} --yes\n`,
           );
         } catch (error) {
           if (error instanceof IntegrationPrepareParkedError) {
@@ -508,7 +508,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
                   `run: ${error.runId}\n` +
                   `plan: ${error.planId}\n` +
                   `approval: ${error.approvalId}\n` +
-                  `approve: ${resolveBinName()} workflow approvals approve ${error.approvalId}\n`,
+                  `approve: ${resolveBinName()} approval approve ${error.approvalId}\n`,
               );
             }
             return;
@@ -557,7 +557,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
         emit.text(
           `integration ${receipt.status}: ${receipt.target_ref} at ${receipt.target_commit}\n` +
             `receipt: ${receipt.receipt_id}\n` +
-            `cleanup: ${resolveBinName()} workflow cleanup ${runId} --yes\n`,
+            `cleanup: ${resolveBinName()} run cleanup ${runId} --yes\n`,
         );
       } catch (error) {
         emit.error({
@@ -877,7 +877,7 @@ function approvalNextActionHint(coordRoot: string, approval: WorkflowApproval): 
     "plan.json",
   );
   if (existsSync(integrationPlanPath)) {
-    return `prepare: ${bin} workflow integration prepare ${runId}\n`;
+    return `prepare: ${bin} run integration prepare ${runId}\n`;
   }
-  return `resume: ${bin} workflow resume ${runId}\n`;
+  return `resume: ${bin} run resume ${runId}\n`;
 }

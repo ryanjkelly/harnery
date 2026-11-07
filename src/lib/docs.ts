@@ -1,6 +1,6 @@
 import { existsSync as __existsSyncForDocs } from "node:fs";
 import { resolve as __resolveForDocs } from "node:path";
-import { sh } from "./exec.ts";
+import { exec, sh } from "./exec.ts";
 
 // Module-level docs context, initialized by initDocsContext() before any
 // other function in this file is called. The repo root + submodule list
@@ -147,9 +147,11 @@ async function getFileInfo(
   // Determine which repo to query and the relative path within it
   const { cwd, relativePath } = resolveFilePath(filePath);
 
-  const logResult = await sh(`git log -${commitCount} --format="%aI%x09%s" -- "${relativePath}"`, {
-    cwd,
-  });
+  // argv form: a file name is data, never shell syntax.
+  const logResult = await exec(
+    ["git", "log", `-${commitCount}`, "--format=%aI%x09%s", "--", relativePath],
+    { cwd },
+  );
 
   if (logResult.exitCode !== 0 || !logResult.stdout.trim()) {
     return {

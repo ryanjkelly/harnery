@@ -175,11 +175,6 @@ export function cuaPlatform(host: HostInfo, arch: string): CuaPlatform | undefin
   return undefined;
 }
 
-/** Map a process architecture onto a pinned build architecture. */
-export function cuaArch(arch: string): CuaArch | undefined {
-  return archLabel(arch);
-}
-
 /** `CFBundleIdentifier` and `CFBundleShortVersionString` from an XML Info.plist. */
 export function readBundleInfo(plistPath: string): { id?: string; version?: string } {
   let text: string;

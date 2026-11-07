@@ -4057,7 +4057,18 @@ function runTrace(
     process.exit(1);
   }
 
-  const sinceMs = opts.since ? Date.now() - (parseWindowSecs(opts.since) ?? 0) * 1000 : 0;
+  let sinceMs = 0;
+  if (opts.since) {
+    const sinceSecs = parseWindowSecs(opts.since);
+    if (sinceSecs === null) {
+      emit.error({
+        code: "bad_since",
+        message: `invalid --since value '${opts.since}': expected Nh or Nd (e.g. 24h, 7d)`,
+      });
+      process.exit(1);
+    }
+    sinceMs = Date.now() - sinceSecs * 1000;
+  }
   const limit = Math.max(1, Number.parseInt(opts.limit, 10) || 200);
   const diagnosticRead = readAgentDiagnosticEventsInWindow(root, sinceMs);
   const nativeCandidateIds = targetId.includes("\x00") ? targetId.split("\x00") : [targetId];
@@ -4172,7 +4183,6 @@ function runTrace(
     emit.data(result);
     return;
   }
-  emit.data(result);
   const header = `Trace: agent-${displayName}  (${resolvedId.slice(0, 8)}…)  ${events.length} events${result.other_instances.length ? ` · ${result.other_instances.length} older instance(s) of this name` : ""}`;
   process.stdout.write(`${header}\n`); // lint-ok-emission: human trace view
   process.stdout.write(
@@ -5953,7 +5963,7 @@ function runCouncilCreate(
   if (!opts.json) {
     emit.text(
       `council ${councilId} created: round 1 open, ${members.length} member(s) (${pingedMembers.length} pinged, ${skippedMembers.length} dormant)\n` +
-        `view: harn agents council show ${councilId}\n`,
+        `view: ${resolveBinName()} agents council show ${councilId}\n`,
     );
   }
 }
@@ -6170,7 +6180,7 @@ function runCouncilClose(id: string, opts: { json?: boolean }): void {
   });
   if (!opts.json) {
     emit.text(
-      `council ${next.council_id} closed at ${next.closed_at}.\nmanifest kept in .harnery/councils/ (use 'harn agents council archive ${next.council_id}' to move it).\n\n${transcript.markdown}`,
+      `council ${next.council_id} closed at ${next.closed_at}.\nmanifest kept in .harnery/councils/ (use '${resolveBinName()} agents council archive ${next.council_id}' to move it).\n\n${transcript.markdown}`,
     );
   }
 }
@@ -6918,7 +6928,7 @@ function advanceCouncil(manifest: CouncilManifest, force: boolean): CouncilManif
       appendEntry(
         memberOwner,
         "handoff",
-        `from council advance (${manifest.council_id}): round ${nextRound} is now open${force ? " (advanced with --force; some round-N members dropped)" : ""}. Run 'harn agents council show ${manifest.council_id}' to read prior round + 'harn agents council contribute ${manifest.council_id}' to weigh in.`,
+        `from council advance (${manifest.council_id}): round ${nextRound} is now open${force ? " (advanced with --force; some round-N members dropped)" : ""}. Run '${resolveBinName()} agents council show ${manifest.council_id}' to read prior round + '${resolveBinName()} agents council contribute ${manifest.council_id}' to weigh in.`,
       );
     } catch {
       /* best-effort; member journal may not exist yet */

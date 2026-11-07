@@ -596,7 +596,7 @@ function checkHarneryDir(): Check {
     name: ".harnery/",
     severity: "warn",
     detail: "no .harnery/ found above cwd",
-    hint: "initialize the project with `harn init` from the repository root",
+    hint: `initialize the project with \`${resolveBinName()} init\` from the repository root`,
   };
 }
 

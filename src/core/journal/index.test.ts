@@ -69,6 +69,26 @@ describe("journal path and parser security", () => {
     );
     expect(doc.header.session_id).toBe("fixture");
   });
+
+  test("keeps a markdown heading inside an entry body", () => {
+    const doc = parseJournal(
+      "fixture.md",
+      [
+        "# Journal: agent-Test",
+        "---",
+        "## 2026-05-15 1:48 AM CDT · handoff",
+        "summary",
+        "## Findings",
+        "detail",
+        "## 2026-05-15 2:10 AM CDT · note",
+        "next entry",
+      ].join("\n"),
+    );
+    expect(doc.entries.map((entry) => entry.body)).toEqual([
+      "summary\n## Findings\ndetail",
+      "next entry",
+    ]);
+  });
 });
 
 describe("journal authoritative lifecycle sweep", () => {

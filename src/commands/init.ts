@@ -351,10 +351,10 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
               : "fresh";
         const head =
           merged === "fresh"
-            ? "harn init --check: hooks + instructions + skills + event ledger V3 are current"
+            ? `${bin} init --check: hooks + instructions + skills + event ledger V3 are current`
             : merged === "drift"
-              ? "harn init --check: drift found (re-run `init` to refresh)"
-              : "harn init --check: error";
+              ? `${bin} init --check: drift found (re-run \`init\` to refresh)`
+              : `${bin} init --check: error`;
         const lines = issues.length
           ? `\n${dedupe(issues)
               .map((i) => `  ✗ ${i}`)
@@ -543,7 +543,13 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
       actions.push(...gitHooks.actions);
 
       emit.text(
-        render(projectRoot, dryRun, dedupe(actions), dedupe([...warnings, ...gitHooks.warnings])),
+        render(
+          projectRoot,
+          bin,
+          dryRun,
+          dedupe(actions),
+          dedupe([...warnings, ...gitHooks.warnings]),
+        ),
       );
     });
 }
@@ -949,15 +955,16 @@ function firstBraceIndex(raw: string): number {
 
 function render(
   projectRoot: string,
+  bin: string,
   dryRun: boolean,
   actions: string[],
   warnings: string[] = [],
 ): string {
-  const head = dryRun ? "harn init (dry run): no changes written" : "harn init";
+  const head = dryRun ? `${bin} init (dry run): no changes written` : `${bin} init`;
   const warnBlock = warnings.length ? `\n${warnings.map((w) => `  ! ${w}`).join("\n")}` : "";
   const tail = dryRun
     ? "\nRe-run without --dry-run to apply."
-    : "\nDone. Start a session and check `harn agents whoami`.";
+    : `\nDone. Start a session and check \`${bin} agents whoami\`.`;
   return `${head}\n  root: ${projectRoot}\n${actions.map((a) => `  ${a}`).join("\n")}${warnBlock}${tail}`;
 }
 

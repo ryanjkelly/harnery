@@ -1577,7 +1577,15 @@ function loadRunHistory(path: string): {
   const decisions = new Map<string, PolicyDecision>();
   for (const line of readFileSync(path, "utf8").split("\n")) {
     if (!line.trim()) continue;
-    const event = JSON.parse(line) as {
+    // A crash mid-append leaves a torn last line, which is exactly the run a
+    // resume is for. Skip it, as loadResumeCache does for the same file.
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const event = parsed as {
       event?: string;
       id?: string;
       cost_usd?: number;

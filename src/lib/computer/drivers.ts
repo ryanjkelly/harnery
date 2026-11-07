@@ -15,10 +15,6 @@ export const DRIVER_IDS = ["cua", "agent-desktop"] as const;
 export type DriverId = (typeof DRIVER_IDS)[number];
 export const DEFAULT_DRIVER: DriverId = "cua";
 
-export function isDriverId(value: unknown): value is DriverId {
-  return typeof value === "string" && (DRIVER_IDS as readonly string[]).includes(value);
-}
-
 /** Load every driver adapter (lazily, so commands that never touch a driver stay cheap). */
 export async function loadDrivers(): Promise<DesktopDriver[]> {
   const [{ cuaDriver }, { agentDesktopDriver }] = await Promise.all([

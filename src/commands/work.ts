@@ -7,7 +7,7 @@ import {
   probeBinaryVersion,
 } from "../core/adapters/index.ts";
 import { resolveCoordRoot } from "../core/agents/coord-client.ts";
-import { workflowSubscriptionOnly } from "../core/config.ts";
+import { resolveBinName, workflowSubscriptionOnly } from "../core/config.ts";
 import { findCompletedMissionGoverning, reopenGovernorMission } from "../core/governor/index.ts";
 import type { PolicyIsolation } from "../core/policy/index.ts";
 import { loadPolicyFile } from "../core/policy/index.ts";
@@ -266,7 +266,7 @@ function registerRunCommand(
             emit.text(
               `work ${workId}: run ${report.runId} finished\n${degraded}` +
                 `proof: ${report.proofPath}\n` +
-                `next: harn work reconcile ${workId}\n`,
+                `next: ${resolveBinName()} work reconcile ${workId}\n`,
             );
           }
         } catch (error) {
@@ -283,7 +283,7 @@ function registerRunCommand(
             } else {
               emit.text(
                 `work ${workId}: run ${error.runId} parked\napproval: ${error.approvalId}\n` +
-                  `next: resolve the approval, then harn work run ${workId}\n`,
+                  `next: resolve the approval, then ${resolveBinName()} work run ${workId}\n`,
               );
             }
             return;

@@ -4,7 +4,7 @@ import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parseBackupDuration, readHostSnapshotCache } from "../backup/host-snapshot.ts";
 import { harnCliEntry } from "../cli-entry.ts";
-import { backupConfig } from "../config.ts";
+import { backupConfig, resolveBinName } from "../config.ts";
 import {
   SCHEDULED_BACKUP_WORKER_FLAG,
   SCHEDULED_BACKUP_WORKER_PATH,
@@ -82,7 +82,7 @@ export function planScheduledBackup(
   const status = readScheduledBackupStatus(invocation.statusFile);
   const failed = status !== null && status.exitCode !== 0;
   const cue = failed
-    ? `harnery backup: the last scheduled snapshot failed (exit ${status.exitCode} at ${status.finishedAt}); see ${invocation.logFile}. Fix the cause or run \`harn backup snapshot --if-stale ${invocation.ifStale}\` to retry.`
+    ? `harnery backup: the last scheduled snapshot failed (exit ${status.exitCode} at ${status.finishedAt}); see ${invocation.logFile}. Fix the cause or run \`${resolveBinName(coordRoot)} backup snapshot --if-stale ${invocation.ifStale}\` to retry.`
     : null;
   const staleMs = parseBackupDuration(invocation.ifStale);
   const cache = readHostSnapshotCache(join(resolve(coordRoot), ".harnery"));

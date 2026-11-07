@@ -5,7 +5,7 @@ import { parseFrontmatter } from "./docs-frontmatter.ts";
 import { managedDocsMetadataType } from "./docs-metadata-managed.ts";
 import { isDocsMetadataV2, validateDocsMetadataV2 } from "./docs-metadata-v2.ts";
 import { createDocsRepositoryView } from "./docs-repository-view.ts";
-import { sh } from "./exec.ts";
+import { exec, sh } from "./exec.ts";
 
 let REPO_ROOT = "";
 let SUBMODULES: readonly string[] = [];
@@ -73,7 +73,8 @@ async function changedFiles(target: Target, explicit: string[], check: boolean):
 }
 
 async function headContent(target: Target, path: string): Promise<string | null> {
-  const result = await sh(`git show HEAD:${JSON.stringify(path)}`, { cwd: target.path });
+  // argv form: a file name is data, never shell syntax.
+  const result = await exec(["git", "show", `HEAD:${path}`], { cwd: target.path });
   return result.exitCode === 0 ? result.stdout : null;
 }
 

@@ -296,6 +296,13 @@ describe("assignName / resolveName", () => {
     expect(resolveName(root, "sess-durable")?.kind).toBe("session");
   });
 
+  test("one malformed name-history row does not erase the others", () => {
+    const name = assignName(root, "sess-torn", "session", { freshnessSecs: 600 });
+    const historyPath = path.join(root, ".harnery", ".name-history");
+    writeFileSync(historyPath, `${readFileSync(historyPath, "utf8")}{"torn":`);
+    expect(resolveName(root, "sess-torn")?.name).toBe(name);
+  });
+
   test("resolveName 3 paths: own id, session inherit→transient, unknown→null", () => {
     assignName(root, "parent-sess", "session", { freshnessSecs: 600 });
     // path 1: own instance_id → original (name, kind)

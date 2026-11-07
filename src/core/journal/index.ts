@@ -201,7 +201,11 @@ export function parseJournal(path: string, content: string): JournalDoc {
 
   for (; i < lines.length; i++) {
     const line = lines[i];
-    if (line.startsWith("## ")) {
+    // Only a line that parses as an entry header starts a new entry. A body
+    // line that merely begins with "## " (a markdown heading inside a
+    // multi-line note) stays in the current entry; treating it as a header
+    // would drop it and everything after it on the next rewrite.
+    if (line.startsWith("## ") && ENTRY_HEADER_RE.test(line)) {
       flush();
       currentHeader = line;
     } else if (currentHeader) {

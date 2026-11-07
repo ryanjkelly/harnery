@@ -201,26 +201,35 @@ export function registerGrepCommand(
     .option("--exclude <glob>", "Extra --exclude glob (repeatable)", collect, [] as string[])
     .option("--no-default-excludes", "Disable the default skip list (node_modules, dist, etc.)")
     .option("--json", "Structured JSON envelope")
-    .action(async (pattern: string, paths: string[], opts: GrepOpts) => {
-      try {
-        const result = await runGrep(pattern, paths, opts, context);
-        if (opts.quiet) {
-          // No output by contract; grep-conventional status. exitCode (not
-          // process.exit) so an embedding host isn't terminated mid-flush.
-          process.exitCode = result.total_matches > 0 ? 0 : 1;
-          return;
+    .action(
+      async (
+        pattern: string,
+        paths: string[],
+        cliOpts: GrepOpts & { defaultExcludes?: boolean },
+      ) => {
+        // Commander stores a negated `--no-default-excludes` flag as
+        // `defaultExcludes: false`; the engine reads `noDefaultExcludes`.
+        const opts: GrepOpts = { ...cliOpts, noDefaultExcludes: cliOpts.defaultExcludes === false };
+        try {
+          const result = await runGrep(pattern, paths, opts, context);
+          if (opts.quiet) {
+            // No output by contract; grep-conventional status. exitCode (not
+            // process.exit) so an embedding host isn't terminated mid-flush.
+            process.exitCode = result.total_matches > 0 ? 0 : 1;
+            return;
+          }
+          if (opts.json) {
+            emit.config({ format: "json" });
+            emit.data(result);
+            return;
+          }
+          emit.text(`${renderResult(result, opts)}\n`);
+        } catch (err) {
+          emit.error({ code: "grep_failed", message: (err as Error).message });
+          process.exit(1);
         }
-        if (opts.json) {
-          emit.config({ format: "json" });
-          emit.data(result);
-          return;
-        }
-        emit.text(`${renderResult(result, opts)}\n`);
-      } catch (err) {
-        emit.error({ code: "grep_failed", message: (err as Error).message });
-        process.exit(1);
-      }
-    });
+      },
+    );
 }
 
 function collect(value: string, prev: string[]): string[] {

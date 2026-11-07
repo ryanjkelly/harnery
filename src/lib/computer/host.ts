@@ -44,11 +44,6 @@ export function detectHost(deps?: HostDeps): HostInfo {
   return result;
 }
 
-/** Forget the cached default result (tests only). */
-export function resetHostCache(): void {
-  cached = undefined;
-}
-
 function resolveHost(deps: HostDeps): HostInfo {
   const platform = deps.platform ?? process.platform;
   const env = deps.env ?? process.env;
