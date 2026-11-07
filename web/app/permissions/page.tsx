@@ -65,7 +65,11 @@ function Value({ raw, children }: { raw?: string; children: React.ReactNode }) {
 }
 
 function Code({ children }: { children: string }) {
-  return <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">{children}</code>;
+  return (
+    <code className="whitespace-nowrap rounded bg-muted px-1 py-0.5 font-mono text-[11px]">
+      {children}
+    </code>
+  );
 }
 
 const MODE_SOURCE: Record<string, string> = {
@@ -437,14 +441,18 @@ export default async function PermissionsPage() {
     <PageShell width="narrow">
       <PageHeader
         title="Permissions"
-        description="What each coding agent on this computer may do without asking you. Amber marks no limits. Open a row for details and how to change it."
-        actions={
-          permissions ? (
-            <span className="text-xs text-muted-foreground">
-              {"Read "}
-              <FormattedDateTime iso={permissions.generatedAt} />
-            </span>
-          ) : null
+        description={
+          <>
+            {
+              "What each coding agent on this computer may do without asking you. Amber marks no limits. Open a row for details and how to change it."
+            }
+            {permissions ? (
+              <span className="mt-1 block text-xs">
+                {"Read "}
+                <FormattedDateTime iso={permissions.generatedAt} />
+              </span>
+            ) : null}
+          </>
         }
       />
       <div className="divide-y divide-border overflow-hidden rounded-lg border border-border bg-card">
