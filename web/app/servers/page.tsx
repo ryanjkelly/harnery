@@ -1,7 +1,11 @@
 import { FormattedDateTime } from "@/components/FormattedDateTime";
-import { NavBar } from "@/components/NavBar";
+import { EmptyState } from "@/components/layout/EmptyState";
+import { Notice } from "@/components/layout/Notice";
+import { PageHeader } from "@/components/layout/PageHeader";
+import { PageShell } from "@/components/layout/PageShell";
+import { Section } from "@/components/layout/Section";
 import { StopServerButton } from "@/components/StopServerButton";
-import { coordRoot } from "@/lib/coord-reader";
+import { Table, TableHead, Td, Th, Tr } from "@/components/ui/table";
 import { readServersReport, type ServerView, type UnregisteredListener } from "@/lib/servers";
 
 export const dynamic = "force-dynamic";
@@ -30,83 +34,71 @@ export default async function ServersPage() {
   const strays = groupByPid(report?.unregistered ?? []);
 
   return (
-    <div>
-      <NavBar scannedDir={coordRoot()} />
-      <main className="mx-auto max-w-6xl px-4 py-6">
-        <header className="mb-5">
-          <h1 className="text-lg font-semibold">Servers</h1>
-          <p className="text-sm text-muted-foreground">
-            Every local server started in this project. Session servers stop on their own once the
-            agent that started them is gone and nobody has used them for two hours. Services stop
-            only when someone stops them.
-          </p>
-        </header>
+    <PageShell width="wide">
+      <PageHeader
+        title="Servers"
+        description="Every local server started in this project. Session servers stop on their own once the agent that started them is gone and nobody has used them for two hours. Services stop only when someone stops them."
+      />
 
-        {error ? (
-          <div className="rounded-md border border-border bg-card p-4 text-sm text-muted-foreground">
-            Could not read the server registry: {error}
-          </div>
-        ) : (
-          <div className="space-y-6">
-            <ServerTable title="Session servers" views={sessions} now={now} session />
-            <ServerTable title="Services" views={services} now={now} />
-            <section>
-              <h2 className="mb-2 text-sm font-semibold">Unregistered servers</h2>
-              {report?.scan === "unsupported" ? (
-                <p className="text-sm text-muted-foreground">Not checked on this platform.</p>
-              ) : strays.length === 0 ? (
-                <p className="text-sm text-muted-foreground">
-                  None. Every server listening inside this project is registered.
+      {error ? (
+        <Notice tone="danger" title="Could not read the server registry">
+          {error}
+        </Notice>
+      ) : (
+        <div className="space-y-6">
+          <ServerTable title="Session servers" views={sessions} now={now} session />
+          <ServerTable title="Services" views={services} now={now} />
+          <Section title="Unregistered servers" className="mb-0">
+            {report?.scan === "unsupported" ? (
+              <EmptyState>Not checked on this platform.</EmptyState>
+            ) : strays.length === 0 ? (
+              <EmptyState>
+                None. Every server listening inside this project is registered.
+              </EmptyState>
+            ) : (
+              <>
+                <p className="mb-2 text-sm text-muted-foreground">
+                  These processes listen on a port from inside this project but never registered, so
+                  nothing tracks or cleans them up.
                 </p>
-              ) : (
-                <>
-                  <p className="mb-2 text-sm text-muted-foreground">
-                    These processes listen on a port from inside this project but never registered,
-                    so nothing tracks or cleans them up.
-                  </p>
-                  <div className="overflow-x-auto rounded-lg border border-border">
-                    <table className="w-full text-sm">
-                      <thead className="bg-muted/40 text-left text-xs text-muted-foreground">
-                        <tr>
-                          <th className="px-3 py-2">Process</th>
-                          <th className="px-3 py-2">Ports</th>
-                          <th className="px-3 py-2">Command</th>
-                          <th className="px-3 py-2" />
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {strays.map((stray) => (
-                          <tr key={stray.pid} className="border-t border-border align-top">
-                            <td className="px-3 py-2 font-mono text-xs">{stray.pid}</td>
-                            <td className="px-3 py-2 font-mono text-xs">
-                              {stray.ports.join(", ")}
-                            </td>
-                            <td className="px-3 py-2 font-mono text-xs break-all">
-                              {stray.command}
-                            </td>
-                            <td className="px-3 py-2 text-right">
-                              <StopServerButton pid={stray.pid} label={`process ${stray.pid}`} />
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </>
-              )}
-            </section>
-            {report?.pruned.length ? (
-              <p className="text-xs text-muted-foreground">
-                Removed records of servers that had exited: {report.pruned.join(", ")}
-              </p>
-            ) : null}
+                <Table>
+                  <TableHead>
+                    <tr>
+                      <Th>Process</Th>
+                      <Th>Ports</Th>
+                      <Th>Command</Th>
+                      <Th />
+                    </tr>
+                  </TableHead>
+                  <tbody>
+                    {strays.map((stray) => (
+                      <Tr key={stray.pid}>
+                        <Td mono>{stray.pid}</Td>
+                        <Td mono>{stray.ports.join(", ")}</Td>
+                        <Td mono className="break-all">
+                          {stray.command}
+                        </Td>
+                        <Td className="text-right">
+                          <StopServerButton pid={stray.pid} label={`process ${stray.pid}`} />
+                        </Td>
+                      </Tr>
+                    ))}
+                  </tbody>
+                </Table>
+              </>
+            )}
+          </Section>
+          {report?.pruned.length ? (
             <p className="text-xs text-muted-foreground">
-              as of <FormattedDateTime iso={new Date(now).toISOString()} kind="timestamp" />
+              Removed records of servers that had exited: {report.pruned.join(", ")}
             </p>
-          </div>
-        )}
-      </main>
-    </div>
+          ) : null}
+          <p className="text-xs text-muted-foreground">
+            as of <FormattedDateTime iso={new Date(now).toISOString()} kind="timestamp" />
+          </p>
+        </div>
+      )}
+    </PageShell>
   );
 }
 
@@ -132,81 +124,74 @@ function ServerTable({
   session?: boolean;
 }) {
   return (
-    <section>
-      <h2 className="mb-2 text-sm font-semibold">
-        {title} <span className="font-normal text-muted-foreground">({views.length})</span>
-      </h2>
+    <Section title={title} count={views.length} className="mb-0">
       {views.length === 0 ? (
-        <p className="text-sm text-muted-foreground">None running.</p>
+        <EmptyState>None running.</EmptyState>
       ) : (
-        <div className="overflow-x-auto rounded-lg border border-border">
-          <table className="w-full text-sm">
-            <thead className="bg-muted/40 text-left text-xs text-muted-foreground">
-              <tr>
-                <th className="px-3 py-2">Server</th>
-                <th className="px-3 py-2">Address</th>
-                <th className="px-3 py-2">Started by</th>
-                <th className="px-3 py-2">{session ? "Use" : "Running for"}</th>
-                <th className="px-3 py-2" />
-              </tr>
-            </thead>
-            <tbody>
-              {views.map((view) => {
-                const { record } = view;
-                const started = Date.parse(record.started_at);
-                const owner = record.owner
-                  ? `${record.owner.name ?? record.owner.instance_id.slice(0, 8)}${
-                      view.owner_state !== "live" ? ` (${OWNER_STATE[view.owner_state]})` : ""
-                    }`
-                  : "no agent";
-                const use = !session
-                  ? Number.isFinite(started)
-                    ? duration(now - started)
-                    : "unknown"
-                  : view.connections
-                    ? `in use (${view.connections} connection${view.connections === 1 ? "" : "s"})`
-                    : `idle ${duration(view.idle_ms)}`;
-                return (
-                  <tr key={record.id} className="border-t border-border align-top">
-                    <td className="px-3 py-2">
-                      <div>{record.label}</div>
-                      <div className="font-mono text-xs text-muted-foreground">{record.id}</div>
-                    </td>
-                    <td className="px-3 py-2 text-xs break-all">
-                      {record.url ? (
-                        <a className="underline" href={record.url} target="_blank" rel="noreferrer">
-                          {record.url}
-                        </a>
-                      ) : record.port ? (
-                        `port ${record.port}`
-                      ) : (
-                        ""
-                      )}
-                    </td>
-                    <td className="px-3 py-2 text-xs">{owner}</td>
-                    <td className="px-3 py-2 text-xs">
-                      {view.state === "running" ? use : view.state}
-                    </td>
-                    <td className="px-3 py-2 text-right">
-                      {view.state === "running" ? (
-                        <StopServerButton
-                          id={record.id}
-                          label={record.label}
-                          confirmMessage={
-                            session
-                              ? undefined
-                              : `Stop ${record.label}? A service is not restarted automatically${record.type === "tunnel" ? ", and a restarted tunnel gets a new public URL" : ""}.`
-                          }
-                        />
-                      ) : null}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+        <Table>
+          <TableHead>
+            <tr>
+              <Th>Server</Th>
+              <Th>Address</Th>
+              <Th>Started by</Th>
+              <Th>{session ? "Use" : "Running for"}</Th>
+              <Th />
+            </tr>
+          </TableHead>
+          <tbody>
+            {views.map((view) => {
+              const { record } = view;
+              const started = Date.parse(record.started_at);
+              const owner = record.owner
+                ? `${record.owner.name ?? record.owner.instance_id.slice(0, 8)}${
+                    view.owner_state !== "live" ? ` (${OWNER_STATE[view.owner_state]})` : ""
+                  }`
+                : "no agent";
+              const use = !session
+                ? Number.isFinite(started)
+                  ? duration(now - started)
+                  : "unknown"
+                : view.connections
+                  ? `in use (${view.connections} connection${view.connections === 1 ? "" : "s"})`
+                  : `idle ${duration(view.idle_ms)}`;
+              return (
+                <Tr key={record.id}>
+                  <Td>
+                    <div>{record.label}</div>
+                    <div className="font-mono text-xs text-muted-foreground">{record.id}</div>
+                  </Td>
+                  <Td className="text-xs break-all">
+                    {record.url ? (
+                      <a className="underline" href={record.url} target="_blank" rel="noreferrer">
+                        {record.url}
+                      </a>
+                    ) : record.port ? (
+                      `port ${record.port}`
+                    ) : (
+                      ""
+                    )}
+                  </Td>
+                  <Td className="text-xs">{owner}</Td>
+                  <Td className="text-xs">{view.state === "running" ? use : view.state}</Td>
+                  <Td className="text-right">
+                    {view.state === "running" ? (
+                      <StopServerButton
+                        id={record.id}
+                        label={record.label}
+                        confirmMessage={
+                          session
+                            ? undefined
+                            : `Stop ${record.label}? A service is not restarted automatically${record.type === "tunnel" ? ", and a restarted tunnel gets a new public URL" : ""}.`
+                        }
+                      />
+                    ) : null}
+                  </Td>
+                </Tr>
+              );
+            })}
+          </tbody>
+        </Table>
       )}
-    </section>
+    </Section>
   );
 }

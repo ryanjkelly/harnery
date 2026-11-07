@@ -2,6 +2,7 @@ import * as React from "react";
 
 import { Tooltip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/cn";
+import { TONE, type Tone } from "@/lib/tone";
 
 type Variant =
   | "default"
@@ -27,25 +28,26 @@ const VARIANT_CLS: Record<Variant, string> = {
   secondary: "border-transparent bg-secondary text-secondary-foreground",
   outline: "border-border text-foreground bg-background",
   muted: "border-border/60 bg-muted text-muted-foreground",
-  info: "border-sky-500/60 bg-sky-500/10 text-sky-700 dark:bg-sky-500/20 dark:text-sky-300",
-  success:
-    "border-emerald-500/60 bg-emerald-500/10 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300",
-  warning:
-    "border-amber-500/60 bg-amber-500/10 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300",
-  destructive:
-    "border-destructive/60 bg-destructive/10 text-destructive dark:bg-destructive/20",
-  accent:
-    "border-purple-500/60 bg-purple-500/10 text-purple-700 dark:bg-purple-500/20 dark:text-purple-300",
+  // Semantic variants are aliases for the shared state tones (lib/tone.ts),
+  // so a Badge and every other toned surface agree on colour.
+  info: TONE.act.pill,
+  success: TONE.done.pill,
+  warning: TONE.warn.pill,
+  destructive: TONE.danger.pill,
+  accent: TONE.accent.pill,
 };
 
 export function Badge({
   variant = "muted",
+  tone,
   className,
   title,
   children,
   ...props
 }: Omit<React.ComponentProps<"span">, "title"> & {
   variant?: Variant;
+  /** State tone from the shared colour grammar; takes precedence over `variant`. */
+  tone?: Tone;
   title?: React.ReactNode;
 }) {
   const cursor = title ? "cursor-help" : "";
@@ -62,7 +64,7 @@ export function Badge({
       className={cn(
         "inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] font-medium tracking-wider uppercase whitespace-nowrap shrink-0 [&>svg]:size-3 [&>svg]:pointer-events-none transition-colors",
         cursor,
-        VARIANT_CLS[variant],
+        tone ? TONE[tone].pill : VARIANT_CLS[variant],
         className,
       )}
       {...props}

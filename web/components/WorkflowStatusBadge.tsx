@@ -1,4 +1,5 @@
-import { Badge } from "@/components/ui/badge";
+import { StatusBadge } from "@/components/ui/status-badge";
+import type { Tone } from "@/lib/tone";
 
 /** What each state means, on hover. These badges are the first thing an
  * operator reads on both workflow surfaces, and several of them are easy to
@@ -18,65 +19,29 @@ const STATUS_HINTS: Record<string, string> = {
     "Skipped because an identical call in an earlier run already produced this result. Nothing was spawned and nothing was charged.",
 };
 
+type WorkflowStatus = "running" | "parked" | "done" | "failed" | "stale" | "cached";
+
+const STATUS_TONES: Partial<Record<WorkflowStatus, Tone>> = {
+  running: "act",
+  done: "done",
+  parked: "warn",
+  failed: "danger",
+};
+
+const STATUS_LABELS: Partial<Record<WorkflowStatus, string>> = {
+  parked: "awaiting approval",
+};
+
 /** House colour grammar: sky = working live, neutral = wait/stale,
  * emerald = done. Shared by the /workflows list + detail pages. */
-export function WorkflowStatusBadge({
-  status,
-}: {
-  status: "running" | "parked" | "done" | "failed" | "stale" | "cached";
-}) {
-  const hint = STATUS_HINTS[status];
-  if (status === "running") {
-    return (
-      <Badge
-        className="border-sky-500/40 bg-sky-500/10 text-sky-600 dark:text-sky-400"
-        title={hint}
-      >
-        <span className="live-dot mr-1" />
-        running
-      </Badge>
-    );
-  }
-  if (status === "done") {
-    return (
-      <Badge
-        className="border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-        title={hint}
-      >
-        done
-      </Badge>
-    );
-  }
-  if (status === "parked") {
-    return (
-      <Badge
-        className="border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400"
-        title={hint}
-      >
-        awaiting approval
-      </Badge>
-    );
-  }
-  if (status === "failed") {
-    return (
-      <Badge
-        className="border-red-500/40 bg-red-500/10 text-red-600 dark:text-red-400"
-        title={hint}
-      >
-        failed
-      </Badge>
-    );
-  }
-  if (status === "cached") {
-    return (
-      <Badge className="text-muted-foreground" title={hint}>
-        cached
-      </Badge>
-    );
-  }
+export function WorkflowStatusBadge({ status }: { status: WorkflowStatus }) {
   return (
-    <Badge className="text-muted-foreground" title={hint}>
-      stale
-    </Badge>
+    <StatusBadge
+      state={status}
+      tones={STATUS_TONES}
+      labels={STATUS_LABELS}
+      hints={STATUS_HINTS}
+      live={status === "running"}
+    />
   );
 }

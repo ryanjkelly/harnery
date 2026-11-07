@@ -1,5 +1,25 @@
 import type { WorkflowWorkspaceInspection } from "harnery/core/workflow";
 import { Badge } from "@/components/ui/badge";
+import { stateLabel, type Tone, toneFor } from "@/lib/tone";
+
+type LifecycleState = Extract<
+  WorkflowWorkspaceInspection,
+  { ok: true }
+>["value"]["lifecycle"]["state"];
+
+const LIFECYCLE_TONES: Partial<Record<LifecycleState, Tone>> = {
+  integrated: "done",
+  released: "done",
+  blocked: "danger",
+  lost: "danger",
+  abandoned_dirty: "danger",
+  preserved_dirty: "warn",
+  failed_retained: "warn",
+  running: "act",
+  allocating: "act",
+  integrating: "act",
+  cleanup_pending: "act",
+};
 
 export function WorkspaceStateBadge({ inspection }: { inspection: WorkflowWorkspaceInspection }) {
   if (!inspection.ok) {
@@ -31,25 +51,12 @@ export function WorkspaceStateBadge({ inspection }: { inspection: WorkflowWorksp
     );
   }
   const state = status.lifecycle.state;
-  const variant =
-    state === "integrated" || state === "released"
-      ? "success"
-      : state === "blocked" || state === "lost" || state === "abandoned_dirty"
-        ? "destructive"
-        : state === "preserved_dirty" || state === "failed_retained"
-          ? "warning"
-          : state === "running" ||
-              state === "allocating" ||
-              state === "integrating" ||
-              state === "cleanup_pending"
-            ? "info"
-            : "muted";
   return (
     <Badge
-      variant={variant}
+      tone={toneFor(state, LIFECYCLE_TONES)}
       title={`${status.provider?.id ?? "workspace provider"} · verification ${status.verification.status}`}
     >
-      {state.replaceAll("_", " ")}
+      {stateLabel(state)}
     </Badge>
   );
 }
