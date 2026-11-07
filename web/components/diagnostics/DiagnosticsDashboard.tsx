@@ -10,6 +10,7 @@ import {
   type DiagnosticsViewModel,
   findingMatchesQuery,
 } from "@/lib/diagnostics-reader";
+import { formatBytes } from "@/lib/format/bytes";
 import type {
   SupervisorCapability,
   SupervisorExplanationStatement,
@@ -613,17 +614,6 @@ function formatEvidenceValue(value: number, unit: SupervisorFinding["peak_unit"]
   if (unit === "milliseconds") return `${value.toLocaleString()} ms`;
   if (unit === "seconds") return `${value.toLocaleString()} s`;
   return `${value.toLocaleString()}${unit ? ` ${unit}` : ""}`;
-}
-
-function formatBytes(value: number): string {
-  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
-  let amount = value;
-  let index = 0;
-  while (amount >= 1_024 && index < units.length - 1) {
-    amount /= 1_024;
-    index += 1;
-  }
-  return `${amount >= 10 || index === 0 ? amount.toFixed(0) : amount.toFixed(1)} ${units[index]}`;
 }
 
 function preventRunt(value: string): string {

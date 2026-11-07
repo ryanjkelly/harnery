@@ -16,6 +16,7 @@ import {
   buildSubagentSummaries,
 } from "@/lib/agent-summary";
 import { coordRoot, readAgents, readInstanceIdentities } from "@/lib/coord-reader";
+import { formatBytes } from "@/lib/format/bytes";
 import { readResourceDashboard } from "@/lib/resource-reader";
 import { readSupervisorDashboard } from "@/lib/supervisor-reader";
 import { TONE } from "@/lib/tone";
@@ -674,18 +675,6 @@ function SupportBadge({ state }: { state: string }) {
 
 function formatPercent(value: number | null): string {
   return value === null ? "Warming up" : `${value.toFixed(1)}%`;
-}
-
-function formatBytes(value: number | null): string {
-  if (value === null) return "Unknown";
-  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
-  let amount = value;
-  let unit = 0;
-  while (amount >= 1_024 && unit < units.length - 1) {
-    amount /= 1_024;
-    unit += 1;
-  }
-  return `${amount >= 10 || unit === 0 ? amount.toFixed(0) : amount.toFixed(1)} ${units[unit]}`;
 }
 
 function formatAge(seconds: number): string {

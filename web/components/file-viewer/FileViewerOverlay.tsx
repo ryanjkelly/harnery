@@ -19,6 +19,7 @@ import {
   renderUrl,
 } from "@/lib/file-viewer/client";
 import type { FileMeta, FileViewerState } from "@/lib/file-viewer/types";
+import { formatFileSize } from "@/lib/format/bytes";
 import { RendererRegistry } from "./RendererRegistry";
 import { RevealInFileManagerButton } from "./RevealInFileManagerButton";
 import {
@@ -195,7 +196,7 @@ export default function FileViewerOverlay({
           <CopyButton value={m?.relPath ?? path} title="Copy path" />
           {m && (
             <span className="ml-1 hidden items-center gap-2 text-xs text-muted-foreground sm:flex">
-              <span>{formatSize(m.size)}</span>
+              <span>{formatFileSize(m.size)}</span>
               <span>·</span>
               <span>{m.category}</span>
             </span>
@@ -365,10 +366,4 @@ function CopyButton({ value, title }: { value: string; title: string }) {
       {copied ? <Check className="size-3.5 text-emerald-400" /> : <Copy className="size-3.5" />}
     </button>
   );
-}
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }

@@ -41,6 +41,7 @@ import { usePaletteFileOpenOverride } from "@/components/palette/PaletteProvider
 import { Tooltip } from "@/components/ui/tooltip";
 import type { BrowseSearchResult, BrowseWorkspaces } from "@/lib/browse-types";
 import { invalidatePreview } from "@/lib/file-viewer/client";
+import { formatFileSize } from "@/lib/format/bytes";
 import { createLiveRefreshScheduler } from "@/lib/live-refresh-scheduler";
 import { useLiveSignal } from "@/lib/useLiveSignal";
 import { browseFileActions } from "./browse-file-actions";
@@ -1264,7 +1265,7 @@ const EntryRow = memo(function EntryRow({
           <div className="ml-3 hidden shrink-0 text-right text-xs text-muted-foreground sm:block">
             {formattedDate && <div>{formattedDate}</div>}
             {entry.kind === "file" && entry.size !== undefined && (
-              <div className="mt-1 tabular-nums">{formatBytes(entry.size)}</div>
+              <div className="mt-1 tabular-nums">{formatFileSize(entry.size)}</div>
             )}
             {entry.deliveryItems?.length ? (
               <div className="mt-1">{entry.deliveryItems.length} outputs</div>
@@ -1310,8 +1311,3 @@ const EntryRow = memo(function EntryRow({
     </fieldset>
   );
 });
-function formatBytes(size: number): string {
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
-}

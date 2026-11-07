@@ -22,6 +22,15 @@ import { NO_DATA } from "@/lib/format/no-data";
 import type { LogRowRenderer, LogRowVariant } from "@/lib/log-table/types";
 import { useLiveSignal } from "@/lib/useLiveSignal";
 
+/** Expand or collapse a focused row with Enter or Space, like a button.
+ * Keys pressed inside a nested control (a link, a copy button) stay theirs. */
+function toggleOnKey(event: KeyboardEvent<HTMLTableRowElement>, toggle: () => void): void {
+  if (event.target !== event.currentTarget) return;
+  if (event.key !== "Enter" && event.key !== " ") return;
+  event.preventDefault();
+  toggle();
+}
+
 const MAX_BUFFER = 5000;
 const SEARCH_DEBOUNCE_MS = 120;
 
@@ -837,7 +846,7 @@ function LogRowInner<E>({
   const agentInstanceId = renderer.getAgentInstanceId(row);
 
   const rowBaseCls =
-    "group transition-colors odd:bg-muted/30 hover:bg-muted/60 cursor-pointer align-top";
+    "group transition-colors odd:bg-muted/30 hover:bg-muted/60 cursor-pointer align-top focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring";
 
   return (
     <>
@@ -853,6 +862,8 @@ function LogRowInner<E>({
           flashing && "bg-sky-500/20 hover:bg-sky-500/20 odd:bg-sky-500/20",
         )}
         onClick={() => onToggle(rowKey)}
+        onKeyDown={(event) => toggleOnKey(event, () => onToggle(rowKey))}
+        tabIndex={0}
         aria-expanded={expanded}
       >
         <td className={cn(STACKED_CELL, "font-mono text-muted-foreground whitespace-nowrap")}>
@@ -961,7 +972,7 @@ function LogRowGroupInner<E>({
   const count = rows.length;
 
   const rowBaseCls =
-    "group transition-colors odd:bg-muted/30 hover:bg-muted/60 cursor-pointer align-top";
+    "group transition-colors odd:bg-muted/30 hover:bg-muted/60 cursor-pointer align-top focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring";
 
   return (
     <>
@@ -973,6 +984,8 @@ function LogRowGroupInner<E>({
           flashing && "bg-sky-500/20 hover:bg-sky-500/20 odd:bg-sky-500/20",
         )}
         onClick={() => onToggle(rowKey)}
+        onKeyDown={(event) => toggleOnKey(event, () => onToggle(rowKey))}
+        tabIndex={0}
         aria-expanded={expanded}
       >
         <td className={cn(STACKED_CELL, "font-mono text-muted-foreground whitespace-nowrap")}>
