@@ -100,6 +100,7 @@ export {
   WORKFLOW_PROOF_SCHEMA_VERSION,
   WORKFLOW_WORK_CONTEXT_SCHEMA_VERSION,
 } from "./types.ts";
+export { validateAgainstSchema } from "./validate.ts";
 export type {
   ApplyIntegrationInput,
   AuthorizedIntegrationPlan,
@@ -173,4 +174,3 @@ export {
   WORKSPACE_BINDING_SCHEMA_VERSION,
   WORKSPACE_RECEIPT_SCHEMA_VERSION,
 } from "./workspaces/index.ts";
-export { validateAgainstSchema } from "./validate.ts";

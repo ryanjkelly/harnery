@@ -85,7 +85,7 @@ function projectGeneration(
   codec: PresenceCodecDigest | undefined,
 ): SemanticEvidenceV1 | undefined {
   const start = events.find((event) => event.event_type === "session.started");
-  if (!start || start.event_type !== "session.started") return undefined;
+  if (start?.event_type !== "session.started") return undefined;
   const harness = observedHarness(start.payload.runtime_attestation.adapter);
   if (!harness) return undefined;
 

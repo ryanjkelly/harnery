@@ -196,13 +196,13 @@ export function allowlistMatches(list: Allowlist, ip: string): boolean {
 /** The IPv6 /64 network prefix of an address, as a canonical `…/64` entry. */
 export function ipv6Slash64(address: string): string | null {
   const ip = parseIp(address);
-  if (!ip || ip.family !== 6) return null;
+  if (ip?.family !== 6) return null;
   return formatAllowEntry({ ...ip, prefix: 64, value: ip.value & maskFor(6, 64) });
 }
 
 /** A single IPv4 address as a `/32` entry. */
 export function ipv4Slash32(address: string): string | null {
   const ip = parseIp(address);
-  if (!ip || ip.family !== 4) return null;
+  if (ip?.family !== 4) return null;
   return `${formatIp(ip)}/32`;
 }
