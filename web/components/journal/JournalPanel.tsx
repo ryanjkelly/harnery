@@ -629,7 +629,7 @@ function ComposeView({
         <p
           className={cn(
             "text-xs",
-            feedback.ok ? "text-emerald-500" : "text-destructive",
+            feedback.ok ? "text-emerald-600 dark:text-emerald-500" : "text-destructive",
           )}
         >
           {feedback.msg}
@@ -912,7 +912,7 @@ function ReplaceEditor({
         <p
           className={cn(
             "text-xs",
-            feedback.ok ? "text-emerald-500" : "text-destructive",
+            feedback.ok ? "text-emerald-600 dark:text-emerald-500" : "text-destructive",
           )}
         >
           {feedback.msg}

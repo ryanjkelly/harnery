@@ -50,7 +50,7 @@ export function DecisionReopenActions({ decisionId }: { decisionId: string }) {
         <ArchiveRestore className="size-3.5" />
         Reopen
       </Button>
-      {error && <p className="text-xs text-red-400">reopen failed: {error}</p>}
+      {error && <p className="text-xs text-destructive">reopen failed: {error}</p>}
     </div>
   );
 }

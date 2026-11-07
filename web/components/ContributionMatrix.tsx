@@ -169,7 +169,7 @@ function chipStyle(type: ContributionType): { letter: string; cls: string } {
     case "Substantive":
       return {
         letter: "S",
-        cls: "bg-amber-500/15 text-amber-300 border border-amber-500/40",
+        cls: "bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/40",
       };
     case "Trivial":
       return {
@@ -220,7 +220,7 @@ function TallyChip({
     substantive === 0 && unknown === 0
       ? "text-muted-foreground"
       : substantive > 0
-        ? "text-amber-300"
+        ? "text-amber-700 dark:text-amber-300"
         : "text-muted-foreground";
   const tip =
     substantive > 0
@@ -242,7 +242,7 @@ function Legend() {
   return (
     <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] text-muted-foreground">
       <span className="flex items-center gap-1.5">
-        <span className="inline-flex items-center justify-center size-5 rounded font-mono text-[10px] font-semibold bg-amber-500/15 text-amber-300 border border-amber-500/40">
+        <span className="inline-flex items-center justify-center size-5 rounded font-mono text-[10px] font-semibold bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/40">
           S
         </span>
         Substantive (scope / schema / architecture)

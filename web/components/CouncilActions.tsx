@@ -168,9 +168,11 @@ export function CouncilActions({
         {closeRecommended && (
           <div className="mb-3 rounded-md border border-emerald-500/40 bg-emerald-500/[0.08] px-3 py-2 text-xs leading-relaxed space-y-1">
             <div>
-              <strong className="text-emerald-300">Exit criterion met.</strong> The last{" "}
-              {consecutiveAllTrivialRounds} consecutive rounds had no Substantive entries. Close the
-              council to mark deliberation complete; no further rounds needed.
+              <strong className="text-emerald-700 dark:text-emerald-300">
+                Exit criterion met.
+              </strong>{" "}
+              The last {consecutiveAllTrivialRounds} consecutive rounds had no Substantive entries.
+              Close the council to mark deliberation complete; no further rounds needed.
               {openIdle &&
                 ` Round ${currentRound} is open but nothing is pending in it, so closing from here is safe and ends the empty round.`}
             </div>
@@ -363,7 +365,9 @@ export function CouncilActions({
         </p>
 
         {feedback && (
-          <p className={`text-xs mt-2 ${feedback.ok ? "text-emerald-400" : "text-red-400"}`}>
+          <p
+            className={`text-xs mt-2 ${feedback.ok ? "text-emerald-600 dark:text-emerald-400" : "text-destructive"}`}
+          >
             {feedback.msg}
           </p>
         )}
@@ -389,7 +393,7 @@ export function CouncilActions({
                 (round_visibility=next_round).
                 {hasPending && (
                   <span className="mt-2 block rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs">
-                    <strong className="text-amber-300">
+                    <strong className="text-amber-700 dark:text-amber-300">
                       {pending.length} pending member
                       {pending.length === 1 ? "" : "s"}:
                     </strong>{" "}
@@ -568,7 +572,7 @@ export function CouncilActions({
                           className={
                             "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 border text-[10px] " +
                             (a.state === "active"
-                              ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30"
+                              ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30"
                               : "bg-muted/40 text-muted-foreground border-border/60")
                           }
                         >

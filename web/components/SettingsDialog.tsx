@@ -386,7 +386,7 @@ export function SettingsDialog({
 function SaveStatus({ dirty, recentlySaved }: { dirty: boolean; recentlySaved: boolean }) {
   if (recentlySaved) {
     return (
-      <span className="flex items-center gap-1.5 text-xs text-emerald-500">
+      <span className="flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-500">
         <svg
           xmlns="http://www.w3.org/2000/svg"
           viewBox="0 0 20 20"
@@ -406,7 +406,7 @@ function SaveStatus({ dirty, recentlySaved }: { dirty: boolean; recentlySaved: b
   }
   if (dirty) {
     return (
-      <span className="flex items-center gap-1.5 text-xs text-amber-500">
+      <span className="flex items-center gap-1.5 text-xs text-amber-700 dark:text-amber-500">
         <span className="size-1.5 rounded-full bg-amber-500" aria-hidden="true" />
         Unsaved changes
       </span>

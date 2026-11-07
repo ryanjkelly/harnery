@@ -43,7 +43,7 @@ export function RevealInFileManagerButton({ path }: { path: string }) {
         {state === "opening" ? (
           <LoaderCircle className="size-4 animate-spin" />
         ) : state === "opened" ? (
-          <Check className="size-4 text-emerald-400" />
+          <Check className="size-4 text-emerald-600 dark:text-emerald-400" />
         ) : state === "error" ? (
           <TriangleAlert className="size-4 text-amber-500" />
         ) : (

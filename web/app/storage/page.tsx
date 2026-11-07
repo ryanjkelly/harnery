@@ -1331,6 +1331,6 @@ function classConicGradient(rows: readonly ClassVisualRow[], totalBytes: number)
     cursor += (bytes / totalBytes) * 100;
     return `${CLASS_COLOR[row.storageClass] ?? "#71717a"} ${start}% ${cursor}%`;
   });
-  if (cursor < 100) segments.push(`#27272a ${cursor}% 100%`);
+  if (cursor < 100) segments.push(`var(--muted) ${cursor}% 100%`);
   return `conic-gradient(${segments.join(", ")})`;
 }

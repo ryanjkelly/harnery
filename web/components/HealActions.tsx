@@ -119,7 +119,12 @@ export function HealActions({ instanceId, agentName }: { instanceId: string; age
           change.
         </p>
         {feedback && (
-          <p className={"text-xs mt-2 " + (feedback.ok ? "text-emerald-400" : "text-red-400")}>
+          <p
+            className={
+              "text-xs mt-2 " +
+              (feedback.ok ? "text-emerald-600 dark:text-emerald-400" : "text-destructive")
+            }
+          >
             {feedback.msg}
           </p>
         )}

@@ -189,7 +189,11 @@ function CopyButton({ value }: { value: string }) {
       }}
       className="inline-flex items-center justify-center rounded p-1 text-muted-foreground hover:bg-muted/60 hover:text-foreground"
     >
-      {copied ? <Check className="size-3.5 text-emerald-400" /> : <Copy className="size-3.5" />}
+      {copied ? (
+        <Check className="size-3.5 text-emerald-600 dark:text-emerald-400" />
+      ) : (
+        <Copy className="size-3.5" />
+      )}
     </button>
   );
 }

@@ -61,7 +61,9 @@ export function EndSessionButton({ instanceId, name }: { instanceId: string; nam
           cancel
         </button>
         {feedback && (
-          <span className={feedback.ok ? "text-green-400" : "text-red-400"}>{feedback.msg}</span>
+          <span className={feedback.ok ? "text-green-600 dark:text-green-400" : "text-destructive"}>
+            {feedback.msg}
+          </span>
         )}
       </span>
     );
@@ -71,7 +73,7 @@ export function EndSessionButton({ instanceId, name }: { instanceId: string; nam
     <button
       type="button"
       onClick={() => setConfirming(true)}
-      className="text-xs px-2 py-1 rounded border border-red-900 hover:bg-destructive/15 text-red-300"
+      className="text-xs px-2 py-1 rounded border border-red-300 dark:border-red-900 hover:bg-destructive/15 text-red-700 dark:text-red-300"
     >
       end session
     </button>

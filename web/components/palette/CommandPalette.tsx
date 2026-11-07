@@ -144,7 +144,7 @@ function HighlightedMatch({ text, indices }: { text: string; indices: number[] |
       {runs.map((run, index) =>
         run.matched ? (
           // biome-ignore lint/suspicious/noArrayIndexKey: runs are positional segments of one string
-          <mark key={index} className="bg-transparent font-semibold text-sky-400">
+          <mark key={index} className="bg-transparent font-semibold text-sky-600 dark:text-sky-400">
             {run.text}
           </mark>
         ) : (

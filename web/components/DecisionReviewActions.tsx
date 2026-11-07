@@ -35,14 +35,14 @@ const VERDICTS: {
     label: "Didn't need me",
     hint: "Triage was too eager. I should not have seen this.",
     Icon: TrendingDown,
-    cls: "border-amber-500/50 text-amber-300 hover:bg-amber-500/10",
+    cls: "border-amber-500/50 text-amber-700 dark:text-amber-300 hover:bg-amber-500/10",
   },
   {
     verdict: "wrong-tier-high",
     label: "Wanted this sooner",
     hint: "I should have seen this before it was enacted.",
     Icon: TrendingUp,
-    cls: "border-amber-500/50 text-amber-300 hover:bg-amber-500/10",
+    cls: "border-amber-500/50 text-amber-700 dark:text-amber-300 hover:bg-amber-500/10",
   },
 ];
 
@@ -112,7 +112,7 @@ export function DecisionReviewActions({ decisionId }: { decisionId: string }) {
             </Button>
           ))}
         </div>
-        {error && <p className="text-xs text-red-400">review failed: {error}</p>}
+        {error && <p className="text-xs text-destructive">review failed: {error}</p>}
       </CardContent>
     </Card>
   );

@@ -151,10 +151,10 @@ export function RoutingPromptTabs({
                 <Tooltip
                   content={`${selected.member}'s V3 generation is active now: live off-screen progress; watch for the contribution to land.`}
                 >
-                  <span className="inline-flex items-center gap-1.5 text-[11px] text-emerald-300 cursor-help">
+                  <span className="inline-flex items-center gap-1.5 text-[11px] text-emerald-700 dark:text-emerald-300 cursor-help">
                     <span className="live-dot" aria-hidden />
                     working
-                    <span className="text-emerald-300/60 tabular-nums">
+                    <span className="text-emerald-700/60 dark:text-emerald-300/60 tabular-nums">
                       · {formatRelativeAgo(selected.activity.lastSeen)}
                     </span>
                   </span>
@@ -181,7 +181,7 @@ export function RoutingPromptTabs({
           </div>
 
           {selected.state === "active" && (
-            <p className="mb-1.5 flex items-center gap-1.5 text-[11px] text-sky-300">
+            <p className="mb-1.5 flex items-center gap-1.5 text-[11px] text-sky-700 dark:text-sky-300">
               <MousePointerClick className="size-3.5 shrink-0" aria-hidden />
               Next up: copy this into <AgentChip name={selected.member} className="font-mono" />
               &apos;s session; they run <code className="font-mono">/council contribute</code> to
@@ -219,9 +219,9 @@ function PromptTab({
   const { state, member, activity } = prompt;
   const nameCls =
     state === "active"
-      ? "font-semibold text-sky-300"
+      ? "font-semibold text-sky-700 dark:text-sky-300"
       : state === "contributed"
-        ? "text-emerald-300/70 line-through"
+        ? "text-emerald-700/70 dark:text-emerald-300/70 line-through"
         : "text-muted-foreground";
   const stateHint =
     state === "active"
@@ -236,7 +236,9 @@ function PromptTab({
           <p className="font-mono text-foreground">{member}</p>
           <p>{stateHint}</p>
           {activity && state !== "contributed" && (
-            <p className="text-emerald-300">Active in V3 right now (off-screen progress).</p>
+            <p className="text-emerald-700 dark:text-emerald-300">
+              Active in V3 right now (off-screen progress).
+            </p>
           )}
         </div>
       }
@@ -273,8 +275,8 @@ function StewardTab({
   onSelect: () => void;
 }) {
   const nameCls = seat.contributed
-    ? "text-emerald-300/70 line-through"
-    : "font-semibold text-sky-300";
+    ? "text-emerald-700/70 dark:text-emerald-300/70 line-through"
+    : "font-semibold text-sky-700 dark:text-sky-300";
   return (
     <Tooltip
       content={
@@ -283,7 +285,9 @@ function StewardTab({
           <p>Steward: routes the prompts and contributes directly; no prompt to copy.</p>
           <p>{seat.contributed ? "Their take is in." : "Their take is still needed this round."}</p>
           {seat.activity && !seat.contributed && (
-            <p className="text-emerald-300">Active in V3 right now (off-screen progress).</p>
+            <p className="text-emerald-700 dark:text-emerald-300">
+              Active in V3 right now (off-screen progress).
+            </p>
           )}
         </div>
       }
@@ -300,7 +304,7 @@ function StewardTab({
         }`}
       >
         {seat.contributed ? (
-          <Check className="size-3 text-emerald-400" aria-hidden />
+          <Check className="size-3 text-emerald-600 dark:text-emerald-400" aria-hidden />
         ) : (
           <span className="size-2 rounded-full bg-sky-400" aria-hidden />
         )}
@@ -338,12 +342,12 @@ function StewardDetail({
         </span>
         <AdapterBadge platform={seat.platform} model={seat.model} />
         {seat.contributed ? (
-          <span className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium ring-1 bg-emerald-500/15 text-emerald-300 ring-emerald-500/30">
+          <span className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium ring-1 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 ring-emerald-500/30">
             <Check className="size-3" aria-hidden />
             contributed
           </span>
         ) : (
-          <span className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium ring-1 bg-sky-500/15 text-sky-300 ring-sky-500/30">
+          <span className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium ring-1 bg-sky-500/15 text-sky-700 dark:text-sky-300 ring-sky-500/30">
             take needed
           </span>
         )}
@@ -351,10 +355,10 @@ function StewardDetail({
           <Tooltip
             content={`${seat.name}'s V3 generation is active now: live off-screen progress; watch for the contribution to land.`}
           >
-            <span className="inline-flex items-center gap-1.5 text-[11px] text-emerald-300 cursor-help">
+            <span className="inline-flex items-center gap-1.5 text-[11px] text-emerald-700 dark:text-emerald-300 cursor-help">
               <span className="live-dot" aria-hidden />
               working
-              <span className="text-emerald-300/60 tabular-nums">
+              <span className="text-emerald-700/60 dark:text-emerald-300/60 tabular-nums">
                 · {formatRelativeAgo(seat.activity.lastSeen)}
               </span>
             </span>
@@ -367,7 +371,7 @@ function StewardDetail({
           There&apos;s no prompt to copy for this seat.
         </p>
         {seat.contributed ? (
-          <p className="text-emerald-300/90">
+          <p className="text-emerald-700/90 dark:text-emerald-300/90">
             <Check className="inline size-3 -mt-0.5 mr-1" aria-hidden />
             {/* Single template literal; see the entity-whitespace trap in
                 harnery/AGENTS.md § Web app. */}
@@ -377,7 +381,7 @@ function StewardDetail({
           councilId && (
             <p>
               Still needed{currentRound ? ` for round ${currentRound}` : ""}. Ask them to run:{" "}
-              <code className="font-mono text-[11px] rounded bg-sky-500/10 px-1.5 py-0.5 text-sky-200/90 break-all">
+              <code className="font-mono text-[11px] rounded bg-sky-500/10 px-1.5 py-0.5 text-sky-800/90 dark:text-sky-200/90 break-all">
                 {`${binName} council contribute ${councilId} --file <their-take>.md`}
               </code>
             </p>
@@ -422,16 +426,20 @@ function AdapterBadge({ platform, model }: { platform?: string | null; model?: s
 /** Small colour-coded dot for the strip, mirroring the Key. */
 function StateDot({ state }: { state: CouncilPromptState }) {
   if (state === "active") return <span className="size-2 rounded-full bg-sky-400" aria-hidden />;
-  if (state === "contributed") return <Check className="size-3 text-emerald-400" aria-hidden />;
+  if (state === "contributed")
+    return <Check className="size-3 text-emerald-600 dark:text-emerald-400" aria-hidden />;
   return <span className="size-2 rounded-full border border-muted-foreground/60" aria-hidden />;
 }
 
 /** Coloured pill matching the Key, used in the detail header. */
 function StateBadge({ state }: { state: CouncilPromptState }) {
   const map = {
-    active: { cls: "bg-sky-500/15 text-sky-300 ring-sky-500/30", label: "active" },
+    active: {
+      cls: "bg-sky-500/15 text-sky-700 dark:text-sky-300 ring-sky-500/30",
+      label: "active",
+    },
     contributed: {
-      cls: "bg-emerald-500/15 text-emerald-300 ring-emerald-500/30",
+      cls: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 ring-emerald-500/30",
       label: "contributed",
     },
     queued: { cls: "bg-muted/60 text-muted-foreground ring-border/60", label: "queued" },

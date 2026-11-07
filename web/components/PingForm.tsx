@@ -67,7 +67,7 @@ export function PingForm({ instanceId }: { instanceId: string }) {
           {busy ? "sending…" : "ping"}
         </button>
         {feedback && (
-          <span className={`text-xs ${feedback.ok ? "text-green-400" : "text-red-400"}`}>
+          <span className={`text-xs ${feedback.ok ? "text-green-600 dark:text-green-400" : "text-destructive"}`}>
             {feedback.msg}
           </span>
         )}

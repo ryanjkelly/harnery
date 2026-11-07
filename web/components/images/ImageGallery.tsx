@@ -254,7 +254,7 @@ function FilterBar(props: {
         </span>
         {props.unavailableReason && (
           <span
-            className="inline-flex items-center gap-1 text-amber-500/80"
+            className="inline-flex items-center gap-1 text-amber-700/80 dark:text-amber-500/80"
             title={props.unavailableReason}
           >
             <span className="size-1.5 rounded-full bg-amber-500/80" />
@@ -666,7 +666,11 @@ function CopyButton({ value, title }: { value: string; title: string }) {
       }}
       className="inline-flex items-center justify-center rounded p-1 text-muted-foreground hover:bg-muted/60 hover:text-foreground"
     >
-      {copied ? <Check className="size-3.5 text-emerald-400" /> : <Copy className="size-3.5" />}
+      {copied ? (
+        <Check className="size-3.5 text-emerald-600 dark:text-emerald-400" />
+      ) : (
+        <Copy className="size-3.5" />
+      )}
     </button>
   );
 }

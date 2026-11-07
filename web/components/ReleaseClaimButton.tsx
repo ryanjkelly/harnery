@@ -108,7 +108,12 @@ export function ReleaseClaimButton({
       </Dialog>
 
       {feedback && (
-        <p className={"text-[11px] mt-1 " + (feedback.ok ? "text-emerald-400" : "text-red-400")}>
+        <p
+          className={
+            "text-[11px] mt-1 " +
+            (feedback.ok ? "text-emerald-600 dark:text-emerald-400" : "text-destructive")
+          }
+        >
           {feedback.msg}
         </p>
       )}

@@ -76,7 +76,7 @@ export function SnapshotDiff({
     <div className="rounded-md border border-border overflow-hidden">
       <div className="grid grid-cols-2 text-[10px] font-mono border-b border-border">
         <div className="flex items-center justify-between gap-2 px-2 py-1 bg-rose-500/5 border-r border-border">
-          <span className="text-rose-300 truncate">
+          <span className="text-rose-700 dark:text-rose-300 truncate">
             − {left.label}
             {typeof left.bytes === "number" && (
               <> ({left.bytes.toLocaleString()} B)</>
@@ -85,7 +85,7 @@ export function SnapshotDiff({
           <CopyButton text={left.body} label={left.label} />
         </div>
         <div className="flex items-center justify-between gap-2 px-2 py-1 bg-emerald-500/5">
-          <span className="text-emerald-300 truncate">
+          <span className="text-emerald-700 dark:text-emerald-300 truncate">
             + {right.label}
             {typeof right.bytes === "number" && (
               <> ({right.bytes.toLocaleString()} B)</>
@@ -101,7 +101,7 @@ export function SnapshotDiff({
               <div className="space-y-1 font-mono text-[11px] leading-relaxed">
                 <div className="font-semibold text-foreground">Lines</div>
                 <div>Total: {stats.linesTotalLeft.toLocaleString()}</div>
-                <div className="text-rose-300">
+                <div className="text-rose-700 dark:text-rose-300">
                   Removed: {stats.linesRemoved.toLocaleString()} (−
                   {pctRemoved}%)
                 </div>
@@ -109,7 +109,7 @@ export function SnapshotDiff({
                   Characters
                 </div>
                 <div>Total: {stats.charsTotalLeft.toLocaleString()}</div>
-                <div className="text-rose-300">
+                <div className="text-rose-700 dark:text-rose-300">
                   Removed: {stats.charsRemoved.toLocaleString()}
                 </div>
               </div>
@@ -126,14 +126,14 @@ export function SnapshotDiff({
               <div className="space-y-1 font-mono text-[11px] leading-relaxed">
                 <div className="font-semibold text-foreground">Lines</div>
                 <div>Total: {stats.linesTotalRight.toLocaleString()}</div>
-                <div className="text-emerald-300">
+                <div className="text-emerald-700 dark:text-emerald-300">
                   Added: {stats.linesAdded.toLocaleString()} (+{pctAdded}%)
                 </div>
                 <div className="font-semibold text-foreground mt-1.5">
                   Characters
                 </div>
                 <div>Total: {stats.charsTotalRight.toLocaleString()}</div>
-                <div className="text-emerald-300">
+                <div className="text-emerald-700 dark:text-emerald-300">
                   Added: {stats.charsAdded.toLocaleString()}
                 </div>
               </div>
@@ -395,7 +395,7 @@ function CopyButton({ text, label }: { text: string; label: string }) {
         aria-label={`Copy ${label} body`}
       >
         {copied ? (
-          <Check className="size-3 text-emerald-400" />
+          <Check className="size-3 text-emerald-600 dark:text-emerald-400" />
         ) : (
           <CopyIcon className="size-3" />
         )}

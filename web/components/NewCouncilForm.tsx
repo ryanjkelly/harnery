@@ -126,7 +126,7 @@ export function NewCouncilForm({
           <p className="text-[11px] text-muted-foreground">
             {objectiveCharCount} chars
             {objectiveTooShort && objectiveCharCount > 0 && (
-              <span className="ml-2 text-amber-400">
+              <span className="ml-2 text-amber-600 dark:text-amber-400">
                 (very short; councils benefit from a clear objective)
               </span>
             )}
@@ -249,8 +249,8 @@ export function NewCouncilForm({
 
       {error && (
         <div className="flex items-start gap-2 rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs">
-          <AlertCircle className="size-4 shrink-0 mt-0.5 text-red-400" />
-          <span className="text-red-300">{error}</span>
+          <AlertCircle className="size-4 shrink-0 mt-0.5 text-destructive" />
+          <span className="text-red-700 dark:text-red-300">{error}</span>
         </div>
       )}
 

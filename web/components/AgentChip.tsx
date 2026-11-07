@@ -269,7 +269,7 @@ export function AgentChip({
             </span>
           </DialogDescription>
         </DialogHeader>
-        {endError && <p className="mt-3 text-xs text-red-400 font-mono">✗ {endError}</p>}
+        {endError && <p className="mt-3 text-xs text-destructive font-mono">✗ {endError}</p>}
         <DialogFooter>
           <Button variant="outline" onClick={() => setEndOpen(false)} disabled={endPending}>
             Cancel
@@ -302,7 +302,7 @@ function AgentCardBody({
           className={
             "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] border " +
             (isActive
-              ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30"
+              ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30"
               : "bg-muted/60 text-muted-foreground border-border")
           }
         >
@@ -322,7 +322,7 @@ function AgentCardBody({
           reason={summary.task_state_reason}
         />
         {summary.task_state === "blocked" && summary.task_state_reason && (
-          <p className="mt-1 text-[11px] text-amber-300 wrap-break-word">
+          <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-300 wrap-break-word">
             {summary.task_state_reason}
           </p>
         )}
@@ -392,7 +392,7 @@ function AgentCardBody({
       {isActive && summary.task && (
         <div className="border-t border-border/60 pt-2">
           <div className="flex items-start gap-1.5">
-            <Activity className="size-3 shrink-0 mt-0.5 text-emerald-400" />
+            <Activity className="size-3 shrink-0 mt-0.5 text-emerald-600 dark:text-emerald-400" />
             <span className="wrap-break-word">{summary.task}</span>
           </div>
         </div>
@@ -402,7 +402,7 @@ function AgentCardBody({
         <div className="border-t border-border/60 pt-2 space-y-1 text-muted-foreground">
           {summary.files_touched && summary.files_touched.length > 0 && (
             <div className="flex items-start gap-1.5">
-              <FileWarning className="size-3 shrink-0 mt-0.5 text-amber-400" />
+              <FileWarning className="size-3 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
               <span>
                 {summary.files_touched.length} file
                 {summary.files_touched.length === 1 ? "" : "s"} held:{" "}
@@ -471,7 +471,11 @@ function CopyMicroButton({ value, label }: { value: string; label: string }) {
       aria-label={label}
       className="inline-flex items-center justify-center size-4 rounded text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors shrink-0"
     >
-      {copied ? <Check className="size-3 text-emerald-400" /> : <Copy className="size-3" />}
+      {copied ? (
+        <Check className="size-3 text-emerald-600 dark:text-emerald-400" />
+      ) : (
+        <Copy className="size-3" />
+      )}
     </button>
   );
 }
@@ -589,7 +593,10 @@ function AgentActions({
       </div>
       {feedback && (
         <p
-          className={"text-[10px] font-mono " + (feedback.ok ? "text-emerald-400" : "text-red-400")}
+          className={
+            "text-[10px] font-mono " +
+            (feedback.ok ? "text-emerald-600 dark:text-emerald-400" : "text-destructive")
+          }
         >
           {feedback.ok ? `✓ ${feedback.msg}` : `✗ ${feedback.msg}`}
         </p>

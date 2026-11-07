@@ -62,7 +62,9 @@ export default function ArchiveRenderer({ meta, path }: { meta: FileMeta; path: 
         <span className="uppercase tracking-wide">{kind}</span>
         <span>·</span>
         <span>{entries.length.toLocaleString()} entries</span>
-        {truncated && <span className="text-amber-500/80">· listing truncated</span>}
+        {truncated && (
+          <span className="text-amber-700/80 dark:text-amber-500/80">· listing truncated</span>
+        )}
       </div>
       <div className="min-h-0 flex-1 overflow-auto p-1 font-mono text-[11px]">
         {sorted.map((e, i) => (

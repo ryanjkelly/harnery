@@ -67,8 +67,8 @@ export function WaitingOnSteward({
         }
       />
       <div>
-        <strong className="text-amber-300">Waiting on steward.</strong> No prompts drafted yet for
-        round {currentRound}.
+        <strong className="text-amber-700 dark:text-amber-300">Waiting on steward.</strong> No
+        prompts drafted yet for round {currentRound}.
       </div>
       <div className="text-muted-foreground">
         The steward (

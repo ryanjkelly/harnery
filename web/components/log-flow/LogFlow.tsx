@@ -141,14 +141,16 @@ export function LogFlow({ initialSnapshot }: { initialSnapshot: LogFlowSnapshot 
         </div>
         <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
           {arrivals > 0 ? (
-            <span aria-live="polite" className="font-medium text-emerald-500">
+            <span aria-live="polite" className="font-medium text-emerald-600 dark:text-emerald-500">
               +{arrivals} new
             </span>
           ) : null}
           <span className="flex items-center gap-1">
             <Radio className="size-3" aria-hidden /> 2 minute window
           </span>
-          {paused ? <span className="font-semibold text-amber-500">FROZEN</span> : null}
+          {paused ? (
+            <span className="font-semibold text-amber-700 dark:text-amber-500">FROZEN</span>
+          ) : null}
         </div>
       </div>
 
@@ -184,7 +186,7 @@ export function LogFlow({ initialSnapshot }: { initialSnapshot: LogFlowSnapshot 
               <div className="log-flow-track">
                 <span className="log-flow-beam" aria-hidden />
                 {lane.error ? (
-                  <div className="absolute inset-0 flex items-center justify-center gap-1.5 text-[10px] text-amber-500">
+                  <div className="absolute inset-0 flex items-center justify-center gap-1.5 text-[10px] text-amber-700 dark:text-amber-500">
                     <span className="relative z-10 inline-flex max-w-[92%] items-center gap-1.5 rounded-full bg-background/90 px-2 py-0.5 text-center backdrop-blur-sm">
                       <CircleAlert className="size-3 shrink-0" aria-hidden /> lane unavailable:{" "}
                       {lane.error}

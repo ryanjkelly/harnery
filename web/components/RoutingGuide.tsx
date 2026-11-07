@@ -119,14 +119,14 @@ export function NextActionBanner({
       <div className="rounded-lg border border-emerald-500/45 bg-emerald-500/[0.07] px-4 py-3.5 flex items-start gap-3">
         <Attention request={attention} />
         <span className="grid size-7 shrink-0 place-items-center rounded-full bg-emerald-500/15 ring-1 ring-emerald-500/40">
-          <CheckCheck className="size-4 text-emerald-400" aria-hidden />
+          <CheckCheck className="size-4 text-emerald-600 dark:text-emerald-400" aria-hidden />
         </span>
         <p className="text-sm text-foreground/90 leading-relaxed self-center min-w-0 flex-1">
-          <span className="font-semibold text-emerald-300">
+          <span className="font-semibold text-emerald-700 dark:text-emerald-300">
             {`Exit criterion met: ${consecutiveAllTrivialRounds ?? 2} consecutive all-trivial rounds.`}
           </span>{" "}
           <span className="font-semibold">Next:</span>{" "}
-          <CloseCouncilTrigger className="font-medium text-emerald-300 underline decoration-emerald-500/50 underline-offset-2 hover:text-emerald-200 cursor-pointer">
+          <CloseCouncilTrigger className="font-medium text-emerald-700 dark:text-emerald-300 underline decoration-emerald-500/50 underline-offset-2 hover:text-emerald-800 dark:hover:text-emerald-200 cursor-pointer">
             Close the council
             <ArrowRight className="inline size-3.5 ml-0.5 -mt-0.5" aria-hidden />
           </CloseCouncilTrigger>
@@ -134,7 +134,7 @@ export function NextActionBanner({
             ? `. It opens the confirmation right here. Round ${currentRound} is open but nothing is pending in it, so closing ends the empty round. To keep deliberating instead, have the steward draft round-${currentRound} prompts.`
             : `. It opens the confirmation right here. Deliberation is complete; the council stays inspectable read-only after close.`}
         </p>
-        <span className="shrink-0 self-center rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs tabular-nums text-emerald-200/90">
+        <span className="shrink-0 self-center rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs tabular-nums text-emerald-800/90 dark:text-emerald-200/90">
           {roundIdle ? "ready to close" : `${memberContributed} of ${memberTotal} in`}
         </span>
       </div>
@@ -147,21 +147,21 @@ export function NextActionBanner({
       <div className="rounded-lg border border-emerald-500/45 bg-emerald-500/[0.07] px-4 py-3.5 flex items-start gap-3">
         <Attention request={attention} />
         <span className="grid size-7 shrink-0 place-items-center rounded-full bg-emerald-500/15 ring-1 ring-emerald-500/40">
-          <Check className="size-4 text-emerald-400" aria-hidden />
+          <Check className="size-4 text-emerald-600 dark:text-emerald-400" aria-hidden />
         </span>
         <p className="text-sm text-foreground/90 leading-relaxed self-center min-w-0 flex-1">
-          <span className="font-semibold text-emerald-300">
+          <span className="font-semibold text-emerald-700 dark:text-emerald-300">
             Round {currentRound} complete: all {memberTotal} members are in.
           </span>{" "}
           <span className="font-semibold">Next:</span>{" "}
-          <AdvanceCouncilTrigger className="font-medium text-emerald-300 underline decoration-emerald-500/50 underline-offset-2 hover:text-emerald-200 cursor-pointer">
+          <AdvanceCouncilTrigger className="font-medium text-emerald-700 dark:text-emerald-300 underline decoration-emerald-500/50 underline-offset-2 hover:text-emerald-800 dark:hover:text-emerald-200 cursor-pointer">
             Advance to round {nextRound}
             <ArrowRight className="inline size-3.5 ml-0.5 -mt-0.5" aria-hidden />
           </AdvanceCouncilTrigger>
           . It opens the confirmation right here; contributions unlock for everyone once the new
           round opens, and the steward synthesizes them into the plan.
         </p>
-        <span className="shrink-0 self-center rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs tabular-nums text-emerald-200/90">
+        <span className="shrink-0 self-center rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs tabular-nums text-emerald-800/90 dark:text-emerald-200/90">
           {memberContributed} of {memberTotal} in
         </span>
       </div>
@@ -176,11 +176,11 @@ export function NextActionBanner({
       <div className="rounded-lg border border-sky-500/45 bg-sky-500/[0.07] px-4 py-3.5 flex items-start gap-3">
         <Attention request={attention} />
         <span className="grid size-7 shrink-0 place-items-center rounded-full bg-sky-500/15 ring-1 ring-sky-500/40">
-          <PenLine className="size-4 text-sky-400" aria-hidden />
+          <PenLine className="size-4 text-sky-600 dark:text-sky-400" aria-hidden />
         </span>
         <div className="min-w-0 flex-1 self-center">
           <p className="text-sm text-foreground/90 leading-relaxed">
-            <span className="font-semibold text-sky-300">
+            <span className="font-semibold text-sky-700 dark:text-sky-300">
               All {routedTotal} routed prompts are in.
             </span>{" "}
             <span className="font-semibold">Still needed:</span> the round-
@@ -204,20 +204,23 @@ export function NextActionBanner({
                 under this Next/SWC version (the "round 2once" bug). */}
             <code
               data-attention-target
-              className="font-mono text-xs rounded bg-sky-500/10 px-1.5 py-0.5 text-sky-200/90 break-all"
+              className="font-mono text-xs rounded bg-sky-500/10 px-1.5 py-0.5 text-sky-800/90 dark:text-sky-200/90 break-all"
             >
               {`${binName} council contribute ${councilId} --file <their-take>.md`}
             </code>
           </p>
           {(workingUnrouted ?? []).map((name) => (
-            <p key={name} className="mt-1.5 flex items-center gap-1.5 text-xs text-emerald-300">
+            <p
+              key={name}
+              className="mt-1.5 flex items-center gap-1.5 text-xs text-emerald-700 dark:text-emerald-300"
+            >
               <span className="live-dot" aria-hidden />
               <AgentChip name={name} className="font-mono" /> is working now. Watch for the
               contribution to land.
             </p>
           ))}
         </div>
-        <span className="shrink-0 self-center rounded-full bg-sky-500/10 px-2 py-0.5 text-xs tabular-nums text-sky-200/90">
+        <span className="shrink-0 self-center rounded-full bg-sky-500/10 px-2 py-0.5 text-xs tabular-nums text-sky-800/90 dark:text-sky-200/90">
           {memberContributed} of {memberTotal} in
         </span>
       </div>
@@ -229,11 +232,11 @@ export function NextActionBanner({
     <div className="rounded-lg border border-sky-500/45 bg-sky-500/[0.07] px-4 py-3.5 flex items-start gap-3">
       <Attention request={attention} />
       <span className="grid size-7 shrink-0 place-items-center rounded-full bg-sky-500/15 ring-1 ring-sky-500/40">
-        <MousePointerClick className="size-4 text-sky-400" aria-hidden />
+        <MousePointerClick className="size-4 text-sky-600 dark:text-sky-400" aria-hidden />
       </span>
       <div className="min-w-0 flex-1 self-center">
         <p className="text-sm text-foreground/90 leading-relaxed">
-          <span className="font-semibold text-sky-300">Next:</span> copy{" "}
+          <span className="font-semibold text-sky-700 dark:text-sky-300">Next:</span> copy{" "}
           <AgentChip name={activeMember} className="font-mono text-foreground" />
           &apos;s prompt below and paste it into their{" "}
           {activeMemberPlatform ? (
@@ -247,14 +250,14 @@ export function NextActionBanner({
           the next prompt unlocks automatically.
         </p>
         {activeMemberWorking && (
-          <p className="mt-1 inline-flex items-center gap-1.5 text-xs text-emerald-300">
+          <p className="mt-1 inline-flex items-center gap-1.5 text-xs text-emerald-700 dark:text-emerald-300">
             <span className="live-dot" aria-hidden />
             <AgentChip name={activeMember} className="font-mono" /> is working now. Watch for the
             contribution to land.
           </p>
         )}
       </div>
-      <span className="shrink-0 self-center rounded-full bg-sky-500/10 px-2 py-0.5 text-xs tabular-nums text-sky-200/90">
+      <span className="shrink-0 self-center rounded-full bg-sky-500/10 px-2 py-0.5 text-xs tabular-nums text-sky-800/90 dark:text-sky-200/90">
         {routedContributed} of {routedTotal} routed
       </span>
     </div>
@@ -280,7 +283,7 @@ export function RoutingLegend() {
           <KeyRow
             swatch={<span className="size-2.5 rounded-full bg-sky-400" />}
             term="active"
-            termCls="text-sky-300"
+            termCls="text-sky-700 dark:text-sky-300"
             meaning="copy this one now; it's your move"
           />
           <KeyRow
@@ -290,15 +293,15 @@ export function RoutingLegend() {
             meaning="waiting its turn; Copy is disabled until the one above contributes"
           />
           <KeyRow
-            swatch={<Check className="size-3 text-emerald-400" />}
+            swatch={<Check className="size-3 text-emerald-600 dark:text-emerald-400" />}
             term="contributed"
-            termCls="text-emerald-300"
+            termCls="text-emerald-700 dark:text-emerald-300"
             meaning="that agent has submitted"
           />
           <KeyRow
             swatch={<span className="live-dot" />}
             term="working"
-            termCls="text-emerald-300"
+            termCls="text-emerald-700 dark:text-emerald-300"
             meaning="that agent is heartbeating live right now (off-screen progress)"
           />
           <KeyRow

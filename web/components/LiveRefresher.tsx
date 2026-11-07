@@ -86,11 +86,11 @@ export function LiveRefresher() {
   const isReconnecting = status === "reconnecting";
 
   const colorCls = isLive
-    ? "text-emerald-400"
+    ? "text-emerald-600 dark:text-emerald-400"
     : isPolling
-      ? "text-sky-400"
+      ? "text-sky-600 dark:text-sky-400"
       : isReconnecting
-        ? "text-amber-400"
+        ? "text-amber-600 dark:text-amber-400"
         : "text-muted-foreground";
 
   const icon = isLive ? (

@@ -69,7 +69,7 @@ export function DecisionArchiveActions({ decisionId }: { decisionId: string }) {
           <Archive className="size-3.5" />
           Archive decision
         </Button>
-        {error && <p className="text-xs text-red-400">archive failed: {error}</p>}
+        {error && <p className="text-xs text-destructive">archive failed: {error}</p>}
       </CardContent>
     </Card>
   );

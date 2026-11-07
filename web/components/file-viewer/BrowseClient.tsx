@@ -916,7 +916,7 @@ export function BrowseClient({
             {!remoteSearch && !query && currentWorkspace?.deliveryItems?.length ? (
               <div className="border-b border-border bg-muted/15 px-4 py-4 sm:px-5">
                 <div className="mb-3 flex items-center gap-2 text-xs font-medium">
-                  <FileCheck2 className="size-4 text-emerald-400" />
+                  <FileCheck2 className="size-4 text-emerald-600 dark:text-emerald-400" />
                   Deliverables
                   <span className="text-muted-foreground">
                     {currentWorkspace.deliveryItems.length}
@@ -936,7 +936,7 @@ export function BrowseClient({
                       }
                       className="flex max-w-full shrink-0 items-center gap-2 rounded-md border border-border bg-background px-3 py-2 text-sm hover:border-ring/50 hover:bg-muted"
                     >
-                      <FileCheck2 className="size-4 shrink-0 text-emerald-400" />
+                      <FileCheck2 className="size-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
                       <span className="truncate">{item.label}</span>
                       <ChevronRight className="size-3 shrink-0 text-muted-foreground" />
                     </button>

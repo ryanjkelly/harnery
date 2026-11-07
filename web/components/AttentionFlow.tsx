@@ -123,12 +123,16 @@ export function AttentionFlow() {
 
         // Guide stroke: wide soft halo + thin core, brightening toward the
         // target and faded at both ends.
+        // Light mode swaps the pale sky-400/200 glow (lost on white) for
+        // sky-600/500 so the guide stays visible on either background.
+        const dark = document.documentElement.classList.contains("dark");
+        const line = dark ? "56, 189, 248" : "2, 132, 199";
         const grad = ctx.createLinearGradient(mouse.x, mouse.y, ax, ay);
-        grad.addColorStop(0, "rgba(56, 189, 248, 0)");
-        grad.addColorStop(0.18, "rgba(56, 189, 248, 0.10)");
-        grad.addColorStop(0.55, "rgba(56, 189, 248, 0.22)");
-        grad.addColorStop(0.92, "rgba(56, 189, 248, 0.34)");
-        grad.addColorStop(1, "rgba(56, 189, 248, 0)");
+        grad.addColorStop(0, `rgba(${line}, 0)`);
+        grad.addColorStop(0.18, `rgba(${line}, 0.10)`);
+        grad.addColorStop(0.55, `rgba(${line}, 0.22)`);
+        grad.addColorStop(0.92, `rgba(${line}, 0.34)`);
+        grad.addColorStop(1, `rgba(${line}, 0)`);
         ctx.lineCap = "round";
         ctx.strokeStyle = grad;
         for (const [width, alpha] of [
@@ -163,8 +167,10 @@ export function AttentionFlow() {
             0,
             Math.PI * 2,
           );
-          ctx.fillStyle = `rgba(165, 224, 252, ${alpha.toFixed(3)})`;
-          ctx.shadowColor = "rgba(56, 189, 248, 0.8)";
+          ctx.fillStyle = dark
+            ? `rgba(165, 224, 252, ${alpha.toFixed(3)})`
+            : `rgba(14, 165, 233, ${alpha.toFixed(3)})`;
+          ctx.shadowColor = `rgba(${line}, 0.8)`;
           ctx.shadowBlur = 10;
           ctx.fill();
           ctx.shadowBlur = 0;

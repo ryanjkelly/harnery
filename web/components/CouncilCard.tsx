@@ -218,7 +218,7 @@ function CopyIconButton({
         aria-label={ariaLabel}
       >
         {copied ? (
-          <Check className="size-3.5 text-emerald-400" aria-hidden />
+          <Check className="size-3.5 text-emerald-600 dark:text-emerald-400" aria-hidden />
         ) : (
           <Copy className="size-3.5" aria-hidden />
         )}
