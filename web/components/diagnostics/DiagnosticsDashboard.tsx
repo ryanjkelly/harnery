@@ -3,6 +3,8 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { AgentChip } from "@/components/AgentChip";
 import { FormattedDateTime } from "@/components/FormattedDateTime";
+import { Notice } from "@/components/layout/Notice";
+import { PageHeader } from "@/components/layout/PageHeader";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -43,41 +45,33 @@ export function DiagnosticsDashboard({
   const explanation = selected ? model.explanation : undefined;
   return (
     <div data-diagnostics-mode={model.mode}>
-      <header className="mb-6 flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <div className="flex flex-wrap items-center gap-2">
-            <h1 className="text-2xl font-semibold tracking-tight">Diagnostics</h1>
-            <ModeBadge mode={model.mode} />
+      <PageHeader
+        title="Diagnostics"
+        meta={<ModeBadge mode={model.mode} />}
+        description="Follow a finding from direct observations through related evidence and clearly labeled possible explanations."
+        actions={
+          <div className="text-right">
+            {model.capturedAt ? (
+              <div>
+                {model.mode === "frozen" ? "Captured" : "Observed"}{" "}
+                <FormattedDateTime iso={model.capturedAt} kind="datetime" />
+              </div>
+            ) : (
+              <div>Waiting for observations</div>
+            )}
+            {model.bundle ? (
+              <code className="mt-1 block max-w-64 truncate font-mono">
+                {model.bundle.artifact_id}
+              </code>
+            ) : null}
           </div>
-          <p className="mt-2 max-w-3xl text-pretty text-sm text-muted-foreground">
-            Follow a finding from direct observations through related evidence and clearly labeled
-            possible explanations.
-          </p>
-        </div>
-        <div className="text-right text-xs text-muted-foreground">
-          {model.capturedAt ? (
-            <div>
-              {model.mode === "frozen" ? "Captured" : "Observed"}{" "}
-              <FormattedDateTime iso={model.capturedAt} kind="datetime" />
-            </div>
-          ) : (
-            <div>Waiting for observations</div>
-          )}
-          {model.bundle ? (
-            <code className="mt-1 block max-w-64 truncate font-mono">
-              {model.bundle.artifact_id}
-            </code>
-          ) : null}
-        </div>
-      </header>
+        }
+      />
 
       {model.notice ? (
-        <Card className="mb-5 border-amber-500/30 bg-amber-500/5">
-          <CardContent className="flex-row items-center gap-2 text-sm text-muted-foreground">
-            <FileWarning className="size-4 shrink-0 text-amber-500" aria-hidden />
-            {model.notice}
-          </CardContent>
-        </Card>
+        <Notice tone="warn" icon={<FileWarning aria-hidden />} className="mb-5">
+          {model.notice}
+        </Notice>
       ) : null}
 
       <nav aria-label="Diagnostic source views" className="mb-5 flex flex-wrap gap-2 text-sm">
