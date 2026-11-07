@@ -1,8 +1,8 @@
 import Link from "next/link";
 import { AgentChipProvider } from "@/components/AgentChip";
+import { PageHeader } from "@/components/layout/PageHeader";
+import { PageShell } from "@/components/layout/PageShell";
 import { EventsLogTable } from "@/components/log-table/EventsLogTable";
-import { NavBar } from "@/components/NavBar";
-import { coordRoot } from "@/lib/coord-reader";
 import { readDashboard } from "@/lib/dashboard-reader";
 
 export const dynamic = "force-dynamic";
@@ -39,18 +39,20 @@ export default async function EventsPage({ searchParams }: PageProps) {
 
   return (
     <div className="fixed inset-0 flex flex-col overflow-hidden bg-background">
-      <NavBar scannedDir={coordRoot()} />
-      <main className="flex-1 min-h-0 flex flex-col w-full px-6 pb-6">
-        <header className="mb-4 flex items-baseline justify-between flex-wrap gap-3 shrink-0">
-          <h1 className="text-xl font-semibold tracking-tight">Events</h1>
-          <div className="text-xs text-muted-foreground flex items-center gap-3">
-            <span>{data.meta.total_lines.toLocaleString()} events in buffer</span>
-            <code className="font-mono text-muted-foreground/80">Event Ledger V3</code>
-            <Link href="/live" className="underline hover:text-foreground">
-              commands-only view →
-            </Link>
-          </div>
-        </header>
+      <PageShell width="fill" compactNav={false}>
+        <PageHeader
+          className="mb-4 shrink-0"
+          title="Events"
+          actions={
+            <div className="flex items-center gap-3">
+              <span>{data.meta.total_lines.toLocaleString()} events in buffer</span>
+              <code className="font-mono text-muted-foreground/80">Event Ledger V3</code>
+              <Link href="/live" className="underline hover:text-foreground">
+                commands-only view →
+              </Link>
+            </div>
+          }
+        />
 
         <AgentChipProvider summaries={summaries}>
           <EventsLogTable
@@ -63,7 +65,7 @@ export default async function EventsPage({ searchParams }: PageProps) {
             knownKinds={allKinds}
           />
         </AgentChipProvider>
-      </main>
+      </PageShell>
     </div>
   );
 }

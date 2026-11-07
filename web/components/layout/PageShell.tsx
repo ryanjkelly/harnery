@@ -42,10 +42,13 @@ export function pageMainClass(width: PageWidth = "default", className?: string):
 export function PageShell({
   width = "default",
   compactNav,
+  id,
   className,
   children,
 }: {
   width?: PageWidth;
+  /** Anchor id for the `<main>` element. */
+  id?: string;
   /** Slim nav bar with no bottom margin; defaults to on for `fill` pages. */
   compactNav?: boolean;
   className?: string;
@@ -54,7 +57,9 @@ export function PageShell({
   return (
     <>
       <NavBar scannedDir={coordRoot()} compact={compactNav ?? width === "fill"} />
-      <main className={pageMainClass(width, className)}>{children}</main>
+      <main id={id} className={pageMainClass(width, className)}>
+        {children}
+      </main>
     </>
   );
 }

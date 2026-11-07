@@ -20,10 +20,12 @@ import {
 } from "lucide-react";
 
 import { FormattedDateTime } from "@/components/FormattedDateTime";
-import { NavBar } from "@/components/NavBar";
+import { PageHeader } from "@/components/layout/PageHeader";
+import { PageShell } from "@/components/layout/PageShell";
 import { StorageHelp } from "@/components/storage/StorageHelp";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { cn } from "@/lib/cn";
 import { coordRoot } from "@/lib/coord-reader";
 import {
   formatReasonLabel,
@@ -36,6 +38,7 @@ import {
 } from "@/lib/storage-display";
 import type { StorageClassSummary, StorageFamilyView } from "@/lib/storage-reader";
 import { readStorageFootprint, summarizeStorageHealth } from "@/lib/storage-reader";
+import { TONE, type Tone } from "@/lib/tone";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -95,23 +98,18 @@ export default async function StoragePage() {
   const familyHealth = summarizeStorageHealth(report.families);
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
-      <NavBar scannedDir={root} />
-      <main id="storage-footprint" className="mx-auto max-w-screen-2xl px-4 pb-12 sm:px-6">
-        <header className="mb-6 flex flex-wrap items-start justify-between gap-4">
-          <div className="max-w-3xl">
-            <div className="mb-2 flex flex-wrap items-center gap-2">
-              <h1 className="text-2xl font-semibold tracking-tight">
-                <Term term="Storage footprint" />
-              </h1>
-              <HealthBadge status={report.health.status} />
-            </div>
-            <p className="text-sm text-muted-foreground">
-              <Term term="Metadata only">Metadata-only</Term> inventory of Harnery files, external
-              roots, log budgets, and maintenance boundaries.
-            </p>
-          </div>
-          <div className="text-right text-xs text-muted-foreground">
+    <PageShell id="storage-footprint" width="wide">
+      <PageHeader
+        title={<Term term="Storage footprint" />}
+        meta={<HealthBadge status={report.health.status} />}
+        description={
+          <>
+            <Term term="Metadata only">Metadata-only</Term> inventory of Harnery files, external
+            roots, log budgets, and maintenance boundaries.
+          </>
+        }
+        actions={
+          <div className="text-right">
             <div>
               <Term term="Captured" />{" "}
               <FormattedDateTime iso={report.inventory.captured_at} kind="datetime" />
@@ -125,403 +123,400 @@ export default async function StoragePage() {
               </StorageHelp>
             </div>
           </div>
-        </header>
+        }
+      />
 
-        <section
-          aria-label="Storage at a glance"
-          className="storage-overview mb-6 grid gap-4 xl:grid-cols-[1.35fr_1fr]"
-        >
-          <Card className="relative min-h-[250px] overflow-hidden border-cyan-500/30 bg-gradient-to-br from-cyan-500/15 via-card to-sky-500/5 p-5 sm:p-6">
-            <CardContent className="relative grid items-center gap-6 sm:grid-cols-[1fr_auto]">
-              <div>
-                <div className="mb-3 flex items-center gap-2 text-sm font-medium text-cyan-700 dark:text-cyan-300">
-                  <HardDrive className="size-5" aria-hidden />
-                  <Term term="Logical footprint" />
+      <section
+        aria-label="Storage at a glance"
+        className="storage-overview mb-6 grid gap-4 xl:grid-cols-[1.35fr_1fr]"
+      >
+        <Card className="relative min-h-[250px] overflow-hidden border-cyan-500/30 bg-gradient-to-br from-cyan-500/15 via-card to-sky-500/5 p-5 sm:p-6">
+          <CardContent className="relative grid items-center gap-6 sm:grid-cols-[1fr_auto]">
+            <div>
+              <div className="mb-3 flex items-center gap-2 text-sm font-medium text-cyan-700 dark:text-cyan-300">
+                <HardDrive className="size-5" aria-hidden />
+                <Term term="Logical footprint" />
+              </div>
+              <div className="text-4xl font-semibold tracking-[-0.04em] tabular-nums sm:text-5xl">
+                <StorageHelp
+                  name="hero-logical-footprint"
+                  help={`${storageByteHelp(filesystemBytes)} This is current measured usage across all registered storage, not Harnery's maximum storage limit.`}
+                  className="text-4xl sm:text-5xl"
+                >
+                  <span>{formatStorageBytes(filesystemBytes)}</span>
+                </StorageHelp>
+              </div>
+              <p className="mt-3 max-w-xl text-sm leading-relaxed text-muted-foreground">
+                {dominantClass ? (
+                  <>
+                    Most space is{" "}
+                    <strong className="font-semibold text-foreground">
+                      {classLabel(dominantClass.row.storageClass).toLowerCase()}
+                    </strong>
+                    , representing {formatPercent(dominantPercent)} of the measured footprint.
+                  </>
+                ) : (
+                  "The current inventory did not report a dominant storage class."
+                )}
+              </p>
+              <div className="mt-5 flex flex-wrap gap-x-5 gap-y-2 text-xs text-muted-foreground">
+                <span className="inline-flex items-center gap-1.5">
+                  <FileStack className="size-3.5" aria-hidden /> {formatCount(files)} files
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <FolderTree className="size-3.5" aria-hidden /> {report.catalog.rootCount} roots
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <Layers3 className="size-3.5" aria-hidden /> {report.catalog.storageClassCount}{" "}
+                  classes
+                </span>
+              </div>
+            </div>
+            <ClassDonut rows={classRows} totalBytes={filesystemBytes ?? 0} />
+          </CardContent>
+        </Card>
+
+        <div className="grid gap-3 sm:grid-cols-2">
+          <SignalCard
+            icon={<ShieldCheck aria-hidden />}
+            label="Healthy families"
+            value={familyHealth.healthy.toLocaleString()}
+            detail={`of ${report.families.length} · ${familyHealth.unknown} unknown`}
+            tone="done"
+            help="Families whose inventory completed without a reported health problem."
+          />
+          <SignalCard
+            icon={<TriangleAlert aria-hidden />}
+            label="Needs attention"
+            value={familyHealth.needsAttention.toLocaleString()}
+            detail={`${familyHealth.degraded} degraded`}
+            tone={familyHealth.needsAttention > 0 ? "warn" : "done"}
+            help="Families with an actionable degraded health result. Unknown measurements remain visible in the inventory but do not enter this queue."
+          />
+          <SignalCard
+            icon={<Boxes aria-hidden />}
+            label="Storage families"
+            value={report.catalog.familyCount.toLocaleString()}
+            detail={`${report.catalog.rootCount} roots · ${logFamilies.length} log budgets`}
+            tone="act"
+            help={storageTermHelp("Storage catalog")}
+          />
+          <SignalCard
+            icon={<CircleGauge aria-hidden />}
+            label="Physical usage"
+            value={allocatedBytes == null ? "Unknown" : formatStorageBytes(allocatedBytes)}
+            detail={allocatedBytes == null ? "logical size is still measured" : "allocated on disk"}
+            tone={allocatedBytes == null ? "neutral" : "done"}
+            help={
+              allocatedBytes == null
+                ? storageTermHelp("Allocated bytes")
+                : storageByteHelp(allocatedBytes)
+            }
+          />
+        </div>
+      </section>
+
+      <section
+        aria-label="Storage visual summary"
+        className="mb-6 grid gap-4 xl:grid-cols-[1fr_1.15fr]"
+      >
+        <StorageComposition rows={classRows} totalBytes={filesystemBytes ?? 0} />
+        <TopFamiliesChart rows={topFamilies} totalBytes={filesystemBytes ?? 0} />
+      </section>
+
+      <IssuePanel report={report} />
+
+      {logFamilies.length > 0 ? <LogBudgetOverview families={logFamilies} /> : null}
+
+      <section aria-labelledby="inventory-heading" className="mb-6">
+        <div className="mb-3 flex items-start gap-3">
+          <div className="grid size-10 shrink-0 place-items-center rounded-xl bg-sky-500/10 text-sky-600 dark:text-sky-300">
+            <ListTree className="size-5" aria-hidden />
+          </div>
+          <div>
+            <h2 id="inventory-heading" className="text-lg font-semibold">
+              Technical inventory
+            </h2>
+            <p className="text-sm text-muted-foreground">
+              Open these only when you need the complete catalog or a specific path.
+            </p>
+          </div>
+        </div>
+
+        <div className="grid gap-3">
+          <details
+            data-storage-disclosure="families"
+            className="group min-w-0 rounded-xl border border-border/60 bg-card shadow-sm"
+          >
+            <summary className="flex min-h-16 cursor-pointer list-none items-center justify-between gap-4 p-4 marker:hidden">
+              <div className="flex min-w-0 items-center gap-3">
+                <div className="grid size-10 shrink-0 place-items-center rounded-lg bg-indigo-500/10 text-indigo-600 dark:text-indigo-300">
+                  <Boxes className="size-5" aria-hidden />
                 </div>
-                <div className="text-4xl font-semibold tracking-[-0.04em] tabular-nums sm:text-5xl">
-                  <StorageHelp
-                    name="hero-logical-footprint"
-                    help={`${storageByteHelp(filesystemBytes)} This is current measured usage across all registered storage, not Harnery's maximum storage limit.`}
-                    className="text-4xl sm:text-5xl"
-                  >
-                    <span>{formatStorageBytes(filesystemBytes)}</span>
-                  </StorageHelp>
-                </div>
-                <p className="mt-3 max-w-xl text-sm leading-relaxed text-muted-foreground">
-                  {dominantClass ? (
-                    <>
-                      Most space is{" "}
-                      <strong className="font-semibold text-foreground">
-                        {classLabel(dominantClass.row.storageClass).toLowerCase()}
-                      </strong>
-                      , representing {formatPercent(dominantPercent)} of the measured footprint.
-                    </>
-                  ) : (
-                    "The current inventory did not report a dominant storage class."
-                  )}
-                </p>
-                <div className="mt-5 flex flex-wrap gap-x-5 gap-y-2 text-xs text-muted-foreground">
-                  <span className="inline-flex items-center gap-1.5">
-                    <FileStack className="size-3.5" aria-hidden /> {formatCount(files)} files
-                  </span>
-                  <span className="inline-flex items-center gap-1.5">
-                    <FolderTree className="size-3.5" aria-hidden /> {report.catalog.rootCount} roots
-                  </span>
-                  <span className="inline-flex items-center gap-1.5">
-                    <Layers3 className="size-3.5" aria-hidden /> {report.catalog.storageClassCount}{" "}
-                    classes
-                  </span>
+                <div className="min-w-0">
+                  <h3 id="families-heading" className="font-semibold">
+                    <Term term="Registered families" />
+                  </h3>
+                  <p className="text-xs text-muted-foreground">
+                    {familyHealth.healthy} healthy, {familyHealth.degraded + familyHealth.unknown}{" "}
+                    to review
+                  </p>
                 </div>
               </div>
-              <ClassDonut rows={classRows} totalBytes={filesystemBytes ?? 0} />
-            </CardContent>
-          </Card>
+              <div className="flex shrink-0 items-center gap-3">
+                <span className="rounded-full bg-muted px-2.5 py-1 text-xs font-medium tabular-nums">
+                  {report.families.length} records
+                </span>
+                <ChevronRight
+                  className="size-5 text-muted-foreground group-open:hidden"
+                  aria-hidden
+                />
+                <ChevronDown
+                  className="hidden size-5 text-muted-foreground group-open:block"
+                  aria-hidden
+                />
+              </div>
+            </summary>
+            <div className="border-t border-border/60 p-3 sm:p-4">
+              <p className="mb-3 text-xs text-muted-foreground">
+                Every family remains in the page for browser Find. Expand a row for its ownership
+                contract.
+              </p>
+              <div className="min-w-0 md:overflow-x-auto md:rounded-xl md:border md:border-border/60">
+                <table
+                  role="table"
+                  aria-labelledby="families-heading"
+                  className="storage-family-table block w-full text-sm md:table md:min-w-[1080px] md:table-fixed"
+                >
+                  <colgroup className="hidden md:table-column-group">
+                    <col className="w-[260px]" />
+                    <col className="w-[170px]" />
+                    <col className="w-[130px]" />
+                    <col className="w-[90px]" />
+                    <col className="w-[100px]" />
+                    <col className="w-[100px]" />
+                    <col className="w-[230px]" />
+                  </colgroup>
+                  <thead
+                    role="rowgroup"
+                    className="sr-only bg-muted/60 text-left text-xs text-muted-foreground md:not-sr-only md:table-header-group"
+                  >
+                    <tr role="row">
+                      <Th>Family</Th>
+                      <Th>Class</Th>
+                      <Th>Status</Th>
+                      <Th align="right">Files</Th>
+                      <Th align="right">Logical</Th>
+                      <Th align="right">Allocated</Th>
+                      <Th>Maintenance</Th>
+                    </tr>
+                  </thead>
+                  <tbody
+                    role="rowgroup"
+                    className="grid gap-2 md:table-row-group md:divide-y md:divide-border/60"
+                  >
+                    {report.families.map((family) => (
+                      <FamilyRow key={family.inventory.family_id} family={family} />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </details>
 
-          <div className="grid gap-3 sm:grid-cols-2">
-            <SignalCard
-              icon={<ShieldCheck aria-hidden />}
-              label="Healthy families"
-              value={familyHealth.healthy.toLocaleString()}
-              detail={`of ${report.families.length} · ${familyHealth.unknown} unknown`}
-              tone="success"
-              help="Families whose inventory completed without a reported health problem."
-            />
-            <SignalCard
-              icon={<TriangleAlert aria-hidden />}
-              label="Needs attention"
-              value={familyHealth.needsAttention.toLocaleString()}
-              detail={`${familyHealth.degraded} degraded`}
-              tone={familyHealth.needsAttention > 0 ? "warning" : "success"}
-              help="Families with an actionable degraded health result. Unknown measurements remain visible in the inventory but do not enter this queue."
-            />
-            <SignalCard
-              icon={<Boxes aria-hidden />}
-              label="Storage families"
-              value={report.catalog.familyCount.toLocaleString()}
-              detail={`${report.catalog.rootCount} roots · ${logFamilies.length} log budgets`}
-              tone="sky"
-              help={storageTermHelp("Storage catalog")}
-            />
-            <SignalCard
-              icon={<CircleGauge aria-hidden />}
-              label="Physical usage"
-              value={allocatedBytes == null ? "Unknown" : formatStorageBytes(allocatedBytes)}
-              detail={
-                allocatedBytes == null ? "logical size is still measured" : "allocated on disk"
-              }
-              tone={allocatedBytes == null ? "muted" : "success"}
-              help={
-                allocatedBytes == null
-                  ? storageTermHelp("Allocated bytes")
-                  : storageByteHelp(allocatedBytes)
-              }
-            />
-          </div>
-        </section>
+          <details
+            data-storage-disclosure="roots"
+            className="group min-w-0 rounded-xl border border-border/60 bg-card shadow-sm"
+          >
+            <summary className="flex min-h-16 cursor-pointer list-none items-center justify-between gap-4 p-4 marker:hidden">
+              <div className="flex min-w-0 items-center gap-3">
+                <div className="grid size-10 shrink-0 place-items-center rounded-lg bg-cyan-500/10 text-cyan-600 dark:text-cyan-300">
+                  <FolderTree className="size-5" aria-hidden />
+                </div>
+                <div className="min-w-0">
+                  <h3 id="roots-heading" className="font-semibold">
+                    <Term term="Registered roots" />
+                  </h3>
+                  <p className="text-xs text-muted-foreground">
+                    Cataloged filesystem locations with safe labels
+                  </p>
+                </div>
+              </div>
+              <div className="flex shrink-0 items-center gap-3">
+                <span className="rounded-full bg-muted px-2.5 py-1 text-xs font-medium tabular-nums">
+                  {report.catalog.rootCount} records
+                </span>
+                <ChevronRight
+                  className="size-5 text-muted-foreground group-open:hidden"
+                  aria-hidden
+                />
+                <ChevronDown
+                  className="hidden size-5 text-muted-foreground group-open:block"
+                  aria-hidden
+                />
+              </div>
+            </summary>
+            <div className="border-t border-border/60 p-3 sm:p-4">
+              <p className="mb-3 text-xs text-muted-foreground">
+                Aggregate labels only. Physical path contents and stored records remain private.
+              </p>
+              <div className="min-w-0 md:overflow-x-auto md:rounded-xl md:border md:border-border/60">
+                <table
+                  role="table"
+                  aria-labelledby="roots-heading"
+                  className="storage-root-table block w-full text-sm md:table md:min-w-[1300px] md:table-fixed"
+                >
+                  <colgroup className="hidden md:table-column-group">
+                    <col className="w-[230px]" />
+                    <col className="w-[320px]" />
+                    <col className="w-[120px]" />
+                    <col className="w-[130px]" />
+                    <col className="w-[85px]" />
+                    <col className="w-[95px]" />
+                    <col className="w-[95px]" />
+                    <col className="w-[225px]" />
+                  </colgroup>
+                  <thead
+                    role="rowgroup"
+                    className="sr-only bg-muted/60 text-left text-xs text-muted-foreground md:not-sr-only md:table-header-group"
+                  >
+                    <tr role="row">
+                      <Th>Family</Th>
+                      <Th>Root label</Th>
+                      <Th>Ownership</Th>
+                      <Th>State</Th>
+                      <Th align="right">Files</Th>
+                      <Th align="right">Logical</Th>
+                      <Th align="right">Allocated</Th>
+                      <Th>Reasons</Th>
+                    </tr>
+                  </thead>
+                  <tbody
+                    role="rowgroup"
+                    className="grid gap-2 md:table-row-group md:divide-y md:divide-border/60"
+                  >
+                    {report.families.flatMap(({ inventory }) =>
+                      inventory.roots.map((rootRow) => (
+                        <tr
+                          role="row"
+                          key={`${inventory.family_id}:${rootRow.root_index}`}
+                          className={STORAGE_ROW_CLASS}
+                        >
+                          <Td mono mobileLabel="Family">
+                            <StorageHelp
+                              name={`table-root-family-${inventory.family_id}-${rootRow.root_index}`}
+                              help={storageTermHelp("Family")}
+                            >
+                              <span>{inventory.family_id}</span>
+                            </StorageHelp>
+                          </Td>
+                          <Td mono mobileLabel="Root label">
+                            <StorageHelp
+                              name={`table-root-label-${inventory.family_id}-${rootRow.root_index}`}
+                              help={storageTermHelp("Root label")}
+                              className="w-full min-w-0 overflow-hidden"
+                            >
+                              <span className="min-w-0 [overflow-wrap:anywhere]">
+                                {rootRow.root_label}
+                              </span>
+                            </StorageHelp>
+                          </Td>
+                          <Td mobileLabel="Ownership" mobileSpan={3}>
+                            {rootRow.ownership}
+                          </Td>
+                          <Td mobileLabel="State" mobileSpan={3}>
+                            <StateBadge state={rootRow.state} />
+                          </Td>
+                          <Td align="right" mobileLabel="Files" mobileSpan={2}>
+                            {formatMeasurement(rootRow.totals.regular_files)}
+                          </Td>
+                          <Td align="right" mobileLabel="Logical" mobileSpan={2}>
+                            {formatMeasurement(rootRow.totals.logical_bytes)}
+                          </Td>
+                          <Td align="right" mobileLabel="Allocated" mobileSpan={2}>
+                            {formatMeasurement(rootRow.totals.allocated_bytes)}
+                          </Td>
+                          <Td mobileLabel="Reasons">
+                            <ReasonList reasons={rootRow.reason_codes} />
+                          </Td>
+                        </tr>
+                      )),
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </details>
+        </div>
+      </section>
 
-        <section
-          aria-label="Storage visual summary"
-          className="mb-6 grid gap-4 xl:grid-cols-[1fr_1.15fr]"
-        >
-          <StorageComposition rows={classRows} totalBytes={filesystemBytes ?? 0} />
-          <TopFamiliesChart rows={topFamilies} totalBytes={filesystemBytes ?? 0} />
-        </section>
-
-        <IssuePanel report={report} />
-
-        {logFamilies.length > 0 ? <LogBudgetOverview families={logFamilies} /> : null}
-
-        <section aria-labelledby="inventory-heading" className="mb-6">
-          <div className="mb-3 flex items-start gap-3">
-            <div className="grid size-10 shrink-0 place-items-center rounded-xl bg-sky-500/10 text-sky-600 dark:text-sky-300">
-              <ListTree className="size-5" aria-hidden />
+      <details
+        data-storage-disclosure="measurement"
+        className="group min-w-0 rounded-xl border border-border/60 bg-card text-sm shadow-sm"
+      >
+        <summary className="flex min-h-16 cursor-pointer list-none items-center justify-between gap-4 p-4 marker:hidden">
+          <div className="flex items-center gap-3">
+            <div className="grid size-10 place-items-center rounded-lg bg-zinc-500/10 text-zinc-600 dark:text-zinc-300">
+              <ScanSearch className="size-5" aria-hidden />
             </div>
             <div>
-              <h2 id="inventory-heading" className="text-lg font-semibold">
-                Technical inventory
-              </h2>
-              <p className="text-sm text-muted-foreground">
-                Open these only when you need the complete catalog or a specific path.
+              <h2 className="font-semibold">How this measurement works</h2>
+              <p className="text-xs text-muted-foreground">
+                Scan scope, privacy contract, safety boundaries, and schemas
               </p>
             </div>
           </div>
-
-          <div className="grid gap-3">
-            <details
-              data-storage-disclosure="families"
-              className="group min-w-0 rounded-xl border border-border/60 bg-card shadow-sm"
-            >
-              <summary className="flex min-h-16 cursor-pointer list-none items-center justify-between gap-4 p-4 marker:hidden">
-                <div className="flex min-w-0 items-center gap-3">
-                  <div className="grid size-10 shrink-0 place-items-center rounded-lg bg-indigo-500/10 text-indigo-600 dark:text-indigo-300">
-                    <Boxes className="size-5" aria-hidden />
-                  </div>
-                  <div className="min-w-0">
-                    <h3 id="families-heading" className="font-semibold">
-                      <Term term="Registered families" />
-                    </h3>
-                    <p className="text-xs text-muted-foreground">
-                      {familyHealth.healthy} healthy, {familyHealth.degraded + familyHealth.unknown}{" "}
-                      to review
-                    </p>
-                  </div>
-                </div>
-                <div className="flex shrink-0 items-center gap-3">
-                  <span className="rounded-full bg-muted px-2.5 py-1 text-xs font-medium tabular-nums">
-                    {report.families.length} records
-                  </span>
-                  <ChevronRight
-                    className="size-5 text-muted-foreground group-open:hidden"
-                    aria-hidden
-                  />
-                  <ChevronDown
-                    className="hidden size-5 text-muted-foreground group-open:block"
-                    aria-hidden
-                  />
-                </div>
-              </summary>
-              <div className="border-t border-border/60 p-3 sm:p-4">
-                <p className="mb-3 text-xs text-muted-foreground">
-                  Every family remains in the page for browser Find. Expand a row for its ownership
-                  contract.
-                </p>
-                <div className="min-w-0 md:overflow-x-auto md:rounded-xl md:border md:border-border/60">
-                  <table
-                    role="table"
-                    aria-labelledby="families-heading"
-                    className="storage-family-table block w-full text-sm md:table md:min-w-[1080px] md:table-fixed"
-                  >
-                    <colgroup className="hidden md:table-column-group">
-                      <col className="w-[260px]" />
-                      <col className="w-[170px]" />
-                      <col className="w-[130px]" />
-                      <col className="w-[90px]" />
-                      <col className="w-[100px]" />
-                      <col className="w-[100px]" />
-                      <col className="w-[230px]" />
-                    </colgroup>
-                    <thead
-                      role="rowgroup"
-                      className="sr-only bg-muted/60 text-left text-xs text-muted-foreground md:not-sr-only md:table-header-group"
-                    >
-                      <tr role="row">
-                        <Th>Family</Th>
-                        <Th>Class</Th>
-                        <Th>Status</Th>
-                        <Th align="right">Files</Th>
-                        <Th align="right">Logical</Th>
-                        <Th align="right">Allocated</Th>
-                        <Th>Maintenance</Th>
-                      </tr>
-                    </thead>
-                    <tbody
-                      role="rowgroup"
-                      className="grid gap-2 md:table-row-group md:divide-y md:divide-border/60"
-                    >
-                      {report.families.map((family) => (
-                        <FamilyRow key={family.inventory.family_id} family={family} />
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </details>
-
-            <details
-              data-storage-disclosure="roots"
-              className="group min-w-0 rounded-xl border border-border/60 bg-card shadow-sm"
-            >
-              <summary className="flex min-h-16 cursor-pointer list-none items-center justify-between gap-4 p-4 marker:hidden">
-                <div className="flex min-w-0 items-center gap-3">
-                  <div className="grid size-10 shrink-0 place-items-center rounded-lg bg-cyan-500/10 text-cyan-600 dark:text-cyan-300">
-                    <FolderTree className="size-5" aria-hidden />
-                  </div>
-                  <div className="min-w-0">
-                    <h3 id="roots-heading" className="font-semibold">
-                      <Term term="Registered roots" />
-                    </h3>
-                    <p className="text-xs text-muted-foreground">
-                      Cataloged filesystem locations with safe labels
-                    </p>
-                  </div>
-                </div>
-                <div className="flex shrink-0 items-center gap-3">
-                  <span className="rounded-full bg-muted px-2.5 py-1 text-xs font-medium tabular-nums">
-                    {report.catalog.rootCount} records
-                  </span>
-                  <ChevronRight
-                    className="size-5 text-muted-foreground group-open:hidden"
-                    aria-hidden
-                  />
-                  <ChevronDown
-                    className="hidden size-5 text-muted-foreground group-open:block"
-                    aria-hidden
-                  />
-                </div>
-              </summary>
-              <div className="border-t border-border/60 p-3 sm:p-4">
-                <p className="mb-3 text-xs text-muted-foreground">
-                  Aggregate labels only. Physical path contents and stored records remain private.
-                </p>
-                <div className="min-w-0 md:overflow-x-auto md:rounded-xl md:border md:border-border/60">
-                  <table
-                    role="table"
-                    aria-labelledby="roots-heading"
-                    className="storage-root-table block w-full text-sm md:table md:min-w-[1300px] md:table-fixed"
-                  >
-                    <colgroup className="hidden md:table-column-group">
-                      <col className="w-[230px]" />
-                      <col className="w-[320px]" />
-                      <col className="w-[120px]" />
-                      <col className="w-[130px]" />
-                      <col className="w-[85px]" />
-                      <col className="w-[95px]" />
-                      <col className="w-[95px]" />
-                      <col className="w-[225px]" />
-                    </colgroup>
-                    <thead
-                      role="rowgroup"
-                      className="sr-only bg-muted/60 text-left text-xs text-muted-foreground md:not-sr-only md:table-header-group"
-                    >
-                      <tr role="row">
-                        <Th>Family</Th>
-                        <Th>Root label</Th>
-                        <Th>Ownership</Th>
-                        <Th>State</Th>
-                        <Th align="right">Files</Th>
-                        <Th align="right">Logical</Th>
-                        <Th align="right">Allocated</Th>
-                        <Th>Reasons</Th>
-                      </tr>
-                    </thead>
-                    <tbody
-                      role="rowgroup"
-                      className="grid gap-2 md:table-row-group md:divide-y md:divide-border/60"
-                    >
-                      {report.families.flatMap(({ inventory }) =>
-                        inventory.roots.map((rootRow) => (
-                          <tr
-                            role="row"
-                            key={`${inventory.family_id}:${rootRow.root_index}`}
-                            className={STORAGE_ROW_CLASS}
-                          >
-                            <Td mono mobileLabel="Family">
-                              <StorageHelp
-                                name={`table-root-family-${inventory.family_id}-${rootRow.root_index}`}
-                                help={storageTermHelp("Family")}
-                              >
-                                <span>{inventory.family_id}</span>
-                              </StorageHelp>
-                            </Td>
-                            <Td mono mobileLabel="Root label">
-                              <StorageHelp
-                                name={`table-root-label-${inventory.family_id}-${rootRow.root_index}`}
-                                help={storageTermHelp("Root label")}
-                                className="w-full min-w-0 overflow-hidden"
-                              >
-                                <span className="min-w-0 [overflow-wrap:anywhere]">
-                                  {rootRow.root_label}
-                                </span>
-                              </StorageHelp>
-                            </Td>
-                            <Td mobileLabel="Ownership" mobileSpan={3}>
-                              {rootRow.ownership}
-                            </Td>
-                            <Td mobileLabel="State" mobileSpan={3}>
-                              <StateBadge state={rootRow.state} />
-                            </Td>
-                            <Td align="right" mobileLabel="Files" mobileSpan={2}>
-                              {formatMeasurement(rootRow.totals.regular_files)}
-                            </Td>
-                            <Td align="right" mobileLabel="Logical" mobileSpan={2}>
-                              {formatMeasurement(rootRow.totals.logical_bytes)}
-                            </Td>
-                            <Td align="right" mobileLabel="Allocated" mobileSpan={2}>
-                              {formatMeasurement(rootRow.totals.allocated_bytes)}
-                            </Td>
-                            <Td mobileLabel="Reasons">
-                              <ReasonList reasons={rootRow.reason_codes} />
-                            </Td>
-                          </tr>
-                        )),
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </details>
-          </div>
-        </section>
-
-        <details
-          data-storage-disclosure="measurement"
-          className="group min-w-0 rounded-xl border border-border/60 bg-card text-sm shadow-sm"
-        >
-          <summary className="flex min-h-16 cursor-pointer list-none items-center justify-between gap-4 p-4 marker:hidden">
-            <div className="flex items-center gap-3">
-              <div className="grid size-10 place-items-center rounded-lg bg-zinc-500/10 text-zinc-600 dark:text-zinc-300">
-                <ScanSearch className="size-5" aria-hidden />
-              </div>
-              <div>
-                <h2 className="font-semibold">How this measurement works</h2>
-                <p className="text-xs text-muted-foreground">
-                  Scan scope, privacy contract, safety boundaries, and schemas
-                </p>
-              </div>
+          <ChevronRight className="size-5 text-muted-foreground group-open:hidden" aria-hidden />
+          <ChevronDown
+            className="hidden size-5 text-muted-foreground group-open:block"
+            aria-hidden
+          />
+        </summary>
+        <div className="grid gap-3 border-t border-border/60 p-4 lg:grid-cols-3">
+          <div className="rounded-lg border border-border/60 bg-muted/20 p-4">
+            <div className="mb-3 flex items-center gap-2 font-medium">
+              <ScanSearch className="size-4" aria-hidden /> <Term term="Scan scope" />
             </div>
-            <ChevronRight className="size-5 text-muted-foreground group-open:hidden" aria-hidden />
-            <ChevronDown
-              className="hidden size-5 text-muted-foreground group-open:block"
-              aria-hidden
+            <DefinitionList
+              rows={[
+                [
+                  "Coordination root",
+                  formatTotals(report.inventory.scope_totals.coordination_root),
+                ],
+                [
+                  "Registered external roots",
+                  formatTotals(report.inventory.scope_totals.registered_external_roots),
+                ],
+                ["Traversal", report.inventory.scan.mode],
+                ["Concurrency", report.inventory.scan.max_concurrency.toLocaleString()],
+                ["Content read", report.inventory.privacy.content_read ? "yes" : "no"],
+                ["Path mode", report.inventory.privacy.path_mode],
+              ]}
             />
-          </summary>
-          <div className="grid gap-3 border-t border-border/60 p-4 lg:grid-cols-3">
-            <div className="rounded-lg border border-border/60 bg-muted/20 p-4">
-              <div className="mb-3 flex items-center gap-2 font-medium">
-                <ScanSearch className="size-4" aria-hidden /> <Term term="Scan scope" />
-              </div>
-              <DefinitionList
-                rows={[
-                  [
-                    "Coordination root",
-                    formatTotals(report.inventory.scope_totals.coordination_root),
-                  ],
-                  [
-                    "Registered external roots",
-                    formatTotals(report.inventory.scope_totals.registered_external_roots),
-                  ],
-                  ["Traversal", report.inventory.scan.mode],
-                  ["Concurrency", report.inventory.scan.max_concurrency.toLocaleString()],
-                  ["Content read", report.inventory.privacy.content_read ? "yes" : "no"],
-                  ["Path mode", report.inventory.privacy.path_mode],
-                ]}
-              />
-            </div>
-            <div className="rounded-lg border border-border/60 bg-muted/20 p-4 text-xs leading-relaxed text-muted-foreground">
-              <div className="mb-2 flex items-center gap-2 font-medium text-foreground">
-                <Info className="size-4" aria-hidden /> <Term term="Safety boundary" />
-              </div>
-              This page is read-only. Maintenance stays dry-run-first and requires an exact
-              persisted transaction, explicit confirmation, and provider-specific authorization in
-              the CLI.
-            </div>
-            <div className="rounded-lg border border-border/60 bg-muted/20 p-4 text-xs leading-relaxed text-muted-foreground">
-              <div className="mb-2 flex items-center gap-2 font-medium text-foreground">
-                <Archive className="size-4" aria-hidden /> <Term term="Schemas" />
-              </div>
-              <code>{report.inventory.schema}</code>
-              <br />
-              <StorageHelp
-                name="health-schema"
-                help="The versioned machine contract for the derived storage-health report."
-              >
-                <code>{report.health.schema}</code>
-              </StorageHelp>
-            </div>
           </div>
-        </details>
-      </main>
-    </div>
+          <div className="rounded-lg border border-border/60 bg-muted/20 p-4 text-xs leading-relaxed text-muted-foreground">
+            <div className="mb-2 flex items-center gap-2 font-medium text-foreground">
+              <Info className="size-4" aria-hidden /> <Term term="Safety boundary" />
+            </div>
+            This page is read-only. Maintenance stays dry-run-first and requires an exact persisted
+            transaction, explicit confirmation, and provider-specific authorization in the CLI.
+          </div>
+          <div className="rounded-lg border border-border/60 bg-muted/20 p-4 text-xs leading-relaxed text-muted-foreground">
+            <div className="mb-2 flex items-center gap-2 font-medium text-foreground">
+              <Archive className="size-4" aria-hidden /> <Term term="Schemas" />
+            </div>
+            <code>{report.inventory.schema}</code>
+            <br />
+            <StorageHelp
+              name="health-schema"
+              help="The versioned machine contract for the derived storage-health report."
+            >
+              <code>{report.health.schema}</code>
+            </StorageHelp>
+          </div>
+        </div>
+      </details>
+    </PageShell>
   );
 }
 
@@ -541,16 +536,10 @@ function SignalCard({
   value: React.ReactNode;
   detail: React.ReactNode;
   help: string;
-  tone: "success" | "warning" | "sky" | "muted";
+  tone: Tone;
 }) {
-  const toneClass = {
-    success: "border-emerald-500/25 bg-emerald-500/5 text-emerald-600 dark:text-emerald-300",
-    warning: "border-amber-500/30 bg-amber-500/5 text-amber-600 dark:text-amber-300",
-    sky: "border-sky-500/25 bg-sky-500/5 text-sky-600 dark:text-sky-300",
-    muted: "border-border/60 bg-muted/20 text-muted-foreground",
-  }[tone];
   return (
-    <Card className={`storage-signal-card min-w-0 ${toneClass}`}>
+    <Card className={cn("storage-signal-card min-w-0", TONE[tone].surface, TONE[tone].text)}>
       <CardContent className="gap-1">
         <div className="mb-2 flex items-center justify-between gap-3">
           <div className="grid size-9 place-items-center rounded-lg bg-background/70 [&_svg]:size-4">
@@ -748,7 +737,10 @@ function LogBudgetOverview({ families }: { families: readonly StorageFamilyView[
               </div>
               <div>
                 <div
-                  className={`text-2xl font-semibold tabular-nums ${overBudget > 0 ? "text-destructive" : "text-emerald-600 dark:text-emerald-300"}`}
+                  className={cn(
+                    "text-2xl font-semibold tabular-nums",
+                    overBudget > 0 ? TONE.danger.text : TONE.done.text,
+                  )}
                 >
                   {overBudget}
                 </div>
@@ -764,7 +756,7 @@ function LogBudgetOverview({ families }: { families: readonly StorageFamilyView[
               </div>
               <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted">
                 <div
-                  className={overBudget > 0 ? "h-full bg-destructive" : "h-full bg-emerald-500"}
+                  className={cn("h-full", overBudget > 0 ? TONE.danger.dot : TONE.done.dot)}
                   style={{ width: `${Math.min(100, Math.max((peak?.ratio ?? 0) * 100, 1))}%` }}
                 />
               </div>
@@ -793,7 +785,10 @@ function LogBudgetOverview({ families }: { families: readonly StorageFamilyView[
                 </div>
                 <div className="h-2 overflow-hidden rounded-full bg-muted">
                   <div
-                    className={`h-full rounded-full ${state === "over_budget" ? "bg-destructive" : "bg-emerald-500"}`}
+                    className={cn(
+                      "h-full rounded-full",
+                      state === "over_budget" ? TONE.danger.dot : TONE.done.dot,
+                    )}
                     style={{
                       width: `${Math.min(100, Math.max(ratio * 100, managedBytes > 0 ? 1 : 0))}%`,
                     }}
@@ -949,7 +944,10 @@ function LogBudgetCard({ family }: { family: StorageFamilyView }) {
         <span className="sr-only">Managed byte pressure: {Math.round(ratio * 100)}%</span>
         <div className="mt-1 h-2 overflow-hidden rounded-full bg-muted" aria-hidden>
           <div
-            className={`h-full rounded-full ${log.pressure.state === "over_budget" ? "bg-destructive" : "bg-emerald-500"}`}
+            className={cn(
+              "h-full rounded-full",
+              log.pressure.state === "over_budget" ? TONE.danger.dot : TONE.done.dot,
+            )}
             style={{ width: `${Math.max(ratio * 100, log.usage.managed_bytes > 0 ? 1 : 0)}%` }}
           />
         </div>
@@ -1147,7 +1145,7 @@ function IssuePanel({ report }: { report: Awaited<ReturnType<typeof readStorageF
             </div>
             <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-amber-500/10" aria-hidden>
               <div
-                className="h-full rounded-full bg-amber-500"
+                className={cn("h-full rounded-full", TONE.warn.dot)}
                 style={{ width: `${Math.max((item.count / maxCount) * 100, 2)}%` }}
               />
             </div>
@@ -1192,10 +1190,10 @@ function ReasonList({ reasons }: { reasons: readonly string[] }) {
 }
 
 function HealthBadge({ status }: { status: string }) {
-  const variant = status === "healthy" ? "success" : status === "degraded" ? "warning" : "muted";
+  const tone: Tone = status === "healthy" ? "done" : status === "degraded" ? "warn" : "neutral";
   return (
     <Badge
-      variant={variant}
+      tone={tone}
       title={storageStateHelp(status)}
       tabIndex={0}
       data-storage-help={`health-${status}`}
@@ -1206,14 +1204,14 @@ function HealthBadge({ status }: { status: string }) {
 }
 
 function StateBadge({ state }: { state: string }) {
-  const variant = ["present", "eligible", "within_budget", "active", "healthy"].includes(state)
-    ? "success"
+  const tone: Tone = ["present", "eligible", "within_budget", "active", "healthy"].includes(state)
+    ? "done"
     : ["degraded", "over_budget", "blocked", "unavailable"].includes(state)
-      ? "warning"
-      : "muted";
+      ? "warn"
+      : "neutral";
   return (
     <Badge
-      variant={variant}
+      tone={tone}
       title={storageStateHelp(state)}
       tabIndex={0}
       data-storage-help={`state-${state}`}

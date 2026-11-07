@@ -7,11 +7,12 @@ import type {
   DecisionTier,
   ReviewVerdict,
 } from "@/lib/decision-reader";
+import { TONE } from "@/lib/tone";
 
 /**
  * Shared, colour-graded, tooltip-carrying pills for the decision docket.
- * Colour grammar follows the web house rules: sky = act now, emerald = done,
- * neutral = wait, muted = terminal/inert. Every pill is a hover-tooltip so the
+ * Colours come from the shared tone map (lib/tone.ts): act = sky,
+ * done = emerald, warn = amber, danger = red, neutral = wait or inert. Every pill is a hover-tooltip so the
  * shorthand (tier number, verdict slug) explains itself.
  */
 
@@ -41,7 +42,7 @@ const TIER_LABEL: Record<DecisionTier, string> = {
 const TIER_CLS: Record<DecisionTier, string> = {
   0: "bg-muted/30 text-muted-foreground border-border/60",
   1: "bg-muted/60 text-foreground/80 border-border",
-  2: "bg-sky-500/15 text-sky-300 border-sky-500/30",
+  2: TONE.act.pill,
 };
 const TIER_TIP: Record<DecisionTier, string> = {
   0: "Tier 0: the agent decides, no human involvement. You never see it live.",
@@ -62,10 +63,10 @@ export function TierPill({ tier }: { tier: DecisionTier }) {
 const STATUS_CLS: Record<DecisionStatus, string> = {
   filed: "bg-muted/60 text-foreground/70 border-border",
   triaged: "bg-muted/60 text-foreground/70 border-border",
-  deliberating: "bg-sky-500/10 text-sky-300/90 border-sky-500/25",
-  resolved: "bg-sky-500/15 text-sky-300 border-sky-500/30",
-  enacted: "bg-sky-500/15 text-sky-300 border-sky-500/30",
-  reviewed: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
+  deliberating: TONE.act.pill,
+  resolved: TONE.act.pill,
+  enacted: TONE.act.pill,
+  reviewed: TONE.done.pill,
   archived: "bg-muted/30 text-muted-foreground border-border/60",
   superseded: "bg-muted/30 text-muted-foreground border-border/60",
   wontfix: "bg-muted/30 text-muted-foreground border-border/60",
@@ -93,13 +94,13 @@ export function StatusPill({ status }: { status: DecisionStatus }) {
 // ── Stakes ────────────────────────────────────────────────────────────────
 
 const STAKES_CLS: Record<DecisionStakes, string> = {
-  high: "bg-red-500/12 text-red-300 border-red-500/30",
-  medium: "bg-amber-500/12 text-amber-300 border-amber-500/30",
+  high: TONE.danger.pill,
+  medium: TONE.warn.pill,
   small: "bg-muted/40 text-muted-foreground border-border/60",
 };
 const STAKES_DOT: Record<DecisionStakes, string> = {
-  high: "bg-red-400",
-  medium: "bg-amber-400",
+  high: TONE.danger.dot,
+  medium: TONE.warn.dot,
   small: "bg-muted-foreground/50",
 };
 
@@ -124,10 +125,10 @@ const VERDICT_LABEL: Record<ReviewVerdict, string> = {
   "wrong-tier-low": "didn't need me",
 };
 const VERDICT_CLS: Record<ReviewVerdict, string> = {
-  ratified: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
-  overridden: "bg-red-500/15 text-red-300 border-red-500/30",
-  "wrong-tier-high": "bg-amber-500/15 text-amber-300 border-amber-500/30",
-  "wrong-tier-low": "bg-amber-500/15 text-amber-300 border-amber-500/30",
+  ratified: TONE.done.pill,
+  overridden: TONE.danger.pill,
+  "wrong-tier-high": TONE.warn.pill,
+  "wrong-tier-low": TONE.warn.pill,
 };
 const VERDICT_TIP: Record<ReviewVerdict, string> = {
   ratified: "You agreed with the call. No action.",

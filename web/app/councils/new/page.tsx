@@ -1,8 +1,9 @@
 import Link from "next/link";
 
-import { NavBar } from "@/components/NavBar";
+import { PageHeader } from "@/components/layout/PageHeader";
+import { PageShell } from "@/components/layout/PageShell";
 import { type AgentRegistryRow, NewCouncilForm } from "@/components/NewCouncilForm";
-import { coordRoot, readAgents } from "@/lib/coord-reader";
+import { readAgents } from "@/lib/coord-reader";
 
 export const dynamic = "force-dynamic";
 
@@ -57,31 +58,30 @@ export default async function NewCouncilPage({
   }
 
   return (
-    <>
-      <NavBar scannedDir={coordRoot()} />
-      <main className="w-full max-w-screen-md mx-auto px-6 pb-10">
-        <nav className="mb-4 text-xs text-muted-foreground">
-          <Link href="/councils" className="hover:text-foreground">
-            ← Councils
-          </Link>
-          {" / "}
-          <Link href="/agents" className="hover:text-foreground">
-            Agents
-          </Link>
-        </nav>
+    <PageShell width="prose">
+      <nav className="mb-4 text-xs text-muted-foreground">
+        <Link href="/councils" className="hover:text-foreground">
+          ← Councils
+        </Link>
+        {" / "}
+        <Link href="/agents" className="hover:text-foreground">
+          Agents
+        </Link>
+      </nav>
 
-        <header className="mb-6">
-          <h1 className="text-xl font-semibold tracking-tight">New council</h1>
-          <p className="text-sm text-muted-foreground mt-2 leading-relaxed">
+      <PageHeader
+        title="New council"
+        description={
+          <>
             Pick members + steward + (optional) target doc. Submitting creates the council via{" "}
             <code className="font-mono text-xs">harn agents council create</code> and routes you to
             its detail page. Members get pinged via their journals if currently active; others see
             the invite on next SessionStart.
-          </p>
-        </header>
+          </>
+        }
+      />
 
-        <NewCouncilForm initialObjective={initialObjective} agents={dedupedAgents} />
-      </main>
-    </>
+      <NewCouncilForm initialObjective={initialObjective} agents={dedupedAgents} />
+    </PageShell>
   );
 }

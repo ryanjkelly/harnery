@@ -1,7 +1,10 @@
 import { CircleAlert, HeartPulse, History, ServerCog, Workflow } from "lucide-react";
 import { AgentChip, AgentChipProvider } from "@/components/AgentChip";
 import { FormattedDateTime } from "@/components/FormattedDateTime";
-import { NavBar } from "@/components/NavBar";
+import { Notice } from "@/components/layout/Notice";
+import { PageHeader } from "@/components/layout/PageHeader";
+import { PageShell } from "@/components/layout/PageShell";
+import { SectionHeader } from "@/components/layout/Section";
 import { PressureSummaryCard } from "@/components/resources/PressureSummaryCard";
 import { ResourceLiveRefresher } from "@/components/resources/ResourceLiveRefresher";
 import { ResourceMetricCharts } from "@/components/resources/ResourceMetricCharts";
@@ -15,6 +18,7 @@ import {
 import { coordRoot, readAgents, readInstanceIdentities } from "@/lib/coord-reader";
 import { readResourceDashboard } from "@/lib/resource-reader";
 import { readSupervisorDashboard } from "@/lib/supervisor-reader";
+import { TONE } from "@/lib/tone";
 import { readPublishedPressure } from "../../../src/core/resources/status";
 import type {
   ObservedServiceHealth,
@@ -53,27 +57,23 @@ export default function ResourcesPage() {
 
   return (
     <AgentChipProvider summaries={summaries}>
-      <div className="min-h-screen bg-background text-foreground">
-        <ResourceLiveRefresher />
-        <NavBar scannedDir={root} />
-        <main className="mx-auto max-w-screen-2xl px-4 pb-12 sm:px-6">
-          <header className="mb-6 flex flex-wrap items-start justify-between gap-4">
-            <div>
-              <div className="flex flex-wrap items-center gap-2">
-                <h1 className="text-2xl font-semibold tracking-tight">Resource activity</h1>
-                <ObserverBadge
-                  running={report.service.running}
-                  stale={report.service.stale}
-                  unknownState={report.service.liveness === "unknown"}
-                />
-                {snapshot ? <SupportBadge state={snapshot.support.state} /> : null}
-              </div>
-              <p className="mt-2 max-w-3xl text-sm text-muted-foreground">
-                See local CPU and memory pressure by process tree. Expensive unmatched processes
-                stay visible.
-              </p>
-            </div>
-            <div className="text-right text-xs text-muted-foreground">
+      <ResourceLiveRefresher />
+      <PageShell width="wide">
+        <PageHeader
+          title="Resource activity"
+          meta={
+            <>
+              <ObserverBadge
+                running={report.service.running}
+                stale={report.service.stale}
+                unknownState={report.service.liveness === "unknown"}
+              />
+              {snapshot ? <SupportBadge state={snapshot.support.state} /> : null}
+            </>
+          }
+          description="See local CPU and memory pressure by process tree. Expensive unmatched processes stay visible."
+          actions={
+            <div className="text-right">
               {snapshot ? (
                 <>
                   <div>
@@ -87,181 +87,174 @@ export default function ResourcesPage() {
                 <span>No snapshot yet</span>
               )}
             </div>
-          </header>
+          }
+        />
 
-          <PressureSummaryCard assessment={pressure.assessment} capability={pressure.capability} />
+        <PressureSummaryCard assessment={pressure.assessment} capability={pressure.capability} />
 
-          {!snapshot ? (
-            <Card className="border-amber-500/30 bg-amber-500/5">
-              <CardHeader>
-                <CardTitle className="text-base">Waiting for the resource observer</CardTitle>
-              </CardHeader>
-              <CardContent className="text-sm text-muted-foreground">
-                The dashboard starts the local supervisor automatically. Service status:{" "}
-                {report.service.liveness === "unknown"
-                  ? "unknown"
-                  : (report.service.record?.state ?? "not started")}
-                .
-              </CardContent>
-            </Card>
-          ) : (
-            <>
-              <ResourceMetricCharts
-                machine={snapshot.machine}
-                sampledAt={snapshot.sampled_at}
-                history={(supervisor.history?.points ?? []).map(({ sampled_at, machine }) => ({
-                  sampled_at,
-                  machine,
-                }))}
-                nowMs={Date.now()}
-                live={report.service.running && (report.freshness_ms ?? Infinity) <= 15_000}
-                details={{
-                  cpu_percent: `${snapshot.machine.cpu_logical_count} logical CPUs · ${formatMs(snapshot.sample_duration_ms)} sample`,
-                  memory_percent: `${formatBytes(snapshot.machine.memory_used_bytes)} of ${formatBytes(snapshot.machine.memory_total_bytes)}`,
-                  load_average_1: snapshot.machine.load_average
-                    ? `${snapshot.machine.load_average.map((value) => value.toFixed(2)).join(" · ")} over 1, 5, 15 minutes`
-                    : "Not reported",
-                  process_count: `${snapshot.visible_process_count} shown · ${snapshot.unattributed_process_count} unattributed`,
-                }}
-              />
+        {!snapshot ? (
+          <Notice tone="warn" title="Waiting for the resource observer">
+            The dashboard starts the local supervisor automatically. Service status:{" "}
+            {report.service.liveness === "unknown"
+              ? "unknown"
+              : (report.service.record?.state ?? "not started")}
+            .
+          </Notice>
+        ) : (
+          <>
+            <ResourceMetricCharts
+              machine={snapshot.machine}
+              sampledAt={snapshot.sampled_at}
+              history={(supervisor.history?.points ?? []).map(({ sampled_at, machine }) => ({
+                sampled_at,
+                machine,
+              }))}
+              nowMs={Date.now()}
+              live={report.service.running && (report.freshness_ms ?? Infinity) <= 15_000}
+              details={{
+                cpu_percent: `${snapshot.machine.cpu_logical_count} logical CPUs · ${formatMs(snapshot.sample_duration_ms)} sample`,
+                memory_percent: `${formatBytes(snapshot.machine.memory_used_bytes)} of ${formatBytes(snapshot.machine.memory_total_bytes)}`,
+                load_average_1: snapshot.machine.load_average
+                  ? `${snapshot.machine.load_average.map((value) => value.toFixed(2)).join(" · ")} over 1, 5, 15 minutes`
+                  : "Not reported",
+                process_count: `${snapshot.visible_process_count} shown · ${snapshot.unattributed_process_count} unattributed`,
+              }}
+            />
 
-              <section aria-labelledby="supervisor-heading" className="mb-6">
-                <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <HeartPulse className="size-5 text-sky-500" aria-hidden />
-                      <h2 id="supervisor-heading" className="text-lg font-semibold">
-                        Local supervisor
-                      </h2>
-                    </div>
-                    <p className="mt-1 text-sm text-muted-foreground">
-                      Service health, hook activity, recent pressure, and bounded finding evidence.
-                    </p>
-                  </div>
-                  {supervisor.snapshot ? (
+            <section aria-labelledby="supervisor-heading" className="mb-6">
+              <SectionHeader
+                title={
+                  <span className="flex items-center gap-2">
+                    <HeartPulse className="size-4 text-sky-500" aria-hidden />
+                    <span id="supervisor-heading">Local supervisor</span>
+                  </span>
+                }
+                hint="Service health, hook activity, recent pressure, and bounded finding evidence."
+                actions={
+                  supervisor.snapshot ? (
                     <div className="text-xs text-muted-foreground">
                       {`${formatMs(supervisor.snapshot.collector_duration_ms)} total collection · ${supervisor.snapshot.log_record_count} live log records`}
                     </div>
-                  ) : null}
-                </div>
+                  ) : null
+                }
+              />
 
-                <div className="grid gap-3 xl:grid-cols-[1.1fr_1fr]">
-                  <Card>
-                    <CardHeader className="pb-2">
-                      <CardTitle className="flex items-center gap-2 text-sm">
-                        <ServerCog className="size-4 text-sky-500" aria-hidden /> Service health
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="grid gap-2 sm:grid-cols-2">
-                        {(supervisor.snapshot?.services ?? []).map((service) => (
-                          <ServiceHealthRow key={service.id} service={service} />
-                        ))}
-                      </div>
-                    </CardContent>
-                  </Card>
+              <div className="grid gap-3 xl:grid-cols-[1.1fr_1fr]">
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="flex items-center gap-2 text-sm">
+                      <ServerCog className="size-4 text-sky-500" aria-hidden /> Service health
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      {(supervisor.snapshot?.services ?? []).map((service) => (
+                        <ServiceHealthRow key={service.id} service={service} />
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
 
-                  <Card>
-                    <CardHeader className="pb-2">
-                      <CardTitle className="flex items-center gap-2 text-sm">
-                        <History className="size-4 text-violet-500" aria-hidden /> 15-minute
-                        pressure
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <MiniHistoryChart points={supervisor.history?.points ?? []} />
-                    </CardContent>
-                  </Card>
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="flex items-center gap-2 text-sm">
+                      <History className="size-4 text-violet-500" aria-hidden /> 15-minute pressure
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <MiniHistoryChart points={supervisor.history?.points ?? []} />
+                  </CardContent>
+                </Card>
+              </div>
+            </section>
+
+            {(supervisor.findings?.active.length ?? 0) > 0 ? (
+              <section aria-labelledby="findings-heading" className="mb-6">
+                <SectionHeader
+                  title={
+                    <span className="flex items-center gap-2">
+                      <CircleAlert className={`size-4 ${TONE.warn.text}`} aria-hidden />
+                      <span id="findings-heading">Active findings</span>
+                    </span>
+                  }
+                />
+                <div className="grid gap-3 lg:grid-cols-2">
+                  {supervisor.findings?.active.map((finding) => (
+                    <FindingCard key={finding.id} finding={finding} />
+                  ))}
                 </div>
               </section>
+            ) : null}
 
-              {(supervisor.findings?.active.length ?? 0) > 0 ? (
-                <section aria-labelledby="findings-heading" className="mb-6">
-                  <div className="mb-3 flex items-center gap-2">
-                    <CircleAlert className="size-5 text-amber-500" aria-hidden />
-                    <h2 id="findings-heading" className="text-lg font-semibold">
-                      Active findings
-                    </h2>
-                  </div>
-                  <div className="grid gap-3 lg:grid-cols-2">
-                    {supervisor.findings?.active.map((finding) => (
-                      <FindingCard key={finding.id} finding={finding} />
-                    ))}
-                  </div>
-                </section>
-              ) : null}
-
-              {(supervisor.snapshot?.hooks.length ?? 0) > 0 ? (
-                <section aria-labelledby="hooks-heading" className="mb-6">
-                  <div className="mb-3 flex items-center gap-2">
-                    <Workflow className="size-5 text-emerald-500" aria-hidden />
-                    <h2 id="hooks-heading" className="text-lg font-semibold">
-                      Active hooks
-                    </h2>
-                  </div>
-                  <div className="overflow-x-auto rounded-xl border border-border/60 bg-card">
-                    <table className="min-w-[760px] w-full text-sm">
-                      <thead className="bg-muted/60 text-left text-xs text-muted-foreground">
-                        <tr>
-                          <Th>Owner</Th>
-                          <Th align="right">PID</Th>
-                          <Th align="right">Age</Th>
-                          <Th align="right">CPU</Th>
-                          <Th align="right">Memory</Th>
-                          <Th>Command</Th>
+            {(supervisor.snapshot?.hooks.length ?? 0) > 0 ? (
+              <section aria-labelledby="hooks-heading" className="mb-6">
+                <SectionHeader
+                  title={
+                    <span className="flex items-center gap-2">
+                      <Workflow className="size-4 text-emerald-500" aria-hidden />
+                      <span id="hooks-heading">Active hooks</span>
+                    </span>
+                  }
+                />
+                <div className="overflow-x-auto rounded-xl border border-border/60 bg-card">
+                  <table className="min-w-[760px] w-full text-sm">
+                    <thead className="bg-muted/60 text-left text-xs text-muted-foreground">
+                      <tr>
+                        <Th>Owner</Th>
+                        <Th align="right">PID</Th>
+                        <Th align="right">Age</Th>
+                        <Th align="right">CPU</Th>
+                        <Th align="right">Memory</Th>
+                        <Th>Command</Th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border/60">
+                      {supervisor.snapshot?.hooks.map((hook) => (
+                        <tr key={hook.pid} className="align-top hover:bg-muted/30">
+                          <Td>
+                            <Owner
+                              kind="agent"
+                              id={hook.owner_id}
+                              instanceToName={instanceToName}
+                            />
+                          </Td>
+                          <Td align="right" mono>
+                            {hook.pid}
+                          </Td>
+                          <Td align="right" mono>
+                            {formatAge(hook.age_seconds)}
+                          </Td>
+                          <Td align="right" mono>
+                            {formatPercent(hook.cpu_percent)}
+                          </Td>
+                          <Td align="right" mono>
+                            {formatBytes(hook.rss_bytes)}
+                          </Td>
+                          <Td
+                            mono
+                            className="max-w-[420px] break-all text-xs text-muted-foreground"
+                          >
+                            {hook.command}
+                          </Td>
                         </tr>
-                      </thead>
-                      <tbody className="divide-y divide-border/60">
-                        {supervisor.snapshot?.hooks.map((hook) => (
-                          <tr key={hook.pid} className="align-top hover:bg-muted/30">
-                            <Td>
-                              <Owner
-                                kind="agent"
-                                id={hook.owner_id}
-                                instanceToName={instanceToName}
-                              />
-                            </Td>
-                            <Td align="right" mono>
-                              {hook.pid}
-                            </Td>
-                            <Td align="right" mono>
-                              {formatAge(hook.age_seconds)}
-                            </Td>
-                            <Td align="right" mono>
-                              {formatPercent(hook.cpu_percent)}
-                            </Td>
-                            <Td align="right" mono>
-                              {formatBytes(hook.rss_bytes)}
-                            </Td>
-                            <Td
-                              mono
-                              className="max-w-[420px] break-all text-xs text-muted-foreground"
-                            >
-                              {hook.command}
-                            </Td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </section>
-              ) : null}
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            ) : null}
 
-              {supervisor.hookHealth ? (
-                <section aria-labelledby="completed-hooks-heading" className="mb-6">
-                  <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <Workflow className="size-5 text-violet-500" aria-hidden />
-                        <h2 id="completed-hooks-heading" className="text-lg font-semibold">
-                          Completed hook health
-                        </h2>
-                      </div>
-                      <p className="mt-1 text-sm text-muted-foreground">
-                        Recent terminal receipts. Memory is the hook process RSS at completion, not
-                        a process-tree peak.
-                      </p>
-                    </div>
+            {supervisor.hookHealth ? (
+              <section aria-labelledby="completed-hooks-heading" className="mb-6">
+                <SectionHeader
+                  title={
+                    <span className="flex items-center gap-2">
+                      <Workflow className="size-4 text-violet-500" aria-hidden />
+                      <span id="completed-hooks-heading">Completed hook health</span>
+                    </span>
+                  }
+                  hint="Recent terminal receipts. Memory is the hook process RSS at completion, not a process-tree peak."
+                  actions={
                     <div className="flex flex-wrap items-center gap-2 text-xs">
                       <Badge
                         variant={
@@ -278,195 +271,187 @@ export default function ResourcesPage() {
                         {supervisor.hookHealth?.summary.faulted_count ?? 0} faulted
                       </span>
                     </div>
-                  </div>
-                  <p className="mb-2 text-xs text-muted-foreground sm:hidden">
-                    Swipe sideways to see every hook metric.
-                  </p>
-                  <section
-                    className="overflow-x-auto rounded-xl border border-border/60 bg-card"
-                    aria-label="Completed hook health table"
-                  >
-                    <table className="min-w-[980px] w-full text-sm">
-                      <thead className="bg-muted/60 text-left text-xs text-muted-foreground">
+                  }
+                />
+                <p className="mb-2 text-xs text-muted-foreground sm:hidden">
+                  Swipe sideways to see every hook metric.
+                </p>
+                <section
+                  className="overflow-x-auto rounded-xl border border-border/60 bg-card"
+                  aria-label="Completed hook health table"
+                >
+                  <table className="min-w-[980px] w-full text-sm">
+                    <thead className="bg-muted/60 text-left text-xs text-muted-foreground">
+                      <tr>
+                        <Th>Hook</Th>
+                        <Th>Adapter</Th>
+                        <Th align="right">Runs</Th>
+                        <Th align="right">P50</Th>
+                        <Th align="right">P95</Th>
+                        <Th align="right">Max</Th>
+                        <Th align="right">Max memory</Th>
+                        <Th align="right">Problems</Th>
+                        <Th>Owners</Th>
+                        <Th>Last seen</Th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border/60">
+                      {supervisor.hookHealth.aggregates.length > 0 ? (
+                        supervisor.hookHealth.aggregates.map((hook) => (
+                          <CompletedHookRow
+                            key={hook.key}
+                            hook={hook}
+                            instanceToName={instanceToName}
+                          />
+                        ))
+                      ) : (
                         <tr>
-                          <Th>Hook</Th>
-                          <Th>Adapter</Th>
-                          <Th align="right">Runs</Th>
-                          <Th align="right">P50</Th>
-                          <Th align="right">P95</Th>
-                          <Th align="right">Max</Th>
-                          <Th align="right">Max memory</Th>
-                          <Th align="right">Problems</Th>
-                          <Th>Owners</Th>
-                          <Th>Last seen</Th>
+                          <td colSpan={10} className="px-3 py-5 text-center">
+                            <span className="text-sm text-muted-foreground">
+                              No completed hook receipts are visible in the bounded log window.
+                            </span>
+                          </td>
                         </tr>
-                      </thead>
-                      <tbody className="divide-y divide-border/60">
-                        {supervisor.hookHealth.aggregates.length > 0 ? (
-                          supervisor.hookHealth.aggregates.map((hook) => (
-                            <CompletedHookRow
-                              key={hook.key}
-                              hook={hook}
+                      )}
+                    </tbody>
+                  </table>
+                </section>
+              </section>
+            ) : null}
+
+            <section aria-labelledby="groups-heading" className="mb-6">
+              <SectionHeader
+                title={
+                  <span className="flex items-center gap-2">
+                    <ServerCog className="size-4 text-sky-500" aria-hidden />
+                    <span id="groups-heading">Active resource groups</span>
+                  </span>
+                }
+              />
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                {snapshot.groups.map((group) => (
+                  <Card key={`${group.kind}:${group.id}`} className="min-w-0">
+                    <CardContent className="p-4">
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                        <div className="min-w-0">
+                          <div className="break-all font-medium sm:truncate">
+                            <Owner
+                              kind={group.kind}
+                              id={group.id}
                               instanceToName={instanceToName}
                             />
-                          ))
-                        ) : (
-                          <tr>
-                            <td colSpan={10} className="px-3 py-5 text-center">
-                              <span className="text-sm text-muted-foreground">
-                                No completed hook receipts are visible in the bounded log window.
-                              </span>
-                            </td>
-                          </tr>
-                        )}
-                      </tbody>
-                    </table>
-                  </section>
-                </section>
-              ) : null}
-
-              <section aria-labelledby="groups-heading" className="mb-6">
-                <div className="mb-3 flex items-center gap-2">
-                  <ServerCog className="size-5 text-sky-500" aria-hidden />
-                  <h2 id="groups-heading" className="text-lg font-semibold">
-                    Active resource groups
-                  </h2>
-                </div>
-                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                  {snapshot.groups.map((group) => (
-                    <Card key={`${group.kind}:${group.id}`} className="min-w-0">
-                      <CardContent className="p-4">
-                        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                          <div className="min-w-0">
-                            <div className="break-all font-medium sm:truncate">
-                              <Owner
-                                kind={group.kind}
-                                id={group.id}
-                                instanceToName={instanceToName}
-                              />
-                            </div>
-                            <div className="mt-1 text-xs text-muted-foreground">
-                              {group.process_count} process
-                              {group.process_count === 1 ? "" : "es"}
-                            </div>
                           </div>
-                          <Badge variant={group.kind === "unattributed" ? "warning" : "secondary"}>
-                            {group.kind}
-                          </Badge>
-                        </div>
-                        <div className="mt-4 grid grid-cols-2 gap-3 text-sm tabular-nums">
-                          <div>
-                            <div className="text-xs text-muted-foreground">CPU</div>
-                            <div className="font-semibold">{formatPercent(group.cpu_percent)}</div>
-                          </div>
-                          <div>
-                            <div className="text-xs text-muted-foreground">Memory</div>
-                            <div className="font-semibold">{formatBytes(group.rss_bytes)}</div>
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            {group.process_count} process
+                            {group.process_count === 1 ? "" : "es"}
                           </div>
                         </div>
-                      </CardContent>
-                    </Card>
-                  ))}
-                </div>
-              </section>
+                        <Badge variant={group.kind === "unattributed" ? "warning" : "secondary"}>
+                          {group.kind}
+                        </Badge>
+                      </div>
+                      <div className="mt-4 grid grid-cols-2 gap-3 text-sm tabular-nums">
+                        <div>
+                          <div className="text-xs text-muted-foreground">CPU</div>
+                          <div className="font-semibold">{formatPercent(group.cpu_percent)}</div>
+                        </div>
+                        <div>
+                          <div className="text-xs text-muted-foreground">Memory</div>
+                          <div className="font-semibold">{formatBytes(group.rss_bytes)}</div>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            </section>
 
-              <section aria-labelledby="processes-heading">
-                <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
-                  <div>
-                    <h2 id="processes-heading" className="text-lg font-semibold">
-                      Processes
-                    </h2>
-                    <p className="text-sm text-muted-foreground">
-                      Sorted by current CPU, then resident memory. Every shown row remains
-                      searchable.
-                    </p>
-                  </div>
+            <section aria-labelledby="processes-heading">
+              <SectionHeader
+                title={<span id="processes-heading">Processes</span>}
+                hint="Sorted by current CPU, then resident memory. Every shown row remains searchable."
+                actions={
                   <div className="text-xs text-muted-foreground">
                     Supervisor resource overhead {formatMs(snapshot.collector_cpu_ms)} CPU per
                     sample
                   </div>
-                </div>
-                <div className="overflow-x-auto rounded-xl border border-border/60 bg-card">
-                  <div className="divide-y divide-border/60 md:hidden">
-                    {snapshot.processes.map((row) => (
-                      <div key={row.start_id} className="space-y-2 p-3 text-xs">
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <Owner
-                              kind={row.owner_kind}
-                              id={row.owner_id ?? "unattributed"}
-                              instanceToName={instanceToName}
-                            />
-                            <div className="mt-1 font-mono text-[11px] text-muted-foreground">
-                              PID {row.pid} · {formatAge(row.age_seconds)} · {row.name}
-                            </div>
-                          </div>
-                          <div className="shrink-0 text-right font-mono tabular-nums">
-                            <div className="font-semibold">
-                              {formatPercent(row.cpu_percent)} CPU
-                            </div>
-                            <div className="mt-1 text-muted-foreground">
-                              {formatBytes(row.rss_bytes)}
-                            </div>
+                }
+              />
+              <div className="overflow-x-auto rounded-xl border border-border/60 bg-card">
+                <div className="divide-y divide-border/60 md:hidden">
+                  {snapshot.processes.map((row) => (
+                    <div key={row.start_id} className="space-y-2 p-3 text-xs">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <Owner
+                            kind={row.owner_kind}
+                            id={row.owner_id ?? "unattributed"}
+                            instanceToName={instanceToName}
+                          />
+                          <div className="mt-1 font-mono text-[11px] text-muted-foreground">
+                            PID {row.pid} · {formatAge(row.age_seconds)} · {row.name}
                           </div>
                         </div>
-                        <div className="break-all font-mono text-[11px] leading-relaxed text-muted-foreground">
-                          {row.command}
+                        <div className="shrink-0 text-right font-mono tabular-nums">
+                          <div className="font-semibold">{formatPercent(row.cpu_percent)} CPU</div>
+                          <div className="mt-1 text-muted-foreground">
+                            {formatBytes(row.rss_bytes)}
+                          </div>
                         </div>
                       </div>
-                    ))}
-                  </div>
-                  <table className="hidden min-w-[1040px] w-full text-sm md:table">
-                    <thead className="bg-muted/60 text-left text-xs text-muted-foreground">
-                      <tr>
-                        <Th>Owner</Th>
-                        <Th align="right">PID</Th>
-                        <Th align="right">CPU</Th>
-                        <Th align="right">Memory</Th>
-                        <Th align="right">Age</Th>
-                        <Th>Process</Th>
-                        <Th>Command</Th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-border/60">
-                      {snapshot.processes.map((row) => (
-                        <tr key={row.start_id} className="align-top hover:bg-muted/30">
-                          <Td>
-                            <Owner
-                              kind={row.owner_kind}
-                              id={row.owner_id ?? "unattributed"}
-                              instanceToName={instanceToName}
-                            />
-                          </Td>
-                          <Td align="right" mono>
-                            {row.pid}
-                          </Td>
-                          <Td align="right" mono>
-                            {formatPercent(row.cpu_percent)}
-                          </Td>
-                          <Td align="right" mono>
-                            {formatBytes(row.rss_bytes)}
-                          </Td>
-                          <Td align="right" mono>
-                            {formatAge(row.age_seconds)}
-                          </Td>
-                          <Td mono>{row.name}</Td>
-                          <Td
-                            mono
-                            className="max-w-[460px] break-all text-xs text-muted-foreground"
-                          >
-                            {row.command}
-                          </Td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      <div className="break-all font-mono text-[11px] leading-relaxed text-muted-foreground">
+                        {row.command}
+                      </div>
+                    </div>
+                  ))}
                 </div>
-              </section>
-            </>
-          )}
-        </main>
-      </div>
+                <table className="hidden min-w-[1040px] w-full text-sm md:table">
+                  <thead className="bg-muted/60 text-left text-xs text-muted-foreground">
+                    <tr>
+                      <Th>Owner</Th>
+                      <Th align="right">PID</Th>
+                      <Th align="right">CPU</Th>
+                      <Th align="right">Memory</Th>
+                      <Th align="right">Age</Th>
+                      <Th>Process</Th>
+                      <Th>Command</Th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border/60">
+                    {snapshot.processes.map((row) => (
+                      <tr key={row.start_id} className="align-top hover:bg-muted/30">
+                        <Td>
+                          <Owner
+                            kind={row.owner_kind}
+                            id={row.owner_id ?? "unattributed"}
+                            instanceToName={instanceToName}
+                          />
+                        </Td>
+                        <Td align="right" mono>
+                          {row.pid}
+                        </Td>
+                        <Td align="right" mono>
+                          {formatPercent(row.cpu_percent)}
+                        </Td>
+                        <Td align="right" mono>
+                          {formatBytes(row.rss_bytes)}
+                        </Td>
+                        <Td align="right" mono>
+                          {formatAge(row.age_seconds)}
+                        </Td>
+                        <Td mono>{row.name}</Td>
+                        <Td mono className="max-w-[460px] break-all text-xs text-muted-foreground">
+                          {row.command}
+                        </Td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          </>
+        )}
+      </PageShell>
     </AgentChipProvider>
   );
 }
@@ -633,13 +618,7 @@ function MiniHistoryChart({ points }: { points: readonly SupervisorHistoryPoint[
 function FindingCard({ finding }: { finding: SupervisorFinding }) {
   const variant = finding.severity === "critical" ? "destructive" : "warning";
   return (
-    <Card
-      className={
-        finding.severity === "critical"
-          ? "border-red-500/30 bg-red-500/5"
-          : "border-amber-500/30 bg-amber-500/5"
-      }
-    >
+    <Card className={finding.severity === "critical" ? TONE.danger.surface : TONE.warn.surface}>
       <CardContent className="p-4">
         <div className="flex items-start justify-between gap-3">
           <div>

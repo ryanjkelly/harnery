@@ -1,5 +1,5 @@
 import { BrowseClient, type BrowseScope } from "@/components/file-viewer/BrowseClient";
-import { NavBar } from "@/components/NavBar";
+import { PageShell } from "@/components/layout/PageShell";
 import { agentArtifactDirectories } from "@/lib/artifact-browser";
 import { workspaceEntry } from "@/lib/browse-catalog";
 import { coordRoot } from "@/lib/coord-reader";
@@ -57,8 +57,10 @@ export default async function BrowsePage({
   }
   return (
     <div className="fixed inset-0 flex flex-col overflow-hidden bg-background">
-      <NavBar scannedDir={coordRoot()} compact />
-      <BrowseClient initialPath={initialPath} scope={scope} />
+      {/* BrowseClient draws its own edge-to-edge panes, so the shell drops its gutter. */}
+      <PageShell width="fill" className="px-0 pb-0 sm:px-0">
+        <BrowseClient initialPath={initialPath} scope={scope} />
+      </PageShell>
     </div>
   );
 }

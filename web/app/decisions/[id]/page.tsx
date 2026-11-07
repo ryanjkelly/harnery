@@ -1,4 +1,3 @@
-import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { AgentChip, AgentChipProvider } from "@/components/AgentChip";
@@ -8,39 +7,21 @@ import { DecisionReopenActions } from "@/components/DecisionReopenActions";
 import { DecisionReviewActions } from "@/components/DecisionReviewActions";
 import { StakesPill, StatusPill, TierPill, VerdictPill } from "@/components/decision/DecisionPills";
 import { FormattedDateTime } from "@/components/FormattedDateTime";
-import { NavBar } from "@/components/NavBar";
+import { PageHeader } from "@/components/layout/PageHeader";
+import { PageShell } from "@/components/layout/PageShell";
+import { Eyebrow } from "@/components/layout/Section";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { buildAgentSummaryMap } from "@/lib/agent-summary";
-import {
-  coordRoot,
-  type InstanceIdentity,
-  readAgents,
-  readInstanceIdentities,
-} from "@/lib/coord-reader";
+import { readAgents, readInstanceIdentities } from "@/lib/coord-reader";
+import { actorName, chipName } from "@/lib/decision-actors";
 import { readDecision } from "@/lib/decision-reader";
+import { bareName } from "@/lib/identities";
+import { TONE } from "@/lib/tone";
 
 export const dynamic = "force-dynamic";
 
 interface PageProps {
   params: Promise<{ id: string }>;
-}
-
-function norm(name: string | null | undefined): string | null {
-  if (!name) return null;
-  return name.startsWith("agent-") ? name : `agent-${name}`;
-}
-
-/** Resolve an actor field to a chip name. `claimed_by` stores an instance_id
- * (from `resolveOwner`), unlike `filed_by`/`resolved_by` which store the name;
- * map the id back through the identity index so the chip resolves + hovers
- * instead of showing a raw `agent-<uuid>`. */
-function actorName(
-  value: string | null | undefined,
-  identities: Record<string, InstanceIdentity>,
-): string | null {
-  if (!value) return null;
-  const bare = value.startsWith("agent-") ? value.slice("agent-".length) : value;
-  return norm(identities[bare]?.name ?? identities[value]?.name ?? value);
 }
 
 export default async function DecisionDetailPage({ params }: PageProps) {
@@ -52,12 +33,10 @@ export default async function DecisionDetailPage({ params }: PageProps) {
   const { manifest: m, bodies } = detail;
   const awaitingReview = m.status === "resolved" || m.status === "enacted";
   const identities = readInstanceIdentities();
-  const filedBy = norm(m.filed_by);
-  const resolvedBy = norm(m.resolution?.resolved_by);
+  const filedBy = chipName(m.filed_by);
+  const resolvedBy = chipName(m.resolution?.resolved_by);
   const claimedBy = actorName(m.claimed_by, identities);
-  const claimerBare = m.claimed_by?.startsWith("agent-")
-    ? m.claimed_by.slice("agent-".length)
-    : m.claimed_by;
+  const claimerBare = m.claimed_by ? bareName(m.claimed_by) : m.claimed_by;
   // "working" = the claimer is live AND the decision is still being deliberated.
   // Once resolved/reviewed, claimed_by lingers but the agent isn't working it,
   // so a live session shouldn't imply active work on this decision.
@@ -74,46 +53,42 @@ export default async function DecisionDetailPage({ params }: PageProps) {
 
   return (
     <AgentChipProvider summaries={summaries}>
-      <NavBar scannedDir={coordRoot()} />
-      <main className="w-full max-w-4xl mx-auto px-6 pb-10">
-        <nav className="mb-4 text-xs text-muted-foreground">
-          <Link href="/decisions" className="hover:text-foreground">
-            ← Decision docket
-          </Link>
-        </nav>
-
-        <header className="mb-6">
-          <div className="flex items-start justify-between gap-4 flex-wrap">
-            <h1 className="min-w-0 text-lg font-semibold leading-snug max-w-2xl">{m.question}</h1>
-            <TierPill tier={m.tier} />
-          </div>
-          <div className="mt-2.5 flex items-center gap-2 flex-wrap text-[11px] text-muted-foreground">
-            <StatusPill status={m.status} />
-            <StakesPill stakes={m.stakes} />
-            {m.review && <VerdictPill verdict={m.review.verdict} />}
-            {filedBy && (
-              <span className="inline-flex items-center gap-1">
-                <span className="text-muted-foreground/60">filed by</span>
-                <AgentChip name={filedBy} className="font-mono text-foreground/80" />
+      <PageShell width="narrow">
+        <PageHeader
+          back={{ href: "/decisions", label: "Decision docket" }}
+          title={m.question}
+          actions={<TierPill tier={m.tier} />}
+          meta={
+            <div className="flex items-center gap-2 flex-wrap text-[11px] text-muted-foreground">
+              <StatusPill status={m.status} />
+              <StakesPill stakes={m.stakes} />
+              {m.review && <VerdictPill verdict={m.review.verdict} />}
+              {filedBy && (
+                <span className="inline-flex items-center gap-1">
+                  <span className="text-muted-foreground/60">filed by</span>
+                  <AgentChip name={filedBy} className="font-mono text-foreground/80" />
+                </span>
+              )}
+              <span>
+                <FormattedDateTime iso={m.filed_at} />
               </span>
-            )}
-            <span>
-              <FormattedDateTime iso={m.filed_at} />
-            </span>
-            {claimedBy && (
-              <span className="inline-flex items-center gap-1">
-                {claimerWorking ? (
-                  <span className="live-dot" aria-hidden />
-                ) : (
-                  <span className="text-muted-foreground/60">claimed by</span>
-                )}
-                <AgentChip name={claimedBy} className="font-mono text-foreground/80" />
-                {claimerWorking && <span className="text-emerald-400/90">working</span>}
-              </span>
-            )}
-          </div>
-          <p className="mt-1 font-mono text-[11px] text-muted-foreground/60">{m.decision_id}</p>
-        </header>
+              {claimedBy && (
+                <span className="inline-flex items-center gap-1">
+                  {claimerWorking ? (
+                    <span className="live-dot" aria-hidden />
+                  ) : (
+                    <span className="text-muted-foreground/60">claimed by</span>
+                  )}
+                  <AgentChip name={claimedBy} className="font-mono text-foreground/80" />
+                  {claimerWorking && <span className={TONE.done.text}>working</span>}
+                </span>
+              )}
+            </div>
+          }
+          description={
+            <span className="font-mono text-[11px] text-muted-foreground/60">{m.decision_id}</span>
+          }
+        />
 
         {awaitingReview && (
           <Attention
@@ -139,16 +114,14 @@ export default async function DecisionDetailPage({ params }: PageProps) {
         )}
 
         {m.resolution && (
-          <Card className="mb-4 border-emerald-500/30">
+          <Card className={`mb-4 ${TONE.done.surface}`}>
             <CardHeader>
               <CardTitle>Resolution</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
               <p className="text-sm font-medium leading-relaxed">{m.resolution.recommendation}</p>
               <div>
-                <p className="text-xs uppercase tracking-wider text-muted-foreground mb-1">
-                  Evidence
-                </p>
+                <Eyebrow className="mb-1">Evidence</Eyebrow>
                 <ul className="list-disc pl-5 space-y-1 text-sm">
                   {m.resolution.evidence.map((e) => (
                     <li key={e}>{e}</li>
@@ -215,7 +188,7 @@ export default async function DecisionDetailPage({ params }: PageProps) {
         ) : awaitingReview ? (
           <DecisionReviewActions decisionId={m.decision_id} />
         ) : null}
-      </main>
+      </PageShell>
     </AgentChipProvider>
   );
 }

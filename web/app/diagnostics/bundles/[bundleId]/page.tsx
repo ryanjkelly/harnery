@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 
 import { DiagnosticsDashboard } from "@/components/diagnostics/DiagnosticsDashboard";
-import { NavBar } from "@/components/NavBar";
+import { PageShell } from "@/components/layout/PageShell";
 import { hostInfo } from "@/lib/config";
 import { coordRoot } from "@/lib/coord-reader";
 import {
@@ -36,16 +36,13 @@ export default async function DiagnosticBundlePage({ params, searchParams }: Pag
   }
   const basePath = `/diagnostics/bundles/${encodeURIComponent(bundleId)}`;
   return (
-    <div className="min-h-screen bg-background text-foreground">
-      <NavBar scannedDir={root} />
-      <main className="mx-auto max-w-screen-2xl px-4 pb-12 sm:px-6">
-        <DiagnosticsDashboard
-          model={model}
-          filters={filters}
-          basePath={basePath}
-          binName={hostInfo().binName}
-        />
-      </main>
-    </div>
+    <PageShell width="wide">
+      <DiagnosticsDashboard
+        model={model}
+        filters={filters}
+        basePath={basePath}
+        binName={hostInfo().binName}
+      />
+    </PageShell>
   );
 }

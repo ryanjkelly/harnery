@@ -8,7 +8,9 @@ import { CouncilActions } from "@/components/CouncilActions";
 import { CouncilCompletionBanner } from "@/components/CouncilCompletionBanner";
 import { FormattedDateTime } from "@/components/FormattedDateTime";
 import { FilePath } from "@/components/file-viewer/FilePath";
-import { NavBar } from "@/components/NavBar";
+import { EmptyState } from "@/components/layout/EmptyState";
+import { PageHeader } from "@/components/layout/PageHeader";
+import { PageShell } from "@/components/layout/PageShell";
 import { RoundDiff } from "@/components/RoundDiff";
 import { NextActionBanner, RoutingLegend } from "@/components/RoutingGuide";
 import { RoutingPromptTabs } from "@/components/RoutingPromptTabs";
@@ -16,12 +18,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { WaitingOnSteward } from "@/components/WaitingOnSteward";
 import { buildAgentSummaryMap, listKnownAgents } from "@/lib/agent-summary";
-import {
-  coordRoot,
-  readAgents,
-  readCouncilDetail,
-  readInstanceIdentities,
-} from "@/lib/coord-reader";
+import { readAgents, readCouncilDetail, readInstanceIdentities } from "@/lib/coord-reader";
 import { NO_DATA } from "@/lib/format/no-data";
 
 export const dynamic = "force-dynamic";
@@ -126,8 +123,7 @@ export default async function CouncilDetailPage({ params, searchParams }: PagePr
 
   return (
     <AgentChipProvider summaries={summaries}>
-      <NavBar scannedDir={coordRoot()} />
-      <main className="w-full max-w-screen-2xl mx-auto px-6 pb-10">
+      <PageShell width="wide">
         <nav className="mb-4 text-xs text-muted-foreground">
           <Link href="/councils" className="hover:text-foreground">
             ← Councils
@@ -138,71 +134,77 @@ export default async function CouncilDetailPage({ params, searchParams }: PagePr
           </Link>
         </nav>
 
-        <header className="mb-6">
-          <h1 className="text-base font-mono font-semibold tracking-tight flex items-center gap-3 flex-wrap break-all">
-            {manifest.council_id}
-            <Badge
-              variant="outline"
-              title={
-                manifest.status === "active"
-                  ? "Council accepts mutations (contribute / advance / close)."
-                  : manifest.status === "closed"
-                    ? "Read-only; deliberation finalized."
-                    : "Moved to .harnery/councils/archive/ (terminal state)."
-              }
-            >
-              {manifest.status}
-            </Badge>
-            <Badge
-              variant="muted"
-              title={
-                terminal
-                  ? `Round ${manifest.current_round} was ${manifest.round_status} when the council closed; deliberation ended here.`
-                  : manifest.round_status === "open"
-                    ? `Round ${manifest.current_round} is open; members can still contribute.`
-                    : `Round ${manifest.current_round} is collected (all members in), ready to advance.`
-              }
-            >
-              {terminal
-                ? `round ${manifest.current_round} final`
-                : `round ${manifest.current_round} ${manifest.round_status}`}
-            </Badge>
-            {/* On terminal councils a dead round's 0/N reads like outstanding
-                work, so only show the contributor count while the round can
-                still take contributions (or actually got some). */}
-            {(!terminal || current_round_contributors.length > 0) && (
-              <Badge
-                variant="default"
-                title={
-                  terminal
-                    ? `Round ${manifest.current_round} ended with ${current_round_contributors.length}/${manifest.members.length} contributions.`
-                    : `${current_round_contributors.length}/${manifest.members.length} members contributed to round ${manifest.current_round}.${pending.length > 0 ? ` Pending: ${pending.join(", ")}.` : " All members in."}`
-                }
-              >
-                {current_round_contributors.length}/{manifest.members.length}
-              </Badge>
-            )}
-            {/* The status badge already reads "archived" once the manifest
-                flips, so only render the extra archived badge for the edge
-                where an archive-dir manifest still says "closed". */}
-            {archived && manifest.status !== "archived" && (
+        <PageHeader
+          title={<span className="font-mono text-base break-all">{manifest.council_id}</span>}
+          meta={
+            <>
               <Badge
                 variant="outline"
-                title="Council moved to .harnery/councils/archive/ (read-only)."
+                title={
+                  manifest.status === "active"
+                    ? "Council accepts mutations (contribute / advance / close)."
+                    : manifest.status === "closed"
+                      ? "Read-only; deliberation finalized."
+                      : "Moved to .harnery/councils/archive/ (terminal state)."
+                }
               >
-                archived
+                {manifest.status}
               </Badge>
-            )}
-          </h1>
-          <p className="text-sm text-foreground/90 mt-2 leading-relaxed">{manifest.objective}</p>
-          {manifest.target_doc && (
-            <p className="text-xs text-muted-foreground mt-1 font-mono inline-flex items-center gap-1">
-              target:
-              <FileText className="size-3 shrink-0" aria-hidden />
-              {manifest.target_doc}
-            </p>
-          )}
-        </header>
+              <Badge
+                variant="muted"
+                title={
+                  terminal
+                    ? `Round ${manifest.current_round} was ${manifest.round_status} when the council closed; deliberation ended here.`
+                    : manifest.round_status === "open"
+                      ? `Round ${manifest.current_round} is open; members can still contribute.`
+                      : `Round ${manifest.current_round} is collected (all members in), ready to advance.`
+                }
+              >
+                {terminal
+                  ? `round ${manifest.current_round} final`
+                  : `round ${manifest.current_round} ${manifest.round_status}`}
+              </Badge>
+              {/* On terminal councils a dead round's 0/N reads like outstanding
+                  work, so only show the contributor count while the round can
+                  still take contributions (or actually got some). */}
+              {(!terminal || current_round_contributors.length > 0) && (
+                <Badge
+                  variant="default"
+                  title={
+                    terminal
+                      ? `Round ${manifest.current_round} ended with ${current_round_contributors.length}/${manifest.members.length} contributions.`
+                      : `${current_round_contributors.length}/${manifest.members.length} members contributed to round ${manifest.current_round}.${pending.length > 0 ? ` Pending: ${pending.join(", ")}.` : " All members in."}`
+                  }
+                >
+                  {current_round_contributors.length}/{manifest.members.length}
+                </Badge>
+              )}
+              {/* The status badge already reads "archived" once the manifest
+                  flips, so only render the extra archived badge for the edge
+                  where an archive-dir manifest still says "closed". */}
+              {archived && manifest.status !== "archived" && (
+                <Badge
+                  variant="outline"
+                  title="Council moved to .harnery/councils/archive/ (read-only)."
+                >
+                  archived
+                </Badge>
+              )}
+            </>
+          }
+          description={
+            <>
+              <p className="text-foreground/90 leading-relaxed">{manifest.objective}</p>
+              {manifest.target_doc && (
+                <p className="text-xs text-muted-foreground mt-1 font-mono inline-flex items-center gap-1">
+                  target:
+                  <FileText className="size-3 shrink-0" aria-hidden />
+                  {manifest.target_doc}
+                </p>
+              )}
+            </>
+          }
+        />
 
         <CouncilCompletionBanner
           status={manifest.status}
@@ -397,11 +399,11 @@ export default async function CouncilDetailPage({ params, searchParams }: PagePr
               </CardHeader>
               <CardContent>
                 {priorRounds.length === 0 ? (
-                  <p className="text-sm text-muted-foreground italic">
+                  <EmptyState>
                     No prior rounds yet. Contributions for round {manifest.current_round} stay
                     hidden until round {manifest.current_round + 1} opens (round_visibility=
                     {manifest.round_visibility ?? "next_round"}).
-                  </p>
+                  </EmptyState>
                 ) : (
                   <RoundDiff rounds={priorRounds} />
                 )}
@@ -435,7 +437,7 @@ export default async function CouncilDetailPage({ params, searchParams }: PagePr
             )}
           </div>
         </div>
-      </main>
+      </PageShell>
     </AgentChipProvider>
   );
 }

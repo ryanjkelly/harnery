@@ -68,7 +68,7 @@ export function CouncilCompletionBanner({
                 </>
               )}
               . Closed <FormattedTs iso={closedAt} />, archived <FormattedTs iso={archivedAt} />{" "}
-              {archivedAt && <span className="text-muted">({relativeAgo(archivedAt)})</span>}.
+              {archivedAt && <span className="text-muted-foreground">({relativeAgo(archivedAt)})</span>}.
             </p>
           </div>
         </div>
@@ -134,20 +134,20 @@ function ClosedHandoffState({
               </>
             )}
             . Closed <FormattedTs iso={closedAt} />{" "}
-            {closedAt && <span className="text-muted">({relativeAgo(closedAt)})</span>}.
+            {closedAt && <span className="text-muted-foreground">({relativeAgo(closedAt)})</span>}.
           </p>
         </div>
       </div>
 
       <div className="rounded border border-emerald-500/30 bg-background px-3 py-2.5 space-y-3">
-        <div className="text-[10px] uppercase tracking-wide text-muted">
+        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
           Wrap-up: 2 steps to 100% complete
         </div>
 
         <div className="space-y-1.5">
           <div className="flex items-center justify-between gap-2 flex-wrap">
             <div className="text-xs font-medium text-white">
-              <span className="text-muted tabular-nums mr-1">1.</span>
+              <span className="text-muted-foreground tabular-nums mr-1">1.</span>
               Steward close-out handoff
             </div>
             <span
@@ -161,13 +161,13 @@ function ClosedHandoffState({
             </span>
           </div>
           {handoffDone ? (
-            <p className="text-xs text-muted leading-relaxed">
+            <p className="text-xs text-muted-foreground leading-relaxed">
               Handoff doc landed:{" "}
               <span className="font-mono text-[11px] text-emerald-300 inline-flex items-center gap-1">
                 <FileText className="size-3 shrink-0" aria-hidden />
                 {handoffBasename}
               </span>{" "}
-              <span className="text-muted">({closeHandoffPath})</span>.
+              <span className="text-muted-foreground">({closeHandoffPath})</span>.
             </p>
           ) : (
             <HandoffPendingSection councilId={councilId} steward={steward} />
@@ -177,14 +177,14 @@ function ClosedHandoffState({
         <div className="space-y-1.5 border-t border-emerald-500/20 pt-3">
           <div className="flex items-center justify-between gap-2 flex-wrap">
             <div className="text-xs font-medium text-white">
-              <span className="text-muted tabular-nums mr-1">2.</span>
+              <span className="text-muted-foreground tabular-nums mr-1">2.</span>
               Archive
             </div>
             <span className="inline-flex items-center rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-300">
               Pending
             </span>
           </div>
-          <p className="text-xs text-muted leading-relaxed">
+          <p className="text-xs text-muted-foreground leading-relaxed">
             {handoffDone ? (
               <>
                 Click <strong className="text-white">Archive</strong> in the Actions card to move
@@ -219,7 +219,7 @@ function HandoffPendingSection({ councilId, steward }: { councilId: string; stew
   };
   return (
     <>
-      <p className="text-xs text-muted leading-relaxed">
+      <p className="text-xs text-muted-foreground leading-relaxed">
         The steward (
         {steward ? (
           <AgentChip name={steward} className="font-mono text-white" />

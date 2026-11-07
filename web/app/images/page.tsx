@@ -1,5 +1,7 @@
 import { FileAreaNav } from "@/components/file-viewer/FileAreaNav";
 import { ImageGallery } from "@/components/images/ImageGallery";
+import { PageHeader } from "@/components/layout/PageHeader";
+import { pageMainClass } from "@/components/layout/PageShell";
 import { NavBar } from "@/components/NavBar";
 import {
   buildAgentSummaryMap,
@@ -49,15 +51,19 @@ export default async function ImagesPage() {
     <div className="fixed inset-0 flex flex-col overflow-hidden bg-background">
       <NavBar scannedDir={coordRoot()} compact />
       <FileAreaNav active="images" />
-      <main className="flex-1 min-h-0 flex flex-col w-full px-6 py-6">
-        <header className="mb-4 flex items-baseline justify-between flex-wrap gap-3 shrink-0">
-          <h1 className="text-xl font-semibold tracking-tight">Images</h1>
-          <div className="text-xs text-muted-foreground flex items-center gap-3">
-            <span>{meta.distinct.toLocaleString()} distinct</span>
-            <span>{meta.total_touches.toLocaleString()} touches</span>
-            <code className="font-mono text-muted-foreground/80">.harnery/images/</code>
-          </div>
-        </header>
+      {/* FileAreaNav sits between the nav bar and <main>, so PageShell cannot frame it. */}
+      <main className={pageMainClass("fill", "pt-6")}>
+        <PageHeader
+          className="mb-4 shrink-0"
+          title="Images"
+          actions={
+            <div className="flex items-center gap-3">
+              <span>{meta.distinct.toLocaleString()} distinct</span>
+              <span>{meta.total_touches.toLocaleString()} touches</span>
+              <code className="font-mono text-muted-foreground/80">.harnery/images/</code>
+            </div>
+          }
+        />
 
         <ImageGallery initial={images} summaries={summaries} unavailableReason={meta.reason} />
       </main>

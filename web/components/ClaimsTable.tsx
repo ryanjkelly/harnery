@@ -2,8 +2,11 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { AgentChip } from "@/components/AgentChip";
+import { EmptyState } from "@/components/layout/EmptyState";
 import type { ClaimRow } from "@/lib/coord-reader";
 import { NO_DATA } from "@/lib/format/no-data";
+import { TONE } from "@/lib/tone";
 
 export function ClaimsTable({ claims }: { claims: ClaimRow[] }) {
   const router = useRouter();
@@ -11,7 +14,7 @@ export function ClaimsTable({ claims }: { claims: ClaimRow[] }) {
   const [feedback, setFeedback] = useState<{ key: string; msg: string; ok: boolean } | null>(null);
 
   if (claims.length === 0) {
-    return <p className="text-muted text-sm italic">No file claims.</p>;
+    return <EmptyState className="border-0">No file claims.</EmptyState>;
   }
 
   async function release(c: ClaimRow): Promise<void> {
@@ -42,7 +45,7 @@ export function ClaimsTable({ claims }: { claims: ClaimRow[] }) {
 
   return (
     <table className="w-full table-fixed text-sm sm:table-auto">
-      <thead className="text-xs text-muted uppercase tracking-wider border-b border-border">
+      <thead className="text-xs text-muted-foreground uppercase tracking-wider border-b border-border">
         <tr>
           <th className="w-[52%] px-2 py-2 text-left font-normal sm:w-auto sm:px-3">Path</th>
           <th className="w-[24%] px-2 py-2 text-left font-normal sm:w-auto sm:px-3">Agent</th>
@@ -56,8 +59,10 @@ export function ClaimsTable({ claims }: { claims: ClaimRow[] }) {
           return (
             <tr key={key} className="border-b border-border/40 hover:bg-card">
               <td className="break-all px-2 py-2 font-mono text-xs sm:px-3">{c.path}</td>
-              <td className="break-words px-2 py-2 sm:px-3">{c.name}</td>
-              <td className="hidden px-3 py-2 text-muted sm:table-cell">
+              <td className="break-words px-2 py-2 sm:px-3">
+                <AgentChip name={c.name} />
+              </td>
+              <td className="hidden px-3 py-2 text-muted-foreground sm:table-cell">
                 {c.platform ?? NO_DATA}
               </td>
               <td className="px-2 py-2 text-right sm:px-3">
@@ -71,7 +76,7 @@ export function ClaimsTable({ claims }: { claims: ClaimRow[] }) {
                 </button>
                 {feedback?.key === key && (
                   <span
-                    className={`ml-2 text-xs ${feedback.ok ? "text-green-400" : "text-red-400"}`}
+                    className={`ml-2 text-xs ${feedback.ok ? TONE.done.text : TONE.danger.text}`}
                   >
                     {feedback.msg}
                   </span>

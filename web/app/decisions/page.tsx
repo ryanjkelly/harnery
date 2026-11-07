@@ -4,38 +4,21 @@ import { AgentChip, AgentChipProvider } from "@/components/AgentChip";
 import { Attention } from "@/components/Attention";
 import { StakesPill, StatusPill, TierPill, VerdictPill } from "@/components/decision/DecisionPills";
 import { FormattedDateTime } from "@/components/FormattedDateTime";
-import { NavBar } from "@/components/NavBar";
+import { EmptyState } from "@/components/layout/EmptyState";
+import { PageHeader } from "@/components/layout/PageHeader";
+import { PageShell } from "@/components/layout/PageShell";
+import { Section as LayoutSection } from "@/components/layout/Section";
 import { buildAgentSummaryMap } from "@/lib/agent-summary";
 import { formatDuration } from "@/lib/changelog-parser";
 import { hostInfo } from "@/lib/config";
-import {
-  coordRoot,
-  type InstanceIdentity,
-  readAgents,
-  readInstanceIdentities,
-} from "@/lib/coord-reader";
+import { readAgents, readInstanceIdentities } from "@/lib/coord-reader";
+import { actorName, chipName } from "@/lib/decision-actors";
 import { sortReviewFeed } from "@/lib/decision-attention";
 import { type DecisionManifest, readDecisions } from "@/lib/decision-reader";
+import { bareName } from "@/lib/identities";
+import { TONE } from "@/lib/tone";
 
 export const dynamic = "force-dynamic";
-
-/** Normalize a stored agent name (heartbeat form "Quill") to the chip form "agent-Quill". */
-function norm(name: string | null | undefined): string | null {
-  if (!name) return null;
-  return name.startsWith("agent-") ? name : `agent-${name}`;
-}
-
-/** Resolve an actor field to a chip name. `claimed_by` stores an instance_id
- * (from `resolveOwner`), unlike `filed_by`/`resolved_by` which store the name;
- * map the id back through the identity index so the chip resolves + hovers. */
-function actorName(
-  value: string | null | undefined,
-  identities: Record<string, InstanceIdentity>,
-): string | null {
-  if (!value) return null;
-  const bare = value.startsWith("agent-") ? value.slice("agent-".length) : value;
-  return norm(identities[bare]?.name ?? identities[value]?.name ?? value);
-}
 
 /** Per-decision claimer, resolved to a name + whether that agent is live now. */
 export interface ClaimerInfo {
@@ -60,16 +43,14 @@ export default function DecisionsPage() {
     ...snap.reviewed,
     ...snap.closed,
   ]) {
-    const f = norm(d.filed_by);
+    const f = chipName(d.filed_by);
     if (f) everyName.add(f);
-    const r = norm(d.resolution?.resolved_by);
+    const r = chipName(d.resolution?.resolved_by);
     if (r) everyName.add(r);
     if (d.claimed_by) {
       const name = actorName(d.claimed_by, identities);
       if (name) everyName.add(name);
-      const bare = d.claimed_by.startsWith("agent-")
-        ? d.claimed_by.slice("agent-".length)
-        : d.claimed_by;
+      const bare = bareName(d.claimed_by);
       claimers[d.decision_id] = {
         name,
         active: activeIds.has(bare) || activeIds.has(d.claimed_by),
@@ -80,24 +61,19 @@ export default function DecisionsPage() {
 
   return (
     <AgentChipProvider summaries={summaries}>
-      <NavBar scannedDir={coordRoot()} />
-      <main className="w-full max-w-screen-2xl mx-auto px-6 pb-10">
-        <header className="mb-6 flex items-center justify-between gap-4 flex-wrap">
-          <div>
-            <h1 className="text-xl font-semibold tracking-tight">Decision docket</h1>
-            <p className="text-xs text-muted-foreground mt-1 max-w-2xl">
-              Decisions an agent would otherwise route to a human. Tier 2 is waiting on you and
-              nothing else will move it. Everything below it already proceeded on a default, so your
-              review there is calibration, not approval.
-            </p>
-          </div>
-          <div className="text-xs text-muted-foreground flex gap-3">
-            <Count n={snap.waiting.length} label="waiting on you" />
-            <Count n={reviewFeed.length} label="to review" />
-            <Count n={snap.queue.length} label="in queue" />
-            <Count n={snap.reviewed.length} label="reviewed" />
-          </div>
-        </header>
+      <PageShell width="wide">
+        <PageHeader
+          title="Decision docket"
+          description="Decisions an agent would otherwise route to a human. Tier 2 is waiting on you and nothing else will move it. Everything below it already proceeded on a default, so your review there is calibration, not approval."
+          actions={
+            <>
+              <Count n={snap.waiting.length} label="waiting on you" />
+              <Count n={reviewFeed.length} label="to review" />
+              <Count n={snap.queue.length} label="in queue" />
+              <Count n={snap.reviewed.length} label="reviewed" />
+            </>
+          }
+        />
 
         {/* Waiting outranks review for the alert: review is sampling the human
             can batch, whereas a tier-2 decision has work parked behind it. */}
@@ -160,13 +136,13 @@ export default function DecisionsPage() {
         />
 
         {snap.meta.count === 0 && (
-          <p className="text-sm text-muted-foreground italic">
+          <EmptyState>
             No decisions filed yet. An agent files one with{" "}
             <code className="font-mono text-xs">{`${binName} decision file "..."`}</code> (or the{" "}
             <code className="font-mono text-xs">decision</code> skill).
-          </p>
+          </EmptyState>
         )}
-      </main>
+      </PageShell>
     </AgentChipProvider>
   );
 }
@@ -179,7 +155,7 @@ function Count({ n, label }: { n: number; label: string }) {
   );
 }
 
-type Tone = "act" | "wait" | "done" | "muted";
+type CardTone = "act" | "wait" | "done" | "muted";
 
 function Section({
   title,
@@ -192,7 +168,7 @@ function Section({
 }: {
   title: string;
   hint: string;
-  tone: Tone;
+  tone: CardTone;
   decisions: DecisionManifest[];
   claimers: Record<string, ClaimerInfo>;
   emptyText?: string;
@@ -201,18 +177,18 @@ function Section({
    * at three hours than at three weeks, and a filing date does not say which. */
   showAge?: boolean;
 }) {
+  // Only the sections that ask something of the operator carry the accent rule.
+  const sectionTone = tone === "act" ? "act" : undefined;
   if (decisions.length === 0) {
     if (!emptyText) return null;
     return (
-      <section className="mb-8">
-        <SectionHeader title={title} hint={hint} count={0} />
-        <p className="text-sm text-muted-foreground italic">{emptyText}</p>
-      </section>
+      <LayoutSection title={title} hint={hint} tone={sectionTone}>
+        <EmptyState>{emptyText}</EmptyState>
+      </LayoutSection>
     );
   }
   return (
-    <section className="mb-8">
-      <SectionHeader title={title} hint={hint} count={decisions.length} />
+    <LayoutSection title={title} hint={hint} count={decisions.length} tone={sectionTone}>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 items-start">
         {decisions.map((d) => (
           <DecisionCard
@@ -224,22 +200,11 @@ function Section({
           />
         ))}
       </div>
-    </section>
+    </LayoutSection>
   );
 }
 
-function SectionHeader({ title, hint, count }: { title: string; hint: string; count: number }) {
-  return (
-    <div className="mb-3">
-      <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
-        {title} {count > 0 && <span className="text-foreground">({count})</span>}
-      </h2>
-      <p className="text-xs text-muted-foreground">{hint}</p>
-    </div>
-  );
-}
-
-const TONE_RING: Record<Tone, string> = {
+const TONE_RING: Record<CardTone, string> = {
   act: "border-sky-500/40 hover:border-sky-400/70",
   wait: "border-border hover:border-foreground/30",
   done: "border-emerald-500/25 hover:border-emerald-400/50",
@@ -253,11 +218,11 @@ function DecisionCard({
   showAge,
 }: {
   d: DecisionManifest;
-  tone: Tone;
+  tone: CardTone;
   claimer?: ClaimerInfo;
   showAge?: boolean;
 }) {
-  const who = norm(d.filed_by);
+  const who = chipName(d.filed_by);
   const age = showAge ? formatDuration(d.filed_at, new Date().toISOString()) : null;
   return (
     <Link
@@ -295,13 +260,13 @@ function DecisionCard({
                   <span className="text-muted-foreground/60">claimed by</span>
                 )}
                 <AgentChip name={claimer.name} className="font-mono text-foreground/80" />
-                {working && <span className="text-emerald-400/90">working</span>}
+                {working && <span className={TONE.done.text}>working</span>}
               </span>
             );
           })()}
         <span className="ml-auto inline-flex items-center gap-2">
           {age && (
-            <span className="rounded px-1.5 py-0.5 font-medium text-amber-300/90 bg-amber-400/10">
+            <span className={`rounded border px-1.5 py-0.5 font-medium ${TONE.warn.pill}`}>
               open {age}
             </span>
           )}

@@ -2,8 +2,10 @@ import { GitCompareArrows } from "lucide-react";
 
 import { DiagnosticsComparison } from "@/components/diagnostics/DiagnosticsComparison";
 import { FormattedDateTime } from "@/components/FormattedDateTime";
-import { NavBar } from "@/components/NavBar";
-import { Card, CardContent } from "@/components/ui/card";
+import { EmptyState } from "@/components/layout/EmptyState";
+import { Notice } from "@/components/layout/Notice";
+import { PageHeader } from "@/components/layout/PageHeader";
+import { PageShell } from "@/components/layout/PageShell";
 import { hostInfo } from "@/lib/config";
 import { coordRoot } from "@/lib/coord-reader";
 import { readDiagnosticComparison } from "@/lib/diagnostics-reader";
@@ -44,55 +46,52 @@ export default async function DiagnosticComparisonPage({ searchParams }: PagePro
   }
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
-      <NavBar scannedDir={root} />
-      <main className="mx-auto max-w-screen-2xl px-4 pb-12 sm:px-6">
-        <section aria-labelledby="comparison-picker-heading" className="mb-6">
-          <div className="mb-4 flex flex-wrap items-center gap-2">
-            <GitCompareArrows className="size-5 text-sky-500" aria-hidden />
-            <h1 id="comparison-picker-heading" className="text-xl font-semibold">
-              Compare frozen bundles
-            </h1>
-          </div>
-          <form
-            action="/diagnostics/compare"
-            className="grid gap-3 rounded-xl border border-border/60 bg-card p-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] lg:items-end"
+    <PageShell width="wide">
+      <section aria-labelledby="comparison-picker-heading" className="mb-6">
+        <PageHeader
+          className="mb-4"
+          title={
+            <span className="flex flex-wrap items-center gap-2">
+              <GitCompareArrows className="size-5 text-sky-500" aria-hidden />
+              <span id="comparison-picker-heading">Compare frozen bundles</span>
+            </span>
+          }
+        />
+        <form
+          action="/diagnostics/compare"
+          className="grid gap-3 rounded-xl border border-border/60 bg-card p-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] lg:items-end"
+        >
+          <BundleSelect label="Before" name="before" value={before} bundles={bundles} />
+          <BundleSelect label="After" name="after" value={after} bundles={bundles} />
+          <button
+            type="submit"
+            disabled={bundles.length < 2}
+            className="h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2"
           >
-            <BundleSelect label="Before" name="before" value={before} bundles={bundles} />
-            <BundleSelect label="After" name="after" value={after} bundles={bundles} />
-            <button
-              type="submit"
-              disabled={bundles.length < 2}
-              className="h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2"
-            >
-              Compare
-            </button>
-          </form>
-          <p className="mt-2 text-xs text-muted-foreground">
-            {bundles.length} managed bundle candidate{bundles.length === 1 ? "" : "s"} available.
-            The selected pair is fully validated before comparison.
-          </p>
-        </section>
+            Compare
+          </button>
+        </form>
+        <p className="mt-2 text-xs text-muted-foreground">
+          {bundles.length} managed bundle candidate{bundles.length === 1 ? "" : "s"} available. The
+          selected pair is fully validated before comparison.
+        </p>
+      </section>
 
-        {error ? (
-          <Card className="mb-5 border-amber-500/30 bg-amber-500/5">
-            <CardContent className="text-sm text-muted-foreground">{error}</CardContent>
-          </Card>
-        ) : null}
+      {error ? (
+        <Notice tone="warn" className="mb-5">
+          {error}
+        </Notice>
+      ) : null}
 
-        {comparison ? (
-          <DiagnosticsComparison comparison={comparison} binName={hostInfo().binName} />
-        ) : (
-          <Card>
-            <CardContent className="items-center py-12 text-center text-sm text-muted-foreground">
-              <GitCompareArrows className="size-8 text-sky-500" aria-hidden />
-              Select an earlier bundle and a later bundle to expose regressions, recoveries, and
-              evidence changes.
-            </CardContent>
-          </Card>
-        )}
-      </main>
-    </div>
+      {comparison ? (
+        <DiagnosticsComparison comparison={comparison} binName={hostInfo().binName} />
+      ) : (
+        <EmptyState icon={<GitCompareArrows className="text-sky-500" aria-hidden />}>
+          Select an earlier bundle and a later bundle to expose regressions, recoveries, and
+          evidence changes.
+        </EmptyState>
+      )}
+    </PageShell>
   );
 }
 

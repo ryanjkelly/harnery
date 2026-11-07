@@ -1,6 +1,5 @@
 import { StandaloneFileViewer } from "@/components/file-viewer/StandaloneFileViewer";
-import { NavBar } from "@/components/NavBar";
-import { coordRoot } from "@/lib/coord-reader";
+import { PageShell } from "@/components/layout/PageShell";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -24,8 +23,10 @@ export default async function FilesViewPage({
   const initialMode = rawMode === "source" ? "source" : "preview";
   return (
     <div className="fixed inset-0 flex flex-col overflow-hidden bg-background">
-      <NavBar scannedDir={coordRoot()} />
-      <StandaloneFileViewer path={path} initialMode={initialMode} />
+      {/* The viewer draws its own edge-to-edge header and panes, so the shell drops its gutter. */}
+      <PageShell width="fill" compactNav={false} className="px-0 pb-0 sm:px-0">
+        <StandaloneFileViewer path={path} initialMode={initialMode} />
+      </PageShell>
     </div>
   );
 }

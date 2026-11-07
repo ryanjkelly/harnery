@@ -1,13 +1,15 @@
 import { headers } from "next/headers";
 import { FormattedDateTime } from "@/components/FormattedDateTime";
-import { NavBar } from "@/components/NavBar";
+import { Notice } from "@/components/layout/Notice";
+import { PageHeader } from "@/components/layout/PageHeader";
+import { PageShell } from "@/components/layout/PageShell";
+import { SectionHeader } from "@/components/layout/Section";
 import {
   ComputerModeControl,
   type ComputerModeOption,
 } from "@/components/permissions/ComputerModeControl";
 import { Badge } from "@/components/ui/badge";
 import { hostInfo } from "@/lib/config";
-import { coordRoot } from "@/lib/coord-reader";
 import {
   COMPUTER_MODE_LABELS,
   COMPUTER_MODES,
@@ -22,6 +24,7 @@ import {
   readPermissionsPage,
   requestLocality,
 } from "@/lib/permissions";
+import { TONE } from "@/lib/tone";
 
 export const dynamic = "force-dynamic";
 
@@ -107,8 +110,7 @@ function Section({
 }) {
   return (
     <section className="rounded-lg border border-border bg-card p-4">
-      <h2 className="text-sm font-semibold">{title}</h2>
-      {summary ? <p className="mt-1 text-sm text-muted-foreground">{summary}</p> : null}
+      <SectionHeader title={title} hint={summary} className="mb-0" />
       <div className="mt-2 divide-y divide-border">{children}</div>
       <p className="mt-3 border-t border-border pt-2 text-xs text-muted-foreground">{change}</p>
     </section>
@@ -293,7 +295,7 @@ function ClaudeSection({ report }: { report: PermissionsReport }) {
         </p>
       </div>
       {c.sources.some((s) => s.error) ? (
-        <p className="py-2 text-sm text-destructive">
+        <p className={`py-2 text-sm ${TONE.danger.text}`}>
           {c.sources
             .filter((s) => s.error)
             .map((s) => `Could not read ${s.path}: ${s.error}`)
@@ -408,44 +410,43 @@ export default async function PermissionsPage() {
   const bin = hostInfo().binName;
   const local = requestLocality(await headers()).local;
   return (
-    <div>
-      <NavBar scannedDir={coordRoot()} />
-      <main className="mx-auto max-w-4xl px-4 py-6">
-        <header className="mb-5">
-          <h1 className="text-lg font-semibold">Permissions</h1>
-          <p className="text-sm text-muted-foreground">
+    <PageShell width="narrow">
+      <PageHeader
+        title="Permissions"
+        description={
+          <>
             {
               "What the coding agents on this computer are allowed to do, read from each tool's own settings. The one thing you can change here is your own computer-use mode, and only from a browser on this computer; each other section says how to change it. Amber marks a setting with no limits."
             }
-          </p>
-          {permissions ? (
-            <p className="mt-1 text-xs text-muted-foreground">
-              {"Read "}
-              <FormattedDateTime iso={permissions.generatedAt} />
-            </p>
-          ) : null}
-        </header>
-        <div className="space-y-4">
-          <ComputerSection
-            status={computer}
-            error={computerError}
-            report={permissions}
-            bin={bin}
-            local={local}
-          />
-          {permissions ? (
-            <>
-              <ClaudeSection report={permissions} />
-              <CodexSection report={permissions} bin={bin} />
-              <CursorSection report={permissions} />
-            </>
-          ) : (
-            <div className="rounded-md border border-border bg-card p-4 text-sm text-muted-foreground">
-              {`Could not read the coding tools' settings: ${permissionsError ?? "no answer"}`}
-            </div>
-          )}
-        </div>
-      </main>
-    </div>
+            {permissions ? (
+              <p className="mt-1 text-xs">
+                {"Read "}
+                <FormattedDateTime iso={permissions.generatedAt} />
+              </p>
+            ) : null}
+          </>
+        }
+      />
+      <div className="space-y-4">
+        <ComputerSection
+          status={computer}
+          error={computerError}
+          report={permissions}
+          bin={bin}
+          local={local}
+        />
+        {permissions ? (
+          <>
+            <ClaudeSection report={permissions} />
+            <CodexSection report={permissions} bin={bin} />
+            <CursorSection report={permissions} />
+          </>
+        ) : (
+          <Notice tone="danger">
+            {`Could not read the coding tools' settings: ${permissionsError ?? "no answer"}`}
+          </Notice>
+        )}
+      </div>
+    </PageShell>
   );
 }

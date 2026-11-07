@@ -1,15 +1,18 @@
 import type { ReactNode } from "react";
 import { CursorKeyControl } from "@/components/CursorKeyControl";
 import { FormattedDateTime } from "@/components/FormattedDateTime";
-import { NavBar } from "@/components/NavBar";
+import { Notice } from "@/components/layout/Notice";
+import { PageHeader } from "@/components/layout/PageHeader";
+import { PageShell } from "@/components/layout/PageShell";
 import { Tooltip } from "@/components/ui/tooltip";
-import { coordRoot } from "@/lib/coord-reader";
+import { cn } from "@/lib/cn";
 import {
   type CursorUsage,
   type DevtoolsReport,
   readDevtoolsReport,
   type ToolStatus,
 } from "@/lib/devtools-reader";
+import { TONE, type Tone } from "@/lib/tone";
 
 export const dynamic = "force-dynamic";
 
@@ -56,36 +59,30 @@ export default async function DevtoolsPage() {
   const now = Date.now();
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
-      <NavBar scannedDir={coordRoot()} />
-      <main className="mx-auto max-w-5xl px-4 py-6">
-        <header className="mb-5">
-          <h1 className="text-lg font-semibold">Tools</h1>
-          <p className="text-sm text-muted-foreground">
-            Coding agents: where Claude Code, Codex, and Cursor stand on this machine, read straight
-            from local files. Nothing leaves the box.
-          </p>
-        </header>
+    <PageShell>
+      <PageHeader
+        title="Tools"
+        description="Coding agents: where Claude Code, Codex, and Cursor stand on this machine, read straight from local files. Nothing leaves the box."
+      />
 
-        {report.error ? (
-          <div className="rounded-md border border-border bg-card p-4 text-sm text-muted-foreground">
-            Could not read agent status: {report.error}
-          </div>
-        ) : (
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {report.tools.map((t) => (
-              <ToolCard key={t.tool} tool={t} now={now} windowDays={report.windowDays} />
-            ))}
-          </div>
-        )}
+      {report.error ? (
+        <Notice tone="danger" title="Could not read agent status">
+          {report.error}
+        </Notice>
+      ) : (
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {report.tools.map((t) => (
+            <ToolCard key={t.tool} tool={t} now={now} windowDays={report.windowDays} />
+          ))}
+        </div>
+      )}
 
-        {report.generatedAt && !report.error ? (
-          <p className="mt-5 text-xs text-muted-foreground">
-            as of <FormattedDateTime iso={report.generatedAt} kind="timestamp" />
-          </p>
-        ) : null}
-      </main>
-    </div>
+      {report.generatedAt && !report.error ? (
+        <p className="mt-5 text-xs text-muted-foreground">
+          as of <FormattedDateTime iso={report.generatedAt} kind="timestamp" />
+        </p>
+      ) : null}
+    </PageShell>
   );
 }
 
@@ -230,12 +227,7 @@ function CardHeader({ tool }: { tool: ToolStatus }) {
 
 function LoginBadge({ tool }: { tool: ToolStatus }) {
   const { loggedIn, account } = tool;
-  const styles =
-    loggedIn === true
-      ? "bg-positive-soft text-positive"
-      : loggedIn === false
-        ? "bg-negative-soft text-negative"
-        : "bg-muted text-muted-foreground";
+  const tone: Tone = loggedIn === true ? "done" : loggedIn === false ? "danger" : "neutral";
   const label = loggedIn === true ? "signed in" : loggedIn === false ? "signed out" : "unknown";
   const hint =
     loggedIn === true
@@ -247,7 +239,12 @@ function LoginBadge({ tool }: { tool: ToolStatus }) {
         : "Could not determine sign-in state from local files.";
   return (
     <Tooltip content={hint} side="top">
-      <span className={`cursor-help rounded-full px-2 py-0.5 text-xs font-medium ${styles}`}>
+      <span
+        className={cn(
+          "cursor-help rounded-full border px-2 py-0.5 text-xs font-medium",
+          TONE[tone].pill,
+        )}
+      >
         {label}
       </span>
     </Tooltip>
@@ -290,12 +287,12 @@ function QuotaBar({
   // Color grammar: emerald under load, amber past two-thirds, red past 90%.
   const barColor =
     clamped == null
-      ? "bg-muted-foreground/40"
+      ? TONE.neutral.dot
       : clamped >= 90
-        ? "bg-negative"
+        ? TONE.danger.dot
         : clamped >= 66
-          ? "bg-revenue"
-          : "bg-positive";
+          ? TONE.warn.dot
+          : TONE.done.dot;
   const remaining = clamped != null ? 100 - clamped : null;
   return (
     <Tooltip

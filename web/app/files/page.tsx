@@ -1,8 +1,7 @@
 import { FileText } from "lucide-react";
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { NavBar } from "@/components/NavBar";
-import { coordRoot } from "@/lib/coord-reader";
+import { PageShell } from "@/components/layout/PageShell";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -28,8 +27,7 @@ export default async function FilesPage({
   if (!params.path) redirect("/browse");
   return (
     <div className="fixed inset-0 flex flex-col overflow-hidden bg-background">
-      <NavBar scannedDir={coordRoot()} compact />
-      <main className="flex flex-1 flex-col items-center justify-center px-6 pb-6 text-center">
+      <PageShell width="fill" className="items-center justify-center text-center">
         <FileText className="mb-4 size-10 text-muted-foreground/40" />
         <h1 className="mb-2 text-xl font-semibold tracking-tight">File viewer</h1>
         <p className="max-w-md text-sm text-muted-foreground">
@@ -45,7 +43,7 @@ export default async function FilesPage({
           , or deep-link directly with{" "}
           <code className="rounded bg-muted/60 px-1 py-0.5 font-mono text-xs">/files?path=…</code>.
         </p>
-      </main>
+      </PageShell>
     </div>
   );
 }

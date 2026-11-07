@@ -1,15 +1,16 @@
 import Link from "next/link";
 
 import { AgentChipProvider } from "@/components/AgentChip";
+import { PageHeader } from "@/components/layout/PageHeader";
+import { PageShell } from "@/components/layout/PageShell";
 import { LiveLogTable } from "@/components/log-table/LiveLogTable";
-import { NavBar } from "@/components/NavBar";
 import {
   buildAgentSummaryMap,
   buildEndedAgentSummaries,
   buildSubagentSummaries,
 } from "@/lib/agent-summary";
 import { hostInfo } from "@/lib/config";
-import { coordRoot, readAgents, readInstanceIdentities } from "@/lib/coord-reader";
+import { readAgents, readInstanceIdentities } from "@/lib/coord-reader";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -66,12 +67,12 @@ export default async function LivePage({ searchParams }: PageProps) {
 
   return (
     <div className="fixed inset-0 flex flex-col overflow-hidden bg-background">
-      <NavBar scannedDir={coordRoot()} />
-      <main className="flex-1 min-h-0 flex flex-col w-full px-6 pb-6">
-        <header className="mb-4 flex items-baseline justify-between flex-wrap gap-3 shrink-0">
-          <div className="flex flex-col gap-0.5">
-            <h1 className="text-xl font-semibold tracking-tight">Live session</h1>
-            <p className="text-xs text-muted-foreground">
+      <PageShell width="fill" compactNav={false}>
+        <PageHeader
+          className="mb-4 shrink-0"
+          title="Live session"
+          description={
+            <>
               Every shell command + its intent: <code className="font-mono">{binName}</code> (the
               host CLI) and bare shell (<code className="font-mono">git</code>,{" "}
               <code className="font-mono">grep</code>, <code className="font-mono">curl</code>…).
@@ -80,12 +81,10 @@ export default async function LivePage({ searchParams }: PageProps) {
                 Events
               </Link>
               .
-            </p>
-          </div>
-          <code className="font-mono text-xs text-muted-foreground">
-            Event Ledger V3 · command projection
-          </code>
-        </header>
+            </>
+          }
+          actions={<code className="font-mono">Event Ledger V3 · command projection</code>}
+        />
 
         <AgentChipProvider summaries={summaries}>
           <LiveLogTable
@@ -94,7 +93,7 @@ export default async function LivePage({ searchParams }: PageProps) {
             instanceToName={instanceToName}
           />
         </AgentChipProvider>
-      </main>
+      </PageShell>
     </div>
   );
 }
