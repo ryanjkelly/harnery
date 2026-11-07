@@ -12,6 +12,7 @@ import { AgentElapsed } from "@/components/workflow/AgentElapsed";
 import { WorkflowActivityLog } from "@/components/workflow/WorkflowActivityLog";
 import { buildAgentSummaryMap, buildEndedAgentSummaries } from "@/lib/agent-summary";
 import { cn } from "@/lib/cn";
+import { hostInfo } from "@/lib/config";
 import { coordRoot, readEvents, readInstanceIdentities } from "@/lib/coord-reader";
 import { TONE } from "@/lib/tone";
 import { describeRunCost } from "@/lib/workflow-cost";
@@ -322,7 +323,7 @@ export default async function WorkflowRunPage({ params }: PageProps) {
           </p>
           <code className="mt-3 block break-all text-xs">{run.parkedApprovalId}</code>
           <code className="mt-1 block break-all text-xs">
-            harn workflow approvals show {run.parkedApprovalId}
+            {`${hostInfo().binName} approval show ${run.parkedApprovalId}`}
           </code>
         </section>
       ) : null}

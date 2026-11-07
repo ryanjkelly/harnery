@@ -1,8 +1,7 @@
-import Link from "next/link";
-
 import { PageHeader } from "@/components/layout/PageHeader";
 import { PageShell } from "@/components/layout/PageShell";
 import { type AgentRegistryRow, NewCouncilForm } from "@/components/NewCouncilForm";
+import { hostInfo } from "@/lib/config";
 import { readAgents } from "@/lib/coord-reader";
 
 export const dynamic = "force-dynamic";
@@ -59,24 +58,15 @@ export default async function NewCouncilPage({
 
   return (
     <PageShell width="prose">
-      <nav className="mb-4 text-xs text-muted-foreground">
-        <Link href="/councils" className="hover:text-foreground">
-          ← Councils
-        </Link>
-        {" / "}
-        <Link href="/agents" className="hover:text-foreground">
-          Agents
-        </Link>
-      </nav>
-
       <PageHeader
+        back={{ href: "/councils", label: "Councils" }}
         title="New council"
         description={
           <>
             Pick members + steward + (optional) target doc. Submitting creates the council via{" "}
-            <code className="font-mono text-xs">harn council create</code> and routes you to its
-            detail page. Members get pinged via their journals if currently active; others see the
-            invite on next SessionStart.
+            <code className="font-mono text-xs">{`${hostInfo().binName} council create`}</code> and
+            routes you to its detail page. Members get pinged via their journals if currently
+            active; others see the invite on next SessionStart.
           </>
         }
       />

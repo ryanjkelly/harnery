@@ -7,6 +7,7 @@ import { PageShell } from "@/components/layout/PageShell";
 import { Section, SectionHeader } from "@/components/layout/Section";
 import { Badge } from "@/components/ui/badge";
 import { WorkStateBadge } from "@/components/WorkStateBadge";
+import { hostInfo } from "@/lib/config";
 import { coordRoot } from "@/lib/coord-reader";
 import {
   governorDashboardDecision,
@@ -96,7 +97,7 @@ export default async function GovernorGoalPage({ params }: PageProps) {
           <p className={`mt-3 text-xs ${TONE.warn.text}`}>
             Plan {projection.attention_plan_id} needs operator guidance. Review it, then run{" "}
             <code>
-              {`harn governor plan retry ${intent.id} ${projection.attention_plan_id} --reason <text>`}
+              {`${hostInfo().binName} governor plan retry ${intent.id} ${projection.attention_plan_id} --reason <text>`}
             </code>
             .
           </p>
@@ -160,19 +161,17 @@ export default async function GovernorGoalPage({ params }: PageProps) {
                     {planStatus.requiresReview ? (
                       <p className={`mt-2 text-xs ${TONE.warn.text}`}>
                         Review with{" "}
-                        <code>
-                          harn governor plan show {intent.id} {plan.request.id}
-                        </code>
+                        <code>{`${hostInfo().binName} governor plan show ${intent.id} ${plan.request.id}`}</code>
                         , then approve or reject it explicitly.
                       </p>
                     ) : null}
                     {planStatus.requiresDecision ? (
                       <p className={`mt-2 text-xs ${TONE.act.text}`}>
                         Review has passed. Approve with{" "}
-                        <code>{`harn governor plan approve ${intent.id} ${plan.request.id}`}</code>{" "}
+                        <code>{`${hostInfo().binName} governor plan approve ${intent.id} ${plan.request.id}`}</code>{" "}
                         or reject it with{" "}
                         <code>
-                          {`harn governor plan reject ${intent.id} ${plan.request.id} --reason <text>`}
+                          {`${hostInfo().binName} governor plan reject ${intent.id} ${plan.request.id} --reason <text>`}
                         </code>
                         .
                       </p>
@@ -182,7 +181,7 @@ export default async function GovernorGoalPage({ params }: PageProps) {
                       <p className={`mt-2 text-xs ${TONE.warn.text}`}>
                         Supply the missing judgment with{" "}
                         <code>
-                          {`harn governor plan retry ${intent.id} ${plan.request.id} --reason <text>`}
+                          {`${hostInfo().binName} governor plan retry ${intent.id} ${plan.request.id} --reason <text>`}
                         </code>
                         .
                       </p>
@@ -228,7 +227,8 @@ export default async function GovernorGoalPage({ params }: PageProps) {
           </dl>
         ) : (
           <p className="mt-2 text-xs text-muted-foreground">
-            Enroll this goal with <code>harn governor service start {intent.id}</code>.
+            Enroll this goal with{" "}
+            <code>{`${hostInfo().binName} governor service start ${intent.id}`}</code>.
           </p>
         )}
         {serviceRuntime?.last_error ? (
