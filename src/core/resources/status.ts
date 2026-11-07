@@ -73,6 +73,8 @@ export interface ResourceStatus {
   oom: ResourceOomSample | null;
   io: ResourceIoSample | null;
   host: ResourceHostSample | null;
+  /** Native Windows commit and page-in readings; a WSL status carries them under `host`. */
+  memory_strain?: ResourceHostMemoryStrain;
   processes?: Array<
     Pick<
       ResourceProcessSample,
@@ -146,6 +148,15 @@ export function readResourceStatus(
   result.state = "fresh";
   result.reason = null;
   result.machine = projectMachine(value.machine);
+  if (value.memory_strain)
+    result.memory_strain = {
+      commit_used_bytes: value.memory_strain.commit_used_bytes,
+      commit_limit_bytes: value.memory_strain.commit_limit_bytes,
+      page_input_pages_per_second: value.memory_strain.page_input_pages_per_second,
+      ...(value.memory_strain.commit_limit_can_grow === undefined
+        ? {}
+        : { commit_limit_can_grow: value.memory_strain.commit_limit_can_grow }),
+    };
   result.disks = (value.disks ?? []).map(projectDisk);
   result.pressure = value.pressure
     ? {
@@ -200,6 +211,9 @@ export function readResourceStatus(
                     commit_limit_bytes: value.host.memory_strain.commit_limit_bytes,
                     page_input_pages_per_second:
                       value.host.memory_strain.page_input_pages_per_second,
+                    ...(value.host.memory_strain.commit_limit_can_grow === undefined
+                      ? {}
+                      : { commit_limit_can_grow: value.host.memory_strain.commit_limit_can_grow }),
                   },
                 }
               : {}),
@@ -309,6 +323,8 @@ export function formatResourceStatus(status: ResourceStatus, bin: string): strin
     const oom = status.oom;
     lines.push(formatOomLine(oom));
   }
+  const strain = formatHostStrain(status.memory_strain);
+  if (strain) lines.push(`Memory strain: ${strain.slice(2)}.`);
   if (status.io)
     lines.push(
       `Disk I/O: ${status.io.state}; read ${status.io.read_bytes_per_second === null ? "unknown" : `${formatBytes(status.io.read_bytes_per_second)}/s`}, write ${status.io.write_bytes_per_second === null ? "unknown" : `${formatBytes(status.io.write_bytes_per_second)}/s`}`,
@@ -353,7 +369,7 @@ function formatHostStrain(strain: ResourceHostMemoryStrain | undefined): string 
   const parts: string[] = [];
   if (strain.commit_used_bytes !== null && strain.commit_limit_bytes)
     parts.push(
-      `commit ${Math.round((strain.commit_used_bytes / strain.commit_limit_bytes) * 100)}% of limit`,
+      `commit ${Math.round((strain.commit_used_bytes / strain.commit_limit_bytes) * 100)}% of limit${strain.commit_limit_can_grow === true ? " (page file can grow)" : strain.commit_limit_can_grow === false ? " (fixed)" : ""}`,
     );
   if (strain.page_input_pages_per_second !== null)
     parts.push(`${Math.round(strain.page_input_pages_per_second)} pages/s read from disk`);
@@ -731,6 +747,7 @@ function validSnapshot(v: unknown): v is ResourceSnapshot {
       (v.oom.reason !== undefined && !string(v.oom.reason)))
   )
     return false;
+  if (v.memory_strain !== undefined && !validHostMemoryStrain(v.memory_strain)) return false;
   if (
     v.io !== undefined &&
     (!object(v.io) ||
@@ -773,7 +790,10 @@ function validHostMemoryStrain(value: unknown): boolean {
     object(value) &&
     nullable(value.commit_used_bytes) &&
     nullable(value.commit_limit_bytes) &&
-    nullable(value.page_input_pages_per_second)
+    nullable(value.page_input_pages_per_second) &&
+    (value.commit_limit_can_grow === undefined ||
+      value.commit_limit_can_grow === null ||
+      typeof value.commit_limit_can_grow === "boolean")
   );
 }
 

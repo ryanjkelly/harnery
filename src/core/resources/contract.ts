@@ -64,6 +64,12 @@ export interface ResourceSnapshot {
   vmstat?: ResourceVmstatSample;
   io?: ResourceIoSample;
   host?: ResourceHostSample;
+  /**
+   * Native Windows only: the machine's own commit and hard page-in readings,
+   * the strain evidence its memory is judged by because Windows has no stall
+   * measure. A WSL snapshot carries the same readings inside `host`.
+   */
+  memory_strain?: ResourceHostMemoryStrain;
   groups: ResourceProcessGroup[];
   processes: ResourceProcessSample[];
   visible_process_count: number;
@@ -150,6 +156,12 @@ export interface ResourceHostMemoryStrain {
   commit_limit_bytes: number | null;
   /** Pages read from disk to resolve hard faults, per second, between two host samples. */
   page_input_pages_per_second: number | null;
+  /**
+   * Whether the paging file can still grow and raise the commit limit. When it
+   * can, commit near today's limit is not exhaustion. Null when unknown;
+   * absent on snapshots written before it was collected.
+   */
+  commit_limit_can_grow?: boolean | null;
 }
 
 export interface ResourceServiceStatusRecord {

@@ -177,6 +177,29 @@ describe("native machine resources", () => {
     expect(result.snapshot.machine.swap_total_bytes).toBe(4 * 1_024 ** 3);
     expect(result.snapshot.machine.swap_used_bytes).toBe(1_024 ** 3);
   });
+
+  test("native Windows snapshots carry the machine's commit and page-in readings", () => {
+    const strain = {
+      commit_used_bytes: 80 * 1_024 ** 3,
+      commit_limit_bytes: 100 * 1_024 ** 3,
+      page_input_pages_per_second: 42,
+    };
+    const result = sampleNativeResources(
+      "unused",
+      undefined,
+      options({
+        platform: "win32",
+        hostCollector: () => ({
+          ...parseWindowsResourceOutput(windowsFixture(), 1_000),
+          memory_strain: strain,
+        }),
+      }),
+    );
+    expect(result.snapshot.memory_strain).toEqual(strain);
+    expect(sampleNativeResources("unused", undefined, options()).snapshot.memory_strain).toBe(
+      undefined,
+    );
+  });
 });
 
 describe("macOS native parsers", () => {
@@ -302,6 +325,7 @@ describe("Windows host resources for WSL", () => {
       commit_used_bytes: 94_371_840 * 1_024,
       commit_limit_bytes: 104_857_600 * 1_024,
       page_input_pages_per_second: null,
+      commit_limit_can_grow: null,
     });
     const at = Date.parse("2026-09-03T06:00:00.000Z");
     expect(
@@ -320,6 +344,20 @@ describe("Windows host resources for WSL", () => {
     ).toBeNull();
   });
 
+  test("works out whether the paging file can still raise the commit limit", () => {
+    const grow = (overrides: Record<string, unknown>) =>
+      parseWindowsResourceOutput(windowsFixture(overrides), 1_000).memory_strain
+        ?.commit_limit_can_grow;
+    // The fixture's one paging file has 4,096 MiB allocated.
+    expect(grow({ pagefile_auto: true })).toBe(true);
+    expect(grow({ pagefile_auto: false, pagefile_settings: [{ MaximumSize: 0 }] })).toBe(true);
+    expect(grow({ pagefile_auto: false, pagefile_settings: [{ MaximumSize: 8_192 }] })).toBe(true);
+    expect(grow({ pagefile_auto: false, pagefile_settings: [{ MaximumSize: 4_096 }] })).toBe(false);
+    expect(grow({ pagefile_auto: false, pagefile_settings: [], pagefiles: [] })).toBe(false);
+    expect(grow({ pagefile_auto: false })).toBeNull();
+    expect(grow({})).toBeNull();
+  });
+
   test("a missing commit or page-in counter leaves that strain signal unknown", () => {
     const result = parseWindowsResourceOutput(windowsFixture({ commit_free_kib: "9" }), 1_000);
     expect(result.state).toBe("supported");
@@ -327,6 +365,7 @@ describe("Windows host resources for WSL", () => {
       commit_used_bytes: null,
       commit_limit_bytes: null,
       page_input_pages_per_second: null,
+      commit_limit_can_grow: null,
     });
   });
 

@@ -637,7 +637,11 @@ describe("pressure assessment: scope", () => {
     hostMemoryPercent: number,
     hostSwapUsedBytes: number,
     sampledAt = AT(-1_000),
-    strain?: { commitUsedPercent: number | null; pageInputPerSecond: number | null },
+    strain?: {
+      commitUsedPercent: number | null;
+      pageInputPerSecond: number | null;
+      canGrow?: boolean | null;
+    },
   ) {
     const machine = snapshot();
     machine.namespace = "wsl";
@@ -667,6 +671,7 @@ describe("pressure assessment: scope", () => {
                   : Math.round((100 * GIB * strain.commitUsedPercent) / 100),
               commit_limit_bytes: strain.commitUsedPercent === null ? null : 100 * GIB,
               page_input_pages_per_second: strain.pageInputPerSecond,
+              commit_limit_can_grow: strain.canGrow === undefined ? false : strain.canGrow,
             },
           }
         : {}),
@@ -699,13 +704,15 @@ describe("pressure assessment: scope", () => {
   });
 
   // Recorded on a 64 GiB workstation: under a tenth of host memory available
-  // with a large VM and browsers open, commit at 87 percent of its limit, 83
-  // page-ins a second, no guest stall, and a kill total days old. Nothing was
-  // waiting on memory, and work was being held back anyway.
+  // with a large VM and browsers open, commit past 90 percent of a limit a
+  // system-managed paging file could still raise, a few page-ins a second, no
+  // guest stall, and a kill total days old. Nothing was waiting on memory, and
+  // work was being held back anyway.
   test("low host availability with no strain is capacity, not contention", () => {
     const machine = withHost(91.1, 2 * GIB, AT(-1_000), {
-      commitUsedPercent: 86.9,
-      pageInputPerSecond: 83,
+      commitUsedPercent: 90.2,
+      pageInputPerSecond: 2,
+      canGrow: true,
     });
     machine.machine.swap_used_bytes = Math.round(8 * GIB * 0.4);
     machine.oom = {
@@ -722,7 +729,7 @@ describe("pressure assessment: scope", () => {
     expect(codes(last)).not.toContain("host_memory_pressure");
     expect(last.summary).toContain("shows no contention evidence");
     expect(last.summary).toContain(
-      "The Windows host has 8.9 percent of its memory available, but commit is at 86.9 percent of its limit and 83 pages are read back from disk each second, both below their thresholds, so this is capacity in use, not contention",
+      "The Windows host has 8.9 percent of its memory available, but commit is at 90.2 percent of a limit the paging file can still raise and 2 pages are read back from disk each second, which is not strain, so this is capacity in use, not contention",
     );
   });
 
@@ -730,7 +737,7 @@ describe("pressure assessment: scope", () => {
     const states = series(withHost(95, 0), 5);
     expect(states.map((assessment) => assessment.state)).toEqual(Array(5).fill("normal"));
     expect(states.at(-1)!.summary).toContain(
-      "No host strain signal is measurable, and available memory alone does not hold back work.",
+      "No memory strain signal is measurable, and available memory alone does not hold back work.",
     );
   });
 
@@ -765,6 +772,19 @@ describe("pressure assessment: scope", () => {
     expect(states.map((assessment) => assessment.state)).toEqual(Array(4).fill("normal"));
   });
 
+  test("commit near a limit the paging file can raise is not strain; unknown growth still counts", () => {
+    const growable = series(
+      withHost(95, 0, AT(-1_000), { commitUsedPercent: 97, pageInputPerSecond: 10, canGrow: true }),
+      4,
+    );
+    expect(growable.map((assessment) => assessment.state)).toEqual(Array(4).fill("normal"));
+    const unknown = series(
+      withHost(95, 0, AT(-1_000), { commitUsedPercent: 97, pageInputPerSecond: 10, canGrow: null }),
+      3,
+    );
+    expect(unknown.at(-1)!.state).toBe("elevated");
+  });
+
   test("a host under pressure never masks a critical guest", () => {
     const machine = withHost(96, 15.5 * GIB);
     machine.pressure!.memory_full = { avg10: 95, avg60: 80, avg300: 30 };
@@ -785,6 +805,68 @@ describe("pressure assessment: scope", () => {
       state: "unavailable",
       reason_code: "host_sample_stale",
     });
+  });
+
+  /** A native Windows snapshot: no PSI, kill counter, or vmstat, only machine capacity. */
+  function nativeWindows(
+    availablePercent: number,
+    strain?: { commitUsedPercent: number; pageInputPerSecond: number; canGrow?: boolean },
+  ): ResourceSnapshot {
+    const machine = snapshot({
+      platform: "win32",
+      support: { state: "partial", sampler: "win32" },
+      pressure: undefined,
+      oom: undefined,
+      vmstat: undefined,
+      io: undefined,
+    });
+    machine.machine.memory_total_bytes = 64 * GIB;
+    machine.machine.memory_available_bytes = Math.round((64 * GIB * availablePercent) / 100);
+    machine.machine.memory_used_bytes = 64 * GIB - machine.machine.memory_available_bytes;
+    machine.machine.memory_percent = 100 - availablePercent;
+    machine.machine.swap_total_bytes = 16 * GIB;
+    machine.machine.swap_used_bytes = 2 * GIB;
+    if (strain)
+      machine.memory_strain = {
+        commit_used_bytes: Math.round((100 * GIB * strain.commitUsedPercent) / 100),
+        commit_limit_bytes: 100 * GIB,
+        page_input_pages_per_second: strain.pageInputPerSecond,
+        commit_limit_can_grow: strain.canGrow === undefined ? false : strain.canGrow,
+      };
+    return machine;
+  }
+
+  test("native Windows with low availability and no strain stays normal and says why", () => {
+    const states = series(
+      nativeWindows(8.9, { commitUsedPercent: 86.9, pageInputPerSecond: 83 }),
+      6,
+    );
+    expect(states.map((assessment) => assessment.state)).toEqual(Array(6).fill("normal"));
+    expect(codes(states.at(-1)!)).not.toContain("memory_available_low");
+    expect(states.at(-1)!.summary).toContain(
+      "This machine has 8.9 percent of its memory available, but commit is at 86.9 percent of its limit and 83 pages are read back from disk each second, which is not strain, so this is capacity in use, not contention",
+    );
+  });
+
+  test("native Windows without strain readings does not raise on availability alone", () => {
+    const states = series(nativeWindows(6), 5);
+    expect(states.map((assessment) => assessment.state)).toEqual(Array(5).fill("normal"));
+    expect(states.at(-1)!.summary).toContain("No memory strain signal is measurable");
+  });
+
+  test("native Windows with commit strain raises after the entry streak", () => {
+    const states = series(nativeWindows(6, { commitUsedPercent: 95, pageInputPerSecond: 10 }), 3);
+    expect(states.map((assessment) => assessment.state)).toEqual(["normal", "normal", "elevated"]);
+    expect(codes(states.at(-1)!)).toContain("memory_available_low");
+    expect(states.at(-1)!.summary).toContain("commit at 95 percent of its limit");
+  });
+
+  test("a Linux machine keeps its availability rule without strain readings", () => {
+    const machine = snapshot();
+    machine.machine.memory_available_bytes = Math.round(24 * GIB * 0.06);
+    const states = series(machine, 3);
+    expect(states.at(-1)!.state).toBe("elevated");
+    expect(codes(states.at(-1)!)).toContain("memory_available_low");
   });
 });
 

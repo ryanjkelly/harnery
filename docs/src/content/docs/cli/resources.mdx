@@ -84,12 +84,16 @@ produce a falsely healthy answer. In WSL the Windows host is assessed
 separately and can only raise the combined state, never mask the guest. Windows
 has no stall measure, and a host running a large VM routinely has little memory
 available while nothing waits on it, so low availability raises the host only
-beside a strain signal: commit at 90 percent of its limit or more, or at least
-1,000 pages a second read back from disk, held for three samples. Exhaustion of
-both memory and the page file is critical on its own. When the host is low on
-available memory without strain, the summary says that this is capacity in use
-and does not hold back work. A raised state's summary names the reason that set
-it.
+beside a strain signal: at least 1,000 pages a second read back from disk, or
+commit at 90 percent of its limit or more when the paging file cannot grow,
+held for three samples. A system-managed paging file, or one whose maximum is
+above its allocation, raises the commit limit before an allocation fails, so
+commit near today's limit is not strain there; when growth cannot be read,
+commit counts. Exhaustion of both memory and the page file is critical on its
+own. Native Windows judges its own memory by the same rule, because it has no
+stall measure either. When memory is low without strain, the summary says that
+this is capacity in use and does not hold back work. A raised state's summary
+names the reason that set it.
 
 Guidance is given per kind of work, because the answer differs: reads and small
 edits, CPU-heavy builds and tests, memory-heavy browser and QA captures, and

@@ -1,0 +1,53 @@
+---
+title: "ADR 0236: Windows memory strain on native hosts and growable commit"
+description: Judge native Windows memory by the host strain rule, and count commit as strain only when the paging file cannot grow.
+sidebar:
+  order: 236
+---
+
+**Date:** 2026-11-07
+**Status:** Accepted
+
+## Context
+
+[ADR 0235](/decisions/0235-host-memory-needs-a-strain-signal/) stopped low
+available memory on the Windows host behind a WSL guest from raising pressure
+on its own. Two gaps remained.
+
+A native Windows snapshot carries no host block, so its own memory was still
+judged by the Linux availability rule: under ten percent available for three
+samples raised elevated. Native Windows has no stall measure, so that rule
+fired on the same full-but-idle machine the host rule had just stopped
+flagging.
+
+The first live run of the host rule then raised elevated on commit alone. Commit
+stood at 90.2 percent of its current limit with two page-ins a second. The
+paging file was system managed, 38 GiB allocated, 4 percent used, on a volume
+with 600 GiB free. A system-managed paging file grows before an allocation
+fails, so the current limit was never the wall the rule treated it as. Most
+Windows machines manage the paging file automatically.
+
+## Decision
+
+The native Windows sampler copies the host probe's commit and page-in readings
+onto its snapshot as `memory_strain`. For a native Windows snapshot, the
+machine's availability dimension uses the host rule: low availability raises
+elevated only beside a strain signal held for three samples, exhaustion of
+memory and paging file stays critical on one sample, and low availability
+without strain is stated as capacity. Linux and WSL guests keep their rule.
+
+The probe reads whether the paging file is system managed and each file's
+maximum size. Commit can grow when management is automatic, a file's maximum
+is system managed, or the maximums exceed the allocation. Commit at 90 percent
+of its limit counts as strain only when it cannot grow. When growth cannot be
+read, commit still counts, so a missing reading never hides exhaustion. The
+hard page-in rate is unchanged and is now the signal that usually decides.
+
+## Result
+
+The machine that prompted both decisions reads normal through native and WSL
+sessions, and the summary says commit is near a limit the paging file can still
+raise. A machine with a fixed paging file near its commit limit, or one paging
+hard, still raises the state. The policy version stays 3: no threshold changed,
+only which readings a threshold applies to, and the replay digest covers the
+thresholds.

@@ -4,6 +4,7 @@ import * as os from "node:os";
 import {
   RESOURCE_SNAPSHOT_SCHEMA_VERSION,
   type ResourceDiskSample,
+  type ResourceHostMemoryStrain,
   type ResourceHostSample,
   type ResourceMachineSample,
   type ResourceSampleResult,
@@ -39,6 +40,11 @@ try { $disks = @(Get-CimInstance Win32_LogicalDisk -Filter 'DriveType = 3' -Prop
 # The raw counter is locale-independent. Its provider can take seconds to load
 # cold, so it gets its own short timeout and never costs the rest of the sample.
 try { $pagesInput = (Get-CimInstance Win32_PerfRawData_PerfOS_Memory -Property PagesInputPersec -OperationTimeoutSec 2).PagesInputPersec } catch {}
+# Whether the commit limit can still rise: a system-managed paging file grows
+# before allocations fail, so commit near today's limit is not exhaustion.
+$pagefileAuto = $null; $pagefileSettings = $null
+try { $pagefileAuto = [bool](Get-CimInstance Win32_ComputerSystem -Property AutomaticManagedPagefile).AutomaticManagedPagefile } catch {}
+try { $pagefileSettings = @(Get-CimInstance Win32_PageFileSetting -Property MaximumSize | Select-Object MaximumSize) } catch {}
 [pscustomobject]@{
   sampled_at = [DateTime]::UtcNow.ToString('o')
   memory_total_kib = $osInfo.TotalVisibleMemorySize
@@ -46,6 +52,8 @@ try { $pagesInput = (Get-CimInstance Win32_PerfRawData_PerfOS_Memory -Property P
   commit_limit_kib = $osInfo.TotalVirtualMemorySize
   commit_free_kib = $osInfo.FreeVirtualMemory
   pages_input_total = $pagesInput
+  pagefile_auto = $pagefileAuto
+  pagefile_settings = $pagefileSettings
   process_count = $osInfo.NumberOfProcesses
   processors = $processors
   pagefiles = $pagefiles
@@ -104,6 +112,7 @@ export function sampleNativeResources(
   const total = positive(nativeOs.totalmem());
   let swap: { total: number; used: number } | null = null;
   let processCount: number | null = null;
+  let memoryStrain: ResourceHostMemoryStrain | undefined;
   if (platform === "darwin") {
     const vm = parseMacVmStat(readCommand(command, "vm_stat", []) ?? "");
     if (vm) {
@@ -126,6 +135,7 @@ export function sampleNativeResources(
           ? { total: host.machine.swap_total_bytes, used: host.machine.swap_used_bytes }
           : null;
       processCount = host.machine.process_count;
+      memoryStrain = host.memory_strain;
     } else {
       reasons.push(host.reason ?? "windows_auxiliary_metrics_unavailable");
     }
@@ -161,6 +171,7 @@ export function sampleNativeResources(
         swap_used_bytes: swap?.used ?? null,
         process_count: processCount,
       },
+      ...(memoryStrain ? { memory_strain: memoryStrain } : {}),
       groups: [],
       processes: [],
       visible_process_count: 0,
@@ -434,6 +445,7 @@ function parseWindowsHost(
     commit_used_bytes: commitValid ? (commitLimitKiB - commitFreeKiB) * 1_024 : null,
     commit_limit_bytes: commitValid ? commitLimitKiB * 1_024 : null,
     page_input_pages_per_second: pagingRate(previousPaging, paging),
+    commit_limit_can_grow: commitLimitCanGrow(row),
   };
   const processors = records(row.processors);
   let logical = 0;
@@ -492,6 +504,28 @@ function parseWindowsHost(
     },
     paging,
   };
+}
+
+/**
+ * A system-managed paging file, or a file whose maximum is system managed (0)
+ * or above its current allocation, can still grow, so the commit limit is not
+ * yet a wall. With no paging file and no automatic management it cannot.
+ */
+function commitLimitCanGrow(row: Record<string, unknown>): boolean | null {
+  if (row.pagefile_auto === true) return true;
+  if (row.pagefile_auto !== false) return null;
+  const settings = records(row.pagefile_settings);
+  const usage = records(row.pagefiles);
+  if (settings === null || usage === null) return null;
+  const maximums = settings.map((setting) => nonnegative(setting.MaximumSize));
+  if (maximums.some((maximum) => maximum === null)) return null;
+  if (maximums.some((maximum) => maximum === 0)) return true;
+  const maximumMiB = (maximums as number[]).reduce((sum, value) => sum + value, 0);
+  const allocatedMiB = usage.reduce(
+    (sum, file) => sum + (nonnegative(file.AllocatedBaseSize) ?? 0),
+    0,
+  );
+  return maximumMiB > allocatedMiB;
 }
 
 /**
