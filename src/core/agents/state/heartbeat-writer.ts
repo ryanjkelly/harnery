@@ -14,17 +14,10 @@
  * (the file IS the heartbeat). No mutations happen elsewhere.
  */
 
-import {
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  renameSync,
-  unlinkSync,
-  writeFileSync,
-} from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync } from "node:fs";
+import { join } from "node:path";
 import { canonicalClaimPath } from "../claim-path.ts";
+import { atomicWrite } from "./atomic-write.ts";
 import { type Heartbeat, heartbeatPath, readHeartbeat } from "./heartbeat-reader.ts";
 import type { TaskState } from "./session-state.ts";
 
@@ -32,13 +25,6 @@ export { type Heartbeat, readHeartbeat } from "./heartbeat-reader.ts";
 
 function nowIsoSeconds(): string {
   return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
-}
-
-function atomicWrite(path: string, content: string): void {
-  mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.tmp.${process.pid}`;
-  writeFileSync(tmp, content, "utf8");
-  renameSync(tmp, path);
 }
 
 /** Persist operator-facing lifecycle prose in the generation-bound cache only. */

@@ -34,15 +34,9 @@
  * now probes forward past any name a fresh heartbeat still holds.
  */
 
-import {
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  renameSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { atomicWrite } from "./atomic-write.ts";
 
 /** All 260 names. */
 export const COORD_NAMES = [
@@ -345,13 +339,6 @@ export interface NameHistoryRow {
   /** Fork detection has run against this instance's transcript; the tool-path
    * heal skips instances carrying it so the scan runs once per instance. */
   fork_checked?: true;
-}
-
-function atomicWrite(path: string, content: string): void {
-  mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.tmp.${process.pid}`;
-  writeFileSync(tmp, content, "utf8");
-  renameSync(tmp, path);
 }
 
 function counterPath(coordRoot: string): string {

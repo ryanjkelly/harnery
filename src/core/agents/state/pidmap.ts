@@ -14,17 +14,10 @@
  * Atomic temp+rename. Idempotent: re-writing the same row is a no-op.
  */
 
-import {
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  renameSync,
-  unlinkSync,
-  writeFileSync,
-} from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, readdirSync, readFileSync, unlinkSync } from "node:fs";
+import { join } from "node:path";
 import { processAlive } from "../../../lib/process-alive.ts";
+import { atomicWrite } from "./atomic-write.ts";
 import { processStartToken, verifyProcessGeneration } from "./proc-start.ts";
 
 /**
@@ -61,13 +54,6 @@ export function parsePidmapRow(row: string): {
 function rowStillNamesItsProcess(pid: number, startToken: string | undefined): boolean {
   if (!processAlive(pid)) return false;
   return verifyProcessGeneration(pid, startToken) !== "different";
-}
-
-function atomicWrite(path: string, content: string): void {
-  mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.tmp.${process.pid}`;
-  writeFileSync(tmp, content, "utf8");
-  renameSync(tmp, path);
 }
 
 /**
