@@ -168,7 +168,7 @@ export function codexSummary(x: PermissionsReport["codex"]): ToolSummary {
   const noSandbox = x.sandboxMode === "danger-full-access";
   if (!x.approvalPolicy && !x.sandboxMode) {
     return {
-      level: "Codex default",
+      level: "Default",
       tone: "neutral",
       sentence: "Uses Codex's built-in defaults for when to ask and what it may change.",
       raw,
@@ -226,12 +226,12 @@ export function cursorSummary(c: PermissionsReport["cursor"]): ToolSummary {
     return {
       level: "Asks first",
       tone: "neutral",
-      sentence: `Runs its ${count(c.effective.allow.length, "allowed command")} and asks about the rest.`,
+      sentence: `Runs ${c.effective.allow.length === 1 ? "the one command" : `the ${c.effective.allow.length} commands`} on its allowed list and asks about the rest.`,
       raw,
     };
   }
   return {
-    level: mode ?? "Cursor default",
+    level: mode ?? "Default",
     tone: "neutral",
     sentence: mode
       ? (MEANINGS.cursorApproval[mode] ?? "")

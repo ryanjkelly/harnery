@@ -65,7 +65,7 @@ describe("tool summaries", () => {
 
   test("Codex: amber for any wide-open value, plain default when unset", () => {
     const base = { available: true, hooks: [] };
-    expect(codexSummary(base).level).toBe("Codex default");
+    expect(codexSummary(base).level).toBe("Default");
     expect(
       codexSummary({ ...base, approvalPolicy: "never", sandboxMode: "danger-full-access" }),
     ).toMatchObject({ level: "No limits", tone: "warn" });
