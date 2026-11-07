@@ -269,11 +269,10 @@ function FilterBar(props: {
 /* ── thumbnail ───────────────────────────────────────────────────────────── */
 
 const ROLE_BADGE: Record<"viewed" | "produced", string> = {
-  // Higher opacity + backdrop-blur + ring so chips stay readable over busy
-  // thumbnails while keeping a translucent feel.
-  produced:
-    "bg-emerald-600/45 text-emerald-50 ring-1 ring-emerald-300/40 backdrop-blur-md shadow-sm",
-  viewed: "bg-sky-600/45 text-sky-50 ring-1 ring-sky-300/40 backdrop-blur-md shadow-sm",
+  // Near-solid fills so the white label stays readable over any thumbnail,
+  // light or dark, in either theme.
+  produced: "bg-emerald-700/90 text-white ring-1 ring-black/10 backdrop-blur-md shadow-sm",
+  viewed: "bg-sky-700/90 text-white ring-1 ring-black/10 backdrop-blur-md shadow-sm",
 };
 
 function RoleBadge({ role }: { role: "viewed" | "produced" }) {
