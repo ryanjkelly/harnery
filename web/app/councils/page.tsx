@@ -7,6 +7,7 @@ import { EmptyState } from "@/components/layout/EmptyState";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { PageShell } from "@/components/layout/PageShell";
 import { Section } from "@/components/layout/Section";
+import { hostInfo } from "@/lib/config";
 import type { CouncilSummary } from "@/lib/coord-reader";
 import { readDashboard } from "@/lib/dashboard-reader";
 
@@ -76,7 +77,7 @@ function CouncilSection({
           </Link>{" "}
           (web member-picker) or{" "}
           <code className="font-mono text-xs">
-            harn agents council create &quot;...&quot; --member A --member B --member C
+            {`${hostInfo().binName} council create "..." --member A --member B --member C`}
           </code>
           .
         </EmptyState>

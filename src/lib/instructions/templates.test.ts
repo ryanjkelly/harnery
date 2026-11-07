@@ -96,7 +96,7 @@ describe("renderInstructionsBlock", () => {
     expect(block).not.toContain("`harn-council` skill");
     expect(block).not.toContain("`harn-team` skill");
     expect(block).toContain("acme decision --help");
-    expect(block).toContain("acme agents council --help");
+    expect(block).toContain("acme council --help");
     expect(block).toContain("acme agents status --end-turn --end-session");
     expect(block).toContain("acme governor --help");
   });

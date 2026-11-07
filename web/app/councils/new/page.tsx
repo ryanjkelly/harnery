@@ -12,7 +12,7 @@ const STALE_AGE_SECONDS = 5 * 60;
 /**
  * Server-rendered new-council page. Loads the current agent registry from
  * the authoritative V3 coordination projection and hands it to the client form. Submission goes
- * to POST /api/councils which shells through to `harn agents council create`.
+ * to POST /api/councils which shells through to `harn council create`.
  *
  * Preselect via `?objective=<encoded>`: the /council skill's create mode
  * emits this URL with the operator's objective baked in.
@@ -74,9 +74,9 @@ export default async function NewCouncilPage({
         description={
           <>
             Pick members + steward + (optional) target doc. Submitting creates the council via{" "}
-            <code className="font-mono text-xs">harn agents council create</code> and routes you to
-            its detail page. Members get pinged via their journals if currently active; others see
-            the invite on next SessionStart.
+            <code className="font-mono text-xs">harn council create</code> and routes you to its
+            detail page. Members get pinged via their journals if currently active; others see the
+            invite on next SessionStart.
           </>
         }
       />

@@ -5,6 +5,7 @@ import { useState } from "react";
 
 import { AgentChip } from "@/components/AgentChip";
 import { Attention } from "@/components/Attention";
+import { useBinName } from "@/components/HostInfoProvider";
 import { Button } from "@/components/ui/button";
 import { councilStewardKickoffAttentionRequest } from "@/lib/council-attention";
 import { NO_DATA } from "@/lib/format/no-data";
@@ -39,6 +40,7 @@ export function WaitingOnSteward({
    */
   closeRecommended?: boolean;
 }) {
+  const binName = useBinName();
   const kickoff = `Draft round ${currentRound} routing prompts for council \`${councilId}\`.`;
   const [copied, setCopied] = useState(false);
   const onCopy = async () => {
@@ -77,7 +79,7 @@ export function WaitingOnSteward({
         )}
         ) drafts one prompt per member via{" "}
         <code className="font-mono text-[11px]">
-          harn agents council prompt &lt;council-id&gt; &lt;member&gt; --message …
+          {`${binName} council prompt <council-id> <member> --message …`}
         </code>
         . They&apos;ll appear here as the steward writes them.
       </div>

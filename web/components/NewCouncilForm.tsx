@@ -24,7 +24,7 @@ export type AgentRegistryRow = {
  * radio for steward. The convener (created_by) defaults to the steward; we
  * don't surface it separately to keep the form focused.
  *
- * Submits to POST /api/councils which shells to `harn agents council create`.
+ * Submits to POST /api/councils which shells to `harn council create`.
  * Success routes the operator to the council detail page.
  */
 export function NewCouncilForm({

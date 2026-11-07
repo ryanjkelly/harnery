@@ -43,7 +43,7 @@ export interface CouncilManifest {
    * one-time act of creation; the steward is whoever drafts + maintains the
    * per-round prompts that route operator → contributor each round. Defaults
    * to `created_by` when omitted (set at create-time via --steward, or
-   * retrofitted via direct manifest edit). Read by `agents council prompt`
+   * retrofitted via direct manifest edit). Read by `council prompt`
    * to enforce write authority.
    *
    * Display name (denormalized). Canonical FK is `steward_id`.
@@ -182,7 +182,7 @@ export function readManifest(councilId: string): CouncilManifest | null {
 
 /** Read an archived manifest by id from `.harnery/councils/archive/<id>.json`.
  * Symmetric to readManifest() but scoped to the archive dir, used by
- * `agents council unarchive` to load an archived council that is
+ * `council unarchive` to load an archived council that is
  * (by definition) not in the active councils dir. */
 export function readArchivedManifest(councilId: string): CouncilManifest | null {
   const archive = councilsArchiveDir();
@@ -250,7 +250,7 @@ const KNOWN_AGENT_STALE_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
  * Active V3 generations + recently-archived journals, deduped by name.
- * Used by `agents council set-steward` to refuse arbitrary names;
+ * Used by `council set-steward` to refuse arbitrary names;
  * pass `--allow-unknown` to bypass when bootstrapping a new agent.
  */
 export function listKnownAgents(): KnownAgent[] {
@@ -356,7 +356,7 @@ export function moveToArchive(councilId: string): void {
  * archive/ to the active councils dir. Idempotent: a missing archive path is
  * a no-op; an existing active path is left untouched and the archived copy
  * is dropped (mirrors moveToArchive's clobber-avoidance rule). Used by
- * `agents council unarchive` for testing the archive flow and as an undo
+ * `council unarchive` for testing the archive flow and as an undo
  * escape hatch.
  */
 export function moveFromArchive(councilId: string): void {
@@ -468,7 +468,7 @@ export function buildInviteMarkdown(manifest: CouncilManifest): string {
   lines.push("");
   const bin = resolveBinName();
   lines.push(
-    `1. Read the objective + target doc (if any).\n2. Run \`${bin} agents council show ${manifest.council_id}\` for full state.\n3. Contribute your round-${manifest.current_round} take with:\n\n       ${bin} agents council contribute ${manifest.council_id} \\\n         --message "<your take>"\n       # or --file /path/to/written/feedback.md\n\n4. After all members contribute, ${manifest.created_by} (or auto-advance) opens round ${manifest.current_round + 1}.`,
+    `1. Read the objective + target doc (if any).\n2. Run \`${bin} council show ${manifest.council_id}\` for full state.\n3. Contribute your round-${manifest.current_round} take with:\n\n       ${bin} council contribute ${manifest.council_id} \\\n         --message "<your take>"\n       # or --file /path/to/written/feedback.md\n\n4. After all members contribute, ${manifest.created_by} (or auto-advance) opens round ${manifest.current_round + 1}.`,
   );
   lines.push("");
   return lines.join("\n");
@@ -633,8 +633,8 @@ export function buildSubmitFooter(councilId: string): string {
     "**⚠ To record your contribution you MUST run the command below; a reply in chat is NOT counted:**",
     "",
     "```bash",
-    `${bin} agents council contribute ${councilId} --message "<your take, end with the status tag>"`,
-    `# longer write-up? ${bin} agents council contribute ${councilId} --file <path>`,
+    `${bin} council contribute ${councilId} --message "<your take, end with the status tag>"`,
+    `# longer write-up? ${bin} council contribute ${councilId} --file <path>`,
     "```",
     "",
     '_(Or invoke the `council` skill in your adapter: `/council contribute` in Claude Code, `$council` / "use the council skill" in Codex/Cursor, for the same flow with routing guards.)_',

@@ -480,9 +480,9 @@ export function formatPendingCouncils(coordRoot: string, agentName: string): str
   if (pending.length === 1) {
     return (
       `Council waiting on your input: \`${pending[0]}\`. ` +
-      `Run \`${bin} agents council show ${pending[0]}\` for the brief and ` +
-      `\`${bin} agents council contribute ${pending[0]} --message "<your take>"\` to weigh in.`
+      `Run \`${bin} council show ${pending[0]}\` for the brief and ` +
+      `\`${bin} council contribute ${pending[0]} --message "<your take>"\` to weigh in.`
     );
   }
-  return `Councils waiting on your input (${pending.length} open): ${list}. Run \`${bin} agents council list --mine\` to see all of them, then \`${bin} agents council show <id>\` for any brief.`;
+  return `Councils waiting on your input (${pending.length} open): ${list}. Run \`${bin} council list --mine\` to see all of them, then \`${bin} council show <id>\` for any brief.`;
 }

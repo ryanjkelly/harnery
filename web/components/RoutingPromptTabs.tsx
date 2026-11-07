@@ -378,7 +378,7 @@ function StewardDetail({
             <p>
               Still needed{currentRound ? ` for round ${currentRound}` : ""}. Ask them to run:{" "}
               <code className="font-mono text-[11px] rounded bg-sky-500/10 px-1.5 py-0.5 text-sky-200/90 break-all">
-                {`${binName} agents council contribute ${councilId} --file <their-take>.md`}
+                {`${binName} council contribute ${councilId} --file <their-take>.md`}
               </code>
             </p>
           )

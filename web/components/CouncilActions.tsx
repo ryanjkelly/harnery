@@ -6,6 +6,7 @@ import { useEffect, useState, useTransition } from "react";
 
 import { AgentChip } from "@/components/AgentChip";
 import { COUNCIL_ACTION_EVENT, type CouncilActionDetail } from "@/components/CouncilActionTrigger";
+import { useBinName } from "@/components/HostInfoProvider";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -73,6 +74,7 @@ export function CouncilActions({
   closeHandoffDone: boolean;
   knownAgents: KnownAgent[];
 }) {
+  const binName = useBinName();
   const router = useRouter();
   const [open, setOpen] = useState<Action>(null);
   const [busy, startTransition] = useTransition();
@@ -197,8 +199,8 @@ export function CouncilActions({
                 </>
               ) : null}{" "}
               drafts the round-{currentRound + 1} routing prompts via{" "}
-              <code className="font-mono text-[11px]">harn agents council prompt</code>. The Routing
-              prompts card below will sit empty until they land.
+              <code className="font-mono text-[11px]">{`${binName} council prompt`}</code>. The
+              Routing prompts card below will sit empty until they land.
             </div>
           </div>
         )}
@@ -392,8 +394,8 @@ export function CouncilActions({
                       {pending.length === 1 ? "" : "s"}:
                     </strong>{" "}
                     <code className="font-mono">{pending.join(", ")}</code>. Advance with --force
-                    will drop {pending.length === 1 ? "this member" : "these members"}{" "}
-                    from THIS round&apos;s transcript; they can rejoin the next round.
+                    will drop {pending.length === 1 ? "this member" : "these members"} from THIS
+                    round&apos;s transcript; they can rejoin the next round.
                   </span>
                 )}
                 {hasPending && (

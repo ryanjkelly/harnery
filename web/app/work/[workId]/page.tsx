@@ -8,6 +8,7 @@ import { Eyebrow, Section, SectionHeader } from "@/components/layout/Section";
 import { Badge } from "@/components/ui/badge";
 import { WorkStateBadge } from "@/components/WorkStateBadge";
 import { cn } from "@/lib/cn";
+import { hostInfo } from "@/lib/config";
 import { coordRoot } from "@/lib/coord-reader";
 import { TONE } from "@/lib/tone";
 import { readDurableWorkItem } from "@/lib/work-reader";
@@ -83,7 +84,7 @@ export default async function WorkItemPage({ params }: PageProps) {
           <SectionHeader className="mb-0" title="Approval" />
           <code className="mt-2 block break-all text-xs">{projection.approval_id}</code>
           <code className="mt-1 block break-all text-xs">
-            harn workflow approvals show {projection.approval_id}
+            {`${hostInfo().binName} approval show ${projection.approval_id}`}
           </code>
         </section>
       ) : null}

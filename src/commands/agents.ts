@@ -2742,7 +2742,7 @@ function runStatus(opts: {
   if (pendingCouncils.length > 0) {
     // Slot the council line right before `time` so it stays in the "what's
     // active for me" cluster of rows. Show the first ID + count; full list
-    // available via `harn agents council list --mine`.
+    // available via `harn council list --mine`.
     const idx = rows.findIndex((r) => r[0] === "time");
     const summary =
       pendingCouncils.length === 1
@@ -5934,7 +5934,7 @@ function runCouncilCreate(
         "handoff",
         `from ${createdBy} (council create): you're in council \`${councilId}\`; ` +
           `objective: ${trimmedObjective.slice(0, 140)}${trimmedObjective.length > 140 ? "…" : ""}. ` +
-          `Run \`${resolveBinName()} agents council show ${councilId}\` for context.`,
+          `Run \`${resolveBinName()} council show ${councilId}\` for context.`,
       );
       pingedMembers.push(memberName);
     } catch {
@@ -5963,7 +5963,7 @@ function runCouncilCreate(
   if (!opts.json) {
     emit.text(
       `council ${councilId} created: round 1 open, ${members.length} member(s) (${pingedMembers.length} pinged, ${skippedMembers.length} dormant)\n` +
-        `view: ${resolveBinName()} agents council show ${councilId}\n`,
+        `view: ${resolveBinName()} council show ${councilId}\n`,
     );
   }
 }
@@ -6180,7 +6180,7 @@ function runCouncilClose(id: string, opts: { json?: boolean }): void {
   });
   if (!opts.json) {
     emit.text(
-      `council ${next.council_id} closed at ${next.closed_at}.\nmanifest kept in .harnery/councils/ (use '${resolveBinName()} agents council archive ${next.council_id}' to move it).\n\n${transcript.markdown}`,
+      `council ${next.council_id} closed at ${next.closed_at}.\nmanifest kept in .harnery/councils/ (use '${resolveBinName()} council archive ${next.council_id}' to move it).\n\n${transcript.markdown}`,
     );
   }
 }
@@ -6928,7 +6928,7 @@ function advanceCouncil(manifest: CouncilManifest, force: boolean): CouncilManif
       appendEntry(
         memberOwner,
         "handoff",
-        `from council advance (${manifest.council_id}): round ${nextRound} is now open${force ? " (advanced with --force; some round-N members dropped)" : ""}. Run '${resolveBinName()} agents council show ${manifest.council_id}' to read prior round + '${resolveBinName()} agents council contribute ${manifest.council_id}' to weigh in.`,
+        `from council advance (${manifest.council_id}): round ${nextRound} is now open${force ? " (advanced with --force; some round-N members dropped)" : ""}. Run '${resolveBinName()} council show ${manifest.council_id}' to read prior round + '${resolveBinName()} council contribute ${manifest.council_id}' to weigh in.`,
       );
     } catch {
       /* best-effort; member journal may not exist yet */
