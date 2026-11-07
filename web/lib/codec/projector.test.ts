@@ -175,9 +175,9 @@ describe("projectScene", () => {
     expect(panel.identity.task?.value).toBe("Ship the codec view");
     expect(panel.presence).toMatchObject({ value: "online", provenance: "projection" });
     expect(panel.activity).toMatchObject({ value: "working", provenance: "projection" });
-    // No task_state_updated_at and no event evidence → lifecycle unknown, not
-    // the heartbeat's compatibility default.
-    expect(panel.lifecycle.value).toBe("unknown");
+    // No task_state_updated_at and no event evidence → the documented
+    // compatibility default, marked inferred rather than declared.
+    expect(panel.lifecycle).toMatchObject({ value: "active", provenance: "inferred" });
     expect(panel.context_band).toMatchObject({ value: "unknown", provenance: "unknown" });
     expect(panel.context_usage).toBeUndefined();
     expect(panel.runtime).toMatchObject({
@@ -472,7 +472,7 @@ describe("projectScene", () => {
     expect(scene.panels).toHaveLength(0);
   });
 
-  test("lifecycle prefers the stamped projection, then event evidence, then unknown", () => {
+  test("lifecycle prefers the stamped projection, then event evidence, then the inferred default", () => {
     const stamped = projectScene({
       snapshot: snapshot([
         hb({ task_state: "blocked", task_state_updated_at: "2026-08-16T10:01:00.000Z" }),

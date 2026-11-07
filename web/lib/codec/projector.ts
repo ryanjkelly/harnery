@@ -506,7 +506,10 @@ function lifecycle(hb: Heartbeat, ev: InstanceEvidence | undefined): Presented<C
       [ev.lastLifecycleChanged.event_id],
     );
   }
-  return present("unknown", "unknown", "low", hb.last_heartbeat);
+  // No declaration and no event: the documented compatibility default is
+  // `active` (concepts/session-state), the same value the heartbeat shows.
+  // Mark it inferred so the card still says nobody declared it.
+  return present("active", "inferred", "medium", hb.started_at ?? hb.last_heartbeat);
 }
 
 function taskLabel(hb: Heartbeat, ev: InstanceEvidence | undefined): Presented<string> | undefined {
