@@ -12,11 +12,14 @@ import {
   __resetCoordRootCache,
   __resetNameHistoryCache,
   classifyAgentLedgerStateV3,
+  coordRootFound,
+  fileServingRoot,
   historyNameForInstance,
   readAgents,
   readCachedAgentsForCodec,
   readEvents,
 } from "./coord-reader.ts";
+import { resolveDir } from "./file-tree.ts";
 
 const roots: string[] = [];
 const previousRoot = process.env.HARNERY_COORD_ROOT;
@@ -160,3 +163,33 @@ function freshRoot(): string {
   mkdirSync(join(root, ".harnery"), { recursive: true });
   return root;
 }
+
+describe("coord root discovery", () => {
+  test("file serving refuses when no .harnery directory exists", () => {
+    const outside = mkdtempSync(join(tmpdir(), "coord-root-none-"));
+    roots.push(outside);
+    const cwd = process.cwd();
+    delete process.env.HARNERY_COORD_ROOT;
+    process.chdir(outside);
+    try {
+      __resetCoordRootCache();
+      expect(coordRootFound()).toBe(false);
+      expect(() => fileServingRoot()).toThrow(/no \.harnery directory/);
+      const dir = resolveDir("");
+      expect(dir.ok).toBe(false);
+      if (!dir.ok) expect(dir.code).toBe("config_error");
+    } finally {
+      process.chdir(cwd);
+    }
+  });
+
+  test("an env root with .harnery is found", () => {
+    const root = mkdtempSync(join(tmpdir(), "coord-root-env-"));
+    roots.push(root);
+    mkdirSync(join(root, ".harnery"));
+    process.env.HARNERY_COORD_ROOT = root;
+    __resetCoordRootCache();
+    expect(coordRootFound()).toBe(true);
+    expect(fileServingRoot()).toBe(root);
+  });
+});

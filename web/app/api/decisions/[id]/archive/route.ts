@@ -19,7 +19,7 @@ export async function POST(
   const result = await archiveDecision(id, body.graduatedTo);
   if (!result.ok) {
     return Response.json(
-      { error: "archive_failed", stderr: result.stderr, exit_code: result.exit_code },
+      { error: "archive_failed", stderr: result.stderr, exit_code: result.exitCode },
       { status: 500 },
     );
   }

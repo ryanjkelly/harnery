@@ -13,7 +13,7 @@ export async function POST(
   const result = await archiveCouncil(id);
   if (!result.ok) {
     return Response.json(
-      { error: "archive_failed", stderr: result.stderr, exit_code: result.exit_code },
+      { error: "archive_failed", stderr: result.stderr, exit_code: result.exitCode },
       { status: 500 },
     );
   }

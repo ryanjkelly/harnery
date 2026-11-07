@@ -1,13 +1,17 @@
 /**
- * Write-side helpers for the standalone web UI. These are operator-initiated
- * mutations: release a stale claim, ping a peer, end a stuck session.
+ * Write-side helpers for the standalone web UI: operator-initiated mutations
+ * on agents and their journals.
  *
- * Direct fs writes (no flock, since they're operator-initiated and low frequency). The bash
- * coord layer's flock dance is for the agent-vs-agent race; the web UI is
- * the operator's escape hatch.
+ * - Release a claim, end a session, repair a coordination cache, and replace
+ *   a journal shell `agent-coord` (through `runHarn`), so the coordination
+ *   rules stay in the CLI.
+ * - Ping uses the shared inbox writer (`sendPeerMessage`).
+ * - Appending, editing, and deleting single journal entries are direct fs
+ *   writes through the shared journal parser, without a lock: they are
+ *   operator-initiated and low frequency, and the coord layer's locking exists
+ *   for the agent-vs-agent race.
  */
 
-import { spawn } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { isSafeInstanceId } from "harnery/core/agents";
@@ -22,46 +26,12 @@ import {
   serializeJournal,
 } from "harnery/core/journal";
 import { coordRoot } from "./coord-reader";
-import { harnChildEnv, harnCommand } from "./harn-command";
+import { type HelperResult, runHarn } from "./run-harn";
 
 export { JOURNAL_CATEGORIES, type JournalCategory };
 
-interface HelperResult {
-  ok: boolean;
-  stdout: string;
-  stderr: string;
-  exit_code: number | null;
-}
-
 function runHelper(args: string[]): Promise<HelperResult> {
-  const root = coordRoot();
-  const helper = harnCommand(root, args, { executable: "agent-coord" });
-  return new Promise((resolve) => {
-    const proc = spawn(helper.command, helper.args, {
-      cwd: root,
-      windowsHide: true,
-      env: harnChildEnv(root),
-    });
-    let stdout = "";
-    let stderr = "";
-    proc.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
-    });
-    proc.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-    proc.on("close", (code) => {
-      resolve({ ok: code === 0, stdout, stderr, exit_code: code });
-    });
-    proc.on("error", (err) => {
-      resolve({
-        ok: false,
-        stdout,
-        stderr: stderr + err.message,
-        exit_code: null,
-      });
-    });
-  });
+  return runHarn(args, { executable: "agent-coord" });
 }
 
 /** Defensive instance_id validation: owner_ids are UUIDs in practice. */
@@ -313,7 +283,7 @@ export async function releaseClaim(
       path: target,
       removed: false,
       remaining: 0,
-      error: result.stderr.trim() || `claim release exited ${result.exit_code}`,
+      error: result.stderr.trim() || `claim release exited ${result.exitCode}`,
     };
   }
   let filesTouched: string[] = [];
@@ -369,7 +339,13 @@ export function pingAgent(targetInstanceId: string, message: string): PingResult
   ensureCoordRootEnv();
   const trimmed = message.trim();
   if (!trimmed) {
-    return { ok: false, complete: false, target_instance: targetInstanceId, bytes: 0, error: "empty message" };
+    return {
+      ok: false,
+      complete: false,
+      target_instance: targetInstanceId,
+      bytes: 0,
+      error: "empty message",
+    };
   }
   try {
     const sent = sendPeerMessage({
@@ -379,11 +355,32 @@ export function pingAgent(targetInstanceId: string, message: string): PingResult
       senderName: "Operator",
       body: message,
     });
-    const routing = { complete: sent.complete, operation_id: sent.operation_id, child: sent.child,
-      parent_reference: sent.parent_reference, parent_copy: sent.parent_copy,
-      ...("ok" in sent.parent_copy && !sent.parent_copy.ok ? { partial_reason: sent.parent_copy.message } : {}) };
-    if (!sent.ok) return { ...routing, ok: false, target_instance: targetInstanceId, bytes: 0, error: sent.message };
-    return { ...routing, ok: true, target_instance: sent.target.instance_id, bytes: sent.body_bytes, state: sent.state, message_id: sent.message_id };
+    const routing = {
+      complete: sent.complete,
+      operation_id: sent.operation_id,
+      child: sent.child,
+      parent_reference: sent.parent_reference,
+      parent_copy: sent.parent_copy,
+      ...("ok" in sent.parent_copy && !sent.parent_copy.ok
+        ? { partial_reason: sent.parent_copy.message }
+        : {}),
+    };
+    if (!sent.ok)
+      return {
+        ...routing,
+        ok: false,
+        target_instance: targetInstanceId,
+        bytes: 0,
+        error: sent.message,
+      };
+    return {
+      ...routing,
+      ok: true,
+      target_instance: sent.target.instance_id,
+      bytes: sent.body_bytes,
+      state: sent.state,
+      message_id: sent.message_id,
+    };
   } catch (err) {
     return {
       ok: false,
@@ -421,7 +418,7 @@ export async function endSession(instanceId: string): Promise<EndSessionResult> 
       instance_id: instanceId,
       terminal_event_recorded: false,
       terminal_event_queued: false,
-      error: result.stderr.trim() || `session finalizer exited ${result.exit_code}`,
+      error: result.stderr.trim() || `session finalizer exited ${result.exitCode}`,
     };
   }
   try {

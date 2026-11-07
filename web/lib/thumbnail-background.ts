@@ -1,7 +1,7 @@
 import { closeSync, type FSWatcher, fstatSync, realpathSync, watch } from "node:fs";
 import { opendir } from "node:fs/promises";
 import { setImmediate as yieldTurn } from "node:timers/promises";
-import { coordRoot } from "./coord-reader";
+import { coordRoot, coordRootFound } from "./coord-reader";
 import { resolveDir } from "./file-tree";
 import { resolveFile } from "./files";
 import { thumbnailActivity } from "./thumbnail-activity";
@@ -261,6 +261,7 @@ const globalBackground = globalThis as typeof globalThis & {
 };
 export function startThumbnailBackground() {
   if (process.env.HARNERY_THUMBNAILS_PREGENERATE === "0") return;
+  if (!coordRootFound()) return; // nothing to pregenerate outside a project
   globalBackground.__harneryThumbnailBackgroundV1 ??= createThumbnailBackground({
     root: realpathSync(coordRoot()),
   });

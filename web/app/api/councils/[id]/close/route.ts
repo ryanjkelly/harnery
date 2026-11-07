@@ -13,7 +13,7 @@ export async function POST(
   const result = await closeCouncil(id);
   if (!result.ok) {
     return Response.json(
-      { error: "close_failed", stderr: result.stderr, exit_code: result.exit_code },
+      { error: "close_failed", stderr: result.stderr, exit_code: result.exitCode },
       { status: 500 },
     );
   }

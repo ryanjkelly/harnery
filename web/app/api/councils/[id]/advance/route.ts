@@ -20,7 +20,7 @@ export async function POST(
   const result = await advanceCouncil(id, force);
   if (!result.ok) {
     return Response.json(
-      { error: "advance_failed", stderr: result.stderr, exit_code: result.exit_code },
+      { error: "advance_failed", stderr: result.stderr, exit_code: result.exitCode },
       { status: 500 },
     );
   }

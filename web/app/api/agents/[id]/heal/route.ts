@@ -9,7 +9,7 @@ export async function POST(
   context: { params: Promise<{ id: string }> },
 ): Promise<Response> {
   const { id } = await context.params;
-  const instanceId = decodeURIComponent(id);
+  const instanceId = id; // Next already decoded the path segment.
   if (!safeOwnerId(instanceId)) {
     return Response.json({ error: "invalid instance_id" }, { status: 400 });
   }
@@ -31,7 +31,7 @@ export async function POST(
     return Response.json(
       {
         error: "agent-coord failed",
-        exit_code: result.exit_code,
+        exit_code: result.exitCode,
         stderr: result.stderr.trim(),
       },
       { status: 500 },

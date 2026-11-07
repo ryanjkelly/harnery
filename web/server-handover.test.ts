@@ -74,7 +74,9 @@ async function waitForPort(port: number, ms: number): Promise<string | undefined
       return await new Promise<string>((resolve, reject) => {
         const request = get(`http://127.0.0.1:${port}/hello`, { agent: false }, (response) => {
           let body = "";
-          response.on("data", (chunk) => { body += chunk; });
+          response.on("data", (chunk) => {
+            body += chunk;
+          });
           response.once("error", reject);
           response.once("end", () => resolve(`${response.headers["x-served-by"]}:${body}`));
         });
@@ -274,6 +276,39 @@ describe("web server handover preload", () => {
     expect(upgraded).toContain("101 Switching Protocols");
     // The ephemeral listener keeps working beside the public one.
     expect(await waitForPort(port, 2_000)).toBe("fixture:ok /hello");
+  });
+
+  test("keeps the public port on loopback when Next bound loopback", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "harnery-web-loopback-"));
+    roots.push(root);
+    const publicPort = await freePort();
+    const handover = path.join(root, "handover");
+    await startFixture({
+      HARNERY_WEB_PUBLIC_PORT: String(publicPort),
+      HARNERY_WEB_HANDOVER_FILE: handover,
+    });
+    writeFileSync(handover, "");
+    expect(await waitForPort(publicPort, 2_000)).toBe("fixture:ok /hello");
+    const ipv6 = await fetch(`http://[::1]:${publicPort}/hello`);
+    expect(await ipv6.text()).toBe("ok /hello");
+    const { networkInterfaces } = await import("node:os");
+    const external = Object.values(networkInterfaces())
+      .flat()
+      .find((address) => address && !address.internal && address.family === "IPv4");
+    if (!external) return; // no non-loopback interface to probe on this host
+    const { connect } = await import("node:net");
+    const reached = await new Promise<boolean>((resolve) => {
+      const socket = connect(publicPort, external.address, () => {
+        socket.destroy();
+        resolve(true);
+      });
+      socket.setTimeout(1000, () => {
+        socket.destroy();
+        resolve(false);
+      });
+      socket.once("error", () => resolve(false));
+    });
+    expect(reached).toBe(false);
   });
 
   test("stays inert without the public port and handover file", async () => {

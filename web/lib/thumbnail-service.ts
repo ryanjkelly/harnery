@@ -4,7 +4,7 @@ import { mkdtemp, open, opendir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import sharp from "sharp";
-import { coordRoot } from "./coord-reader";
+import { fileServingRoot } from "./coord-reader";
 import { fileErrorResponse } from "./file-routes";
 import { resolveDir } from "./file-tree";
 import { type ResolvedFile, type ResolveOptions, resolveFile } from "./files";
@@ -228,7 +228,7 @@ export async function serveFileThumbnail(
   const started = performance.now();
   let root: string;
   try {
-    root = realpathSync(opts.root ?? coordRoot());
+    root = realpathSync(opts.root ?? fileServingRoot());
   } catch {
     return problem("config_error", 500);
   }

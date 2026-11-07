@@ -18,7 +18,7 @@ export async function GET(
   context: { params: Promise<{ id: string }> },
 ): Promise<Response> {
   const { id } = await context.params;
-  const instanceId = decodeURIComponent(id);
+  const instanceId = id; // Next already decoded the path segment.
   if (!safeOwnerId(instanceId)) {
     return Response.json({ error: "invalid instance_id" }, { status: 400 });
   }

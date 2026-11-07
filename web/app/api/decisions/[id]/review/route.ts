@@ -22,7 +22,7 @@ export async function POST(
   const result = await reviewDecision(id, body.verdict, body.note);
   if (!result.ok) {
     return Response.json(
-      { error: "review_failed", stderr: result.stderr, exit_code: result.exit_code },
+      { error: "review_failed", stderr: result.stderr, exit_code: result.exitCode },
       { status: 500 },
     );
   }

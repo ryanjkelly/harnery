@@ -145,39 +145,6 @@ export function formatRelativeAgo(
 }
 
 /**
- * Render just the time-of-day portion in `HH:MM:SS` (24-hour) form in the
- * given `timeZone`. Optionally include milliseconds.
- *
- * Designed for dense table/log rows where a full datetime is overkill but
- * the user still needs the time to be in their detected zone, not UTC. Don't
- * use `iso.slice(11, 19)` for this; that returns UTC because ISO strings end
- * with Z, and silently misleads users in non-UTC zones.
- */
-export function formatTimeOfDay(
-  d: Date | string | null | undefined,
-  opts: { timeZone?: string; withMillis?: boolean } = {},
-): string {
-  if (d === null || d === undefined) return "";
-  const dt = typeof d === "string" ? new Date(d) : d;
-  if (Number.isNaN(dt.getTime())) return "";
-  const { timeZone = "America/Chicago", withMillis = false } = opts;
-
-  const parts = new Intl.DateTimeFormat("en-GB", {
-    timeZone,
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  }).formatToParts(dt);
-  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "00";
-  const hh = get("hour") === "24" ? "00" : get("hour");
-  const base = `${hh}:${get("minute")}:${get("second")}`;
-  if (!withMillis) return base;
-  const ms = String(dt.getMilliseconds()).padStart(3, "0");
-  return `${base}.${ms}`;
-}
-
-/**
  * Convert a Harnery changelog wall-clock timestamp ("2026-05-26 00:20 CDT")
  * into an ISO string parseable by JS `Date` + `formatDateTime`. The Plan
  * changelog uses local wall-clock with named zones; without translation,
@@ -196,9 +163,7 @@ export function isoFromChangelogTs(ts: string): string {
     PST: "-08:00",
     PDT: "-07:00",
   };
-  const m = ts.match(
-    /^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})(?::(\d{2}))?\s*([A-Z]{2,4})?\s*$/,
-  );
+  const m = ts.match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})(?::(\d{2}))?\s*([A-Z]{2,4})?\s*$/);
   if (!m) return ts; // unparseable: return as-is; <FormattedDateTime> renders the NO_DATA placeholder
   const [, y, mo, d, hh, mm, ss = "00", zone] = m;
   const offset = zone && zoneOffsets[zone] ? zoneOffsets[zone] : "+00:00";

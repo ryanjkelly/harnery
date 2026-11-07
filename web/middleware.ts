@@ -1,5 +1,11 @@
 /**
- * Host-based files origin. Requests to `harnery-files.localhost` are rewritten
+ * Two jobs:
+ *
+ * 1. Every state-changing request under `/api/*` must come from the
+ *    dashboard's own page (`checkWriteOrigin`, lib/write-origin.ts), so no
+ *    other site can drive the dashboard's writes from a visitor's browser.
+ *
+ * 2. Host-based files origin. Requests to `harnery-files.localhost` are rewritten
  * to `/api/file`; the repo path travels in `x-harnery-files-path` (Next rewrites
  * to App Router handlers often drop rewritten search params). Navigable MIME is
  * keyed off Host — never a client-supplied query flag.
@@ -7,8 +13,19 @@
 
 import { type NextRequest, NextResponse } from "next/server";
 import { FILES_ORIGIN_HEADER, FILES_ORIGIN_HOST, isFilesOriginHost } from "@/lib/files-origin";
+import { checkWriteOrigin, isStateChangingMethod } from "@/lib/write-origin";
 
 export function middleware(req: NextRequest) {
+  if (req.nextUrl.pathname.startsWith("/api/") && isStateChangingMethod(req.method)) {
+    const verdict = checkWriteOrigin(req.headers);
+    if (!verdict.ok) {
+      return NextResponse.json(
+        { ok: false, error: verdict.message },
+        { status: 403, headers: { "cache-control": "no-store" } },
+      );
+    }
+  }
+
   if (!isFilesOriginHost(req.headers.get("host"))) {
     return NextResponse.next();
   }

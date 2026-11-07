@@ -19,11 +19,17 @@ const HEARTBEAT_MS = 15_000;
 const DEBOUNCE_MS = 250;
 const FILESIZE_POLL_MS = 2_000;
 
-export function GET(): Response {
+export function GET(request: Request): Response {
+  // Shared by start() and cancel(): cancel() runs with `this` bound to the
+  // underlying source, not the controller, so the cleanup must live in a
+  // closure both callbacks can reach.
+  let cleanup = (): void => {};
   const stream = new ReadableStream({
     start(controller) {
+      let closed = false;
       const enc = new TextEncoder();
       const send = (eventName: string, data: unknown): void => {
+        if (closed) return;
         try {
           controller.enqueue(enc.encode(`event: ${eventName}\ndata: ${JSON.stringify(data)}\n\n`));
         } catch {
@@ -136,7 +142,10 @@ export function GET(): Response {
         send("ping", { ts: new Date().toISOString() });
       }, HEARTBEAT_MS);
 
-      const cleanup = (): void => {
+      cleanup = (): void => {
+        if (closed) return;
+        closed = true;
+        request.signal.removeEventListener("abort", cleanup);
         clearInterval(heartbeat);
         if (filesizePoll) clearInterval(filesizePoll);
         if (pending) clearTimeout(pending);
@@ -154,14 +163,13 @@ export function GET(): Response {
         }
       };
 
-      // Wire the abort signal. Next propagates client disconnect via
-      // controller's onCancel path; we hook into the ReadableStream's
-      // cancel() below for the same effect.
-      (controller as unknown as { _cleanup?: () => void })._cleanup = cleanup;
+      // A client disconnect reaches us as either reader cancellation
+      // (cancel() below) or the request's abort signal; both run cleanup once.
+      request.signal.addEventListener("abort", cleanup, { once: true });
+      if (request.signal.aborted) cleanup();
     },
     cancel() {
-      const cleanup = (this as unknown as { _cleanup?: () => void })._cleanup;
-      if (typeof cleanup === "function") cleanup();
+      cleanup();
     },
   });
 

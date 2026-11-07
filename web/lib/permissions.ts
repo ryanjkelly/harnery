@@ -10,6 +10,7 @@
 
 import type { PermissionsReport } from "../../src/core/permissions";
 import { type HarnResult, runHarn } from "./run-harn";
+import { checkWriteOrigin } from "./write-origin";
 
 export type { PermissionsReport };
 
@@ -381,29 +382,5 @@ export function checkLocalWrite(h: HeaderSource): { ok: true } | { ok: false; me
         "Not changed: your computer-use mode can be changed only from a browser on this computer.",
     };
   }
-  const site = h.get("sec-fetch-site");
-  if (site !== null && site !== "same-origin" && site !== "none") {
-    return { ok: false, message: "Not changed: the request did not come from the dashboard page." };
-  }
-  const origin = h.get("origin");
-  if (origin !== null) {
-    let originHost: string;
-    try {
-      const url = new URL(origin);
-      if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("scheme");
-      originHost = url.host;
-    } catch {
-      return {
-        ok: false,
-        message: "Not changed: the request did not come from the dashboard page.",
-      };
-    }
-    if (originHost.toLowerCase() !== (h.get("host") ?? "").toLowerCase()) {
-      return {
-        ok: false,
-        message: "Not changed: the request did not come from the dashboard page.",
-      };
-    }
-  }
-  return { ok: true };
+  return checkWriteOrigin(h);
 }

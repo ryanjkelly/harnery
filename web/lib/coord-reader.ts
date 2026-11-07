@@ -39,11 +39,13 @@ import {
 import { countConsecutiveAllTrivialRoundsFromTags } from "./council-triviality";
 
 let cachedRoot: string | null = null;
+let cachedRootFound = false;
 
 /** Reset the memoized root (tests only; route-level tests repoint
  * HARNERY_COORD_ROOT at a temp fixture and need the cache dropped). */
 export function __resetCoordRootCache(): void {
   cachedRoot = null;
+  cachedRootFound = false;
 }
 
 export function coordRoot(): string {
@@ -51,20 +53,45 @@ export function coordRoot(): string {
   const envRoot = process.env.HARNERY_COORD_ROOT?.trim();
   if (envRoot && existsSync(path.join(envRoot, ".harnery"))) {
     cachedRoot = envRoot;
+    cachedRootFound = true;
     return envRoot;
   }
   let dir = process.cwd();
   for (let i = 0; i < 8; i++) {
     if (existsSync(path.join(dir, ".harnery"))) {
       cachedRoot = dir;
+      cachedRootFound = true;
       return dir;
     }
     const parent = path.dirname(dir);
     if (parent === dir) break;
     dir = parent;
   }
+  // No project found: readers see an empty state under wherever the walk
+  // stopped (often `/`). File serving must not; see `fileServingRoot`.
   cachedRoot = dir;
   return dir;
+}
+
+/** Whether `coordRoot()` found a real `.harnery/` project directory. */
+export function coordRootFound(): boolean {
+  coordRoot();
+  return cachedRootFound;
+}
+
+/**
+ * The root the file viewer may serve from. Throws when no `.harnery/` was
+ * found, so a misconfigured start never serves the filesystem under `/`.
+ * Callers already map a throw here to a `config_error` response.
+ */
+export function fileServingRoot(): string {
+  const root = coordRoot();
+  if (!cachedRootFound) {
+    throw new Error(
+      "no .harnery directory found; set HARNERY_COORD_ROOT or start the dashboard inside a project",
+    );
+  }
+  return root;
 }
 
 export function harneryDir(): string {
@@ -904,10 +931,6 @@ export interface InstanceIdentity {
   task_state_reason?: string | null;
   started_at?: string | null;
   last_ts?: string | null;
-}
-
-export function __resetIdentityIndexCache(): void {
-  // V3 projection is rebuilt from the canonical reader on demand.
 }
 
 export function readInstanceIdentities(): Record<string, InstanceIdentity> {

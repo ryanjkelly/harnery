@@ -23,12 +23,12 @@ import { type Dirent, realpathSync, statSync } from "node:fs";
 import { lstat, opendir, readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import type { BrowseEntry, BrowseSearchResult } from "./browse-types";
-import { coordRoot } from "./coord-reader";
+import { fileServingRoot } from "./coord-reader";
 import type { DirListing, DirUsage, DirUsageStats } from "./file-viewer/types";
 import {
   evaluateDeny,
   type FilesConfig,
-  loadFilesConfig,
+  filesConfig,
   type RejectCode,
   type ResolveReject,
 } from "./files";
@@ -140,7 +140,7 @@ interface ResolvedDir {
 export function resolveDir(rawInput: string, opts: ListOptions = {}): ResolvedDir | ResolveReject {
   let ROOT: string;
   try {
-    ROOT = realpathSync(opts.root ?? coordRoot());
+    ROOT = realpathSync(opts.root ?? fileServingRoot());
   } catch (err) {
     return reject("config_error", 500, `root unresolvable: ${(err as Error).message}`);
   }
@@ -171,7 +171,7 @@ export function resolveDir(rawInput: string, opts: ListOptions = {}): ResolvedDi
   // Config + deny precheck: a denied directory is never listable.
   let cfg: FilesConfig;
   try {
-    cfg = loadFilesConfig(ROOT);
+    cfg = filesConfig(ROOT);
   } catch (err) {
     return reject("config_error", 500, (err as Error).message);
   }

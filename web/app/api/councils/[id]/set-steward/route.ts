@@ -24,7 +24,7 @@ export async function POST(
       {
         error: "set_steward_failed",
         stderr: result.stderr,
-        exit_code: result.exit_code,
+        exit_code: result.exitCode,
       },
       { status: 500 },
     );

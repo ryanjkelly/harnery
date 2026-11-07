@@ -23,7 +23,7 @@ interface RouteContext {
  */
 export async function PATCH(request: Request, context: RouteContext): Promise<Response> {
   const { id, index } = await context.params;
-  const instanceId = decodeURIComponent(id);
+  const instanceId = id; // Next already decoded the path segment.
   if (!safeOwnerId(instanceId)) {
     return Response.json({ error: "invalid instance_id" }, { status: 400 });
   }
@@ -99,7 +99,7 @@ export async function PATCH(request: Request, context: RouteContext): Promise<Re
  */
 export async function DELETE(request: Request, context: RouteContext): Promise<Response> {
   const { id, index } = await context.params;
-  const instanceId = decodeURIComponent(id);
+  const instanceId = id; // Next already decoded the path segment.
   if (!safeOwnerId(instanceId)) {
     return Response.json({ error: "invalid instance_id" }, { status: 400 });
   }

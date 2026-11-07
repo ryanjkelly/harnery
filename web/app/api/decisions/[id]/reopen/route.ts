@@ -13,7 +13,7 @@ export async function POST(
   const result = await reopenDecision(id);
   if (!result.ok) {
     return Response.json(
-      { error: "reopen_failed", stderr: result.stderr, exit_code: result.exit_code },
+      { error: "reopen_failed", stderr: result.stderr, exit_code: result.exitCode },
       { status: 500 },
     );
   }

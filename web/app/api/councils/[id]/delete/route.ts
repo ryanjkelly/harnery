@@ -13,7 +13,7 @@ export async function POST(
   const result = await deleteCouncil(id);
   if (!result.ok) {
     return Response.json(
-      { error: "delete_failed", stderr: result.stderr, exit_code: result.exit_code },
+      { error: "delete_failed", stderr: result.stderr, exit_code: result.exitCode },
       { status: 500 },
     );
   }

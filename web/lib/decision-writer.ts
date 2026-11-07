@@ -4,16 +4,9 @@
  * Review is the only write the web UI performs; everything else is agent-side.
  */
 
-import { spawn } from "node:child_process";
-import { coordRoot } from "./coord-reader";
-import { harnChildEnv, harnCommand } from "./harn-command";
+import { type HelperResult, runHarn } from "./run-harn";
 
-export interface HelperResult {
-  ok: boolean;
-  stdout: string;
-  stderr: string;
-  exit_code: number | null;
-}
+export type { HelperResult };
 
 // slug-YYYY-MM-DD-hhhh
 const DECISION_ID_PATTERN = /^[a-z0-9][a-z0-9-]*-\d{4}-\d{2}-\d{2}-[0-9a-f]{4}$/;
@@ -30,32 +23,6 @@ export const REVIEW_VERDICTS = [
 export type ReviewVerdict = (typeof REVIEW_VERDICTS)[number];
 export function isVerdict(v: string): v is ReviewVerdict {
   return (REVIEW_VERDICTS as readonly string[]).includes(v);
-}
-
-async function runHarn(args: string[]): Promise<HelperResult> {
-  const root = coordRoot();
-  const harn = harnCommand(root, args);
-  return new Promise((resolve) => {
-    const proc = spawn(harn.command, harn.args, {
-      cwd: root,
-      env: harnChildEnv(root),
-      windowsHide: true,
-    });
-    let stdout = "";
-    let stderr = "";
-    proc.stdout.on("data", (c) => {
-      stdout += c.toString();
-    });
-    proc.stderr.on("data", (c) => {
-      stderr += c.toString();
-    });
-    proc.on("close", (code) => {
-      resolve({ ok: code === 0, stdout, stderr, exit_code: code });
-    });
-    proc.on("error", (err) => {
-      resolve({ ok: false, stdout, stderr: `${stderr}${err.message}`, exit_code: null });
-    });
-  });
 }
 
 export async function reviewDecision(

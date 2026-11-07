@@ -24,6 +24,7 @@ import {
   __resetFileTreeCaches,
   dirUsage,
   listDir,
+  resolveDir,
   searchFiles,
 } from "./file-tree.ts";
 
@@ -405,5 +406,20 @@ describe("searchFiles — fuzzy index (deny + build-artifact aware)", async () =
       expect(r.matches.length).toBeLessThanOrEqual(1);
       if (r.total > 1) expect(r.truncated).toBe(true);
     }
+  });
+});
+
+describe("resolveDir config", () => {
+  test("reuses the parsed files config until the config file changes", () => {
+    const root = buildFixture();
+    const first = resolveDir("docs", { root });
+    const second = resolveDir("docs", { root });
+    expect(first.ok && second.ok).toBe(true);
+    if (!first.ok || !second.ok) return;
+    expect(second.cfg).toBe(first.cfg);
+    w(root, ".harnery/config.jsonc", '{ "files": {} }\n');
+    const third = resolveDir("docs", { root });
+    expect(third.ok).toBe(true);
+    if (third.ok) expect(third.cfg).not.toBe(first.cfg);
   });
 });

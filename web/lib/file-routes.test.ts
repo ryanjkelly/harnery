@@ -315,11 +315,18 @@ describe("GET /files/render/[...path]", () => {
     expect(html.status).toBe(200);
     expect(html.headers.get("content-type")).toBe("text/html; charset=utf-8");
     expect(html.headers.get("content-security-policy")).toBe("sandbox");
-    expect(html.headers.get("access-control-allow-origin")).toBe("*");
+    // Only CORS-mode assets (fonts, media) carry the wildcard.
+    expect(html.headers.get("access-control-allow-origin")).toBeNull();
+
+    w("docs/page/face.woff2", Buffer.from("font-bytes"));
+    const font = await renderTreeGET(...renderTreeReq("docs/page/face.woff2"));
+    expect(font.status).toBe(200);
+    expect(font.headers.get("access-control-allow-origin")).toBe("*");
 
     const css = await renderTreeGET(...renderTreeReq("docs/page/site.css"));
     expect(css.status).toBe(200);
     expect(css.headers.get("content-type")).toBe("text/css; charset=utf-8");
+    expect(css.headers.get("access-control-allow-origin")).toBeNull();
 
     const image = await renderTreeGET(...renderTreeReq("docs/page/pixel.webp"));
     expect(image.status).toBe(200);

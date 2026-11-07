@@ -53,7 +53,7 @@ import {
   statSync,
 } from "node:fs";
 import path from "node:path";
-import { coordRoot } from "./coord-reader";
+import { fileServingRoot } from "./coord-reader";
 
 // ---------------------------------------------------------------------------
 // Categories + extension map
@@ -588,7 +588,8 @@ export function loadFilesConfig(root: string): FilesConfig {
  * preserve modification times or replace a config file within one clock tick. */
 let configCache: { root: string; identity: string; cfg: FilesConfig } | null = null;
 
-function filesConfig(root: string): FilesConfig {
+/** `loadFilesConfig` behind an identity-checked cache (exported for file-tree). */
+export function filesConfig(root: string): FilesConfig {
   const p = path.join(root, ".harnery", "config.jsonc");
   let identity = "missing";
   try {
@@ -683,14 +684,14 @@ export function scanChunk(buf: Buffer): { binary: boolean; secret: boolean } {
 // Root resolution
 // ---------------------------------------------------------------------------
 
-/** ROOT = realpathSync(coordRoot()), memoized once. coordRoot() itself returns
+/** ROOT = realpathSync(fileServingRoot()), memoized once. coordRoot() itself returns
  * the raw env/cwd string and is never realpath'd; under a symlinked root that
  * breaks anchored containment ([PROVEN]), so we canonicalize here. */
 let cachedRealRoot: string | null = null;
 
 function realRoot(): string {
   if (cachedRealRoot) return cachedRealRoot;
-  cachedRealRoot = realpathSync(coordRoot());
+  cachedRealRoot = realpathSync(fileServingRoot());
   return cachedRealRoot;
 }
 

@@ -72,6 +72,17 @@ function etagFor(f: ResolvedFile): string {
   return `W/"${f.size}-${Math.round(f.mtimeMs)}"`;
 }
 
+const RENDER_TREE_CORS_EXTENSIONS = new Set(["woff", "woff2", "ttf", "otf", "eot", "vtt"]);
+
+/** Assets a sandboxed render document can fetch only in CORS mode. */
+function needsRenderTreeCors(category: ResolvedFile["category"], ext: string): boolean {
+  return (
+    category === "audio" ||
+    category === "video" ||
+    RENDER_TREE_CORS_EXTENSIONS.has(ext.toLowerCase())
+  );
+}
+
 function baseHeaders(
   f: ResolvedFile,
   opts: { filesOrigin?: boolean; renderTree?: boolean } = {},
@@ -97,7 +108,13 @@ function baseHeaders(
     // can never become a same-origin script source.
     const ext = f.relPath.includes(".") ? (f.relPath.split(".").pop() ?? "") : "";
     headers["content-type"] = sandboxedTreeMimeFor(f.category, ext);
-    headers["access-control-allow-origin"] = "*";
+    // The rendered document runs under a CSP sandbox, so it has an opaque
+    // (`null`) origin. Stylesheets, images and plain media load in no-cors
+    // mode and need nothing, but @font-face and `crossorigin` media/text
+    // tracks are CORS fetches that fail without this header. Grant it only
+    // to those assets: a wildcard on every file would let any website read
+    // allowlisted repo files out of a visitor's local dashboard.
+    if (needsRenderTreeCors(f.category, ext)) headers["access-control-allow-origin"] = "*";
   }
   // CSP sandbox: a directly-navigated response gets a unique origin with
   // scripts disabled, the svg/html escape hatch ("never become

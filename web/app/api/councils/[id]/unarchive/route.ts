@@ -13,7 +13,7 @@ export async function POST(
   const result = await unarchiveCouncil(id);
   if (!result.ok) {
     return Response.json(
-      { error: "unarchive_failed", stderr: result.stderr, exit_code: result.exit_code },
+      { error: "unarchive_failed", stderr: result.stderr, exit_code: result.exitCode },
       { status: 500 },
     );
   }

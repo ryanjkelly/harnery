@@ -37,6 +37,8 @@ const BIND_LIMIT_MS = Number(process.env.HARNERY_WEB_HANDOVER_TIMEOUT_MS ?? 15_0
 if ((PUBLIC_PORT > 0 && HANDOVER_FILE) || DRAIN_FILE) {
   /** The HTTP server Next listens with; the front door feeds it sockets. */
   let target;
+  /** Front-door hosts: loopback when Next bound loopback, else the wildcards. */
+  let doorHosts = ["0.0.0.0", "::"];
   const doors = new Set();
   let draining = false;
   let bindingFailed = false;
@@ -51,14 +53,17 @@ if ((PUBLIC_PORT > 0 && HANDOVER_FILE) || DRAIN_FILE) {
     const started = Date.now();
     const door = createServer((socket) => target.emit("connection", socket));
     doors.add(door);
-    const bind = () => { if (!draining && !bindingFailed) door.listen(options); };
+    const bind = () => {
+      if (!draining && !bindingFailed) door.listen(options);
+    };
     door.on("error", (error) => {
       if (draining || bindingFailed) return;
       if (error.code === "EADDRINUSE" && Date.now() - started < BIND_LIMIT_MS) {
         setTimeout(bind, BIND_RETRY_MS).unref();
         return;
       }
-      // IPv4-only hosts still work; an occupied IPv6 port is not optional.
+      // IPv4-only hosts (no ::1 or no IPv6 at all) still work; an occupied
+      // IPv6 port is not optional.
       if (options.ipv6Only && ["EAFNOSUPPORT", "EADDRNOTAVAIL"].includes(error.code)) {
         doors.delete(door);
         onReady();
@@ -78,7 +83,10 @@ if ((PUBLIC_PORT > 0 && HANDOVER_FILE) || DRAIN_FILE) {
       target = this;
       this.on("connection", (socket) => {
         sockets.add(socket);
-        socket.once("close", () => { sockets.delete(socket); acknowledgeDrain(); });
+        socket.once("close", () => {
+          sockets.delete(socket);
+          acknowledgeDrain();
+        });
       });
       this.prependListener("request", (_request, response) => {
         if (draining) response.setHeader("Connection", "close");
@@ -86,6 +94,9 @@ if ((PUBLIC_PORT > 0 && HANDOVER_FILE) || DRAIN_FILE) {
       const options = typeof args[0] === "object" && args[0] !== null ? args[0] : null;
       const port = options ? options.port : args[0];
       const host = options ? options.host : typeof args[1] === "string" ? args[1] : undefined;
+      // `next start --hostname 127.0.0.1` keeps the dashboard local; the public
+      // port must not widen that to every interface.
+      if (["127.0.0.1", "::1", "localhost"].includes(host)) doorHosts = ["127.0.0.1", "::1"];
       if (host === undefined && (typeof port === "number" || /^\d+$/.test(port))) {
         // Preserve explicit host and Unix-socket binds. Only split the default
         // wildcard TCP bind used by a supervised Next start.
@@ -120,8 +131,9 @@ if ((PUBLIC_PORT > 0 && HANDOVER_FILE) || DRAIN_FILE) {
       writeFileSync(`${HANDOVER_FILE}.ready`, String(process.pid));
       console.log(`[handover] serving public port ${PUBLIC_PORT}`);
     };
-    listenDoor({ port: PUBLIC_PORT, host: "0.0.0.0" }, onReady, onFailure);
-    listenDoor({ port: PUBLIC_PORT, host: "::", ipv6Only: true }, onReady, onFailure);
+    const [ipv4Host, ipv6Host] = doorHosts;
+    listenDoor({ port: PUBLIC_PORT, host: ipv4Host }, onReady, onFailure);
+    listenDoor({ port: PUBLIC_PORT, host: ipv6Host, ipv6Only: true }, onReady, onFailure);
     return true;
   };
 

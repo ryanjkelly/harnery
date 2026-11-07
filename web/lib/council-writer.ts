@@ -1,49 +1,17 @@
 /**
- * Council write-side helpers. Shells out to `harnery/bin/agent-coord`
- * for mutations (advance / close / archive / unarchive / delete) so the
- * lifecycle semantics stay in one place.
+ * Council write-side helpers. Shells out to `agent-coord` for lifecycle
+ * mutations (advance / close / archive / unarchive / delete / set-steward)
+ * and to `harn council create` for creation, so the lifecycle
+ * semantics stay in one place.
  */
 
-import { spawn } from "node:child_process";
-import { coordRoot } from "./coord-reader";
-import { harnChildEnv, harnCommand } from "./harn-command";
+import { lookupByName } from "./identities";
+import { type HelperResult, runHarn } from "./run-harn";
 
-export interface HelperResult {
-  ok: boolean;
-  stdout: string;
-  stderr: string;
-  exit_code: number | null;
-}
+export type { HelperResult };
 
-async function runHelper(args: string[]): Promise<HelperResult> {
-  const root = coordRoot();
-  const helper = harnCommand(root, args, { executable: "agent-coord" });
-  return new Promise((resolve) => {
-    const proc = spawn(helper.command, helper.args, {
-      cwd: root,
-      windowsHide: true,
-      env: harnChildEnv(root),
-    });
-    let stdout = "";
-    let stderr = "";
-    proc.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
-    });
-    proc.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-    proc.on("close", (code) => {
-      resolve({ ok: code === 0, stdout, stderr, exit_code: code });
-    });
-    proc.on("error", (err) => {
-      resolve({
-        ok: false,
-        stdout,
-        stderr: `${stderr}${err.message}`,
-        exit_code: null,
-      });
-    });
-  });
+function runHelper(args: string[]): Promise<HelperResult> {
+  return runHarn(args, { executable: "agent-coord" });
 }
 
 const COUNCIL_ID_PATTERN = /^[a-z0-9][a-z0-9-]*-\d{4}-\d{2}-\d{2}-[0-9a-f]{4}$/;
@@ -80,10 +48,6 @@ export async function deleteCouncil(id: string): Promise<HelperResult> {
  * pair the helper expects. */
 export function lookupAgentIdByName(name: string): string | null {
   if (!name) return null;
-  // Local import to avoid circular dep: identities.ts imports coord-reader.
-  const { lookupByName } = require("./identities") as {
-    lookupByName: (n: string) => { agent_id: string } | null;
-  };
   return lookupByName(name)?.agent_id ?? null;
 }
 
@@ -106,43 +70,13 @@ export interface CreateCouncilOpts {
   auto_advance?: boolean;
 }
 
-async function runHarn(args: string[]): Promise<HelperResult> {
-  const root = coordRoot();
-  const harn = harnCommand(root, args);
-  return new Promise((resolve) => {
-    const proc = spawn(harn.command, harn.args, {
-      cwd: root,
-      windowsHide: true,
-      env: harnChildEnv(root),
-    });
-    let stdout = "";
-    let stderr = "";
-    proc.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
-    });
-    proc.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-    proc.on("close", (code) => {
-      resolve({ ok: code === 0, stdout, stderr, exit_code: code });
-    });
-    proc.on("error", (err) => {
-      resolve({
-        ok: false,
-        stdout,
-        stderr: `${stderr}${err.message}`,
-        exit_code: null,
-      });
-    });
-  });
-}
-
-/** Create a council via `harn agents council create`. Returns the new
+/** Create a council via `harn council create`. Returns the new
  * council_id (parsed from stdout JSON) when successful. */
 export async function createCouncil(
   opts: CreateCouncilOpts,
 ): Promise<HelperResult & { council_id?: string }> {
-  const args = ["agents", "council", "create", opts.objective];
+  // `council` is a top-level command (promoted out of `agents`).
+  const args = ["council", "create"];
   // CLI signature is `--members <comma-list>` (not a repeated `--member` flag).
   args.push("--members", opts.members.join(","));
   if (opts.steward) args.push("--steward", opts.steward);
@@ -154,6 +88,10 @@ export async function createCouncil(
   const createdBy = opts.steward ?? opts.members[0];
   if (createdBy) args.push("--created-by", createdBy);
   args.push("--json");
+  // Free text goes after `--` so an objective starting with "-" is never read
+  // as an option. (Option values like --steward are safe: Commander consumes
+  // the next argument as a required value even when it starts with "-".)
+  args.push("--", opts.objective);
   const result = await runHarn(args);
   if (!result.ok) return result;
   try {

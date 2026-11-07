@@ -6,7 +6,7 @@
  */
 
 import { createPreviewCache } from "./preview-cache";
-import type { DirListing, DirUsage, FileError, FileMeta, FileText, SearchResult } from "./types";
+import type { FileError, FileMeta, FileText, SearchResult } from "./types";
 
 export interface FetchOk<T> {
   ok: true;
@@ -123,17 +123,6 @@ export async function revealInFileManager(
     };
   }
   return { ok: true, data: body as RevealResult };
-}
-
-/** List one directory's immediate children (repo-relative; "" = repo root). */
-export function fetchList(dir: string): Promise<FetchResult<DirListing>> {
-  return getJson<DirListing>(`/api/file/list?dir=${encodeURIComponent(dir)}`);
-}
-
-/** Recursive disk usage + file/folder counts for a directory (+ per-immediate-
- * child breakdown). */
-export function fetchUsage(dir: string): Promise<FetchResult<DirUsage>> {
-  return getJson<DirUsage>(`/api/file/usage?dir=${encodeURIComponent(dir)}`);
 }
 
 /** Fuzzy file-name search across the repo (cached, deny-aware index). */
