@@ -31,15 +31,21 @@ const COMMAND_TIMEOUT_MS = 4_000;
 const WINDOWS_QUERY = `
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
-$osInfo = Get-CimInstance Win32_OperatingSystem -Property TotalVisibleMemorySize,FreePhysicalMemory,NumberOfProcesses
-$processors = $null; $pagefiles = $null; $disks = $null
+$osInfo = Get-CimInstance Win32_OperatingSystem -Property TotalVisibleMemorySize,FreePhysicalMemory,TotalVirtualMemorySize,FreeVirtualMemory,NumberOfProcesses
+$processors = $null; $pagefiles = $null; $disks = $null; $pagesInput = $null
 try { $processors = @(Get-CimInstance Win32_Processor -Property NumberOfLogicalProcessors,LoadPercentage | Select-Object NumberOfLogicalProcessors,LoadPercentage) } catch {}
 try { $pagefiles = @(Get-CimInstance Win32_PageFileUsage -Property AllocatedBaseSize,CurrentUsage | Select-Object AllocatedBaseSize,CurrentUsage) } catch {}
 try { $disks = @(Get-CimInstance Win32_LogicalDisk -Filter 'DriveType = 3' -Property DeviceID,Size,FreeSpace | Select-Object DeviceID,Size,FreeSpace) } catch {}
+# The raw counter is locale-independent. Its provider can take seconds to load
+# cold, so it gets its own short timeout and never costs the rest of the sample.
+try { $pagesInput = (Get-CimInstance Win32_PerfRawData_PerfOS_Memory -Property PagesInputPersec -OperationTimeoutSec 2).PagesInputPersec } catch {}
 [pscustomobject]@{
   sampled_at = [DateTime]::UtcNow.ToString('o')
   memory_total_kib = $osInfo.TotalVisibleMemorySize
   memory_available_kib = $osInfo.FreePhysicalMemory
+  commit_limit_kib = $osInfo.TotalVirtualMemorySize
+  commit_free_kib = $osInfo.FreeVirtualMemory
+  pages_input_total = $pagesInput
   process_count = $osInfo.NumberOfProcesses
   processors = $processors
   pagefiles = $pagefiles
@@ -241,26 +247,28 @@ export interface WindowsHostOptions {
 }
 
 export function createWindowsHostCollector(): (options?: WindowsHostOptions) => ResourceHostSample {
-  const cache = new WeakMap<NativeResourceCommand, { at: number; sample: ResourceHostSample }>();
+  const cache = new WeakMap<
+    NativeResourceCommand,
+    { at: number; sample: ResourceHostSample; paging: WindowsPagingCounter | null }
+  >();
   return (options = {}) => {
     const nowMs = options.nowMs ?? Date.now();
     const command = options.command ?? runNativeCommand;
     const cached = cache.get(command);
     if (cached && nowMs >= cached.at && nowMs - cached.at < WINDOWS_CACHE_MS) return cached.sample;
     let sample: ResourceHostSample;
+    let paging: WindowsPagingCounter | null = null;
     try {
       const executable =
         command === runNativeCommand ? windowsPowerShellExecutable() : "powershell.exe";
       const output = command(executable, windowsPowerShellArgs());
-      sample =
-        output === null
-          ? unavailableWindowsHost(nowMs, "windows_host_query_failed")
-          : parseWindowsResourceOutput(output, nowMs);
+      if (output === null) sample = unavailableWindowsHost(nowMs, "windows_host_query_failed");
+      else ({ sample, paging } = parseWindowsHost(output, nowMs, cached?.paging ?? null));
     } catch {
       sample = unavailableWindowsHost(nowMs, "windows_host_query_failed");
     }
     // Cache failures too: missing interop/CIM must not launch PowerShell every tick.
-    cache.set(command, { at: nowMs, sample });
+    cache.set(command, { at: nowMs, sample, paging });
     return sample;
   };
 }
@@ -299,7 +307,12 @@ export function createWindowsHostBackgroundCollector(): (
 ) => ResourceHostSample {
   const cache = new WeakMap<
     NativeResourceAsyncCommand,
-    { at: number; sample: ResourceHostSample; pending: boolean }
+    {
+      at: number;
+      sample: ResourceHostSample;
+      pending: boolean;
+      paging: WindowsPagingCounter | null;
+    }
   >();
   return (options = {}) => {
     const nowMs = options.nowMs ?? Date.now();
@@ -311,6 +324,7 @@ export function createWindowsHostBackgroundCollector(): (
       at: nowMs,
       sample: { ...unavailableWindowsHost(nowMs, "windows_host_query_pending"), state: "partial" },
       pending: false,
+      paging: null,
     };
     entry.at = nowMs;
     entry.pending = true;
@@ -322,10 +336,13 @@ export function createWindowsHostBackgroundCollector(): (
     void Promise.resolve()
       .then(() => command(executable, windowsPowerShellArgs()))
       .then((output) => {
-        current.sample =
-          output === null
-            ? unavailableWindowsHost(nowMs, "windows_host_query_failed")
-            : parseWindowsResourceOutput(output, nowMs);
+        if (output === null) {
+          current.sample = unavailableWindowsHost(nowMs, "windows_host_query_failed");
+          return;
+        }
+        const parsed = parseWindowsHost(output, nowMs, current.paging);
+        current.sample = parsed.sample;
+        current.paging = parsed.paging;
       })
       .catch(() => {
         current.sample = unavailableWindowsHost(nowMs, "windows_host_query_failed");
@@ -356,20 +373,68 @@ function windowsPowerShellArgs(): string[] {
   ];
 }
 
-export function parseWindowsResourceOutput(output: string, nowMs = Date.now()): ResourceHostSample {
+/** A raw hard page-in counter reading, carried to the next sample to form a rate. */
+export interface WindowsPagingCounter {
+  pages_input_total: number;
+  at_ms: number;
+}
+
+/**
+ * Beyond this gap a page-in rate is an average over too long a window to say
+ * anything about now, so no rate is reported until the next pair of samples.
+ */
+const PAGING_RATE_MAX_GAP_MS = 120_000;
+
+export function parseWindowsResourceOutput(
+  output: string,
+  nowMs = Date.now(),
+  previousPaging: WindowsPagingCounter | null = null,
+): ResourceHostSample {
+  return parseWindowsHost(output, nowMs, previousPaging).sample;
+}
+
+function parseWindowsHost(
+  output: string,
+  nowMs: number,
+  previousPaging: WindowsPagingCounter | null,
+): { sample: ResourceHostSample; paging: WindowsPagingCounter | null } {
   let row: Record<string, unknown>;
   try {
     const parsed: unknown = JSON.parse(output.replace(/^\uFEFF/, "").trim());
     if (!isRecord(parsed)) throw new Error("invalid");
     row = parsed;
   } catch {
-    return unavailableWindowsHost(nowMs, "windows_host_output_invalid");
+    return {
+      sample: unavailableWindowsHost(nowMs, "windows_host_output_invalid"),
+      paging: previousPaging,
+    };
   }
   const totalKiB = positive(row.memory_total_kib);
   const availableKiB = nonnegative(row.memory_available_kib);
   if (totalKiB === null || availableKiB === null || availableKiB > totalKiB) {
-    return unavailableWindowsHost(nowMs, "windows_host_memory_invalid");
+    return {
+      sample: unavailableWindowsHost(nowMs, "windows_host_memory_invalid"),
+      paging: previousPaging,
+    };
   }
+  const sampledAt =
+    typeof row.sampled_at === "string" && Number.isFinite(Date.parse(row.sampled_at))
+      ? new Date(row.sampled_at).toISOString()
+      : new Date(nowMs).toISOString();
+  const commitLimitKiB = positive(row.commit_limit_kib);
+  const commitFreeKiB = nonnegative(row.commit_free_kib);
+  const commitValid =
+    commitLimitKiB !== null && commitFreeKiB !== null && commitFreeKiB <= commitLimitKiB;
+  const pagesInputTotal = nonnegative(row.pages_input_total);
+  const paging: WindowsPagingCounter | null =
+    pagesInputTotal === null
+      ? null
+      : { pages_input_total: pagesInputTotal, at_ms: Date.parse(sampledAt) };
+  const memoryStrain = {
+    commit_used_bytes: commitValid ? (commitLimitKiB - commitFreeKiB) * 1_024 : null,
+    commit_limit_bytes: commitValid ? commitLimitKiB * 1_024 : null,
+    page_input_pages_per_second: pagingRate(previousPaging, paging),
+  };
   const processors = records(row.processors);
   let logical = 0;
   let weightedCpu = 0;
@@ -416,16 +481,33 @@ export function parseWindowsResourceOutput(output: string, nowMs = Date.now()): 
     disks.length > 0 &&
     disks.every((disk) => disk.state === "supported");
   return {
-    platform: "win32",
-    sampled_at:
-      typeof row.sampled_at === "string" && Number.isFinite(Date.parse(row.sampled_at))
-        ? new Date(row.sampled_at).toISOString()
-        : new Date(nowMs).toISOString(),
-    state: complete ? "supported" : "partial",
-    machine,
-    disks,
-    ...(!complete ? { reason: "windows_host_optional_metrics_unavailable" } : {}),
+    sample: {
+      platform: "win32",
+      sampled_at: sampledAt,
+      state: complete ? "supported" : "partial",
+      machine,
+      disks,
+      memory_strain: memoryStrain,
+      ...(!complete ? { reason: "windows_host_optional_metrics_unavailable" } : {}),
+    },
+    paging,
   };
+}
+
+/**
+ * The counter is 32-bit and restarts with the machine, so a decrease is a wrap
+ * or a reset and yields no rate rather than a negative or enormous one.
+ */
+function pagingRate(
+  previous: WindowsPagingCounter | null,
+  current: WindowsPagingCounter | null,
+): number | null {
+  if (!previous || !current) return null;
+  const elapsedMs = current.at_ms - previous.at_ms;
+  if (!(elapsedMs > 0) || elapsedMs > PAGING_RATE_MAX_GAP_MS) return null;
+  const pages = current.pages_input_total - previous.pages_input_total;
+  if (pages < 0) return null;
+  return round1(pages / (elapsedMs / 1_000));
 }
 
 function parseWindowsDisk(row: Record<string, unknown>): ResourceDiskSample {

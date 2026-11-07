@@ -134,7 +134,22 @@ export interface ResourceHostSample {
   state: ResourceSupportState;
   machine: ResourceMachineSample | null;
   disks: ResourceDiskSample[];
+  /**
+   * Strain evidence for host memory. Available memory alone is capacity: a
+   * Windows host routinely runs with little free memory while nothing waits on
+   * it. Commit nearing its limit, or a sustained hard page-in rate, is what
+   * shows that the shortage is costing work. Absent on older snapshots.
+   */
+  memory_strain?: ResourceHostMemoryStrain;
   reason?: string;
+}
+
+export interface ResourceHostMemoryStrain {
+  /** Committed virtual memory, and the limit it cannot grow past without paging-file growth. */
+  commit_used_bytes: number | null;
+  commit_limit_bytes: number | null;
+  /** Pages read from disk to resolve hard faults, per second, between two host samples. */
+  page_input_pages_per_second: number | null;
 }
 
 export interface ResourceServiceStatusRecord {

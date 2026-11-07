@@ -531,7 +531,8 @@ describe("local supervisor collectors", () => {
         expect.objectContaining({
           finding_kind: "machine.host-memory-pressure",
           scope_id: "windows-host",
-          severity: "critical",
+          severity: "info",
+          summary: expect.stringContaining("capacity in use, not contention"),
         }),
       ]),
     );

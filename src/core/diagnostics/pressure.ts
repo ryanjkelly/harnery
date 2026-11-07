@@ -105,6 +105,11 @@ interface CapacityReading {
   swap_used_percent: number | null;
 }
 
+interface HostMemoryReading extends CapacityReading {
+  commit_used_percent: number | null;
+  page_input_pages_per_second: number | null;
+}
+
 interface DiskReading {
   path: string;
   available_bytes: number;
@@ -120,7 +125,7 @@ interface Readings {
   direct_reclaim_pages_per_second: number | null;
   memory_available: CapacityReading | null;
   disk_available: DiskReading | null;
-  host_memory: CapacityReading | null;
+  host_memory: HostMemoryReading | null;
   unavailable_reasons: Partial<Record<PressureDimension, string>>;
   /** `host_memory` is only applicable when the snapshot carries a host block. */
   host_applicable: boolean;
@@ -387,29 +392,41 @@ export const assessPressure: AssessPressure = (input) => {
   }
 
   // The Windows host is assessed separately so it can raise the combined state
-  // without ever masking a guest signal.
+  // without ever masking a guest signal. Low available memory alone is the
+  // host's ordinary state, so it raises nothing without a strain signal.
+  let hostCapacityContext: string | null = null;
   if (readings.host_memory) {
     const host = readings.host_memory;
+    const hostPolicy = policy.host_memory;
     const count = streaks.host_memory ?? 0;
-    const hostCritical =
-      host.available_percent < policy.memory_available.critical_available_percent &&
-      host.swap_used_percent !== null &&
-      host.swap_used_percent >= policy.memory_available.critical_swap_used_percent;
-    const hostElevated =
-      host.available_percent < policy.memory_available.elevated_available_percent;
-    if (hostCritical || hostElevated) {
+    const strain = hostStrain(host);
+    if (hostExhausted(host)) {
       reasons.push({
         code: "host_memory_pressure",
         dimension: "host_memory",
-        summary: `The Windows host has ${percent(host.available_percent)} of its memory available${host.swap_used_percent === null ? "" : ` with its page file ${percent(host.swap_used_percent)} used`}, past the threshold of ${percent(hostCritical ? policy.memory_available.critical_available_percent : policy.memory_available.elevated_available_percent)} available.`,
+        summary: `The Windows host has ${percent(host.available_percent)} of its memory available and its page file is ${percent(host.swap_used_percent ?? 0)} used, so both memory tiers are exhausted against the thresholds of ${percent(hostPolicy.critical_available_percent)} available and ${percent(hostPolicy.critical_swap_used_percent)} page file used.`,
         observed_value: host.available_percent,
-        threshold_value: hostCritical
-          ? policy.memory_available.critical_available_percent
-          : policy.memory_available.elevated_available_percent,
+        threshold_value: hostPolicy.critical_available_percent,
         unit: "percent",
         sample_count: count,
-        contributes_to: hostCritical ? "critical" : "elevated",
+        contributes_to: "critical",
       });
+    } else if (hot.host_memory && count >= hostPolicy.elevated_samples) {
+      reasons.push({
+        code: "host_memory_pressure",
+        dimension: "host_memory",
+        summary: `The Windows host has stayed under ${percent(hostPolicy.elevated_available_percent)} available memory with ${strain.join(" and ")} for ${samples(count)}, and is now at ${percent(host.available_percent)} available.`,
+        observed_value: host.available_percent,
+        threshold_value: hostPolicy.elevated_available_percent,
+        unit: "percent",
+        sample_count: count,
+        contributes_to: "elevated",
+      });
+    } else if (
+      host.available_percent < hostPolicy.elevated_available_percent &&
+      strain.length === 0
+    ) {
+      hostCapacityContext = hostCapacitySentence(host);
     }
   }
 
@@ -515,6 +532,12 @@ export const assessPressure: AssessPressure = (input) => {
                   : policy.recovery.elevated_exit_samples,
             }
           : null,
+      cause:
+        dominant !== undefined &&
+        (transition.state === "elevated" || transition.state === "critical")
+          ? dominant.summary
+          : null,
+      hostCapacityContext,
       evidenceState,
       findingsCapabilityState: input.findings_capability.state,
       unattributed,
@@ -736,7 +759,7 @@ function readSnapshot(snapshot: ResourceSnapshot, nowMs: number): Readings {
       available_percent: round2(
         (machine.memory_available_bytes / machine.memory_total_bytes) * 100,
       ),
-      swap_used_percent: swapUsedPercent(machine.swap_total_bytes, machine.swap_used_bytes),
+      swap_used_percent: usedPercent(machine.swap_total_bytes, machine.swap_used_bytes),
     };
   } else {
     unavailable.memory_available = "machine_memory_unavailable";
@@ -765,7 +788,7 @@ function readSnapshot(snapshot: ResourceSnapshot, nowMs: number): Readings {
     hostAgeMs !== null &&
     Number.isFinite(hostAgeMs) &&
     Math.abs(hostAgeMs) <= PRESSURE_POLICY.sample_staleness_ms;
-  let hostMemory: CapacityReading | null = null;
+  let hostMemory: HostMemoryReading | null = null;
   if (
     host &&
     hostFresh &&
@@ -773,12 +796,15 @@ function readSnapshot(snapshot: ResourceSnapshot, nowMs: number): Readings {
     host.machine &&
     host.machine.memory_percent !== null
   ) {
+    const strain = host.memory_strain;
     hostMemory = {
       available_percent: round2(100 - host.machine.memory_percent),
-      swap_used_percent: swapUsedPercent(
-        host.machine.swap_total_bytes,
-        host.machine.swap_used_bytes,
+      swap_used_percent: usedPercent(host.machine.swap_total_bytes, host.machine.swap_used_bytes),
+      commit_used_percent: usedPercent(
+        strain?.commit_limit_bytes ?? null,
+        strain?.commit_used_bytes ?? null,
       ),
+      page_input_pages_per_second: strain?.page_input_pages_per_second ?? null,
     };
   } else if (hostApplicable) {
     unavailable.host_memory = hostFresh ? "host_memory_unavailable" : "host_sample_stale";
@@ -799,7 +825,7 @@ function readSnapshot(snapshot: ResourceSnapshot, nowMs: number): Readings {
   };
 }
 
-function swapUsedPercent(total: number | null, used: number | null): number | null {
+function usedPercent(total: number | null, used: number | null): number | null {
   if (total === null || used === null || total <= 0) return null;
   return round2((used / total) * 100);
 }
@@ -830,8 +856,56 @@ function hotDimensions(readings: Readings): Partial<Record<PressureDimension, bo
         readings.disk_available.used_percent >= policy.disk.elevated_used_percent);
   if (readings.host_memory)
     hot.host_memory =
-      readings.host_memory.available_percent < policy.memory_available.elevated_available_percent;
+      hostExhausted(readings.host_memory) ||
+      (readings.host_memory.available_percent < policy.host_memory.elevated_available_percent &&
+        hostStrain(readings.host_memory).length > 0);
   return hot;
+}
+
+function hostExhausted(host: HostMemoryReading): boolean {
+  const policy = PRESSURE_POLICY.host_memory;
+  return (
+    host.available_percent < policy.critical_available_percent &&
+    host.swap_used_percent !== null &&
+    host.swap_used_percent >= policy.critical_swap_used_percent
+  );
+}
+
+/** The strain signals present on the host, phrased for a reason summary. Empty means none. */
+function hostStrain(host: HostMemoryReading): string[] {
+  const policy = PRESSURE_POLICY.host_memory;
+  const strain: string[] = [];
+  if (
+    host.commit_used_percent !== null &&
+    host.commit_used_percent >= policy.elevated_commit_used_percent
+  )
+    strain.push(
+      `commit at ${percent(host.commit_used_percent)} of its limit (threshold ${percent(policy.elevated_commit_used_percent)})`,
+    );
+  if (
+    host.page_input_pages_per_second !== null &&
+    host.page_input_pages_per_second >= policy.elevated_page_input_pages_per_second
+  )
+    strain.push(
+      `${pages(host.page_input_pages_per_second)} read back from disk each second (threshold ${pages(policy.elevated_page_input_pages_per_second)})`,
+    );
+  return strain;
+}
+
+/**
+ * Said aloud so a reader who sees the low figure elsewhere does not mistake it
+ * for the reason work should wait.
+ */
+function hostCapacitySentence(host: HostMemoryReading): string {
+  const measured: string[] = [];
+  if (host.commit_used_percent !== null)
+    measured.push(`commit is at ${percent(host.commit_used_percent)} of its limit`);
+  if (host.page_input_pages_per_second !== null)
+    measured.push(`${pages(host.page_input_pages_per_second)} are read back from disk each second`);
+  const lead = `The Windows host has ${percent(host.available_percent)} of its memory available`;
+  if (measured.length === 0)
+    return `${lead}. No host strain signal is measurable, and available memory alone does not hold back work.`;
+  return `${lead}, but ${measured.join(" and ")}, ${measured.length === 1 ? "below its threshold" : "both below their thresholds"}, so this is capacity in use, not contention, and it does not hold back work.`;
 }
 
 function advanceStreaks(
@@ -1196,6 +1270,14 @@ function buildSummary(view: {
   action: PressureRecommendedAction;
   /** Set when no dimension is hot and only the recovery dwell holds the state. */
   dwell: { clear: number; required: number } | null;
+  /**
+   * The reason that set a raised state, stated beside it. A reader who is told
+   * only "under elevated memory contention" goes looking for a number to blame
+   * and tends to find the wrong one.
+   */
+  cause: string | null;
+  /** Low host availability that raised nothing, said so it is not read as the cause. */
+  hostCapacityContext: string | null;
   evidenceState: PressureAssessment["evidence_state"];
   findingsCapabilityState: string;
   unattributed: number | null;
@@ -1236,7 +1318,8 @@ function buildSummary(view: {
         : view.action === "limit-heavy-work"
           ? "Limit heavy work until the evidence clears."
           : "Do not start new heavy work until the evidence clears.";
-  const parts = [stateClause, actionClause];
+  const parts = view.cause ? [stateClause, view.cause, actionClause] : [stateClause, actionClause];
+  if (view.hostCapacityContext) parts.push(view.hostCapacityContext);
   if (view.evidenceState === "partial")
     parts.push("Some dimensions are unavailable, so this reading rests on partial evidence.");
   if (view.evidenceState === "unavailable")

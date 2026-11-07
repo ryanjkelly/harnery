@@ -633,7 +633,12 @@ describe("pressure assessment: gaps are never health", () => {
 });
 
 describe("pressure assessment: scope", () => {
-  function withHost(hostMemoryPercent: number, hostSwapUsedBytes: number, sampledAt = AT(-1_000)) {
+  function withHost(
+    hostMemoryPercent: number,
+    hostSwapUsedBytes: number,
+    sampledAt = AT(-1_000),
+    strain?: { commitUsedPercent: number | null; pageInputPerSecond: number | null },
+  ) {
     const machine = snapshot();
     machine.namespace = "wsl";
     machine.host = {
@@ -653,8 +658,34 @@ describe("pressure assessment: scope", () => {
         process_count: 300,
       },
       disks: [],
+      ...(strain
+        ? {
+            memory_strain: {
+              commit_used_bytes:
+                strain.commitUsedPercent === null
+                  ? null
+                  : Math.round((100 * GIB * strain.commitUsedPercent) / 100),
+              commit_limit_bytes: strain.commitUsedPercent === null ? null : 100 * GIB,
+              page_input_pages_per_second: strain.pageInputPerSecond,
+            },
+          }
+        : {}),
     };
     return machine;
+  }
+
+  /** Feed the same snapshot through consecutive samples, carrying hysteresis. */
+  function series(machine: ResourceSnapshot, count: number): PressureAssessment[] {
+    let carried: PressureHysteresisState | null = null;
+    const out: PressureAssessment[] = [];
+    for (let index = 0; index < count; index++) {
+      machine.sampled_at = AT(index * 2_000);
+      if (machine.host) machine.host.sampled_at = AT(index * 2_000 - 1_000);
+      const assessment = assess({ snapshot: machine, prior: carried, now_ms: NOW + index * 2_000 });
+      carried = assessment.hysteresis;
+      out.push(assessment);
+    }
+    return out;
   }
 
   test("a healthy host leaves the guest scope in place", () => {
@@ -667,12 +698,71 @@ describe("pressure assessment: scope", () => {
     });
   });
 
-  test("a strained host raises the combined state and takes the limiting scope", () => {
-    const assessment = assess({ snapshot: withHost(95, 0) });
-    expect(assessment.state).toBe("elevated");
-    expect(assessment.scope).toBe("windows-host");
-    expect(codes(assessment)).toContain("host_memory_pressure");
-    expect(assessment.summary).toContain("Windows host");
+  // Recorded on a 64 GiB workstation: under a tenth of host memory available
+  // with a large VM and browsers open, commit at 87 percent of its limit, 83
+  // page-ins a second, no guest stall, and a kill total days old. Nothing was
+  // waiting on memory, and work was being held back anyway.
+  test("low host availability with no strain is capacity, not contention", () => {
+    const machine = withHost(91.1, 2 * GIB, AT(-1_000), {
+      commitUsedPercent: 86.9,
+      pageInputPerSecond: 83,
+    });
+    machine.machine.swap_used_bytes = Math.round(8 * GIB * 0.4);
+    machine.oom = {
+      state: "supported",
+      total_kills: 3,
+      kills_since_last_sample: 0,
+      last_kill_age_ms: null,
+    };
+    const states = series(machine, 8);
+    expect(states.map((assessment) => assessment.state)).toEqual(Array(8).fill("normal"));
+    const last = states.at(-1)!;
+    expect(last.scope).toBe("guest");
+    expect(last.recommended_action).toBe("proceed");
+    expect(codes(last)).not.toContain("host_memory_pressure");
+    expect(last.summary).toContain("shows no contention evidence");
+    expect(last.summary).toContain(
+      "The Windows host has 8.9 percent of its memory available, but commit is at 86.9 percent of its limit and 83 pages are read back from disk each second, both below their thresholds, so this is capacity in use, not contention",
+    );
+  });
+
+  test("low host availability with no measurable strain raises nothing and says so", () => {
+    const states = series(withHost(95, 0), 5);
+    expect(states.map((assessment) => assessment.state)).toEqual(Array(5).fill("normal"));
+    expect(states.at(-1)!.summary).toContain(
+      "No host strain signal is measurable, and available memory alone does not hold back work.",
+    );
+  });
+
+  test("commit near its limit raises the host after the entry streak and names the cause", () => {
+    const states = series(
+      withHost(95, 0, AT(-1_000), { commitUsedPercent: 96, pageInputPerSecond: 40 }),
+      3,
+    );
+    expect(states.map((assessment) => assessment.state)).toEqual(["normal", "normal", "elevated"]);
+    const raised = states.at(-1)!;
+    expect(raised.scope).toBe("windows-host");
+    expect(codes(raised)).toContain("host_memory_pressure");
+    expect(raised.summary).toContain(
+      "The Windows host is under elevated memory contention. The Windows host has stayed under 10 percent available memory with commit at 96 percent of its limit",
+    );
+  });
+
+  test("sustained hard page-ins raise the host even with commit headroom", () => {
+    const states = series(
+      withHost(94, 0, AT(-1_000), { commitUsedPercent: 70, pageInputPerSecond: 4_000 }),
+      3,
+    );
+    expect(states.at(-1)!.state).toBe("elevated");
+    expect(states.at(-1)!.summary).toContain("4000 pages read back from disk each second");
+  });
+
+  test("strain with ample available memory is not host pressure", () => {
+    const states = series(
+      withHost(60, 0, AT(-1_000), { commitUsedPercent: 97, pageInputPerSecond: 4_000 }),
+      4,
+    );
+    expect(states.map((assessment) => assessment.state)).toEqual(Array(4).fill("normal"));
   });
 
   test("a host under pressure never masks a critical guest", () => {

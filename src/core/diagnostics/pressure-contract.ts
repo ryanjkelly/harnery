@@ -172,7 +172,7 @@ const GIB = 1_024 * MIB;
  * instead of silently changing its expected result.
  */
 export const PRESSURE_POLICY = {
-  policy_version: 2,
+  policy_version: 3,
   /** A snapshot older than this cannot support any state but `unknown`. */
   sample_staleness_ms: 15_000,
   /**
@@ -205,6 +205,22 @@ export const PRESSURE_POLICY = {
     critical_available_percent: 5,
     critical_swap_used_percent: 90,
     elevated_available_percent: 10,
+    elevated_samples: 3,
+  },
+  /**
+   * A Windows host has no stall measure, and low available memory is its
+   * ordinary state under a large VM and a browser. Low availability therefore
+   * raises the state only beside a strain signal: commit near its limit, where
+   * allocations start to fail, or a sustained hard page-in rate, where work is
+   * waiting on the disk for memory. The critical rule is exhaustion of both
+   * memory and the paging file, which is strain by definition.
+   */
+  host_memory: {
+    critical_available_percent: 5,
+    critical_swap_used_percent: 90,
+    elevated_available_percent: 10,
+    elevated_commit_used_percent: 90,
+    elevated_page_input_pages_per_second: 1_000,
     elevated_samples: 3,
   },
   disk: {

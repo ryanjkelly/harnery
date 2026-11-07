@@ -18,6 +18,7 @@ import { supervisorPaths } from "../supervisor/storage.ts";
 import {
   RESOURCE_SNAPSHOT_SCHEMA_VERSION,
   type ResourceDiskSample,
+  type ResourceHostMemoryStrain,
   type ResourceHostSample,
   type ResourceIoSample,
   type ResourceMachineSample,
@@ -192,6 +193,16 @@ export function readResourceStatus(
             state: value.host.state,
             machine: value.host.machine ? projectMachine(value.host.machine) : null,
             disks: value.host.disks.map(projectDisk),
+            ...(value.host.memory_strain
+              ? {
+                  memory_strain: {
+                    commit_used_bytes: value.host.memory_strain.commit_used_bytes,
+                    commit_limit_bytes: value.host.memory_strain.commit_limit_bytes,
+                    page_input_pages_per_second:
+                      value.host.memory_strain.page_input_pages_per_second,
+                  },
+                }
+              : {}),
             ...reason(value.host.reason),
           };
   }
@@ -273,7 +284,7 @@ export function formatResourceStatus(status: ResourceStatus, bin: string): strin
     );
   if (status.host)
     lines.push(
-      `Windows host: ${status.host.state}${status.host.machine ? `; CPU ${status.host.machine.cpu_percent === null ? "warming up" : `${Math.round(status.host.machine.cpu_percent)}%`}, RAM ${status.host.machine.memory_available_bytes === null ? "unknown" : `${formatBytes(status.host.machine.memory_available_bytes)} available`}` : `; ${status.host.reason ?? "unavailable"}`}`,
+      `Windows host: ${status.host.state}${status.host.machine ? `; CPU ${status.host.machine.cpu_percent === null ? "warming up" : `${Math.round(status.host.machine.cpu_percent)}%`}, RAM ${status.host.machine.memory_available_bytes === null ? "unknown" : `${formatBytes(status.host.machine.memory_available_bytes)} available`}${formatHostStrain(status.host.memory_strain)}` : `; ${status.host.reason ?? "unavailable"}`}`,
     );
   for (const disk of status.disks)
     lines.push(
@@ -296,9 +307,7 @@ export function formatResourceStatus(status: ResourceStatus, bin: string): strin
   }
   if (status.oom) {
     const oom = status.oom;
-    lines.push(
-      `OOM kills: ${oom.total_kills ?? "unknown"} total; ${oom.kills_since_last_sample ?? "unknown"} since previous sample${oom.last_kill_age_ms === null ? "" : `; last increase ${Math.round(oom.last_kill_age_ms / 1000)}s ago`}${oom.reason ? ` (${oom.reason})` : ""}.`,
-    );
+    lines.push(formatOomLine(oom));
   }
   if (status.io)
     lines.push(
@@ -314,6 +323,41 @@ export function formatResourceStatus(status: ResourceStatus, bin: string): strin
       lines.push(`  ${status.processes_omitted} other processes omitted.`);
   }
   return lines.join("\n");
+}
+
+/**
+ * New kills lead, and the cumulative total is labelled as history. The kernel
+ * counter only grows until the machine restarts, so a bare total reads as a
+ * current incident when it may be days old.
+ */
+function formatOomLine(oom: NonNullable<ResourceStatus["oom"]>): string {
+  const recent =
+    oom.kills_since_last_sample === null
+      ? "new kills since the previous sample unknown"
+      : oom.kills_since_last_sample === 0
+        ? "none new since the previous sample"
+        : `${oom.kills_since_last_sample} new since the previous sample`;
+  const last =
+    oom.last_kill_age_ms === null
+      ? ""
+      : `; last increase ${Math.round(oom.last_kill_age_ms / 1000)}s ago`;
+  const history =
+    oom.total_kills === null
+      ? ""
+      : `; ${oom.total_kills} counted since the kernel started, which is history, not current pressure`;
+  return `OOM kills: ${recent}${last}${history}${oom.reason ? ` (${oom.reason})` : ""}.`;
+}
+
+function formatHostStrain(strain: ResourceHostMemoryStrain | undefined): string {
+  if (!strain) return "";
+  const parts: string[] = [];
+  if (strain.commit_used_bytes !== null && strain.commit_limit_bytes)
+    parts.push(
+      `commit ${Math.round((strain.commit_used_bytes / strain.commit_limit_bytes) * 100)}% of limit`,
+    );
+  if (strain.page_input_pages_per_second !== null)
+    parts.push(`${Math.round(strain.page_input_pages_per_second)} pages/s read from disk`);
+  return parts.length ? `, ${parts.join(", ")}` : "";
 }
 
 /** Ownership is stated only when attribution is exact. */
@@ -707,6 +751,7 @@ function validSnapshot(v: unknown): v is ResourceSnapshot {
       !Array.isArray(v.host.disks) ||
       v.host.disks.length > 64 ||
       !v.host.disks.every(validDisk) ||
+      (v.host.memory_strain !== undefined && !validHostMemoryStrain(v.host.memory_strain)) ||
       (v.host.reason !== undefined && !string(v.host.reason)))
   )
     return false;
@@ -720,6 +765,15 @@ function validSnapshot(v: unknown): v is ResourceSnapshot {
       number(p.rss_bytes) &&
       ["agent", "service", "unattributed"].includes(p.owner_kind as string) &&
       (p.owner_id === null || string(p.owner_id)),
+  );
+}
+
+function validHostMemoryStrain(value: unknown): boolean {
+  return (
+    object(value) &&
+    nullable(value.commit_used_bytes) &&
+    nullable(value.commit_limit_bytes) &&
+    nullable(value.page_input_pages_per_second)
   );
 }
 

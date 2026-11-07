@@ -206,11 +206,15 @@ function evaluateCandidates(input: {
       machine.cpu_percent!,
       "percent",
     );
+  // Memory in use is capacity, not contention: a cache-heavy machine sits high
+  // while nothing waits. It is reported as information so no reader treats it
+  // as the reason work should wait; the stall, kill, and reclaim findings and
+  // the pressure assessment carry that judgement.
   if ((machine.memory_percent ?? 0) >= MACHINE_MEMORY_THRESHOLD)
     addMachine(
       "machine.memory-pressure",
-      "critical",
-      `Machine memory is ${machine.memory_percent}%.`,
+      "info",
+      memoryCapacitySummary("Machine", machine.memory_percent!),
       machine.memory_percent!,
       "percent",
     );
@@ -311,7 +315,7 @@ function evaluateCandidates(input: {
     );
     for (const [kind, value, threshold, severity] of [
       ["cpu", host.machine.cpu_percent, MACHINE_CPU_THRESHOLD, "warning"],
-      ["memory", host.machine.memory_percent, MACHINE_MEMORY_THRESHOLD, "critical"],
+      ["memory", host.machine.memory_percent, MACHINE_MEMORY_THRESHOLD, "info"],
     ] as const) {
       if (value === null || value < threshold) continue;
       out.push(
@@ -320,7 +324,9 @@ function evaluateCandidates(input: {
           severity,
           "machine",
           "windows-host",
-          `Windows host ${kind} is ${value}%.`,
+          kind === "memory"
+            ? memoryCapacitySummary("Windows host", value)
+            : `Windows host ${kind} is ${value}%.`,
           hostSource,
           value,
           "percent",
@@ -1002,4 +1008,8 @@ function severityRank(value: SupervisorFindingSeverity): number {
 }
 function round1(value: number): number {
   return Math.round(value * 10) / 10;
+}
+
+function memoryCapacitySummary(subject: string, percent: number): string {
+  return `${subject} memory is ${percent}% used. That is capacity in use, not contention; the pressure assessment decides whether work should wait.`;
 }

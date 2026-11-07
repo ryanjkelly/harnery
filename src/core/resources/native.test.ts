@@ -291,6 +291,60 @@ describe("Windows host resources for WSL", () => {
     expect(result.machine?.swap_total_bytes).toBe(0);
   });
 
+  test("reads host commit and forms a page-in rate only from a consecutive counter pair", () => {
+    const strained = windowsFixture({
+      commit_limit_kib: "104857600",
+      commit_free_kib: "10485760",
+      pages_input_total: 5_000,
+    });
+    const first = parseWindowsResourceOutput(strained, 1_000);
+    expect(first.memory_strain).toEqual({
+      commit_used_bytes: 94_371_840 * 1_024,
+      commit_limit_bytes: 104_857_600 * 1_024,
+      page_input_pages_per_second: null,
+    });
+    const at = Date.parse("2026-09-03T06:00:00.000Z");
+    expect(
+      parseWindowsResourceOutput(strained, 1_000, { pages_input_total: 3_500, at_ms: at - 15_000 })
+        .memory_strain?.page_input_pages_per_second,
+    ).toBe(100);
+    // A smaller total is a 32-bit wrap or a restart, never a negative rate.
+    expect(
+      parseWindowsResourceOutput(strained, 1_000, { pages_input_total: 9_000, at_ms: at - 15_000 })
+        .memory_strain?.page_input_pages_per_second,
+    ).toBeNull();
+    // A baseline from long ago averages away anything happening now.
+    expect(
+      parseWindowsResourceOutput(strained, 1_000, { pages_input_total: 0, at_ms: at - 600_000 })
+        .memory_strain?.page_input_pages_per_second,
+    ).toBeNull();
+  });
+
+  test("a missing commit or page-in counter leaves that strain signal unknown", () => {
+    const result = parseWindowsResourceOutput(windowsFixture({ commit_free_kib: "9" }), 1_000);
+    expect(result.state).toBe("supported");
+    expect(result.memory_strain).toEqual({
+      commit_used_bytes: null,
+      commit_limit_bytes: null,
+      page_input_pages_per_second: null,
+    });
+  });
+
+  test("the collector carries the page-in counter between refreshes", () => {
+    const collect = createWindowsHostCollector();
+    let total = 1_000;
+    const command = () => {
+      const sampledAt = new Date(Date.parse("2026-09-03T06:00:00.000Z") + (total - 1_000) * 10);
+      return windowsFixture({ sampled_at: sampledAt.toISOString(), pages_input_total: total });
+    };
+    expect(collect({ command, nowMs: 0 }).memory_strain?.page_input_pages_per_second).toBeNull();
+    // 1,500 more pages over the 15 seconds the fixture clock advances.
+    total = 2_500;
+    expect(collect({ command, nowMs: 16_000 }).memory_strain?.page_input_pages_per_second).toBe(
+      100,
+    );
+  });
+
   test("rejects malformed required data without converting null or garbage into free memory", () => {
     for (const output of [
       "",

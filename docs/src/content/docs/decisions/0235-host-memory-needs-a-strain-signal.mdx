@@ -1,0 +1,79 @@
+---
+title: "ADR 0235: host memory needs a strain signal"
+description: Raise the Windows host only when low availability comes with commit or paging strain, name the cause of a raised state, and label capacity readings as capacity.
+sidebar:
+  order: 235
+---
+
+**Date:** 2026-11-06
+**Status:** Accepted
+
+## Context
+
+A WSL guest with no memory stall, 13 GiB available, swap 40 percent occupied
+and nothing being written to it held the combined pressure state at elevated
+for hours, and agents declined to start heavy work. The cause was the Windows
+host: 64 GiB of memory with 8.9 percent available, because a large VM and
+several browsers were open. Commit stood at 87 percent of its limit and hard
+page-ins ran at about 80 pages a second, so nothing on the host was waiting on
+memory either.
+
+The host rule raised elevated whenever available memory fell under ten percent,
+on a single sample, with no other condition. That contradicts the assessment's
+own premise, that state comes from contention evidence and that memory
+occupancy is capacity. The guest side already follows that premise; the host
+side did not, because Windows exposes no stall measure to build on. A host
+hovering near the bar also never completed the five clear samples the recovery
+dwell asks for, so the state stayed raised.
+
+Agents then explained the refusal from the numbers they were shown. The summary
+said only "under elevated memory contention", so the reader looked for a figure
+to blame. The supervisor reported machine and host memory above 85 percent used
+as critical findings, and status printed the kernel's cumulative kill total
+first, which read as a current incident when the kills were a week old.
+
+## Alternatives considered
+
+- Lower the availability bar to five percent. A host can sit at five percent
+  without strain, and can thrash at twelve. A different number on the same
+  measurement keeps the same failure.
+- Count host commit alone. Commit near its limit predicts failed allocations,
+  but working sets can exceed physical memory, and pages can be read back from
+  disk constantly, with commit well clear of its limit.
+- Use the formatted page-in counter or a named performance counter query. The
+  formatted class reads zero on a fresh connection, and counter paths are
+  localised, so neither works from a short-lived probe on every machine.
+- Drop the host dimension. The host can starve a guest that reports no stall of
+  its own, and an exhausted host is worth reporting.
+
+## Decision
+
+The host block of a snapshot carries commit used and its limit, read from the
+operating system query the probe already runs, and the hard page-in rate,
+formed from the raw `PagesInputPersec` counter across two consecutive host
+samples. The counter query has its own two-second timeout, because its provider
+can take several seconds to load cold and must not cost the rest of the sample.
+A decrease is a wrap or a restart and yields no rate, and a baseline older than
+two minutes yields none either.
+
+The host enters elevated when available memory is under ten percent and either
+commit is at 90 percent of its limit or more, or at least 1,000 pages a second
+are read back from disk, held for three samples. Exhaustion of both memory and
+the page file stays critical on one sample. The host thresholds move into their
+own policy section, and the policy version moves to 3.
+
+A raised state's summary carries the reason that set it. When the host is under
+the availability bar without strain, the summary says the host is using its
+capacity and that this does not hold back work. Machine and host memory
+occupancy findings become information and say that they are capacity. Status
+leads the kill line with kills new since the previous sample and labels the
+cumulative total as history.
+
+## Result
+
+The recorded case reads normal on every sample and tells the reader why the low
+host figure is not the cause. A host that is short of memory and paging, or
+close to its commit limit, still raises the state, after the same three-sample
+streak the guest's availability rule uses. Frozen replays from policy version 2
+are invalidated by design. Native Windows snapshots do not carry a host block,
+so their machine availability rule is unchanged by this decision.

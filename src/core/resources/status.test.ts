@@ -161,7 +161,9 @@ describe("cached resource status", () => {
     const report = formatResourceStatus(status, "project");
     expect(report).toContain("Full memory stalls: 70% / 30% / 5%");
     expect(report).toContain("rising");
-    expect(report).toContain("OOM kills: 4 total; 1 since previous sample");
+    expect(report).toContain(
+      "OOM kills: 1 new since the previous sample; last increase 0s ago; 4 counted since the kernel started, which is history, not current pressure.",
+    );
   });
 
   test("rejects future and unparseable timestamps, tolerating small clock skew", () => {
@@ -406,5 +408,29 @@ describe("cached resource status", () => {
       machine: null,
       reason: "host_snapshot_stale",
     });
+  });
+
+  test("carries host commit and page-in readings into the status line", () => {
+    const snapshot = resourceStatusFixture(root, nowMs);
+    writePrivateJsonAtomic(resourcePaths(root).snapshot, {
+      ...snapshot,
+      host: {
+        platform: "win32",
+        sampled_at: new Date(nowMs - 5_000).toISOString(),
+        state: "supported",
+        machine: snapshot.machine,
+        disks: [],
+        memory_strain: {
+          commit_used_bytes: 87 * 1_024 ** 3,
+          commit_limit_bytes: 100 * 1_024 ** 3,
+          page_input_pages_per_second: 83.4,
+        },
+      },
+    });
+    const status = readResourceStatus(root, { nowMs });
+    expect(status.host?.memory_strain?.page_input_pages_per_second).toBe(83.4);
+    expect(formatResourceStatus(status, "harn")).toContain(
+      ", commit 87% of limit, 83 pages/s read from disk",
+    );
   });
 });

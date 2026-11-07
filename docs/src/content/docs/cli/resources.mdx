@@ -81,7 +81,15 @@ change of state is written to the supervisor log as a
 past episode can be explained after it clears. A dimension the platform does not expose is reported as
 unavailable and never read as spare capacity, so a partial platform cannot
 produce a falsely healthy answer. In WSL the Windows host is assessed
-separately and can only raise the combined state, never mask the guest.
+separately and can only raise the combined state, never mask the guest. Windows
+has no stall measure, and a host running a large VM routinely has little memory
+available while nothing waits on it, so low availability raises the host only
+beside a strain signal: commit at 90 percent of its limit or more, or at least
+1,000 pages a second read back from disk, held for three samples. Exhaustion of
+both memory and the page file is critical on its own. When the host is low on
+available memory without strain, the summary says that this is capacity in use
+and does not hold back work. A raised state's summary names the reason that set
+it.
 
 Guidance is given per kind of work, because the answer differs: reads and small
 edits, CPU-heavy builds and tests, memory-heavy browser and QA captures, and
@@ -138,7 +146,12 @@ only the workspace and temporary filesystems; they never walk directory contents
 
 A WSL snapshot describes the Linux environment. It includes a separate Windows
 host section when Windows interop and CIM providers are available. That section
-reports CPU, memory, pagefiles, and fixed-volume capacity. The Windows probe is
+reports CPU, memory, pagefiles, fixed-volume capacity, commit against its limit,
+and the hard page-in rate. The page-in rate comes from a locale-independent raw
+counter and needs two consecutive host samples, so the first is unknown; the
+counter has its own short timeout, so a slow provider costs only that reading.
+Status prints the cumulative OOM kill count as history and leads with the kills
+new since the previous sample. The Windows probe is
 cached for 15 seconds, including failures. Supervisor probes run in the background
 and coalesce while one query is in flight, so WSL sampling does not wait for
 Windows. Pending host measurements are explicit. It does not allocate shared Windows
