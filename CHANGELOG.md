@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.49.1
+
+### Patch Changes
+
+- 9ead286: Fix several command and coordination bugs found in a code review:
+
+  - `grep --no-default-excludes` now disables the default skip list; the flag was parsed but never applied.
+  - `storage maintain --dry-run` now refuses to run with `--transaction` instead of executing the transaction anyway.
+  - `run` and `approval` next-step hints name the real commands (`run resume`, `run integration apply|prepare`, `run cleanup`, `approval approve`) instead of a nonexistent `workflow` command.
+  - `agents trace --since` reports an unsupported window instead of silently showing no events, and its text view no longer prints the JSON payload first.
+  - A journal entry body that contains a `## ` markdown heading is no longer dropped when the journal is rewritten.
+  - One malformed `.name-history` row no longer erases every agent's name binding.
+  - Resuming a workflow tolerates a torn last transcript line.
+  - The claim guard logs a failed claim read instead of swallowing it.
+  - Agent-facing hints from `init`, `work`, `doctor`, council messages, and the backup scheduler use the host's command name instead of a literal `harn`.
+  - `docs` git calls pass file names as arguments rather than through a shell.
+  - Removed unused internal functions.
+
+- 732450e: Council hints in agent messages, session context, the council invite, and the fallback instruction block now name the real `council` commands (`council show`, `council contribute`, `council archive`, `council list --mine`) instead of the removed `agents council` group.
+- f444cd1: The pid-map, hook run-marker, and supervisor service liveness checks share one probe that never treats a process id of zero or below as alive. Signal 0 sent to id 0 reaches the caller's own process group, so a missing id could previously read as a live process.
+- f459bf7: Stop low Windows host memory from raising resource pressure on its own. The host now also reports commit against its limit and the hard page-in rate, and is raised only when low availability comes with one of those strain signals for three samples. Raised states name their cause, host and machine memory-occupancy findings are reported as information, and status labels the cumulative OOM kill count as history.
+- 2802523: Read every relative duration flag (`events --since/--until`, `admission history --since`, `web performance --since`, `storage maintain --budget`, `backup snapshot --if-stale`, `agents` timeouts) with one parser, so each accepts the same units: `ms`, `s`, `m`, `h`, `d`, `w`, case-insensitive, with decimals such as `1.5h`. Each command keeps its own limits.
+- 897e1be: Probe process liveness through two shared helpers instead of twenty private copies. Lock, lease and admission-slot owners recorded with a process id of 0, a negative id or a non-integer now count as gone, so a corrupt owner record can no longer hold a lock forever. Tunnel and presence-relay status now count a process owned by another user as running.
+- dad2448: Judge native Windows memory by the strain rule as well, so low available memory alone no longer raises resource pressure there, and count commit near its limit as strain only when the paging file cannot grow.
+- 049618e: Find `cmd.exe` and `powershell.exe` at their standard Windows paths under WSL when the process has no Windows folders on PATH. A dashboard or service started outside an interactive shell now reports installed desktop drivers correctly and can show the computer-use confirmation pop-up.
+
 ## 0.49.0
 
 ### Minor Changes
