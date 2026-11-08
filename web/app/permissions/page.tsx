@@ -226,6 +226,7 @@ function ClaudeRow({ report }: { report: PermissionsReport }) {
   const e = c.effective;
   const bypass = claudeBypasses(c);
   const errors = c.sources.filter((s) => s.error);
+  const userSettings = c.sources.find((s) => s.scope === "user")?.path;
   return (
     <ToolRow
       id="claude"
@@ -240,6 +241,15 @@ function ClaudeRow({ report }: { report: PermissionsReport }) {
           {" (this computer only), or use "}
           <Code>/permissions</Code>
           {" inside Claude Code."}
+          {userSettings ? (
+            <>
+              {" Your own settings were read from "}
+              <Code>{userSettings}</Code>
+              {
+                "; a Claude Code session started with a different CLAUDE_CONFIG_DIR uses that folder instead."
+              }
+            </>
+          ) : null}
         </>
       }
     >
