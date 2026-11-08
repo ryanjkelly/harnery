@@ -81,15 +81,15 @@ Next 16 App Router + React 19 + Tailwind v4 (geist font, lucide icons). `next de
 - **RSC-first.** Pages are server components reading `.harnery/` via `fs` per request; `"use client"` only at interactive leaves.
 - **Writes prefer the CLI.** Council mutations shell `bin/agent-coord` / `bin/harn` (`web/lib/council-writer.ts`). Direct fs writes are reserved for operator escape hatches (`web/lib/coord-writer.ts`: release claim, ping, end session; deliberately no flock since they're operator-initiated and low-frequency). New write paths default to shelling the CLI.
 - **Liveness:** ride the shared `useLiveSignal` hook (SSE with poll fallback; Cloudflare quick tunnels buffer SSE, so never EventSource-only) and the globally-mounted `LiveRefresher` (`router.refresh()` on coord-layer change). Don't roll new polling.
-- **Codec card discrepancies:** When a live `/codec` card looks stale, wrong, or missing, use
-  **Snapshot and compare cards** before reloading the page. It preserves the values driving the
-  visible cards and compares local cards with a fresh V3 coordination read; later scene refreshes
-  lose the disputed state. The server cannot run this check on its own because it does not know
-  which scene the browser is showing. Inspect the field-level findings and download the JSON
-  report when the evidence must outlast the browser's 10-report history. `unverified` is not a
-  match, remote cards need a check on their source machine, and a zero-difference report covers
-  only the compared fields. Use `/codec/debug` for synthetic reproduction, not to validate a live
-  agent. See [ADR 0191](docs/src/content/docs/decisions/0191-compare-codec-card-snapshots.mdx) and
+- **Codec card discrepancies:** when a live `/codec` card looks stale, wrong, or missing, click
+  **Snapshot and compare cards** before reloading. It keeps the values behind the visible cards
+  (later scene refreshes lose them) and compares them with a fresh V3 coordination read, which the
+  server cannot do alone because it does not know which scene the browser shows. Check the
+  field-level findings; download the JSON report when evidence must outlast the browser's
+  10-report history. `unverified` is not a match, remote cards need a check on their source
+  machine, and a zero-difference report covers only the compared fields. `/codec/debug` is for
+  synthetic reproduction, not for validating a live agent. See
+  [ADR 0191](docs/src/content/docs/decisions/0191-compare-codec-card-snapshots.mdx) and
   [the comparison code](web/lib/codec/card-audit.ts).
 - **Shared layout:** pages render in `PageShell` (nav + `<main>` width: `wide` by default, `prose`/`narrow` for forms and one-column reading, `fill` for self-scrolling tools) and open with `PageHeader`; bodies use `components/layout/` (`Section`, `Eyebrow`, `EmptyState`, `Notice`) and `components/ui/` (`Badge`, `StatusBadge`, `Table`, `KeyValueList`, …). Extend these rather than hand-roll a local copy.
 - **Colour grammar:** one map, `lib/tone.ts`: `act` = sky (act now / working live), `done` = emerald, `warn` = amber, `danger` = red, `accent` = purple, `neutral` = wait; `live-dot` = working live. Use a `tone` prop or `TONE[tone]`, never raw palette classes; don't invent state colours. Every page must work light and dark.
