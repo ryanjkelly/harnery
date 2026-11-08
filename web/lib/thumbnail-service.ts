@@ -149,6 +149,12 @@ async function renderSource(
     theme,
   });
 }
+/** Folder grids sit on a backing that matches the dashboard theme. */
+const FOLDER_BACKING: Record<ThumbnailTheme, { tile: string; sheet: string }> = {
+  dark: { tile: "#101820", sheet: "#18232f" },
+  light: { tile: "#f8fafc", sheet: "#e2e8f0" },
+};
+
 async function generate(
   sources: Source[],
   root: string,
@@ -167,12 +173,13 @@ async function generate(
     }
     if (!images.length) throw new Error("thumbnail_unavailable");
     if (!folder) return images[0];
+    const backing = FOLDER_BACKING[theme];
     const tiles = await Promise.all(
       images.map((image) =>
-        sharp(image).resize(174, 110, { fit: "contain", background: "#101820" }).toBuffer(),
+        sharp(image).resize(174, 110, { fit: "contain", background: backing.tile }).toBuffer(),
       ),
     );
-    return sharp({ create: { width: 360, height: 240, channels: 3, background: "#18232f" } })
+    return sharp({ create: { width: 360, height: 240, channels: 3, background: backing.sheet } })
       .composite(
         tiles.map((input, index) => ({
           input,
@@ -286,8 +293,10 @@ export async function serveFileThumbnail(
           root,
           rel,
           folder,
-          // Only drawn text previews differ by theme; images share one entry.
-          sources.some(({ file }) => THEMED_CATEGORIES.has(file.category)) ? theme : "any",
+          // Text previews and folder grids differ by theme; single images share one entry.
+          folder || sources.some(({ file }) => THEMED_CATEGORIES.has(file.category))
+            ? theme
+            : "any",
           dependencies,
           sources.map((s) => [
             s.file.relPath,
