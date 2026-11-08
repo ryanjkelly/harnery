@@ -53,13 +53,8 @@ describe("OpenClaw native fixture intake", () => {
     ).toThrow("capture_contains_raw_array:event.params.items");
   });
 
-  test("writes collision-safe owner-only fixture files", () => {
-    const root = mkdtempSync(join(tmpdir(), "harnery-openclaw-fixture-intake-"));
-    try {
-      const input = join(root, "capture.jsonl");
-      const output = join(root, "fixtures");
-      writeFileSync(input, captureJsonl());
-      const paths = writeCaptureFixtures(input, output, "2026.7.1-2");
+  test("writes collision-safe fixture files", () => {
+    withFixtures((input, output, paths) => {
       expect(paths.map((path) => path.slice(output.length + 1))).toEqual(
         OPENCLAW_HOOKS.map((hook) => `${hook.replaceAll("_", "-")}.json`),
       );
@@ -67,14 +62,30 @@ describe("OpenClaw native fixture intake", () => {
         expect(JSON.parse(readFileSync(path, "utf8"))).toMatchObject({
           source: { kind: "native_capture" },
         });
-        expect(statSync(path).mode & 0o777).toBe(0o600);
       }
       expect(() => writeCaptureFixtures(input, output, "2026.7.1-2")).toThrow();
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
+    });
+  });
+
+  // Windows has no POSIX mode bits to check, so this is skipped there, not passed.
+  test.skipIf(process.platform === "win32")("writes owner-only fixture files", () => {
+    withFixtures((_input, _output, paths) => {
+      for (const path of paths) expect(statSync(path).mode & 0o777).toBe(0o600);
+    });
   });
 });
+
+function withFixtures(check: (input: string, output: string, paths: string[]) => void): void {
+  const root = mkdtempSync(join(tmpdir(), "harnery-openclaw-fixture-intake-"));
+  try {
+    const input = join(root, "capture.jsonl");
+    const output = join(root, "fixtures");
+    writeFileSync(input, captureJsonl());
+    check(input, output, writeCaptureFixtures(input, output, "2026.7.1-2"));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
 
 function captureJsonl(hooks: readonly OpenClawHookName[] = OPENCLAW_HOOKS): string {
   const byHook = new Map(captureRows().map((row) => [row.hook, row]));

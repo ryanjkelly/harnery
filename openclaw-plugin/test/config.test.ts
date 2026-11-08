@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { resolve, sep } from "node:path";
 import {
   DEFAULT_RECORD_QUEUE_CAPACITY,
   defaultOpenClawStateRoot,
@@ -14,13 +15,13 @@ describe("OpenClaw plugin configuration", () => {
         home: "/portable/runtime-user",
       },
     );
-    expect(config.ledgerRoot).toBe("/srv/gateway-state/harnery");
-    expect(config.logRoot).toBe("/srv/gateway-state/logs/harnery");
+    expect(config.ledgerRoot).toBe(resolve("/srv/gateway-state", "harnery"));
+    expect(config.logRoot).toBe(resolve("/srv/gateway-state", "logs", "harnery"));
   });
 
   test("falls back to the runtime user's home without a host-specific account", () => {
     expect(defaultOpenClawStateRoot({}, "/portable/runtime-user")).toBe(
-      "/portable/runtime-user/.openclaw",
+      resolve("/portable/runtime-user", ".openclaw"),
     );
   });
 
@@ -29,8 +30,8 @@ describe("OpenClaw plugin configuration", () => {
       { ledgerRoot: "./ledger", logRoot: "./logs", queueCapacity: 0 },
       { env: {}, home: "/portable/runtime-user" },
     );
-    expect(explicit.ledgerRoot.endsWith("/ledger")).toBe(true);
-    expect(explicit.logRoot.endsWith("/logs")).toBe(true);
+    expect(explicit.ledgerRoot.endsWith(`${sep}ledger`)).toBe(true);
+    expect(explicit.logRoot.endsWith(`${sep}logs`)).toBe(true);
     expect(explicit.queueCapacity).toBe(1);
     expect(
       parsePluginConfig({ queueCapacity: 10_000 }, { env: {}, home: "/portable/runtime-user" })

@@ -87,8 +87,3 @@ export function exec(cmd: string[], opts: ExecOpts = {}): Promise<ExecResult> {
     proc.on("close", (code) => finish(code ?? 1));
   });
 }
-
-/** Run a shell command via /bin/sh -c (for pipes, redirects, etc.) */
-export async function sh(command: string, opts: Omit<ExecOpts, "trim"> = {}): Promise<ExecResult> {
-  return exec(["sh", "-c", command], opts);
-}

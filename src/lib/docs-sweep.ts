@@ -1,7 +1,7 @@
 import { existsSync as __existsSyncForDocs } from "node:fs";
 import { resolve as __resolveForDocs } from "node:path";
 import { parseFrontmatter, readDocStatus } from "./docs-frontmatter.ts";
-import { sh } from "./exec.ts";
+import { exec } from "./exec.ts";
 
 // Module-level docs context, initialized by initDocsContext() before any
 // other function in this file is called. The repo root + submodule list
@@ -23,7 +23,7 @@ function isSubmoduleInitialized(name: string): boolean {
 }
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, posix, relative, sep } from "node:path";
 
 /**
  * Surfaces stalled lifecycle states across the monorepo: plans in-progress
@@ -101,7 +101,7 @@ export function parseDocsAgeLog(stdout: string, nowMs: number = Date.now()): Age
  * so we take the full history for accurate ages on old files.
  */
 async function loadDocsAges(cwd: string): Promise<AgeMap> {
-  const result = await sh(`git log --format="COMMIT %aI" --name-only -- docs/`, {
+  const result = await exec(["git", "log", "--format=COMMIT %aI", "--name-only", "--", "docs/"], {
     cwd,
     timeout: 120_000,
   });
@@ -116,7 +116,7 @@ function ageDays(ages: AgeMap, rel: string): number | null {
 
 /** Days since ANY commit in the repo (measures repo activity) */
 async function lastRepoCommitAgeDays(cwd: string): Promise<number | null> {
-  const result = await sh("git log -1 --format=%aI", { cwd });
+  const result = await exec(["git", "log", "-1", "--format=%aI"], { cwd });
   if (result.exitCode !== 0 || !result.stdout.trim()) return null;
   const ms = Date.now() - new Date(result.stdout.trim()).getTime();
   return Math.floor(ms / (1000 * 60 * 60 * 24));
@@ -157,8 +157,8 @@ function sweepPlans(repoName: string, repoPath: string, items: SweepItem[]): voi
   if (!existsSync(plansDir)) return;
 
   for (const full of walkMdFiles(plansDir, true)) {
-    const rel = relative(repoPath, full);
-    const displayPath = join(repoName === "(root)" ? "" : repoName, rel);
+    const rel = relative(repoPath, full).split(sep).join("/");
+    const displayPath = posix.join(repoName === "(root)" ? "" : repoName, rel);
     const isArchived = rel.includes("/archive/");
     const status = readDocStatus(full, "plan");
     const age = metadataAgeDays(full, "status_changed_at");
@@ -192,8 +192,8 @@ function sweepIssues(repoName: string, repoPath: string, items: SweepItem[]): vo
   for (const entry of readdirSync(issuesDir)) {
     if (!entry.endsWith(".md") || entry === "README.md") continue;
     const full = join(issuesDir, entry);
-    const rel = join("docs", "issues", entry);
-    const displayPath = join(repoName === "(root)" ? "" : repoName, rel);
+    const rel = posix.join("docs", "issues", entry);
+    const displayPath = posix.join(repoName === "(root)" ? "" : repoName, rel);
     const status = readDocStatus(full, "issue");
     if (status !== "open") continue;
     const age = metadataAgeDays(full, "status_changed_at");
@@ -213,12 +213,12 @@ function sweepHandoffs(repoName: string, repoPath: string, items: SweepItem[]): 
   if (!existsSync(handoffsDir)) return;
 
   for (const full of walkMdFiles(handoffsDir)) {
-    const rel = relative(repoPath, full);
+    const rel = relative(repoPath, full).split(sep).join("/");
     const status = readDocStatus(full, "handoff");
     if (status !== "open") continue;
     const age = metadataAgeDays(full, "status_changed_at");
     if (age == null || age <= COLD_HANDOFF_DAYS) continue;
-    const displayPath = join(repoName === "(root)" ? "" : repoName, rel);
+    const displayPath = posix.join(repoName === "(root)" ? "" : repoName, rel);
     items.push({
       kind: "cold-handoff",
       repo: repoName,
@@ -237,11 +237,11 @@ function sweepRunbooks(repoName: string, repoPath: string, items: SweepItem[]): 
     if (metadata.schema !== "harnery-doc/v2" || metadata.type !== "runbook") continue;
     const age = metadataAgeDays(runbook, "reviewed_at");
     if (age == null || age <= RUNBOOK_DAYS) continue;
-    const rel = relative(repoPath, runbook);
+    const rel = relative(repoPath, runbook).split(sep).join("/");
     items.push({
       kind: "runbook-unverified",
       repo: repoName,
-      path: join(repoName === "(root)" ? "" : repoName, rel),
+      path: posix.join(repoName === "(root)" ? "" : repoName, rel),
       ageDays: age,
       message: `runbook has not been reviewed for ${age}d; verify it with docs metadata sync --reviewed`,
     });
@@ -283,10 +283,10 @@ function sweepTopicDocs(
     if (!st.isDirectory()) continue;
 
     for (const full2 of walkMdFiles(full)) {
-      const rel = relative(repoPath, full2);
+      const rel = relative(repoPath, full2).split(sep).join("/");
       const age = ageDays(ages, rel);
       if (age == null || age <= TOPIC_DOC_DAYS) continue;
-      const displayPath = join(repoName === "(root)" ? "" : repoName, rel);
+      const displayPath = posix.join(repoName === "(root)" ? "" : repoName, rel);
       items.push({
         kind: "topic-doc-stale",
         repo: repoName,
@@ -312,7 +312,7 @@ async function sweepDecisions(
   // Only flag if the repo is active (recent commits) but decisions haven't moved
   if (age <= DECISIONS_DORMANT_DAYS) return;
   if (repoAge > 30) return; // repo itself is dormant, nothing to decide
-  const displayPath = join(repoName === "(root)" ? "" : repoName, "docs/decisions.md");
+  const displayPath = posix.join(repoName === "(root)" ? "" : repoName, "docs/decisions.md");
   items.push({
     kind: "decisions-dormant",
     repo: repoName,

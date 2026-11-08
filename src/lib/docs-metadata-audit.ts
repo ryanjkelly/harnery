@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { join, posix, relative, resolve, sep } from "node:path";
 import { parseFrontmatter } from "./docs-frontmatter.ts";
 import { isManagedDocsMetadataFile, managedDocsMetadataType } from "./docs-metadata-managed.ts";
 import {
@@ -53,7 +53,7 @@ function auditFile(
   if (content === undefined) {
     return {
       repo: repoName,
-      path: join(repoName === "(root)" ? "" : repoName, path),
+      path: posix.join(repoName === "(root)" ? "" : repoName, path),
       state: "missing",
       profile: null,
       issues: [
@@ -68,7 +68,7 @@ function auditFile(
   }
 
   const { data, raw } = parseFrontmatter(content);
-  const displayPath = join(repoName === "(root)" ? "" : repoName, path);
+  const displayPath = posix.join(repoName === "(root)" ? "" : repoName, path);
   if (!isManagedDocsMetadataFile(path, data, raw !== null)) return null;
   const expectedType = managedDocsMetadataType(path, data, raw !== null);
   if (isDocsMetadataV2(data)) {
@@ -144,7 +144,7 @@ export function auditDocsMetadataText(content: string, path: string): DocsMetada
     const result = validateDocsMetadataV2(parsed.data);
     return {
       repo: "(root)",
-      path: relative(root, resolve(root, path)),
+      path: relative(root, resolve(root, path)).split(sep).join("/"),
       state: result.valid ? "valid" : "invalid",
       profile: result.profile,
       issues: result.issues,

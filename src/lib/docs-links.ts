@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parseHTML } from "linkedom";
 import { type DocKind, readDocStatusFromText } from "./docs-frontmatter.ts";
-import { sh } from "./exec.ts";
+import { exec } from "./exec.ts";
 
 /**
  * Internal Markdown link checker.
@@ -147,7 +147,7 @@ function isExcluded(rel: string): boolean {
 }
 
 async function findMarkdownFiles(root: string): Promise<string[]> {
-  const result = await sh('git ls-files --cached "**/*.md" "*.md"', { cwd: root });
+  const result = await exec(["git", "ls-files", "--cached", "**/*.md", "*.md"], { cwd: root });
   if (result.exitCode !== 0 || !result.stdout) return [];
   return result.stdout
     .split("\n")

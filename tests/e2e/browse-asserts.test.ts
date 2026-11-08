@@ -71,7 +71,8 @@ describe("browse asserts", () => {
   test("CLI --assert emits results and --assert-fail exits 2 on failure", () => {
     const result = Bun.spawnSync({
       cmd: [
-        resolve(import.meta.dir, "../../bin/harn"),
+        process.execPath,
+        resolve(import.meta.dir, "../../src/cli.ts"),
         "browse",
         fixtureUrl,
         "--json",

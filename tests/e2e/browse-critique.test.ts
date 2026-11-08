@@ -184,7 +184,8 @@ describe("critique tiling + orchestration", () => {
   test("CLI --check-critique reports skipped when no provider is injected", () => {
     const result = Bun.spawnSync({
       cmd: [
-        resolve(import.meta.dir, "../../bin/harn"),
+        process.execPath,
+        resolve(import.meta.dir, "../../src/cli.ts"),
         "browse",
         fixtureUrl,
         "--json",

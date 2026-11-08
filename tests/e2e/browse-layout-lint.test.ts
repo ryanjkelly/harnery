@@ -150,7 +150,8 @@ describe("browse layout lint", () => {
   test("CLI forwards the explicit budget to both geometry and content", () => {
     const result = Bun.spawnSync({
       cmd: [
-        resolve(import.meta.dir, "../../bin/harn"),
+        process.execPath,
+        resolve(import.meta.dir, "../../src/cli.ts"),
         "browse",
         fixtureUrl,
         "--profile",
@@ -413,7 +414,8 @@ describe("browse layout lint", () => {
       const run = (value: string) =>
         Bun.spawnSync({
           cmd: [
-            resolve(import.meta.dir, "../../bin/harn"),
+            process.execPath,
+            resolve(import.meta.dir, "../../src/cli.ts"),
             "browse",
             pathToFileURL(fixture).href,
             "--json",
@@ -535,7 +537,8 @@ describe("browse layout lint", () => {
       const run = (...args: string[]) =>
         Bun.spawnSync({
           cmd: [
-            resolve(import.meta.dir, "../../bin/harn"),
+            process.execPath,
+            resolve(import.meta.dir, "../../src/cli.ts"),
             "browse",
             pageChecksFixtureUrl,
             "--json",
@@ -580,7 +583,8 @@ describe("browse layout lint", () => {
   test("CLI runt gate fails when its requested scope is missing", () => {
     const result = Bun.spawnSync({
       cmd: [
-        resolve(import.meta.dir, "../../bin/harn"),
+        process.execPath,
+        resolve(import.meta.dir, "../../src/cli.ts"),
         "browse",
         fixtureUrl,
         "--no-cookies",
@@ -620,7 +624,8 @@ describe("browse layout lint", () => {
   test("CLI emits every result family and exits 2 after a gated failure", () => {
     const result = Bun.spawnSync({
       cmd: [
-        resolve(import.meta.dir, "../../bin/harn"),
+        process.execPath,
+        resolve(import.meta.dir, "../../src/cli.ts"),
         "browse",
         fixtureUrl,
         "--json",
@@ -659,7 +664,8 @@ describe("browse layout lint", () => {
   test("CLI clip gate catches text overflow in a later selector match", () => {
     const result = Bun.spawnSync({
       cmd: [
-        resolve(import.meta.dir, "../../bin/harn"),
+        process.execPath,
+        resolve(import.meta.dir, "../../src/cli.ts"),
         "browse",
         fixtureUrl,
         "--json",
@@ -686,7 +692,8 @@ describe("browse layout lint", () => {
   test("CLI clip gate catches a visible child escaping its parent", () => {
     const result = Bun.spawnSync({
       cmd: [
-        resolve(import.meta.dir, "../../bin/harn"),
+        process.execPath,
+        resolve(import.meta.dir, "../../src/cli.ts"),
         "browse",
         fixtureUrl,
         "--json",
@@ -711,7 +718,8 @@ describe("browse layout lint", () => {
   test("CLI layout fail gates exit 2 when any geometry result is unknown", () => {
     const result = Bun.spawnSync({
       cmd: [
-        resolve(import.meta.dir, "../../bin/harn"),
+        process.execPath,
+        resolve(import.meta.dir, "../../src/cli.ts"),
         "browse",
         fixtureUrl,
         "--no-cookies",
@@ -742,7 +750,8 @@ describe("browse layout lint", () => {
     const browserProfile = profile();
     const result = Bun.spawnSync({
       cmd: [
-        resolve(import.meta.dir, "../../bin/harn"),
+        process.execPath,
+        resolve(import.meta.dir, "../../src/cli.ts"),
         "browse",
         fixtureUrl,
         "--no-cookies",
@@ -793,7 +802,8 @@ describe("browse layout lint", () => {
     const output = join(outputDir, "capture-non-convergent");
     const result = Bun.spawnSync({
       cmd: [
-        resolve(import.meta.dir, "../../bin/harn"),
+        process.execPath,
+        resolve(import.meta.dir, "../../src/cli.ts"),
         "browse",
         nonConvergentFixtureUrl,
         "--no-cookies",

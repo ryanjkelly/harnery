@@ -37,7 +37,7 @@ function isSubmoduleInitialized(name: string): boolean {
 }
 
 import { readFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, posix } from "node:path";
 import {
   createDocsRepositoryView,
   type DocsRepositorySource,
@@ -200,7 +200,7 @@ function checkEntryTier(
     violations.push({
       severity: "error",
       repo: repoName,
-      path: join(repoName === "(root)" ? "" : repoName, "README.md"),
+      path: posix.join(repoName === "(root)" ? "" : repoName, "README.md"),
       rule: "entry-tier",
       message: "README.md missing at repo root",
     });
@@ -210,7 +210,7 @@ function checkEntryTier(
     violations.push({
       severity: "error",
       repo: repoName,
-      path: join(repoName, "CLAUDE.md"),
+      path: posix.join(repoName, "CLAUDE.md"),
       rule: "entry-tier",
       message: "CLAUDE.md missing: primary LLM context file",
     });
@@ -225,7 +225,7 @@ function checkRootAllowlist(repoName: string, view: DocsRepositoryView): Violati
   for (const entry of entries) {
     if (!entry.endsWith(".md")) continue;
     if (ROOT_FILE_ALLOWLIST.has(entry)) continue;
-    const displayPath = join(repoName === "(root)" ? "" : repoName, entry);
+    const displayPath = posix.join(repoName === "(root)" ? "" : repoName, entry);
     if (FORBIDDEN_ROOT_NAMES.has(entry)) {
       violations.push({
         severity: "error",
@@ -265,7 +265,7 @@ function checkDocsRootAllowlist(repoName: string, view: DocsRepositoryView): Vio
     violations.push({
       severity: "error",
       repo: repoName,
-      path: join("docs", entry),
+      path: posix.join("docs", entry),
       rule: "docs-root-file",
       message: `${entry} is not allowed loose at docs/ root — move it into a docs/<topic>/ subdir (or add it to context.docsRootAllowlist if it's a genuine entry-tier doc)`,
     });
@@ -300,7 +300,7 @@ function checkNamingConvention(repoName: string, _repoPath: string, files: strin
       violations.push({
         severity: "error",
         repo: repoName,
-        path: join(repoName === "(root)" ? "" : repoName, rel),
+        path: posix.join(repoName === "(root)" ? "" : repoName, rel),
         rule: "screaming-snake-case",
         message: `filename ${name} uses SCREAMING_SNAKE_CASE; rename to kebab-case`,
       });
@@ -311,7 +311,7 @@ function checkNamingConvention(repoName: string, _repoPath: string, files: strin
       violations.push({
         severity: "warning",
         repo: repoName,
-        path: join(repoName === "(root)" ? "" : repoName, rel),
+        path: posix.join(repoName === "(root)" ? "" : repoName, rel),
         rule: "non-kebab-filename",
         message: `filename ${name} is not kebab-case`,
       });
@@ -334,7 +334,7 @@ function checkDatedDirs(repoName: string, _repoPath: string, files: string[]): V
         violations.push({
           severity: "error",
           repo: repoName,
-          path: join(repoName === "(root)" ? "" : repoName, rel),
+          path: posix.join(repoName === "(root)" ? "" : repoName, rel),
           rule: "undated-in-dated-dir",
           message: `${d} file must match YYYY-MM-DD_<slug>.md; got ${name}`,
         });
@@ -355,7 +355,7 @@ function checkChangelogNames(repoName: string, _repoPath: string, files: string[
       violations.push({
         severity: "error",
         repo: repoName,
-        path: join(repoName === "(root)" ? "" : repoName, rel),
+        path: posix.join(repoName === "(root)" ? "" : repoName, rel),
         rule: "bad-changelog-name",
         message: `changelog must match YYYY-MM.md; got ${name}`,
       });

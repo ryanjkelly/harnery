@@ -173,7 +173,7 @@ describe("Browser live session operations", () => {
     });
   });
 
-  test("writes owner-only screenshots and refuses to overwrite them", async () => {
+  test("writes screenshots and refuses to overwrite them", async () => {
     const browser = new Browser({ profileDir: profile(), navigationTimeout: 10_000 });
     browsers.push(browser);
     await browser.open();
@@ -184,10 +184,20 @@ describe("Browser live session operations", () => {
     expect(screenshot).toMatchObject({ path: output, revision: 1 });
     expect(screenshot.width).toBeGreaterThan(0);
     expect(screenshot.height).toBeGreaterThan(0);
-    expect(statSync(output).mode & 0o777).toBe(0o600);
     expect(await rejectionOf(browser.sessionScreenshot(output))).toMatchObject({
       code: "screenshot_exists",
     });
+  });
+
+  // Windows has no POSIX mode bits to check, so this is skipped there, not passed.
+  test.skipIf(process.platform === "win32")("writes owner-only screenshots", async () => {
+    const browser = new Browser({ profileDir: profile(), navigationTimeout: 10_000 });
+    browsers.push(browser);
+    await browser.open();
+    await browser.navigate(fixtureOrigin);
+    const output = join(profile(), "session.png");
+    await browser.sessionScreenshot(output);
+    expect(statSync(output).mode & 0o777).toBe(0o600);
   });
 
   test("keeps controlled tabs in the original proxied context", async () => {

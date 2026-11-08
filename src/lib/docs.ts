@@ -1,6 +1,6 @@
 import { existsSync as __existsSyncForDocs } from "node:fs";
 import { resolve as __resolveForDocs } from "node:path";
-import { exec, sh } from "./exec.ts";
+import { exec } from "./exec.ts";
 
 // Module-level docs context, initialized by initDocsContext() before any
 // other function in this file is called. The repo root + submodule list
@@ -126,8 +126,8 @@ function getTopDir(filePath: string): string {
 
 /** Get tracked .md files from a git repo */
 async function getTrackedMdFiles(cwd: string, prefix: string): Promise<string[]> {
-  // Use shell to avoid pathspec vs glob ambiguity; ** ensures recursive matching
-  const result = await sh('git ls-files --cached "**/*.md" "*.md"', { cwd });
+  // Git expands the pathspecs itself; ** matches in subdirectories.
+  const result = await exec(["git", "ls-files", "--cached", "**/*.md", "*.md"], { cwd });
   if (result.exitCode !== 0 || !result.stdout) return [];
 
   return result.stdout

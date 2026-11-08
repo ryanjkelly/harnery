@@ -64,7 +64,8 @@ describe("browse content checks", () => {
   ])("invalid scan budget %s refuses before browser work", (budget) => {
     const result = Bun.spawnSync({
       cmd: [
-        resolve(import.meta.dir, "../../bin/harn"),
+        process.execPath,
+        resolve(import.meta.dir, "../../src/cli.ts"),
         "browse",
         fixtureUrl,
         "--check-placeholder",
@@ -208,7 +209,8 @@ describe("browse content checks", () => {
   test("CLI emits content families and exits 2 after a gated failure", () => {
     const result = Bun.spawnSync({
       cmd: [
-        resolve(import.meta.dir, "../../bin/harn"),
+        process.execPath,
+        resolve(import.meta.dir, "../../src/cli.ts"),
         "browse",
         fixtureUrl,
         "--json",
@@ -244,7 +246,8 @@ describe("browse content checks", () => {
       const run = (...args: string[]) =>
         Bun.spawnSync({
           cmd: [
-            resolve(import.meta.dir, "../../bin/harn"),
+            process.execPath,
+            resolve(import.meta.dir, "../../src/cli.ts"),
             "browse",
             fixtureUrl,
             "--json",
@@ -281,7 +284,8 @@ describe("browse content checks", () => {
   test("contrast fail gate rejects an inconclusive result", () => {
     const result = Bun.spawnSync({
       cmd: [
-        resolve(import.meta.dir, "../../bin/harn"),
+        process.execPath,
+        resolve(import.meta.dir, "../../src/cli.ts"),
         "browse",
         fixtureUrl,
         "--json",

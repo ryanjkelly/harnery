@@ -5,7 +5,7 @@ import { parseFrontmatter } from "./docs-frontmatter.ts";
 import { managedDocsMetadataType } from "./docs-metadata-managed.ts";
 import { isDocsMetadataV2, validateDocsMetadataV2 } from "./docs-metadata-v2.ts";
 import { createDocsRepositoryView } from "./docs-repository-view.ts";
-import { exec, sh } from "./exec.ts";
+import { exec } from "./exec.ts";
 
 let REPO_ROOT = "";
 let SUBMODULES: readonly string[] = [];
@@ -51,23 +51,26 @@ function targets(repo?: string): Target[] {
   return selected;
 }
 
-async function gitMarkdownPaths(target: Target, command: string): Promise<string[]> {
-  const result = await sh(command, { cwd: target.path });
-  if (result.exitCode !== 0) throw new Error(result.stderr || `${command} failed`);
+// argv form, never a shell: there is no `sh` on a native Windows host.
+async function gitMarkdownPaths(target: Target, args: string[]): Promise<string[]> {
+  const result = await exec(["git", ...args, "--", "*.md"], { cwd: target.path });
+  if (result.exitCode !== 0) throw new Error(result.stderr || `git ${args.join(" ")} failed`);
   return result.stdout.split("\n").filter(Boolean);
 }
 
 async function changedFiles(target: Target, explicit: string[], check: boolean): Promise<string[]> {
   if (explicit.length > 0) return explicit;
-  const staged = await gitMarkdownPaths(
-    target,
-    "git diff --cached --name-only --diff-filter=ACMR -- '*.md'",
-  );
+  const staged = await gitMarkdownPaths(target, [
+    "diff",
+    "--cached",
+    "--name-only",
+    "--diff-filter=ACMR",
+  ]);
   if (check) return staged;
 
   const [unstaged, untracked] = await Promise.all([
-    gitMarkdownPaths(target, "git diff --name-only --diff-filter=ACMR -- '*.md'"),
-    gitMarkdownPaths(target, "git ls-files --others --exclude-standard -- '*.md'"),
+    gitMarkdownPaths(target, ["diff", "--name-only", "--diff-filter=ACMR"]),
+    gitMarkdownPaths(target, ["ls-files", "--others", "--exclude-standard"]),
   ]);
   return [...new Set([...staged, ...unstaged, ...untracked])];
 }

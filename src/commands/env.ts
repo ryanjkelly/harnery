@@ -2,7 +2,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext, EnvCheck, EnvSection, HarneryProgramContext } from "../commander.ts";
-import { exec, sh } from "../lib/exec.ts";
+import { exec } from "../lib/exec.ts";
 
 /**
  * `env`: show environment status across the generic sections (runtimes,
@@ -133,7 +133,7 @@ async function checkDocker(): Promise<Check[]> {
   const ver = dockerVersion.stdout.match(/Docker version (\S+)/)?.[1] ?? dockerVersion.stdout;
   checks.push({ label: "Docker", value: ver, status: "ok" });
 
-  const ps = await sh('docker ps --format "{{.Names}}" 2>/dev/null').catch(() => ({
+  const ps = await exec(["docker", "ps", "--format", "{{.Names}}"]).catch(() => ({
     stdout: "",
     exitCode: 1,
     stderr: "",

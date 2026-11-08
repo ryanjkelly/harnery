@@ -77,7 +77,8 @@ describe("browse --collect against a virtualized feed", () => {
     const out = join(dir, "items.jsonl");
     const result = Bun.spawnSync({
       cmd: [
-        resolve(import.meta.dir, "../../bin/harn"),
+        process.execPath,
+        resolve(import.meta.dir, "../../src/cli.ts"),
         "browse",
         fixtureUrl(60),
         "--no-cookies",
