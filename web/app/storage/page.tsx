@@ -1,3 +1,4 @@
+// biome-ignore-all lint/a11y/noRedundantRoles: the family table switches to display:block on phones, which drops native table semantics; the explicit roles restore them.
 import {
   Activity,
   Archive,
