@@ -101,7 +101,12 @@ export async function loadThumbnail(
   const remaining = deadline - Date.now();
   if (remaining <= 0) return null;
   const bounded = AbortSignal.any([signal, AbortSignal.timeout(Math.ceil(remaining))]);
-  const url = `/api/file/thumbnail?path=${encodeURIComponent(path)}&v=${encodeURIComponent(version)}&priority=${priority}`;
+  // Text previews are drawn in the page's palette, so ask for the current theme.
+  const theme =
+    typeof document !== "undefined" && !document.documentElement.classList.contains("dark")
+      ? "light"
+      : "dark";
+  const url = `/api/file/thumbnail?path=${encodeURIComponent(path)}&v=${encodeURIComponent(version)}&priority=${priority}&theme=${theme}`;
   let completing = false;
   while (!bounded.aborted && Date.now() < deadline) {
     const result = await schedule(

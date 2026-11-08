@@ -16,7 +16,51 @@ export interface ThumbnailInput {
   relPath: string;
   category: FileCategory;
   root: string;
+  /** Palette for drawn text previews; other kinds ignore it. Defaults to dark. */
+  theme?: ThumbnailTheme;
 }
+
+export type ThumbnailTheme = "light" | "dark";
+
+/** Kinds drawn as text previews, whose colours follow the theme. */
+export const THEMED_CATEGORIES: ReadonlySet<FileCategory> = new Set<FileCategory>([
+  "text",
+  "code",
+  "json",
+  "yaml",
+  "csv",
+  "markdown",
+]);
+
+/** Colours for text, code and table previews, matched to the dashboard theme. */
+const TEXT_PALETTE: Record<ThumbnailTheme, Record<string, string>> = {
+  dark: {
+    background: "#101820",
+    header: "#1e293b",
+    label: "#94a3b8",
+    body: "#cbd5e1",
+    heading: "#f8fafc",
+    comment: "#94a3b8",
+    string: "#7dd3fc",
+    rowHead: "#263749",
+    rowOdd: "#14202c",
+    rowEven: "#101820",
+    rule: "#334155",
+  },
+  light: {
+    background: "#f8fafc",
+    header: "#e2e8f0",
+    label: "#64748b",
+    body: "#334155",
+    heading: "#0f172a",
+    comment: "#64748b",
+    string: "#0369a1",
+    rowHead: "#e0f2fe",
+    rowOdd: "#f1f5f9",
+    rowEven: "#f8fafc",
+    rule: "#cbd5e1",
+  },
+};
 
 const WIDTH = 360;
 const HEIGHT = 240;
@@ -142,6 +186,7 @@ async function readText(inputPath: string, limit = TEXT_BYTES): Promise<string> 
 
 /** Render text directly with libvips instead of starting a browser per file. */
 export async function renderTextThumbnail(input: ThumbnailInput): Promise<Buffer> {
+  const c = TEXT_PALETTE[input.theme ?? "dark"];
   let source = await readText(input.inputPath);
   if (input.category === "json") {
     try {
@@ -164,14 +209,14 @@ export async function renderTextThumbnail(input: ThumbnailInput): Promise<Buffer
           .slice(0, columns)
           .map(
             (value, column) =>
-              `<rect x="${12 + column * width}" y="${34 + index * 22}" width="${width}" height="22" fill="${index === 0 ? "#263749" : index % 2 ? "#14202c" : "#101820"}" stroke="#334155" stroke-width="0.5"/><text x="${18 + column * width}" y="${49 + index * 22}" font-size="10" fill="${index === 0 ? "#7dd3fc" : "#cbd5e1"}">${escapeThumbnailText(value.slice(0, Math.floor((width - 12) / 6)))}</text>`,
+              `<rect x="${12 + column * width}" y="${34 + index * 22}" width="${width}" height="22" fill="${index === 0 ? c.rowHead : index % 2 ? c.rowOdd : c.rowEven}" stroke="${c.rule}" stroke-width="0.5"/><text x="${18 + column * width}" y="${49 + index * 22}" font-size="10" fill="${index === 0 ? c.string : c.body}">${escapeThumbnailText(value.slice(0, Math.floor((width - 12) / 6)))}</text>`,
           )
           .join(""),
       )
       .join("");
     return webp(
       Buffer.from(
-        `<svg xmlns="http://www.w3.org/2000/svg" width="360" height="240"><rect width="100%" height="100%" fill="#101820"/><g font-family="monospace"><text x="12" y="20" fill="#94a3b8" font-size="10">${escapeThumbnailText(path.basename(input.relPath).slice(0, 48))}</text>${table}</g></svg>`,
+        `<svg xmlns="http://www.w3.org/2000/svg" width="360" height="240"><rect width="100%" height="100%" fill="${c.background}"/><g font-family="monospace"><text x="12" y="20" fill="${c.label}" font-size="10">${escapeThumbnailText(path.basename(input.relPath).slice(0, 48))}</text>${table}</g></svg>`,
       ),
     );
   }
@@ -189,18 +234,18 @@ export async function renderTextThumbnail(input: ThumbnailInput): Promise<Buffer
               .replace(/\*\*([^*]+)\*\*/g, "$1")
           : line;
       const color = heading
-        ? "#f8fafc"
+        ? c.heading
         : /^\s*(\/\/|#|<!--)/.test(line)
-          ? "#94a3b8"
+          ? c.comment
           : /^\s*["']/.test(line)
-            ? "#7dd3fc"
-            : "#cbd5e1";
+            ? c.string
+            : c.body;
       const result = `<text x="16" y="${y}" font-size="${heading ? 14 : 10}" font-weight="${heading ? 700 : 400}" fill="${color}">${escapeThumbnailText(text.slice(0, 100))}</text>`;
       y += heading ? 20 : 14;
       return result;
     })
     .join("");
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${HEIGHT}"><rect width="100%" height="100%" fill="#101820"/><rect width="100%" height="28" fill="#1e293b"/><g font-family="monospace"><text x="16" y="18" fill="#94a3b8" font-size="10">${escapeThumbnailText(path.basename(input.relPath).slice(0, 48))}</text>${body}</g></svg>`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${HEIGHT}"><rect width="100%" height="100%" fill="${c.background}"/><rect width="100%" height="28" fill="${c.header}"/><g font-family="monospace"><text x="16" y="18" fill="${c.label}" font-size="10">${escapeThumbnailText(path.basename(input.relPath).slice(0, 48))}</text>${body}</g></svg>`;
   return webp(Buffer.from(svg));
 }
 
@@ -314,8 +359,7 @@ async function renderOffice(input: ThumbnailInput): Promise<Buffer> {
 export async function renderThumbnail(input: ThumbnailInput): Promise<Buffer> {
   if (OFFICE_EXTENSIONS.has(path.extname(input.relPath).slice(1).toLowerCase()))
     return renderOffice(input);
-  if (["text", "code", "json", "yaml", "csv", "markdown"].includes(input.category))
-    return renderTextThumbnail(input);
+  if (THEMED_CATEGORIES.has(input.category)) return renderTextThumbnail(input);
   if (input.category === "image" || input.category === "svg") {
     const bytes = await readFile(input.inputPath);
     if (input.category === "svg") {

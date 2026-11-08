@@ -308,3 +308,21 @@ test.skipIf(!hasBrowser)(
   },
   30_000,
 );
+
+test("text previews follow the requested theme", async () => {
+  const file = path.join(root, "theme-preview.md");
+  await writeFile(file, "# Heading\nbody line\n");
+  const corner = async (theme: "light" | "dark") => {
+    const bytes = await renderThumbnail({
+      inputPath: file,
+      relPath: "theme-preview.md",
+      category: "markdown",
+      root,
+      theme,
+    });
+    const { data } = await sharp(bytes).raw().toBuffer({ resolveWithObject: true });
+    return data[0]! + data[1]! + data[2]!;
+  };
+  expect(await corner("light")).toBeGreaterThan(600);
+  expect(await corner("dark")).toBeLessThan(150);
+});

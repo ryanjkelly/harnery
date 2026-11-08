@@ -19,6 +19,8 @@ import {
 import {
   canRenderThumbnail,
   renderThumbnail,
+  THEMED_CATEGORIES,
+  type ThumbnailTheme,
   thumbnailDescriptorPath,
 } from "./thumbnail-renderers";
 import { thumbnailDependencyKey } from "./thumbnail-renderers/dependencies";
@@ -93,6 +95,7 @@ async function renderSource(
   root: string,
   temporary: string,
   index: number,
+  theme: ThumbnailTheme,
 ): Promise<Buffer> {
   if (identity(source.file) !== source.identity) throw new Error("source_changed");
   if (source.reuse?.kind === "bytes") {
@@ -113,6 +116,7 @@ async function renderSource(
       relPath: file.relPath,
       category: file.category,
       root,
+      theme,
     });
     // A descriptor survives renames, but in-place writes must invalidate the result before caching.
     if (identity(file) !== expectedIdentity) throw new Error("source_changed");
@@ -137,15 +141,26 @@ async function renderSource(
     await output.close();
   }
   if (identity(file) !== expectedIdentity) throw new Error("source_changed");
-  return renderThumbnail({ inputPath, relPath: file.relPath, category: file.category, root });
+  return renderThumbnail({
+    inputPath,
+    relPath: file.relPath,
+    category: file.category,
+    root,
+    theme,
+  });
 }
-async function generate(sources: Source[], root: string, folder: boolean): Promise<Buffer> {
+async function generate(
+  sources: Source[],
+  root: string,
+  folder: boolean,
+  theme: ThumbnailTheme,
+): Promise<Buffer> {
   const temporary = await mkdtemp(path.join(tmpdir(), "harn-thumbnail-"));
   try {
     const images: Buffer[] = [];
     for (const [index, source] of sources.entries()) {
       try {
-        images.push(await renderSource(source, root, temporary, index));
+        images.push(await renderSource(source, root, temporary, index, theme));
       } catch (error) {
         if (!folder) throw error;
       }
@@ -224,6 +239,7 @@ export async function serveFileThumbnail(
     requestedPriority === "background" || requestedPriority === "prefetch"
       ? requestedPriority
       : "visible";
+  const theme: ThumbnailTheme = params.get("theme") === "light" ? "light" : "dark";
   if (rel === null) return problem("invalid_path", 400);
   const started = performance.now();
   let root: string;
@@ -270,6 +286,8 @@ export async function serveFileThumbnail(
           root,
           rel,
           folder,
+          // Only drawn text previews differ by theme; images share one entry.
+          sources.some(({ file }) => THEMED_CATEGORIES.has(file.category)) ? theme : "any",
           dependencies,
           sources.map((s) => [
             s.file.relPath,
@@ -324,7 +342,7 @@ export async function serveFileThumbnail(
     const submitted = queue.submit(key, priority, cost, async () => {
       const start = performance.now();
       try {
-        const bytes = await generate(sources, root, folder);
+        const bytes = await generate(sources, root, folder, theme);
         if (bytes.length > MAX_OUTPUT) throw new Error("thumbnail_output_limit");
         remember(key, bytes);
         // Cache maintenance is bounded separately and must not delay visible pixels.

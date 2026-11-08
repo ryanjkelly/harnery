@@ -74,7 +74,7 @@ test("the first pending response immediately switches to completion waiting", as
     times.push(performance.now());
     if (times.length === 1)
       return new Response("pending", { status: 202, headers: { "Retry-After": "1" } });
-    expect(url).toContain("priority=prefetch&wait=1000");
+    expect(url).toContain("priority=prefetch&theme=dark&wait=1000");
     return new Response("preview", { headers: { "Content-Type": "image/webp" } });
   }) as unknown as typeof fetch;
   const result = await loadThumbnail(
@@ -177,7 +177,9 @@ test("busy queues and pending conversion retry within the budget", async () => {
   );
   expect(await blob?.text()).toBe("image bytes");
   expect(urls).toHaveLength(3);
-  expect(urls[0]).toBe("/api/file/thumbnail?path=reports%2Fa%20b.json&v=changed&priority=visible");
+  expect(urls[0]).toBe(
+    "/api/file/thumbnail?path=reports%2Fa%20b.json&v=changed&priority=visible&theme=dark",
+  );
   expect(urls[1]).toEndWith("&wait=1000");
 });
 
