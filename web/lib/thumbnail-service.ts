@@ -27,7 +27,7 @@ import { thumbnailDependencyKey } from "./thumbnail-renderers/dependencies";
 import { resolveThumbnailReuse, type ThumbnailReuse } from "./thumbnail-reuse";
 
 // Bump when rendering rules change; disk entries are disposable derivatives.
-const VERSION = "v3";
+const VERSION = "v4";
 const MAX_OUTPUT = 512 * 1024;
 const MEMORY_BYTES = 16 * 1024 * 1024;
 
