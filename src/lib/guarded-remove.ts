@@ -1,5 +1,13 @@
 import { spawnSync } from "node:child_process";
-import { lstatSync, readdirSync, readlinkSync, realpathSync, rmSync, type Stats } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  readdirSync,
+  readlinkSync,
+  realpathSync,
+  rmSync,
+  type Stats,
+} from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 
@@ -294,7 +302,9 @@ function assertCleanClone(clone: string): void {
   const worktrees = git(["worktree", "list", "--porcelain", "-z"])
     .split("\0")
     .filter((entry) => entry.startsWith("worktree "));
-  if (worktrees.length !== 1 || worktrees[0] !== `worktree ${clone}`)
+  // Git prints forward slashes on Windows; compare real paths, as above.
+  const listed = worktrees.length === 1 ? worktrees[0]!.slice("worktree ".length) : null;
+  if (listed === null || !existsSync(listed) || realpathSync(listed) !== clone)
     throw new Error(`Clean clone removal refuses registered or linked worktrees: ${clone}`);
   if (git(["status", "--porcelain=v1", "--untracked-files=all"]).trim())
     throw new Error(`Clean clone has uncommitted or untracked work: ${clone}`);

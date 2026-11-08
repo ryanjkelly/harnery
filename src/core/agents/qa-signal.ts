@@ -26,7 +26,7 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { resolve, sep } from "node:path";
 import type {
   QaRunEvidenceSource,
   QaRunResult,
@@ -78,7 +78,8 @@ export function qaSignalPath(coordRoot: string, instanceId: string): string {
   }
   const directory = resolve(coordRoot, ".harnery", "qa");
   const candidate = resolve(directory, `${instanceId}.json`);
-  if (!candidate.startsWith(`${directory}/`)) {
+  // resolve() returns the OS separator, so a "/" prefix never matches on Windows.
+  if (!candidate.startsWith(`${directory}${sep}`)) {
     throw new Error("resolved qa signal path escapes the qa directory");
   }
   return candidate;

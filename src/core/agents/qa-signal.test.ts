@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { QaRunResult } from "../../lib/browser/qa-run-contracts.ts";
 import {
   formatQaSignalAge,
@@ -102,7 +102,9 @@ function result(overrides: Partial<QaRunResult> = {}): QaRunResult {
 
 describe("qaSignalPath", () => {
   test("resolves under the coordination root's qa directory", () => {
-    expect(qaSignalPath("/repo", INSTANCE)).toBe(`/repo/.harnery/qa/${INSTANCE}.json`);
+    expect(qaSignalPath("/repo", INSTANCE)).toBe(
+      resolve("/repo", ".harnery", "qa", `${INSTANCE}.json`),
+    );
   });
 
   test("refuses an instance id that could escape the directory", () => {
