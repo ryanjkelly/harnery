@@ -23,7 +23,7 @@ Settings resolve from these sources, lowest precedence first (later wins):
 2. `<project>/.harnery/config.jsonc`: the project settings file, which overrides the user-global file **field by field** (a project that sets only `web.port` keeps a user-global `web.bind`)
 3. CLI flags + environment variables: per-invocation overrides (see each field's env note)
 
-The config reader (`src/core/config.ts`) merges the two files and owns `binName`, `hooksSetupHint`, `hooks`, `agents`, `instructions`, `tools`, `workflow`, `skills`, `presence`, `coord`, `logs`, `storage`, `artifacts`, `backup`, and `sync`; the web layer reads `files`. Eight values are project-only. The `binName` **pin** that `harn init` guards against re-stamping ignores the user file. So do `agents.finalizationRoots`, `agents.gitSyncCommand`, `instructions.promptReminder`, `hooks.promptContext`, `hooks.codexWindowsBridge`, `hooks.portableCommands`, and `storage.sharing`. A global setting cannot grant filesystem authority, execute a project extension, or carry one project's wording into another. A user-global `binName` is a display fallback, never a project pin.
+The config reader (`src/core/config.ts`) merges the two files and owns `binName`, `timeZone`, `hooksSetupHint`, `hooks`, `agents`, `instructions`, `tools`, `workflow`, `skills`, `presence`, `coord`, `logs`, `storage`, `artifacts`, `backup`, and `sync`; the web layer reads `files`. Eight values are project-only. The `binName` **pin** that `harn init` guards against re-stamping ignores the user file. So do `agents.finalizationRoots`, `agents.gitSyncCommand`, `instructions.promptReminder`, `hooks.promptContext`, `hooks.codexWindowsBridge`, `hooks.portableCommands`, and `storage.sharing`. A global setting cannot grant filesystem authority, execute a project extension, or carry one project's wording into another. A user-global `binName` is a display fallback, never a project pin.
 
 ## Top-level fields
 
@@ -32,6 +32,7 @@ The config reader (`src/core/config.ts`) merges the two files and owns `binName`
 | `$schema`      | string  | none             | URL to the JSON Schema (used by editors for autocomplete/validation) |
 | `project_name` | string  | repo basename    | Display name surfaced in log lines and to peers |
 | `binName`      | string  | `harn`           | Host CLI bin name used in agent-facing prompts (see below) |
+| `timeZone`     | string  | system zone      | IANA zone for human-facing times and new journal timestamps (see below) |
 | `agents`       | object  | see below        | Host-owned agent ritual policy |
 | `coord`        | object  | see below        | Coord-layer settings |
 | `storage`      | object  | see below        | Who can use the project's `.harnery/` state |
@@ -53,6 +54,35 @@ The config reader (`src/core/config.ts`) merges the two files and owns `binName`
 ### `binName`
 
 The host CLI's bin name. Harnery's coord binaries (`agent-hook`, `agent-coord`) and the web UI run *as Harnery itself*, so they can't see the name of a consumer CLI that composes Harnery (e.g. `myapp`). They read it back from this field for every agent-facing string: end-of-turn nudges, council prompts, worktree-conflict hints. `harn init` stamps it automatically for a consumer (any bin name other than the `harn` default). Resolution precedence: `HARNERY_BIN` env → this field → `"harn"`.
+
+### `timeZone`
+
+The IANA time zone (for example `"Europe/Berlin"`, `"America/New_York"`, or
+`"UTC"`) used for human-facing times: the `agents status` box, inline times,
+`context` summaries, mail listings, and the timestamps written into new
+journal entries. Resolution precedence:
+
+1. `HARNERY_TIME_ZONE` env
+2. this field in the project file
+3. this field in the user-global file
+4. the system zone, as the runtime reports it
+5. `"UTC"`
+
+A value that names no zone the runtime knows is skipped with one warning on
+stderr, and the next source applies, so a typo never breaks a hook or a status
+call. `harn doctor` reports the same value as a failure. Names are
+canonicalized, so `europe/berlin` resolves to `Europe/Berlin`.
+
+Journal timestamps carry the numeric UTC offset of the zone at that instant
+(`2026-11-07 10:38 PM -06:00`), so changing this setting never changes how
+existing entries read or sort. The dashboard does not use this field: it shows
+times in each viewer's own display preference, the browser zone by default.
+
+```jsonc
+{
+  "timeZone": "Europe/Berlin"
+}
+```
 
 ## `agents`
 

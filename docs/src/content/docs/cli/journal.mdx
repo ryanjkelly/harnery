@@ -29,6 +29,22 @@ Every entry carries one category, which describes what kind of breadcrumb it is:
 
 `note` · `plan` · `decision` · `blocker` · `question` · `done` · `handoff`
 
+## File format
+
+Each entry starts with a header line that holds the writer's wall-clock time,
+the UTC offset of its zone at that instant, and the category:
+
+```markdown
+## 2026-11-07 10:38 PM -06:00 · note
+Body text, any markdown. A line such as `## Findings` stays in the body.
+```
+
+The `started:` and `last_updated:` lines at the top of the file use the same
+timestamp. New timestamps are written in the zone from
+[`timeZone`](/reference/config-schema/#timezone) (system zone by default). The
+offset makes every timestamp an exact instant, so readers never consult a zone
+database, and journals written in different zones still sort correctly.
+
 ## Subcommands
 
 ```
@@ -41,7 +57,8 @@ harn journal lint                       # validate journal format + size
 harn journal clear --yes                # delete my journal (rare; mainly for testing)
 harn journal archive                    # archive my journal now (idempotent)
 harn journal recovery-cue               # emit a one-line "previous session was doing X" hint
-harn journal janitor                    # prune old archives + sweep orphaned journals
+harn journal janitor                    # migrate retired timestamps, prune old archives, sweep orphans
+harn journal migrate                    # preview rewriting retired timestamps (add --yes to apply)
 ```
 
 ## Options
@@ -64,6 +81,8 @@ Options are per-subcommand:
 | `recovery-cue` | `--max-age-hours <n>` | Only surface archives newer than this (default `24`). |
 | `janitor` | `--days <n>` | Archive retention in days (default `7`). |
 | `janitor` | `--quiet` | Suppress stdout output. |
+| `migrate` | `--yes` | Apply the rewrite. Without it, report what would change. |
+| `migrate` | `--json` | Emit the per-file report as JSON. |
 
 ## Examples
 
@@ -87,6 +106,35 @@ harn journal list
 harn journal read --archive 5cc4edab-2026-07-14T10-00-00.md
 ```
 
+## Migrating retired timestamps
+
+Journals written by Harnery releases before 0.50 stamped entries with a zone
+abbreviation (`2026-11-07 10:38 PM CST`). Only `CDT` and `CST` were ever
+written, so each maps to one fixed offset (`-05:00` and `-06:00`), and
+`journal migrate` rewrites them to the current format with the same wall clock
+and the same instant.
+
+```bash
+harn journal migrate          # dry run: files, headers, metadata lines, unreadable lines
+harn journal migrate --yes    # apply
+```
+
+The command covers active journals and `.harnery/journal/archived/`. It
+changes only entry-header lines and the `started:` / `last_updated:` values;
+every body byte stays the same, including body lines that begin with `## `. It
+keeps each file's modification time (archive retention runs on it) and saves
+each original file under `.harnery/journal/.migration-backup/<run>/` before
+rewriting it. A second run changes nothing. A retired-looking timestamp that
+is not a real date or time is reported, left as it was, and makes the command
+exit 1.
+
+You rarely need to run it by hand: journals are per machine, so the
+session-start janitor runs the same migration quietly whenever it finds a
+retired timestamp. Until a file is migrated, readers skip its retired entries
+and writers (`add`, `ping`, dashboard edits) refuse to rewrite it, with an
+error that names the command, because rewriting would fold those entries into
+their neighbours.
+
 ## Notes
 
 - **50 KB hard cap.** When a journal exceeds the cap, the oldest entries are
@@ -98,6 +146,9 @@ harn journal read --archive 5cc4edab-2026-07-14T10-00-00.md
   file there; `recovery-cue` reads the newest one to build the session-start
   hint; `janitor` prunes archives past the retention window and sweeps
   journals whose owning agent is gone.
+- **One lock for every write.** Appends, dashboard edits and deletes, archives,
+  archive pruning, and migration all hold `.harnery/journal/.lock`, so a
+  concurrent writer waits instead of losing an entry.
 - **Pull-based, not push.** Nothing notifies a peer that you wrote something;
   they read on demand. To hand someone an actionable note they'll see, use
   `harn agents ping`, which appends a `handoff` entry to *their* journal.

@@ -1,0 +1,107 @@
+---
+title: "ADR 0237: Configurable time zone and offset journal timestamps"
+description: Resolve human-facing times from a timeZone setting, write journal timestamps with a numeric UTC offset, and move retired abbreviation stamps through one bounded migration.
+sidebar:
+  order: 237
+---
+
+**Date:** 2026-11-07
+**Status:** Accepted
+
+## Context
+
+Harnery rendered every human-facing time in one fixed zone: the `agents status`
+box, inline times, `context` summaries, mail listings, and the dashboard's date
+formatters. A project anywhere else saw times in a zone nobody on it used.
+
+Journal entries had the same problem in stored form. Each header carried a wall
+clock and a zone abbreviation (`## 2026-11-07 10:38 PM CST · note`). The parser
+accepted only the two abbreviations of that one zone and turned each into a
+fixed offset. A journal written in any other zone could not be stamped
+correctly, and a general abbreviation parser is not possible: abbreviations are
+ambiguous (`CST` names zones on three continents) and runtimes disagree on
+them.
+
+The dashboard parsed journals with its own copy of the header pattern, so the
+CLI and the dashboard could drift. Appends parse and rewrite the whole file, and
+the dashboard's entry edits wrote without a lock, so a concurrent writer could
+lose an entry.
+
+## Decision
+
+**Zone resolution.** `resolveTimeZone()` in the core config module returns the
+zone in this order: `HARNERY_TIME_ZONE`, the project `timeZone`, the user-global
+`timeZone`, the system zone, then `UTC`. Every value is checked and
+canonicalized through `Intl`. An invalid explicit value is skipped with one
+stderr warning per process and the next source applies, because hooks and
+status output must never fail over a typo; `harn doctor` reports the same value
+as a failure. Formatting helpers take the zone as an argument, so they stay
+pure and testable.
+
+**Journal timestamps.** A timestamp is the wall clock in the resolved zone plus
+that zone's numeric offset at the instant:
+`## 2026-11-07 10:38 PM -06:00 · note`, and the same form for `started:` and
+`last_updated:`. The offset is computed from the wall clock itself, so DST
+transition days are exact: the skipped spring hour is never written and the
+repeated autumn hour gets two distinct offsets. The parser needs no zone data.
+It validates the calendar date, an hour from 1 to 12 without a leading zero,
+the minute, AM or PM, and an offset up to ±14:00 including fractional offsets
+such as +05:30 and +05:45; a pattern match alone is not accepted.
+
+**One codec.** `core/journal/codec.ts` is the only reader and writer of the
+format. The CLI and the dashboard both use it.
+
+**One lock.** Append, entry edit and delete, wholesale replace, archive, archive
+pruning, and migration hold one lock per project (`.harnery/journal/.lock`). It
+is reentrant within a process, waits for a live holder, and breaks a lock only
+when its owner process is gone on this host or, for an unverifiable owner, when
+it has outlived the stale limit.
+
+**Bounded migration.** The retired format is decoded in one place:
+`harn journal migrate`. Only `CDT` and `CST` were ever written, so each maps to
+one offset (`-05:00`, `-06:00`) and the original instant is kept. The command
+is a dry run unless `--yes`, covers active and archived journals, rewrites only
+header lines and the two metadata values (using the retired parser's own rule
+for what counted as a header), keeps bodies byte-identical, keeps file
+modification times and permissions, saves each original under
+`.harnery/journal/.migration-backup/<run>/`, and is idempotent. Normal readers
+do not accept the retired format. Writers refuse a file that still contains it
+and name the command, because an append rewrites the whole file and would fold
+unreadable headers into neighbouring entries.
+
+Journals are per machine and not committed, so the session-start janitor runs
+the same migration quietly whenever it finds a retired timestamp. A failure
+leaves the files unchanged and never fails the hook. Archives that arrive from
+another machine through sync are healed the same way at the next session start.
+
+**Dashboard display.** The dashboard's formatters no longer default to a fixed
+zone. Components pass the viewer's display preference (the browser zone by
+default); a formatter called without a zone uses the runtime's own.
+
+## Alternatives considered
+
+- **Keep the abbreviation and add more of them.** Rejected: abbreviations are
+  ambiguous and runtime-dependent, so the parser could not be exact.
+- **Abbreviation plus offset** (`10:38 PM CST -06:00`). Readable, but the
+  abbreviation is redundant with the offset and still runtime-dependent, and a
+  reader would have to decide which part wins when they disagree.
+- **ISO 8601** (`2026-11-07T22:38-06:00`). Exact, but harder for people to read
+  in a file that people and agents read directly. The chosen form keeps the
+  12-hour clock and adds only the offset.
+- **Accept the retired format forever.** Rejected under the alpha cut-over
+  policy: silent support for two formats at runtime is the compatibility shim
+  that policy rules out. A bounded, explicit migration is allowed.
+- **Default to UTC when unset.** Rejected: the system zone is what a person at
+  the machine expects, and UTC remains the floor when the system reports none.
+
+## Consequences
+
+- The journal file format and some JSON field names change, so the release is
+  a minor version: `context` reports `time.local` and `time.zone` instead of a
+  zone-named field, and the dashboard's journal entries carry `ts_display`.
+- Older Harnery builds cannot read migrated journals. Upgrade every process
+  that writes a project's journals before migrating it; the new lock does not
+  protect against an old process that ignores it.
+- `.migration-backup/` keeps the pre-images until someone deletes them.
+- The fixed changelog wall-clock format the dashboard parses for its
+  contribution matrix is a separate historical format and is unchanged.
