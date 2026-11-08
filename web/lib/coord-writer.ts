@@ -6,24 +6,21 @@
  *   a journal shell `agent-coord` (through `runHarn`), so the coordination
  *   rules stay in the CLI.
  * - Ping uses the shared inbox writer (`sendPeerMessage`).
- * - Appending, editing, and deleting single journal entries are direct fs
- *   writes through the shared journal parser, without a lock: they are
- *   operator-initiated and low frequency, and the coord layer's locking exists
- *   for the agent-vs-agent race.
+ * - Appending, editing, and deleting single journal entries call the core
+ *   journal writers, which hold the project's journal lock and refuse a file
+ *   whose timestamps need `journal migrate`.
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { isSafeInstanceId } from "harnery/core/agents";
 import { sendPeerMessage } from "harnery/core/inbox";
 import {
   appendEntry,
-  archiveJournal,
+  deleteEntry,
+  editEntry,
   JOURNAL_CATEGORIES,
   type JournalCategory,
-  journalPath,
-  parseJournal,
-  serializeJournal,
 } from "harnery/core/journal";
 import { coordRoot } from "./coord-reader";
 import { type HelperResult, runHarn } from "./run-harn";
@@ -106,7 +103,7 @@ export async function editJournal(
 /**
  * Append one well-formed entry to an agent's journal. Uses the same
  * `appendEntry` helper the in-process middleware uses, so the resulting
- * header matches the parser's expectation (`## YYYY-MM-DD H:MM AM/PM CDT · cat`),
+ * header matches the parser's expectation (`## YYYY-MM-DD H:MM AM/PM ±HH:MM · cat`),
  * so entries created here show up in the entries timeline immediately.
  *
  * Distinct from `editJournal`: the latter does wholesale replace (audit
@@ -169,34 +166,8 @@ export function editJournalEntry(
   const trimmed = newBody.trim();
   if (!trimmed) return { ok: false, error: "body is empty" };
 
-  const filePath = journalPath(owner);
-  if (!existsSync(filePath)) {
-    return { ok: false, error: "journal not found" };
-  }
   try {
-    const content = readFileSync(filePath, "utf-8");
-    const doc = parseJournal(filePath, content);
-    if (index < 0 || index >= doc.entries.length) {
-      return { ok: false, error: `index ${index} out of range` };
-    }
-    const target = doc.entries[index];
-    if (target.ts_display !== expectedTsDisplay) {
-      return {
-        ok: false,
-        error: `entry at index ${index} no longer matches (someone else may have edited)`,
-      };
-    }
-    archiveJournal(owner);
-    target.category = newCategory;
-    target.body = trimmed;
-    // Don't touch ts_iso / ts_display; the edit preserves identity.
-    const serialized = serializeJournal(doc);
-    writeFileSync(filePath, serialized, "utf-8");
-    return {
-      ok: true,
-      bytes: Buffer.byteLength(serialized, "utf-8"),
-      entries: doc.entries.length,
-    };
+    return editEntry(owner, index, expectedTsDisplay, newCategory, trimmed);
   } catch (err) {
     return { ok: false, error: (err as Error).message };
   }
@@ -208,31 +179,8 @@ export function deleteJournalEntry(
   expectedTsDisplay: string,
 ): MutateEntryResult {
   ensureCoordRootEnv();
-  const filePath = journalPath(owner);
-  if (!existsSync(filePath)) {
-    return { ok: false, error: "journal not found" };
-  }
   try {
-    const content = readFileSync(filePath, "utf-8");
-    const doc = parseJournal(filePath, content);
-    if (index < 0 || index >= doc.entries.length) {
-      return { ok: false, error: `index ${index} out of range` };
-    }
-    if (doc.entries[index].ts_display !== expectedTsDisplay) {
-      return {
-        ok: false,
-        error: `entry at index ${index} no longer matches (someone else may have edited)`,
-      };
-    }
-    archiveJournal(owner);
-    doc.entries.splice(index, 1);
-    const serialized = serializeJournal(doc);
-    writeFileSync(filePath, serialized, "utf-8");
-    return {
-      ok: true,
-      bytes: Buffer.byteLength(serialized, "utf-8"),
-      entries: doc.entries.length,
-    };
+    return deleteEntry(owner, index, expectedTsDisplay);
   } catch (err) {
     return { ok: false, error: (err as Error).message };
   }

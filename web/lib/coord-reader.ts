@@ -30,6 +30,7 @@ import {
 } from "../../src/core/events/v3/live-route-observer";
 import { listHookProducerStateSummariesV3 } from "../../src/core/events/v3/producers/producer-state-observer";
 import { eventV3Paths, readLedgerV3 } from "../../src/core/events/v3/reader";
+import { parseJournal } from "../../src/core/journal/codec";
 import {
   buildContributionMatrix,
   type ContributionMatrix,
@@ -646,27 +647,11 @@ function normalizeTaskState(value: string | undefined): TaskState {
 }
 
 export interface JournalEntry {
-  ts_chicago: string;
-  ts_iso: string | null;
+  /** The stamp as written in the file, e.g. `2026-11-07 10:38 PM -06:00`. */
+  ts_display: string;
+  ts_iso: string;
   category: string;
   body: string;
-}
-
-/**
- * Parse a Chicago wall-clock header timestamp like `2026-05-28 9:21 AM CDT`
- * back to a canonical ISO string with the right offset (CDT=-05:00,
- * CST=-06:00). Returns null for unrecognized shapes; `<FormattedDateTime>`
- * tolerates null + renders an em dash.
- */
-function parseChicagoStampToIso(s: string): string | null {
-  const m = s.match(/^(\d{4})-(\d{2})-(\d{2}) (\d{1,2}):(\d{2}) (AM|PM) (CDT|CST)$/);
-  if (!m) return null;
-  const [, y, mo, d, hRaw, min, ampm, tz] = m;
-  let h = Number.parseInt(hRaw, 10);
-  if (ampm === "PM" && h !== 12) h += 12;
-  if (ampm === "AM" && h === 12) h = 0;
-  const offset = tz === "CDT" ? "-05:00" : "-06:00";
-  return `${y}-${mo}-${d}T${h.toString().padStart(2, "0")}:${min}:00${offset}`;
 }
 
 export interface JournalDoc {
@@ -674,50 +659,30 @@ export interface JournalDoc {
   path: string;
   bytes: number;
   entries: JournalEntry[];
+  /** Lines whose timestamps need `journal migrate` before the file is writable. */
+  unreadable_lines: number[];
 }
-
-// Journal entries look like: `## 2026-05-27 10:39 AM CDT · handoff`
-// (see src/core/journal/index.ts; appendEntry emits this format).
-const JOURNAL_HEADER_RE =
-  /^##\s+(?<ts>.+?)\s+·\s+(?<cat>note|plan|decision|blocker|question|done|handoff)\s*$/i;
 
 export function readJournal(instanceId: string): JournalDoc {
   const p = path.join(journalDir(), `${instanceId}.md`);
   if (!existsSync(p)) {
-    return { exists: false, path: p, bytes: 0, entries: [] };
+    return { exists: false, path: p, bytes: 0, entries: [], unreadable_lines: [] };
   }
-  const text = readFileSync(p, "utf-8");
-  const bytes = Buffer.byteLength(text, "utf-8");
-  const entries: JournalEntry[] = [];
-  const lines = text.split("\n");
-  let current: JournalEntry | null = null;
-  const bodyBuf: string[] = [];
-  for (const line of lines) {
-    const m = JOURNAL_HEADER_RE.exec(line);
-    if (m) {
-      if (current) {
-        current.body = bodyBuf.join("\n").trim();
-        entries.push(current);
-        bodyBuf.length = 0;
-      }
-      const tsChicago = m.groups?.ts ?? "";
-      current = {
-        ts_chicago: tsChicago,
-        ts_iso: parseChicagoStampToIso(tsChicago),
-        category: (m.groups?.cat ?? "").toLowerCase(),
-        body: "",
-      };
-    } else if (current) {
-      bodyBuf.push(line);
-    }
-  }
-  if (current) {
-    current.body = bodyBuf.join("\n").trim();
-    entries.push(current);
-  }
-  // File is newest-first (appendEntry unshifts). Keep that order; the panel's
-  // "Newest" default toggle relies on the array matching the label.
-  return { exists: true, path: p, bytes, entries };
+  // One codec for the CLI and the dashboard: the file is newest-first
+  // (appendEntry unshifts), and the panel's "Newest" default relies on that.
+  const doc = parseJournal(p, readFileSync(p, "utf-8"));
+  return {
+    exists: true,
+    path: p,
+    bytes: doc.bytes,
+    entries: doc.entries.map((entry) => ({
+      ts_display: entry.ts_display,
+      ts_iso: entry.ts_iso,
+      category: entry.category,
+      body: entry.body,
+    })),
+    unreadable_lines: doc.unreadable_lines,
+  };
 }
 
 export interface JournalArchive {

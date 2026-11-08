@@ -11,7 +11,7 @@ export const revalidate = 0;
 
 /**
  * Append a single well-formed entry. Preferred over PUT (wholesale replace);
- * the resulting `## YYYY-MM-DD H:MM AM/PM CDT · category` block parses cleanly
+ * the resulting `## YYYY-MM-DD H:MM AM/PM ±HH:MM · category` block parses cleanly
  * into the entries timeline without the synthetic-note nesting that bloats
  * the file on every UI Replace.
  */

@@ -29,6 +29,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { FormattedDateTime } from "@/components/FormattedDateTime";
+import { Notice } from "@/components/layout/Notice";
 import { useHostInfo } from "@/components/HostInfoProvider";
 import { SnapshotDiff } from "@/components/diff/SnapshotDiff";
 import { Tooltip } from "@/components/ui/tooltip";
@@ -75,6 +76,8 @@ export function JournalPanel({
     bytes: number;
     entries: EntryRow[];
     path: string;
+    /** Lines whose timestamps need `journal migrate`; the file is read-only until then. */
+    unreadable_lines: number[];
   };
   rawBody: string | null;
   archiveCount: number;
@@ -84,6 +87,7 @@ export function JournalPanel({
   readOnly?: boolean;
 }) {
   const router = useRouter();
+  const { binName } = useHostInfo();
   // Landing tab. Live agents with no content default to "compose" (seed one);
   // read-only agents can't compose, so prefer whatever's readable: entries →
   // timeline, else archives if any, else the (empty-state) raw view.
@@ -137,7 +141,8 @@ export function JournalPanel({
                 </div>
                 <div className="text-muted-foreground">
                   Parsed from headers like{" "}
-                  <code>## YYYY-MM-DD H:MM AM/PM CDT · category</code>.
+                  <code>## YYYY-MM-DD H:MM AM/PM ±HH:MM · category</code>: the
+                  writer's local time and its UTC offset.
                 </div>
               </div>
             }
@@ -177,6 +182,11 @@ export function JournalPanel({
           hasContent={journal.exists}
           readOnly={readOnly}
         />
+        {journal.unreadable_lines.length > 0 && (
+          <Notice tone="warn" title="Journal needs migration">
+            {`${journal.unreadable_lines.length} timestamp line(s) use a format this version cannot read, so those entries are hidden and writes are refused. Run \`${binName} journal migrate --yes\` on this machine (new sessions do it automatically).`}
+          </Notice>
+        )}
         {tab === "timeline" && (
           <TimelineView
             entries={journal.entries}

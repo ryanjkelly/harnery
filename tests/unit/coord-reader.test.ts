@@ -99,7 +99,7 @@ beforeAll(() => {
 
   writeFileSync(
     path.join(h, "journal", "abc-fresh.md"),
-    `# Journal: Alpha\nsession_id: abc-fresh\nstarted: 2026-05-27 10:00 AM CDT\nlast_updated: 2026-05-27 10:01 AM CDT\n\n---\n\n## 2026-05-27 10:01 AM CDT · plan\nfirst entry\n\n## 2026-05-27 10:00 AM CDT · note\nsecond entry\n`,
+    `# Journal: Alpha\nsession_id: abc-fresh\nstarted: 2026-05-27 10:00 AM -05:00\nlast_updated: 2026-05-27 10:01 PM +05:30\n\n---\n\n## 2026-05-27 10:01 PM +05:30 · plan\nfirst entry\n## Findings\nkept in the body\n\n## 2026-05-27 10:00 AM -05:00 · note\nsecond entry\n`,
   );
 });
 
@@ -172,6 +172,22 @@ describe("coord-reader", () => {
     // second. See readJournal's "File is newest-first" note.
     expect(sc.entries[0].category).toBe("plan");
     expect(sc.entries[1].category).toBe("note");
+    // The dashboard uses the CLI's codec: exact instants from the written offset.
+    expect(sc.entries[0].ts_display).toBe("2026-05-27 10:01 PM +05:30");
+    expect(sc.entries[0].ts_iso).toBe("2026-05-27T22:01:00+05:30");
+    expect(sc.entries[0].body).toBe("first entry\n## Findings\nkept in the body");
+    expect(sc.entries[1].ts_iso).toBe("2026-05-27T10:00:00-05:00");
+    expect(sc.unreadable_lines).toEqual([]);
+  });
+
+  test("readJournal flags retired timestamps instead of guessing", () => {
+    writeFileSync(
+      path.join(ROOT, ".harnery", "journal", "retired.md"),
+      "# Journal: agent-Old\nstarted: 2026-05-27 10:00 AM CDT\n\n---\n\n## 2026-05-27 10:00 AM CDT · note\nold entry\n",
+    );
+    const sc = reader.readJournal("retired");
+    expect(sc.entries).toEqual([]);
+    expect(sc.unreadable_lines).toEqual([2, 6]);
   });
 
   test("readJournal on missing instance returns empty doc", () => {

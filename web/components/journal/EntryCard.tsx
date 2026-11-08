@@ -15,7 +15,7 @@ import { CategoryPicker } from "./CategoryPicker";
 import { categoryMeta } from "./categories";
 
 export interface EntryRow {
-  ts_chicago: string;
+  ts_display: string;
   ts_iso: string | null;
   category: string;
   body: string;
@@ -69,7 +69,7 @@ export function EntryCard({
           {entry.ts_iso ? (
             <FormattedDateTime iso={entry.ts_iso} className="tabular-nums" />
           ) : (
-            <span className="font-mono">{entry.ts_chicago}</span>
+            <span className="font-mono">{entry.ts_display}</span>
           )}
         </span>
         <div className="ml-auto flex items-center gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
@@ -174,7 +174,7 @@ function InlineEditor({
             body: JSON.stringify({
               category,
               body,
-              expected_ts_display: entry.ts_chicago,
+              expected_ts_display: entry.ts_display,
             }),
           },
         );
@@ -270,7 +270,7 @@ function ConfirmDelete({
     startTransition(async () => {
       try {
         const res = await fetch(
-          `/api/agents/${encodeURIComponent(ownerId)}/journal/entries/${index}?expected_ts_display=${encodeURIComponent(entry.ts_chicago)}`,
+          `/api/agents/${encodeURIComponent(ownerId)}/journal/entries/${index}?expected_ts_display=${encodeURIComponent(entry.ts_display)}`,
           { method: "DELETE" },
         );
         const data = (await res.json()) as { ok: true } | { error: string };

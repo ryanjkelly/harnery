@@ -76,11 +76,11 @@ describe("journal path and parser security", () => {
       [
         "# Journal: agent-Test",
         "---",
-        "## 2026-05-15 1:48 AM CDT · handoff",
+        "## 2026-05-15 1:48 AM -05:00 · handoff",
         "summary",
         "## Findings",
         "detail",
-        "## 2026-05-15 2:10 AM CDT · note",
+        "## 2026-05-15 2:10 AM -05:00 · note",
         "next entry",
       ].join("\n"),
     );

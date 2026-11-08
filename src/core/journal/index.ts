@@ -20,6 +20,7 @@ import {
   readLiveCoordinationRow,
   readLiveCoordinationRows,
 } from "../agents/state/live-coordination-view.ts";
+import { resolveBinName, resolveTimeZone } from "../config.ts";
 import {
   readCoordinationViewV3,
   requireAuthoritySafeCoordinationViewV3,
@@ -28,229 +29,79 @@ import {
   liveInstanceIdV3,
   observeLiveEventLedgerRouteV3,
 } from "../events/v3/live-route-observer.ts";
+import {
+  formatJournalTimestamp,
+  isUnreadableEntryHeader,
+  JOURNAL_HEADER_PREFIX,
+  type JournalCategory,
+  type JournalDoc,
+  type JournalEntry,
+  parseEntryHeader,
+  parseJournal,
+  parseJournalTimestamp,
+  serializeJournal,
+} from "./codec.ts";
+import { withJournalLock } from "./lock.ts";
+
+export * from "./codec.ts";
+export { holdsJournalLock, JournalLockBusyError, withJournalLock } from "./lock.ts";
 
 /**
  * Agent journal: per-agent markdown journal at `.harnery/journal/<instance_id>.md`.
  *
  * Rules:
- *   - Single writer (the agent itself, via this lib). Peers read but never write.
+ *   - The file format belongs to `./codec.ts`, shared with the dashboard.
+ *   - Entry headers are `## <wall clock> <UTC offset> · <category>`, written in
+ *     the zone `resolveTimeZone()` returns. Parsing never consults a zone.
  *   - Append-only, newest entry first. Atomic temp-file + rename on each write.
- *   - Strict entry-header format: `## <Chicago datetime> · <category>`. The
- *     linter enforces this so format violations are impossible at the write path.
+ *   - Every mutation (append, entry edit/delete, archive, prune, migrate)
+ *     holds the project's journal lock (`./lock.ts`).
+ *   - A writer refuses a file whose timestamps it cannot read and names
+ *     `journal migrate`, because rewriting it would merge or drop entries.
  *   - 50 KB hard cap; auto-prunes oldest entries when exceeded.
  *   - SessionEnd hook archives to `.harnery/journal/archived/<instance_id>-<ts>.md`;
- *     SessionStart janitor deletes archives older than 7 days + surfaces the
- *     most-recent archive as a recovery cue.
+ *     SessionStart janitor migrates legacy timestamps, deletes archives older
+ *     than 7 days, and surfaces the most-recent archive as a recovery cue.
  */
-
-export const JOURNAL_CATEGORIES = [
-  "note",
-  "plan",
-  "decision",
-  "blocker",
-  "question",
-  "done",
-  "handoff",
-] as const;
-
-export type JournalCategory = (typeof JOURNAL_CATEGORIES)[number];
 
 export const MAX_JOURNAL_BYTES = 50 * 1024;
 export const WARN_JOURNAL_BYTES = 40 * 1024;
 export const ARCHIVE_RETENTION_DAYS = 7;
 
-/** Entry-header regex: `## 2026-05-15 1:48 AM CDT · note` */
-export const ENTRY_HEADER_RE =
-  /^## (\d{4}-\d{2}-\d{2}) (\d{1,2}):(\d{2}) (AM|PM) (CDT|CST) · (note|plan|decision|blocker|question|done|handoff)$/;
-
-/** First line of every journal file: this prefix followed by the agent name. */
-export const JOURNAL_HEADER_PREFIX = "# Journal: agent-";
-
-export interface JournalEntry {
-  ts_iso: string; // canonical ISO (computed from Chicago wall time at write)
-  ts_display: string; // "2026-05-15 1:48 AM CDT", what's in the file
-  category: JournalCategory;
-  body: string;
-}
-
-export interface JournalHeader {
-  name: string;
-  session_id: string;
-  machine: string;
-  started: string;
-  last_updated: string;
-}
-
-export interface JournalDoc {
-  path: string;
-  header: JournalHeader;
-  entries: JournalEntry[];
-  bytes: number;
-}
-
 // ─── Paths ────────────────────────────────────────────────────────────────
 
-export function journalDir(): string {
-  const root = monorepoRoot();
-  if (!root) throw new Error("Not in a coord-aware repo (coord_root() returned null).");
-  const dir = resolve(root, ".harnery", "journal");
+function rootOrThrow(root?: string | null): string {
+  const resolved = root ?? monorepoRoot();
+  if (!resolved) throw new Error("Not in a coord-aware repo (coord_root() returned null).");
+  return resolved;
+}
+
+/** The journal directory for `root` (default: the current coordination root). */
+export function journalDir(root?: string | null): string {
+  const dir = resolve(rootOrThrow(root), ".harnery", "journal");
   mkdirSync(dir, { recursive: true });
   return dir;
 }
 
-export function archiveDir(): string {
-  const dir = resolve(journalDir(), "archived");
+export function archiveDir(root?: string | null): string {
+  const dir = resolve(journalDir(root), "archived");
   mkdirSync(dir, { recursive: true });
   return dir;
 }
 
-export function journalPath(instanceId: string): string {
+export function journalPath(instanceId: string, root?: string | null): string {
   assertSafeInstanceId(instanceId);
-  return resolveContainedFile(journalDir(), `${instanceId}.md`);
+  return resolveContainedFile(journalDir(root), `${instanceId}.md`);
 }
 
-// ─── Chicago time formatting ──────────────────────────────────────────────
+// ─── Timestamps ───────────────────────────────────────────────────────────
 
-const CHICAGO_FORMATTER = new Intl.DateTimeFormat("en-US", {
-  year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
-  hour: "numeric",
-  minute: "2-digit",
-  timeZoneName: "short",
-  hour12: true,
-  timeZone: "America/Chicago",
-});
-
-/** Format `Date` as `2026-05-15 1:48 AM CDT`, what we write into the file. */
-export function formatChicago(d: Date = new Date()): string {
-  const parts = CHICAGO_FORMATTER.formatToParts(d);
-  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "";
-  const year = get("year");
-  const month = get("month");
-  const day = get("day");
-  const hour = get("hour");
-  const minute = get("minute");
-  const dayPeriod = get("dayPeriod");
-  const tz = get("timeZoneName");
-  return `${year}-${month}-${day} ${hour}:${minute} ${dayPeriod} ${tz}`;
-}
-
-// ─── Parse / serialize ────────────────────────────────────────────────────
-
-/** Parse a journal file (or empty content) into a structured doc. */
-export function parseJournal(path: string, content: string): JournalDoc {
-  const lines = content.split("\n");
-  const header: JournalHeader = {
-    name: "unknown",
-    session_id: "",
-    machine: "",
-    started: "",
-    last_updated: "",
-  };
-  const entries: JournalEntry[] = [];
-
-  let i = 0;
-  // ── header ──
-  if (lines[i]?.startsWith(JOURNAL_HEADER_PREFIX)) {
-    header.name = lines[i].replace(JOURNAL_HEADER_PREFIX, "").trim();
-    i++;
-  }
-  for (; i < lines.length; i++) {
-    const line = lines[i];
-    if (line === "---") {
-      i++;
-      break;
-    }
-    const separator = line.indexOf(":");
-    if (separator > 0) {
-      const key = line.slice(0, separator);
-      if (
-        key === "session_id" ||
-        key === "machine" ||
-        key === "started" ||
-        key === "last_updated"
-      ) {
-        const value = line.slice(separator + 1).trim();
-        if (value) (header as unknown as Record<string, string>)[key] = value;
-      }
-    }
-  }
-
-  // ── entries ──
-  let currentHeader: string | null = null;
-  let bodyLines: string[] = [];
-  const flush = () => {
-    if (!currentHeader) return;
-    const m = currentHeader.match(ENTRY_HEADER_RE);
-    if (!m) {
-      currentHeader = null;
-      bodyLines = [];
-      return;
-    }
-    const [, date, hour, minute, period, tz, category] = m;
-    entries.push({
-      ts_iso: chicagoToIso(date, hour, minute, period as "AM" | "PM", tz as "CDT" | "CST"),
-      ts_display: `${date} ${hour}:${minute} ${period} ${tz}`,
-      category: category as JournalCategory,
-      body: bodyLines.join("\n").trim(),
-    });
-    currentHeader = null;
-    bodyLines = [];
-  };
-
-  for (; i < lines.length; i++) {
-    const line = lines[i];
-    // Only a line that parses as an entry header starts a new entry. A body
-    // line that merely begins with "## " (a markdown heading inside a
-    // multi-line note) stays in the current entry; treating it as a header
-    // would drop it and everything after it on the next rewrite.
-    if (line.startsWith("## ") && ENTRY_HEADER_RE.test(line)) {
-      flush();
-      currentHeader = line;
-    } else if (currentHeader) {
-      bodyLines.push(line);
-    }
-  }
-  flush();
-
-  return { path, header, entries, bytes: Buffer.byteLength(content, "utf8") };
-}
-
-/** Serialize a parsed doc back to markdown. */
-export function serializeJournal(doc: JournalDoc): string {
-  const lines: string[] = [];
-  lines.push(`${JOURNAL_HEADER_PREFIX}${doc.header.name}`);
-  if (doc.header.session_id) lines.push(`session_id: ${doc.header.session_id}`);
-  if (doc.header.machine) lines.push(`machine: ${doc.header.machine}`);
-  if (doc.header.started) lines.push(`started: ${doc.header.started}`);
-  if (doc.header.last_updated) lines.push(`last_updated: ${doc.header.last_updated}`);
-  lines.push("");
-  lines.push("---");
-  lines.push("");
-  for (const entry of doc.entries) {
-    lines.push(`## ${entry.ts_display} · ${entry.category}`);
-    if (entry.body.length > 0) {
-      lines.push(entry.body);
-    }
-    lines.push("");
-  }
-  return `${lines.join("\n").trimEnd()}\n`;
-}
-
-function chicagoToIso(
-  date: string,
-  hourStr: string,
-  minute: string,
-  period: "AM" | "PM",
-  tz: "CDT" | "CST",
-): string {
-  let hour = Number.parseInt(hourStr, 10);
-  if (period === "PM" && hour !== 12) hour += 12;
-  if (period === "AM" && hour === 12) hour = 0;
-  const offset = tz === "CDT" ? "-05:00" : "-06:00";
-  const hh = String(hour).padStart(2, "0");
-  return `${date}T${hh}:${minute}:00${offset}`;
+/**
+ * Format `d` as a journal timestamp in the project's resolved zone, e.g.
+ * `2026-11-07 10:38 PM -06:00`.
+ */
+export function formatJournalNow(d: Date = new Date(), root?: string | null): string {
+  return formatJournalTimestamp(d, resolveTimeZone(root ?? monorepoRoot()));
 }
 
 // ─── Lint ─────────────────────────────────────────────────────────────────
@@ -274,22 +125,33 @@ export function lintJournal(content: string, byteCap = MAX_JOURNAL_BYTES): LintI
     }
   }
 
+  const doc = parseJournal("", content);
+  for (const line of doc.unreadable_lines) {
+    issues.push({
+      line,
+      message: `unreadable timestamp (run \`${resolveBinName()} journal migrate\`): ${lines[line - 1]}`,
+    });
+  }
+
   // Entry header + chronological order checks
+  let inEntries = false;
   const entryTimes: number[] = [];
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (!line.startsWith("## ")) continue;
-    if (!ENTRY_HEADER_RE.test(line)) {
-      issues.push({ line: i + 1, message: `malformed entry header: ${line}` });
+    const line = lines[i]!;
+    if (!inEntries) {
+      if (line === "---") inEntries = true;
       continue;
     }
-    const m = line.match(ENTRY_HEADER_RE)!;
-    const iso = chicagoToIso(m[1], m[2], m[3], m[4] as "AM" | "PM", m[5] as "CDT" | "CST");
-    const ts = Date.parse(iso);
-    if (Number.isFinite(ts)) entryTimes.push(ts);
+    if (!line.startsWith("## ")) continue;
+    const parsed = parseEntryHeader(line);
+    if (parsed) {
+      entryTimes.push(parsed.timestamp.epoch_ms);
+    } else if (!isUnreadableEntryHeader(line)) {
+      issues.push({ line: i + 1, message: `malformed entry header: ${line}` });
+    }
   }
   for (let i = 1; i < entryTimes.length; i++) {
-    if (entryTimes[i] > entryTimes[i - 1]) {
+    if (entryTimes[i]! > entryTimes[i - 1]!) {
       issues.push({
         line: 0,
         message: "entries are not in chronological-descending order (newest first)",
@@ -303,7 +165,7 @@ export function lintJournal(content: string, byteCap = MAX_JOURNAL_BYTES): LintI
     issues.push({ line: 0, message: "CRLF line endings detected; LF required" });
   }
   for (let i = 0; i < lines.length; i++) {
-    if (/\s$/.test(lines[i]) && lines[i].length > 0) {
+    if (/\s$/.test(lines[i]!) && lines[i]!.length > 0) {
       issues.push({ line: i + 1, message: "trailing whitespace" });
       break;
     }
@@ -321,111 +183,236 @@ export function lintJournal(content: string, byteCap = MAX_JOURNAL_BYTES): LintI
   return issues;
 }
 
-// ─── Append + prune ───────────────────────────────────────────────────────
+// ─── Writers ──────────────────────────────────────────────────────────────
+
+/** Raised when a writer meets timestamps it cannot read; names the fix. */
+export class JournalNeedsMigrationError extends Error {
+  readonly code = "JOURNAL_NEEDS_MIGRATION";
+  constructor(
+    readonly path: string,
+    readonly lines: number[],
+  ) {
+    super(
+      `${path} has ${lines.length} timestamp line(s) this version cannot read ` +
+        `(line ${lines.slice(0, 5).join(", ")}${lines.length > 5 ? ", …" : ""}). ` +
+        `Run \`${resolveBinName()} journal migrate\` to preview the rewrite, then ` +
+        `\`${resolveBinName()} journal migrate --yes\`; refusing to rewrite the file ` +
+        "because that would merge or drop those entries.",
+    );
+    this.name = "JournalNeedsMigrationError";
+  }
+}
+
+function readWritableJournal(path: string): JournalDoc | null {
+  if (!existsSync(path)) return null;
+  const doc = parseJournal(path, readFileSync(path, "utf8"));
+  if (doc.unreadable_lines.length > 0) {
+    throw new JournalNeedsMigrationError(path, doc.unreadable_lines);
+  }
+  return doc;
+}
+
+function writeJournalAtomic(path: string, serialized: string): void {
+  const tmpPath = `${path}.tmp.${process.pid}`;
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(tmpPath, serialized, "utf8");
+  renameSync(tmpPath, path);
+}
+
+export interface AppendEntryOptions {
+  /** Coordination root; defaults to the current one. */
+  root?: string;
+  /** Write time; defaults to now. */
+  now?: Date;
+}
 
 export function appendEntry(
   instanceId: string,
   category: JournalCategory,
   body: string,
+  opts: AppendEntryOptions = {},
 ): JournalDoc {
-  const root = monorepoRoot();
-  const hb = root ? readLiveCoordinationRow(root, instanceId) : null;
-  const path = journalPath(instanceId);
-  let doc: JournalDoc;
-  if (existsSync(path)) {
-    doc = parseJournal(path, readFileSync(path, "utf8"));
-  } else {
-    // Seed `started` from the heartbeat's session start so cross-agent writes
-    // (`harn agents ping`) don't stamp the peer's journal with our wall-clock.
-    const startedSeed = hb?.started_at ? formatChicago(new Date(hb.started_at)) : formatChicago();
-    doc = {
-      path,
-      header: {
-        name: hb?.name ?? "unknown",
-        session_id: hb?.session_id ?? instanceId,
-        machine: resolveMachineLabel(),
-        started: startedSeed,
-        last_updated: "",
-      },
-      entries: [],
-      bytes: 0,
+  const root = rootOrThrow(opts.root);
+  const path = journalPath(instanceId, root);
+  return withJournalLock(journalDir(root), () => {
+    const hb = readLiveCoordinationRow(root, instanceId);
+    const zone = resolveTimeZone(root);
+    const now = opts.now ?? new Date();
+    let doc = readWritableJournal(path);
+    if (!doc) {
+      // Seed `started` from the heartbeat's session start so cross-agent writes
+      // (`harn agents ping`) don't stamp the peer's journal with our wall-clock.
+      const startedAt = hb?.started_at ? new Date(hb.started_at) : now;
+      doc = {
+        path,
+        header: {
+          name: hb?.name ?? "unknown",
+          session_id: hb?.session_id ?? instanceId,
+          machine: resolveMachineLabel(),
+          started: formatJournalTimestamp(
+            Number.isFinite(startedAt.getTime()) ? startedAt : now,
+            zone,
+          ),
+          last_updated: "",
+        },
+        entries: [],
+        bytes: 0,
+        unreadable_lines: [],
+      };
+    }
+
+    const display = formatJournalTimestamp(now, zone);
+    const entry: JournalEntry = {
+      ts_iso: parseJournalTimestamp(display)?.iso ?? now.toISOString(),
+      ts_display: display,
+      category,
+      body: body.trim(),
     };
-  }
+    doc.entries.unshift(entry);
+    doc.header.last_updated = entry.ts_display;
+    if (!doc.header.name || doc.header.name === "unknown") {
+      doc.header.name = hb?.name ?? doc.header.name;
+    }
 
-  const now = new Date();
-  const entry: JournalEntry = {
-    ts_iso: now.toISOString(),
-    ts_display: formatChicago(now),
-    category,
-    body: body.trim(),
-  };
-  doc.entries.unshift(entry);
-  doc.header.last_updated = entry.ts_display;
-  if (!doc.header.name || doc.header.name === "unknown") {
-    doc.header.name = hb?.name ?? doc.header.name;
-  }
+    // Prune from the tail until under cap.
+    let serialized = serializeJournal(doc);
+    let pruned = 0;
+    while (Buffer.byteLength(serialized, "utf8") > MAX_JOURNAL_BYTES && doc.entries.length > 1) {
+      doc.entries.pop();
+      pruned++;
+      serialized = serializeJournal(doc);
+    }
+    if (pruned > 0) {
+      const pruneEntry: JournalEntry = {
+        ts_iso: entry.ts_iso,
+        ts_display: entry.ts_display,
+        category: "note",
+        body: `(auto-pruned ${pruned} oldest entries to stay under ${MAX_JOURNAL_BYTES}-byte cap)`,
+      };
+      doc.entries.unshift(pruneEntry);
+      serialized = serializeJournal(doc);
+    }
+    doc.bytes = Buffer.byteLength(serialized, "utf8");
+    writeJournalAtomic(path, serialized);
+    return doc;
+  });
+}
 
-  // Prune from the tail until under cap.
-  let serialized = serializeJournal(doc);
-  let pruned = 0;
-  while (Buffer.byteLength(serialized, "utf8") > MAX_JOURNAL_BYTES && doc.entries.length > 1) {
-    doc.entries.pop();
-    pruned++;
-    serialized = serializeJournal(doc);
-  }
-  if (pruned > 0) {
-    const pruneEntry: JournalEntry = {
-      ts_iso: new Date().toISOString(),
-      ts_display: formatChicago(),
-      category: "note",
-      body: `(auto-pruned ${pruned} oldest entries to stay under ${MAX_JOURNAL_BYTES}-byte cap)`,
-    };
-    doc.entries.unshift(pruneEntry);
-    serialized = serializeJournal(doc);
-  }
-  doc.bytes = Buffer.byteLength(serialized, "utf8");
+export type EntryMutationResult =
+  | { ok: true; bytes: number; entries: number }
+  | { ok: false; error: string };
 
-  // Atomic write
-  const tmpPath = `${path}.tmp.${process.pid}`;
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(tmpPath, serialized, "utf8");
-  renameSync(tmpPath, path);
+function mutateEntry(
+  instanceId: string,
+  index: number,
+  expectedTsDisplay: string,
+  mutate: (doc: JournalDoc) => void,
+  root?: string,
+): EntryMutationResult {
+  const resolvedRoot = rootOrThrow(root);
+  const path = journalPath(instanceId, resolvedRoot);
+  return withJournalLock(journalDir(resolvedRoot), () => {
+    const doc = readWritableJournal(path);
+    if (!doc) return { ok: false, error: "journal not found" };
+    if (!Number.isInteger(index) || index < 0 || index >= doc.entries.length) {
+      return { ok: false, error: `index ${index} out of range` };
+    }
+    if (doc.entries[index]!.ts_display !== expectedTsDisplay) {
+      return {
+        ok: false,
+        error: `entry at index ${index} no longer matches (someone else may have edited)`,
+      };
+    }
+    // Keep the pre-edit file as an archive (audit trail), then rewrite.
+    archiveJournal(instanceId, resolvedRoot);
+    mutate(doc);
+    const serialized = serializeJournal(doc);
+    writeJournalAtomic(path, serialized);
+    return { ok: true, bytes: Buffer.byteLength(serialized, "utf8"), entries: doc.entries.length };
+  });
+}
 
-  return doc;
+/**
+ * Replace one entry's category and body by its newest-first index. The stamp
+ * is kept: an edit preserves the entry's identity. `expectedTsDisplay` guards
+ * against a concurrent writer having shifted the entries.
+ */
+export function editEntry(
+  instanceId: string,
+  index: number,
+  expectedTsDisplay: string,
+  category: JournalCategory,
+  body: string,
+  root?: string,
+): EntryMutationResult {
+  return mutateEntry(
+    instanceId,
+    index,
+    expectedTsDisplay,
+    (doc) => {
+      const target = doc.entries[index]!;
+      target.category = category;
+      target.body = body.trim();
+    },
+    root,
+  );
+}
+
+/** Delete one entry by its newest-first index, with the same guard as `editEntry`. */
+export function deleteEntry(
+  instanceId: string,
+  index: number,
+  expectedTsDisplay: string,
+  root?: string,
+): EntryMutationResult {
+  return mutateEntry(
+    instanceId,
+    index,
+    expectedTsDisplay,
+    (doc) => {
+      doc.entries.splice(index, 1);
+    },
+    root,
+  );
 }
 
 // ─── Archive lifecycle ────────────────────────────────────────────────────
 
 /** Move `<owner>.md` → `archived/<owner>-<ts>.md`. No-op if missing. Returns archive path (or null). */
-export function archiveJournal(instanceId: string): string | null {
+export function archiveJournal(instanceId: string, root?: string | null): string | null {
   assertSafeInstanceId(instanceId);
-  const src = journalPath(instanceId);
-  if (!existsSync(src)) return null;
-  const ts = new Date().toISOString().replace(/[:.]/g, "-");
-  const dest = resolveContainedFile(archiveDir(), `${instanceId}-${ts}.md`);
-  renameSync(src, dest);
-  return dest;
+  const resolvedRoot = rootOrThrow(root);
+  return withJournalLock(journalDir(resolvedRoot), () => {
+    const src = journalPath(instanceId, resolvedRoot);
+    if (!existsSync(src)) return null;
+    const ts = new Date().toISOString().replace(/[:.]/g, "-");
+    const dest = resolveContainedFile(archiveDir(resolvedRoot), `${instanceId}-${ts}.md`);
+    renameSync(src, dest);
+    return dest;
+  });
 }
 
 /** Delete archives older than `days`. Returns number deleted. */
 export function pruneArchives(days = ARCHIVE_RETENTION_DAYS): number {
   const cutoff = Date.now() - days * 24 * 3600 * 1000;
   const dir = archiveDir();
-  let deleted = 0;
-  for (const f of readdirSync(dir)) {
-    if (!f.endsWith(".md")) continue;
-    const fp = resolve(dir, f);
-    try {
-      const s = statSync(fp);
-      if (s.mtimeMs < cutoff) {
-        unlinkSync(fp);
-        deleted++;
+  return withJournalLock(journalDir(), () => {
+    let deleted = 0;
+    for (const f of readdirSync(dir)) {
+      if (!f.endsWith(".md")) continue;
+      const fp = resolve(dir, f);
+      try {
+        const s = statSync(fp);
+        if (s.mtimeMs < cutoff) {
+          unlinkSync(fp);
+          deleted++;
+        }
+      } catch {
+        // skip
       }
-    } catch {
-      // skip
     }
-  }
-  return deleted;
+    return deleted;
+  });
 }
 
 /** Sweep journals whose corresponding authoritative V3 generation is gone. */
@@ -483,8 +470,8 @@ export function currentOwnerOrThrow(): string {
   return owner;
 }
 
-export function loadJournal(instanceId: string): JournalDoc | null {
-  const path = journalPath(instanceId);
+export function loadJournal(instanceId: string, root?: string | null): JournalDoc | null {
+  const path = journalPath(instanceId, root);
   if (!existsSync(path)) return null;
   return parseJournal(path, readFileSync(path, "utf8"));
 }

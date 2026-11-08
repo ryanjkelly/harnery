@@ -22,6 +22,11 @@ import {
   resolveOwnerByName,
   sweepOrphanJournals,
 } from "../core/journal/index.ts";
+import {
+  hasRetiredJournalStamps,
+  type JournalMigrationReport,
+  migrateJournals,
+} from "../core/journal/migrate.ts";
 
 /**
  * `harn journal`: per-agent markdown journal at `.harnery/journal/<instance_id>.md`.
@@ -118,6 +123,7 @@ export function registerJournalCommand(program: Command, emitParam: EmitContext)
           bytes: number;
           last_category: string | null;
           last_ts: string | null;
+          last_ts_iso: string | null;
         }> = [];
         for (const f of readdirSync(dir)) {
           if (!f.endsWith(".md")) continue;
@@ -131,9 +137,12 @@ export function registerJournalCommand(program: Command, emitParam: EmitContext)
             bytes: doc.bytes,
             last_category: doc.entries[0]?.category ?? null,
             last_ts: doc.entries[0]?.ts_display ?? null,
+            last_ts_iso: doc.entries[0]?.ts_iso ?? null,
           });
         }
-        rows.sort((a, b) => (b.last_ts ?? "").localeCompare(a.last_ts ?? ""));
+        const instant = (row: (typeof rows)[number]) =>
+          row.last_ts_iso ? Date.parse(row.last_ts_iso) : Number.NEGATIVE_INFINITY;
+        rows.sort((a, b) => instant(b) - instant(a));
         emit.data({ rows });
       } catch (err) {
         emit.error({ code: "list_failed", message: (err as Error).message });
@@ -278,6 +287,35 @@ export function registerJournalCommand(program: Command, emitParam: EmitContext)
       }
     });
 
+  // ── migrate ───────────────────────────────────────────────────────────
+  root
+    .command("migrate")
+    .description(
+      "Rewrite journal timestamps from the retired zone-abbreviation format " +
+        "(e.g. '10:38 PM CST') to the numeric-offset format ('10:38 PM -06:00'). " +
+        "Covers active and archived journals; dry run unless --yes.",
+    )
+    .option(
+      "--yes",
+      "Apply the rewrite (saves each original under .harnery/journal/.migration-backup/)",
+    )
+    .option("--json", "Emit the full per-file report as JSON")
+    .action((opts: { yes?: boolean; json?: boolean }) => {
+      try {
+        const report = migrateJournals(journalDir(), { apply: opts.yes === true });
+        if (opts.json) {
+          emit.config({ format: "json" });
+          emit.data(report);
+        } else {
+          emit.text(renderMigrationReport(report, resolveBinName()));
+        }
+        if (report.unparseable > 0) emit.setExitCode(1);
+      } catch (err) {
+        emit.error({ code: "migrate_failed", message: (err as Error).message });
+        process.exit(1);
+      }
+    });
+
   // ── janitor (SessionStart hook) ───────────────────────────────────────
   root
     .command("janitor")
@@ -289,10 +327,14 @@ export function registerJournalCommand(program: Command, emitParam: EmitContext)
     .action((opts: { days: string; quiet?: boolean }) => {
       try {
         const days = Number.parseInt(opts.days, 10);
+        // Journals are per machine and not committed, so each machine heals
+        // its own retired timestamps here, quietly, before anything rewrites them.
+        const migrated = autoMigrate();
         const swept = sweepOrphanJournals();
         const pruned = pruneArchives(days);
         if (!opts.quiet) {
           emit.data({
+            journals_migrated: migrated?.files_changed ?? 0,
             archives_pruned: pruned,
             orphans_swept: swept.length,
             orphans: swept,
@@ -364,6 +406,45 @@ function runLint(opts: { all?: boolean; owner?: string }): void {
   }
   emit.data({ files: reports.length, total_issues: totalIssues, reports });
   if (totalIssues > 0) process.exit(1);
+}
+
+/**
+ * SessionStart's quiet migration. Never throws: a failure leaves the files as
+ * they were, and writers keep refusing them with a message naming the command.
+ */
+function autoMigrate(): JournalMigrationReport | null {
+  try {
+    const dir = journalDir();
+    if (!hasRetiredJournalStamps(dir)) return null;
+    return migrateJournals(dir, { apply: true });
+  } catch {
+    return null;
+  }
+}
+
+export function renderMigrationReport(report: JournalMigrationReport, bin: string): string {
+  const lines: string[] = [];
+  const verb = report.applied ? "Rewrote" : "Would rewrite";
+  lines.push(
+    `${verb} ${report.files_changed} of ${report.files_scanned} journal file(s): ` +
+      `${report.headers} entry header(s), ${report.metadata} metadata line(s).`,
+  );
+  if (report.backup_dir) lines.push(`Originals saved under ${report.backup_dir}`);
+  if (report.unparseable > 0) {
+    lines.push(`${report.unparseable} line(s) could not be read and were left unchanged:`);
+    for (const file of report.files) {
+      for (const bad of file.unparseable) {
+        lines.push(`  ${file.path}:${bad.line}  ${bad.reason}: ${bad.text}`);
+      }
+    }
+  }
+  if (!report.applied && report.files_changed > 0) {
+    lines.push(`Run \`${bin} journal migrate --yes\` to apply.`);
+  }
+  if (report.files_changed === 0 && report.unparseable === 0) {
+    lines.push("Nothing to migrate.");
+  }
+  return lines.join("\n");
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────

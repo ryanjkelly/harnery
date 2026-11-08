@@ -3,7 +3,8 @@
  * `.harnery/journal/<instance_id>.md`.
  *
  * Used by the agents-coord web UI route handlers for both operator-nudge
- * appends and inline edits.
+ * appends and inline edits. Both hold the shared journal lock; appends go
+ * through the journal codec so they carry a standard entry header.
  */
 
 import {
@@ -15,6 +16,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { appendEntry, type JournalCategory, withJournalLock } from "../../journal/index.ts";
 
 const ALLOWED_CATEGORIES = new Set([
   "note",
@@ -66,17 +68,14 @@ export function appendJournal(
 
   const trimmedBody =
     body.length > APPEND_BODY_CAP ? `${body.slice(0, APPEND_BODY_CAP - 3)}...` : body;
-  const target = journalPath(coordRoot, instanceId);
-  const ts = nowIsoSeconds();
-
-  let prior = "";
-  if (existsSync(target)) {
-    prior = readFileSync(target, "utf8");
-    if (!prior.endsWith("\n")) prior += "\n";
+  try {
+    const doc = appendEntry(instanceId, category as JournalCategory, trimmedBody, {
+      root: coordRoot,
+    });
+    return { ok: true, path: doc.path };
+  } catch (error) {
+    return { ok: false, reason: (error as Error).message };
   }
-  const entry = `## [${ts}] ${category}\n${trimmedBody}\n`;
-  atomicWriteText(target, prior + entry);
-  return { ok: true, path: target };
 }
 
 /**
@@ -98,24 +97,25 @@ export function editJournal(
   const archive = archivePath(coordRoot, instanceId, archiveSuffix);
 
   mkdirSync(dirname(archive), { recursive: true });
-
-  let prior = "";
-  if (existsSync(target)) {
-    try {
-      copyFileSync(target, archive);
-    } catch {
-      /* archive optional; continue */
+  return withJournalLock(dirname(target), () => {
+    let prior = "";
+    if (existsSync(target)) {
+      try {
+        copyFileSync(target, archive);
+      } catch {
+        /* archive optional; continue */
+      }
+      prior = readFileSync(target, "utf8");
+      if (!prior.endsWith("\n")) prior += "\n";
     }
-    prior = readFileSync(target, "utf8");
-    if (!prior.endsWith("\n")) prior += "\n";
-  }
 
-  const summaryText = summary && summary.length > 0 ? summary : "(no summary)";
-  const auditMarker =
-    `## [${ts}] note (edited via UI by the operator)\n` +
-    `${summaryText}\n` +
-    `Pre-edit archived at .harnery/journal/archived/${instanceId}-${archiveSuffix}.md\n\n`;
+    const summaryText = summary && summary.length > 0 ? summary : "(no summary)";
+    const auditMarker =
+      `## [${ts}] note (edited via UI by the operator)\n` +
+      `${summaryText}\n` +
+      `Pre-edit archived at .harnery/journal/archived/${instanceId}-${archiveSuffix}.md\n\n`;
 
-  atomicWriteText(target, prior + auditMarker + newBody + (newBody.endsWith("\n") ? "" : "\n"));
-  return { ok: true, archivePath: archive, path: target };
+    atomicWriteText(target, prior + auditMarker + newBody + (newBody.endsWith("\n") ? "" : "\n"));
+    return { ok: true, archivePath: archive, path: target };
+  });
 }
