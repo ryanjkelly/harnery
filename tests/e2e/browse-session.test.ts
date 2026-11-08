@@ -71,10 +71,13 @@ function output(result: ReturnType<typeof runClient>): unknown {
   return JSON.parse(result.stdout.trim());
 }
 
+const posixModes = process.platform !== "win32";
+
 describe("browse-session process integration", () => {
   test("repeated short-lived clients control one context and close it cleanly", async () => {
     const { child, controlFile, origin, descriptor } = await startHost();
-    expect(statSync(controlFile).mode & 0o777).toBe(0o600);
+    // Windows has no POSIX mode bits; owner-only modes are checked only where they exist.
+    if (posixModes) expect(statSync(controlFile).mode & 0o777).toBe(0o600);
     expect(output(runClient(controlFile, ["status"]))).toMatchObject({
       phase: "ready",
       tab_count: 1,
@@ -116,7 +119,7 @@ describe("browse-session process integration", () => {
     expect(output(runClient(controlFile, ["screenshot", "--out", screenshotPath]))).toMatchObject({
       path: screenshotPath,
     });
-    expect(statSync(screenshotPath).mode & 0o777).toBe(0o600);
+    if (posixModes) expect(statSync(screenshotPath).mode & 0o777).toBe(0o600);
 
     expect(output(runClient(controlFile, ["close"]))).toEqual({ closing: true });
     await waitForExit(child);
@@ -125,14 +128,20 @@ describe("browse-session process integration", () => {
       expect(existsSync(descriptor.transport.address)).toBe(false);
   }, 30_000);
 
-  test("SIGTERM removes the descriptor and socket", async () => {
-    const { child, controlFile, descriptor } = await startHost();
-    child.kill("SIGTERM");
-    await waitForExit(child);
-    expect(existsSync(controlFile)).toBe(false);
-    if (descriptor.transport.kind === "unix")
-      expect(existsSync(descriptor.transport.address)).toBe(false);
-  }, 20_000);
+  // On Windows, kill("SIGTERM") ends the process without running its handlers, like
+  // SIGKILL; the leftover descriptor makes the next start ask for its removal.
+  test.skipIf(process.platform === "win32")(
+    "SIGTERM removes the descriptor and socket",
+    async () => {
+      const { child, controlFile, descriptor } = await startHost();
+      child.kill("SIGTERM");
+      await waitForExit(child);
+      expect(existsSync(controlFile)).toBe(false);
+      if (descriptor.transport.kind === "unix")
+        expect(existsSync(descriptor.transport.address)).toBe(false);
+    },
+    20_000,
+  );
 
   test("browse rejects control descriptors outside login mode before launching Chromium", () => {
     const dir = privateDir("harnery-session-compat-");

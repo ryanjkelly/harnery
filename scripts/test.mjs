@@ -170,6 +170,11 @@ function discoverTests(dir) {
   });
 }
 
+// --keep-going runs every partition and fails at the end, so one run lists
+// every failing partition instead of stopping at the first.
+const keepGoing = process.argv.includes("--keep-going");
+const failedPartitions = [];
+
 function run(label, files, extraArgs = []) {
   process.stdout.write(`\n=== ${label} (${files.length} files) ===\n`);
   const startedAt = performance.now();
@@ -188,7 +193,10 @@ function run(label, files, extraArgs = []) {
     `=== ${label} ${outcome} in ${formatDuration(durationMs)} (${files.length} files) ===\n`,
   );
   if (result.error) throw result.error;
-  if (result.status !== 0) process.exit(result.status ?? 1);
+  if (result.status !== 0) {
+    if (!keepGoing) process.exit(result.status ?? 1);
+    failedPartitions.push(label);
+  }
 }
 
 const allFiles = [
@@ -261,4 +269,10 @@ for (const timing of partitionTimings.toSorted((a, b) => b.durationMs - a.durati
   process.stdout.write(
     `- ${timing.label}: ${formatDuration(timing.durationMs)} (${timing.files} files)\n`,
   );
+}
+
+if (failedPartitions.length > 0) {
+  process.stdout.write("\n=== Failed partitions ===\n");
+  for (const label of failedPartitions) process.stdout.write(`- ${label}\n`);
+  process.exit(1);
 }
