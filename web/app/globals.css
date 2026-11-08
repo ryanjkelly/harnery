@@ -65,6 +65,8 @@
   --negative: oklch(0.55 0.22 27);
   --negative-soft: oklch(0.95 0.05 22);
   --radius: 0.625rem;
+  /* Log-flow lane colours: darker on white so pale hues stay visible. */
+  --lane-lightness: 44%;
 }
 
 .dark {
@@ -90,6 +92,7 @@
   --positive-soft: oklch(0.3 0.05 150);
   --negative: oklch(0.72 0.19 22);
   --negative-soft: oklch(0.3 0.06 20);
+  --lane-lightness: 60%;
 }
 
 @layer base {
@@ -287,12 +290,12 @@
 
 .log-flow-lane { @apply grid gap-2 sm:grid-cols-[200px_1fr] sm:items-center; }
 .log-flow-label { @apply flex min-w-0 items-center gap-2 rounded-lg border border-border/40 bg-background/55 px-2.5 py-2 backdrop-blur; }
-.log-flow-family-dot { width: 7px; height: 28px; border-radius: 999px; flex: none; background: hsl(var(--lane-hue) 82% 60%); box-shadow: 0 0 14px hsl(var(--lane-hue) 82% 60% / 0.65); }
+.log-flow-family-dot { width: 7px; height: 28px; border-radius: 999px; flex: none; background: hsl(var(--lane-hue) 82% var(--lane-lightness)); box-shadow: 0 0 14px hsl(var(--lane-hue) 82% var(--lane-lightness) / 0.65); }
 .log-flow-track { @apply relative h-12 overflow-hidden rounded-lg border border-border/45 bg-background/35; }
-.log-flow-beam { position: absolute; left: 0; right: 0; top: 50%; height: 1px; background: linear-gradient(to right, transparent, hsl(var(--lane-hue) 82% 60% / 0.26) 10%, hsl(var(--lane-hue) 82% 60% / 0.56) 90%, transparent); }
+.log-flow-beam { position: absolute; left: 0; right: 0; top: 50%; height: 1px; background: linear-gradient(to right, transparent, hsl(var(--lane-hue) 82% var(--lane-lightness) / 0.26) 10%, hsl(var(--lane-hue) 82% var(--lane-lightness) / 0.56) 90%, transparent); }
 
 .log-flow-event {
-  --marker: hsl(var(--lane-hue) 84% 60%);
+  --marker: hsl(var(--lane-hue) 84% var(--lane-lightness));
   position: absolute;
   top: 50%;
   z-index: 2;
