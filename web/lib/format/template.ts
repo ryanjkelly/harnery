@@ -145,7 +145,8 @@ export function formatTemplate(
   if (d === null || d === undefined) return NO_DATA;
   const dt = typeof d === "string" ? new Date(d) : d;
   if (Number.isNaN(dt.getTime())) return NO_DATA;
-  const timeZone = opts.timeZone ?? "America/Chicago";
+  // Omitted → the runtime's own zone (the viewer's browser on the client).
+  const timeZone = opts.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC";
 
   // Reuse the per-timeZone formatter trio (construction is the costly part).
   // One `formatToParts` call per formatter grabs every field we might need.

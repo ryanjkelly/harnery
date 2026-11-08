@@ -9,6 +9,11 @@
 import { NO_DATA } from "./no-data";
 
 export interface FormatDateTimeOpts {
+  /**
+   * IANA zone. Omitted → the runtime's own zone (the viewer's browser on the
+   * client). Components should pass the display-prefs zone from
+   * `useDateTimeFormat()` so server and client render the same text.
+   */
   timeZone?: string;
   /** Prepend the short weekday (e.g. `Sun, `). Default true so every surface
    * matches the canonical reference style above. */
@@ -50,7 +55,7 @@ export function formatDateTime(
   if (Number.isNaN(dt.getTime())) return NO_DATA;
 
   const {
-    timeZone = "America/Chicago",
+    timeZone,
     withYear = false,
     withSeconds = false,
     withZoneName = false,
