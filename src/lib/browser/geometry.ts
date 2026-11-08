@@ -888,6 +888,24 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
           if (!chain.supported) continue;
           const allowed = chain.allowed;
           const clippedBy = chain.clippedBy;
+          // A fixed line-height shorter than the font's content area (Segoe UI at
+          // 16px/20px is about 21px tall) leaves the text box overhanging its
+          // line box by the negative half-leading on each side. CSS lays the line
+          // out at the line-height, so measure that line box: the overhang is not
+          // content the container cuts off.
+          const lineHeight = Number.parseFloat(getComputedStyle(parent).lineHeight);
+          const lineBox = (fragment: DOMRect): LayoutRect => {
+            const rect = rectOf(fragment);
+            if (!(lineHeight > 0) || rect.height <= lineHeight) return rect;
+            const inset = (rect.height - lineHeight) / 2;
+            return {
+              ...rect,
+              y: rect.y + inset,
+              top: rect.top + inset,
+              bottom: rect.bottom - inset,
+              height: lineHeight,
+            };
+          };
           const range = document.createRange();
           range.selectNodeContents(node);
           for (const fragment of [...range.getClientRects()]) {
@@ -900,7 +918,7 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
                 label: labelOf(parent),
                 snippet: value.replace(/\s+/g, " ").trim().slice(0, 160),
                 source: "text",
-                rect: rectOf(fragment),
+                rect: lineBox(fragment),
               },
               allowed,
               clippedBy,
