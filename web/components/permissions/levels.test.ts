@@ -4,6 +4,7 @@ import {
   claudeBypasses,
   claudeSummary,
   codexSummary,
+  computerAllowed,
   computerSummary,
   cursorSummary,
 } from "./levels";
@@ -49,6 +50,30 @@ describe("tool summaries", () => {
     expect(computerSummary(computer("ask-once-per-session")).tone).toBe("neutral");
     expect(computerSummary(computer("on", { project_mode: "off" })).level).toBe("Off");
     expect(computerSummary(undefined, "boom")).toMatchObject({ tone: "danger" });
+  });
+
+  test("computer use: a person's own off is theirs, not the project's, and keeps the controls", () => {
+    for (const mode_source of ["user-project", "user-default"]) {
+      const own = computer("off", { enabled: false, mode_source });
+      expect(computerAllowed(own)).toBe(true);
+      expect(computerSummary(own)).toMatchObject({ level: "Off", tone: "neutral" });
+      expect(computerSummary(own).sentence).toContain("You turned computer use off for yourself");
+    }
+    const saved = computer("off", {
+      enabled: false,
+      mode_source: "user-project",
+      person_sign_in: true,
+    });
+    expect(computerSummary(saved).sentence).toContain("sign-in choice is saved");
+    const projectOff = computer("off", { enabled: false, project_mode: "off" });
+    expect(computerAllowed(projectOff)).toBe(false);
+    expect(computerSummary(projectOff).sentence).toContain("This project does not let agents");
+    const invalid = computer("off", {
+      enabled: false,
+      config_error: "computer.mode must be one of",
+    });
+    expect(computerAllowed(invalid)).toBe(false);
+    expect(computerSummary(invalid)).toMatchObject({ level: "Off", tone: "danger" });
   });
 
   test("Claude Code: bypass is amber unless policy turns it off", () => {

@@ -114,7 +114,9 @@ password manager's browser extension, never typing it. A locked password
 manager, a passkey, a hardware key, a system prompt, or a code sent by email
 or text still goes to the person, and agents never sign in inside an
 isolated or automation-controlled browser. A person whose own mode is `off`
-gets no agent sign-in either.
+gets no agent sign-in either; a saved `on` then shows as inactive (JSON
+`person_sign_in: true` with `sign_in: false`), comes back with desktop
+control, and can still be turned off.
 
 ## Approval
 

@@ -47,6 +47,7 @@ function cfg(
     sign_in: false,
     project_sign_in: false,
     sign_in_source: "default",
+    person_sign_in: false,
     ...extra,
   };
 }
@@ -839,6 +840,7 @@ describe("computer sign-in", () => {
       return cfg(mode, {
         project_sign_in: projectSignIn && mode !== "off",
         sign_in: projectSignIn && mode !== "off" && personal === true,
+        person_sign_in: personal === true,
         sign_in_source:
           prefs?.sign_in_projects?.["/proj"] !== undefined
             ? "user-project"
@@ -905,6 +907,21 @@ describe("computer sign-in", () => {
     const cap = await run(["sign-in", "on"], { prefs, config: allowing(false) });
     expect(cap.errors[0]?.code).toBe("sign_in_not_allowed");
     expect(prefs.state.signInWrites).toHaveLength(0);
+  });
+
+  test("a saved on is reported, and can be turned off, while desktop control is off", async () => {
+    const prefs = fakePrefs({ sign_in_projects: { "/proj": true } });
+    const config = (p?: ComputerPreferences) => ({
+      ...allowing()(p ?? prefs.state.prefs),
+      enabled: false,
+      mode: "off" as const,
+      sign_in: false,
+    });
+    const status = await run(["status"], { prefs, config });
+    expect(status.text.join("\n")).toContain("sign-in:   off while your desktop control is off");
+    const off = await run(["sign-in", "off"], { prefs, config, confirm: fakeConfirm() });
+    expect(off.exitCode()).toBe(0);
+    expect(prefs.state.signInWrites).toEqual([{ root: "/proj", on: false }]);
   });
 
   test("rejects anything but on or off", async () => {

@@ -15,6 +15,8 @@ export interface ComputerModeOption {
   looser: boolean;
   /** True for the project's default mode, which the control marks. */
   projectDefault?: boolean;
+  /** Why this one choice cannot be picked now; the others stay available. */
+  unavailable?: string;
 }
 
 const OUTCOME_TONE: Record<ModeChangeOutcome["outcome"], keyof typeof TONE> = {
@@ -116,12 +118,16 @@ export function ComputerModeControl({
         <legend className="sr-only">{legend}</legend>
         {options.map((o) => {
           const active = shown === o.value;
-          const hint = `${o.meaning}${o.looser ? " Choosing it asks you to confirm in a pop-up on this computer's screen." : ""}`;
+          const blocked = Boolean(o.unavailable) && !active;
+          const hint = blocked
+            ? `${o.meaning} ${o.unavailable}`
+            : `${o.meaning}${o.looser ? " Choosing it asks you to confirm in a pop-up on this computer's screen." : ""}`;
           return (
             <Tooltip key={o.value} content={hint} triggerClassName="flex">
               <button
                 type="button"
                 aria-pressed={active}
+                disabled={blocked}
                 onClick={() => (active ? undefined : apply(o))}
                 className={cn(
                   "flex w-full flex-col items-center justify-center rounded-md border px-3 py-1.5 text-xs font-medium leading-tight transition-colors disabled:cursor-not-allowed",

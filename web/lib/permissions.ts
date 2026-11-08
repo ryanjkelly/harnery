@@ -25,6 +25,8 @@ export interface ComputerStatus {
   sign_in?: boolean;
   project_sign_in?: boolean;
   sign_in_source?: string;
+  /** The person's saved sign-in choice, which may be on while their desktop mode is off. */
+  person_sign_in?: boolean;
   host: { kind: string; reason?: string; note?: string };
   default_driver: string | null;
   drivers: Array<{
@@ -352,6 +354,32 @@ function interpretChange(
     outcome: "failed",
     message: `Not changed: ${error.message ?? (errorLine(result.stderr) || `${words.command} gave no answer`)}`,
   };
+}
+
+/**
+ * One settings change at a time across every Permissions route, so a second
+ * click never opens a second confirmation pop-up while the first waits. The
+ * dashboard is one server process; this does not coordinate CLI runs. The
+ * flag lives on `globalThis` because Next may bundle a copy of this module
+ * into each route.
+ */
+const guard = globalThis as { __harneryPermissionsChange?: boolean };
+
+export const BUSY_OUTCOME: ModeChangeOutcome = {
+  outcome: "busy",
+  message: "Not changed: another change is still waiting for your answer in the pop-up.",
+};
+
+export async function oneChangeAtATime(
+  change: () => Promise<ModeChangeOutcome>,
+): Promise<ModeChangeOutcome> {
+  if (guard.__harneryPermissionsChange) return BUSY_OUTCOME;
+  guard.__harneryPermissionsChange = true;
+  try {
+    return await change();
+  } finally {
+    guard.__harneryPermissionsChange = false;
+  }
 }
 
 /** Change the person's own mode for this project through the CLI. Call only after `checkLocalWrite`. */

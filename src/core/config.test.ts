@@ -950,8 +950,11 @@ describe("readComputerConfig", () => {
     expect(
       readComputerConfig(root, { sign_in: true, sign_in_projects: { [root]: false } }),
     ).toMatchObject({ sign_in: false, sign_in_source: "user-project" });
-    // Without desktop control, nobody's choice turns it on.
-    expect(readComputerConfig(root, { mode: "off", sign_in: true }).sign_in).toBe(false);
+    // Without desktop control, nobody's choice turns it on, but the saved choice is reported.
+    expect(readComputerConfig(root, { mode: "off", sign_in: true })).toMatchObject({
+      sign_in: false,
+      person_sign_in: true,
+    });
     const notAllowed = makeRoot('{"computer":{"mode":"ask-each-task"}}');
     expect(readComputerConfig(notAllowed, { sign_in: true })).toMatchObject({
       sign_in: false,

@@ -980,6 +980,12 @@ export interface ComputerProjectConfig {
   project_sign_in: boolean;
   /** Where the person's sign-in choice came from; `default` means they made none (off). */
   sign_in_source: SignInSource;
+  /**
+   * The person's saved sign-in choice before the project's and the desktop's
+   * gates. It can be true while `sign_in` is false (their desktop mode is
+   * off), and then takes effect again when desktop control comes back.
+   */
+  person_sign_in: boolean;
 }
 
 /** Where a person's agent sign-in choice came from. */
@@ -1142,6 +1148,7 @@ export function readComputerConfig(
     sign_in: false,
     project_sign_in: false,
     sign_in_source: "default",
+    person_sign_in: false,
   };
   if (!root) return off;
   const raw = readProjectConfig(root).computer;
@@ -1184,6 +1191,7 @@ export function readComputerConfig(
     sign_in: projectSignIn && mode !== "off" && personSignIn,
     project_sign_in: projectSignIn,
     sign_in_source: signInSource,
+    person_sign_in: personSignIn,
     ...(project.error ? { config_error: project.error } : {}),
     ...(idle !== undefined ? { idle_seconds: idle } : {}),
     ...(waitOk ? { wait_seconds: wait } : {}),

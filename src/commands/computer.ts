@@ -304,7 +304,11 @@ function describeSignIn(config: ComputerProjectConfig, bin: string): string {
   if (config.sign_in) {
     return `on: agents may sign in to websites for you with your password manager (${describeSignInSource(config)})`;
   }
-  if (!config.enabled) return "off (desktop control is off)";
+  if (!config.enabled) {
+    return config.person_sign_in
+      ? `off while your desktop control is off (you turned it on, ${describeSignInSource(config)}; it comes back with desktop control; \`${bin} computer sign-in off\` removes it)`
+      : "off (desktop control is off)";
+  }
   return `off: you sign in yourself (${describeSignInSource(config)}; \`${bin} computer sign-in on\` lets agents do it)`;
 }
 
@@ -707,6 +711,7 @@ export function createComputerCommand(
             sign_in: config.sign_in,
             project_sign_in: config.project_sign_in,
             sign_in_source: config.sign_in_source,
+            person_sign_in: config.person_sign_in,
             approval: grant,
             host: {
               kind: host.kind,
@@ -1440,6 +1445,7 @@ export function createComputerCommand(
                   sign_in: config.sign_in,
                   project_sign_in: config.project_sign_in,
                   sign_in_source: config.sign_in_source,
+                  person_sign_in: config.person_sign_in,
                   ...(scope ? { scope } : {}),
                 })
               : emitLine(deps.emit, `Agent sign-in: ${describeSignIn(config, deps.binName)}.`);

@@ -126,17 +126,26 @@ function SignInSetting({
   local: boolean;
 }) {
   const on = status.sign_in === true;
+  // The person's saved choice, which stays on while their own desktop mode is
+  // off; they can still turn it off then, but not on.
+  const saved = status.person_sign_in ?? on;
+  const desktopOff = !computerAllowed(status) || status.mode === "off";
   const options: ComputerModeOption[] = [
     { value: "off", label: "Off", meaning: SIGN_IN_MEANINGS.off, looser: false },
-    { value: "on", label: "On", meaning: SIGN_IN_MEANINGS.on, looser: !on },
+    {
+      value: "on",
+      label: "On",
+      meaning: SIGN_IN_MEANINGS.on,
+      looser: !saved,
+      ...(desktopOff ? { unavailable: "Turn computer use on first." } : {}),
+    },
   ];
-  const desktopOff = !computerAllowed(status) || status.mode === "off";
   return (
     <div className="space-y-1.5 border-t border-border pt-3">
       <p className="text-sm font-medium">Signing in to websites for you</p>
       <ComputerModeControl
         options={options}
-        selected={on ? "on" : "off"}
+        selected={saved ? "on" : "off"}
         reset={
           status.sign_in_source === "user-project"
             ? {
@@ -149,11 +158,7 @@ function SignInSetting({
             : undefined
         }
         disabledReason={
-          !local
-            ? "This can be changed only from a browser on this computer."
-            : desktopOff
-              ? "Agents need computer use to sign in for you; it is off."
-              : undefined
+          local ? undefined : "This can be changed only from a browser on this computer."
         }
         confirmSeconds={CONFIRM_SECONDS}
         endpoint="/api/permissions/sign-in"
@@ -162,7 +167,11 @@ function SignInSetting({
         keepWords="keeps it off"
       />
       <p className="text-xs text-muted-foreground">
-        {on ? SIGN_IN_MEANINGS.on : SIGN_IN_MEANINGS.off}{" "}
+        {desktopOff && saved
+          ? "You turned this on, but it has no effect while your computer use is off; it comes back when you turn computer use on. Choose Off to remove it."
+          : on
+            ? SIGN_IN_MEANINGS.on
+            : SIGN_IN_MEANINGS.off}{" "}
         {SIGN_IN_SOURCE[status.sign_in_source ?? "default"] ?? ""}
         {" Turning it on asks you to confirm in a pop-up on this computer's screen. Or run "}
         <Code>{`${bin} computer sign-in --help`}</Code>

@@ -9,7 +9,9 @@ import {
   interpretModeChange,
   interpretSignInChange,
   isLoopbackHost,
+  type ModeChangeOutcome,
   modeChangeArgs,
+  oneChangeAtATime,
   parseModeChangeRequest,
   parseSignInChangeRequest,
   requestLocality,
@@ -199,6 +201,35 @@ describe("agent sign-in changes", () => {
     );
     expect(refused).toMatchObject({ outcome: "refused" });
     expect(refused.message).toContain("does not let agents sign in");
+  });
+});
+
+describe("oneChangeAtATime", () => {
+  test("a second change while the first waits is busy, and the guard frees afterwards", async () => {
+    let finish: (value: ModeChangeOutcome) => void = () => {};
+    const first = oneChangeAtATime(
+      () =>
+        new Promise<ModeChangeOutcome>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const second = await oneChangeAtATime(async () => ({ outcome: "changed", message: "x" }));
+    expect(second.outcome).toBe("busy");
+    finish({ outcome: "changed", message: "done" });
+    expect((await first).outcome).toBe("changed");
+    const third = await oneChangeAtATime(async () => ({ outcome: "changed", message: "y" }));
+    expect(third.outcome).toBe("changed");
+  });
+
+  test("a failing change still frees the guard", async () => {
+    await expect(
+      oneChangeAtATime(async () => {
+        throw new Error("boom");
+      }),
+    ).rejects.toThrow("boom");
+    expect(
+      (await oneChangeAtATime(async () => ({ outcome: "changed", message: "z" }))).outcome,
+    ).toBe("changed");
   });
 });
 

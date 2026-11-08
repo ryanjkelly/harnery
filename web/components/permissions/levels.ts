@@ -48,7 +48,7 @@ const COMPUTER_LEVELS: Record<string, { level: string; tone: Tone }> = {
 
 /** Whether the project lets agents use the desktop at all. */
 export function computerAllowed(status: ComputerStatus): boolean {
-  return status.enabled !== false && status.project_mode !== "off";
+  return status.project_mode !== "off" && !status.config_error;
 }
 
 export function computerSummary(status?: ComputerStatus, error?: string): ToolSummary {
@@ -59,12 +59,28 @@ export function computerSummary(status?: ComputerStatus, error?: string): ToolSu
       sentence: `Could not read the computer-use settings: ${error ?? "no answer"}.`,
     };
   }
+  if (status.config_error) {
+    return {
+      level: "Off",
+      tone: "danger",
+      sentence: `Off: this project's computer-use settings are invalid (${status.config_error}).`,
+      raw: `mode: ${status.mode}, project default: ${status.project_mode}`,
+    };
+  }
   if (!computerAllowed(status)) {
     return {
       level: "Off",
       tone: "neutral",
       sentence: "This project does not let agents use the screen, mouse or keyboard.",
       raw: `mode: ${status.mode}, project default: ${status.project_mode}`,
+    };
+  }
+  if (status.mode === "off") {
+    return {
+      level: "Off",
+      tone: "neutral",
+      sentence: `You turned computer use off for yourself. ${MEANINGS.computerMode.off}${status.person_sign_in ? " Your agent sign-in choice is saved but has no effect while it is off." : ""}`,
+      raw: `mode: off (from ${status.mode_source}), project default: ${status.project_mode}`,
     };
   }
   const known = COMPUTER_LEVELS[status.mode];
