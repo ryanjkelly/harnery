@@ -3,6 +3,7 @@ import type { Command } from "commander";
 import { parseHTML } from "linkedom";
 import { type ParsedMail, simpleParser } from "mailparser";
 import type { EmitContext } from "../commander.ts";
+import { resolveTimeZone } from "../core/config.ts";
 
 /**
  * `eml` - Parse Gmail .eml thread exports into clean chronological markdown.
@@ -475,7 +476,7 @@ function formatDateTime(d: Date): string {
     hour: "numeric",
     minute: "2-digit",
     hour12: true,
-    timeZone: "America/Chicago",
+    timeZone: resolveTimeZone(),
   });
 }
 

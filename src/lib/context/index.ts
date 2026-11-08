@@ -5,6 +5,7 @@ import {
   readLiveCoordinationRow,
   readLiveCoordinationRows,
 } from "../../core/agents/state/live-coordination-view.ts";
+import { resolveTimeZone } from "../../core/config.ts";
 import { exec } from "../exec.ts";
 import { NO_DATA } from "../format.ts";
 
@@ -81,7 +82,10 @@ export interface SelfSection {
 }
 
 export interface TimeSection {
-  chicago: string;
+  /** Wall-clock time in `zone`, e.g. "Sat, Nov 7, 2026, 10:38 PM CST". */
+  local: string;
+  /** The IANA zone `local` is rendered in (see `resolveTimeZone`). */
+  zone: string;
   utc: string;
 }
 
@@ -173,8 +177,10 @@ function buildSelf(): SelfSection {
 
 function buildTime(): TimeSection {
   const now = new Date();
+  const zone = resolveTimeZone();
   return {
-    chicago: formatChicago(now),
+    local: formatLocalDateTime(now, zone),
+    zone,
     utc: now.toISOString(),
   };
 }
@@ -355,18 +361,16 @@ async function safe<T>(fn: () => T | Promise<T>): Promise<T | { error: string }>
   }
 }
 
-const CHICAGO_FORMATTER = new Intl.DateTimeFormat("en-US", {
-  weekday: "short",
-  year: "numeric",
-  month: "short",
-  day: "numeric",
-  hour: "numeric",
-  minute: "2-digit",
-  timeZoneName: "short",
-  hour12: true,
-  timeZone: "America/Chicago",
-});
-
-function formatChicago(d: Date): string {
-  return CHICAGO_FORMATTER.format(d);
+function formatLocalDateTime(d: Date, zone: string): string {
+  return new Intl.DateTimeFormat("en-US", {
+    weekday: "short",
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+    hour12: true,
+    timeZone: zone,
+  }).format(d);
 }

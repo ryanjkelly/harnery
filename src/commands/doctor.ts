@@ -18,7 +18,14 @@ import path from "node:path";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
 import { BUILTIN_ADAPTER_IDS } from "../core/adapters/index.ts";
-import { codexWindowsBridgeConfig, resolveBinName, ripgrepAutoInstall } from "../core/config.ts";
+import {
+  codexWindowsBridgeConfig,
+  inspectTimeZone,
+  resolveBinName,
+  ripgrepAutoInstall,
+  type TimeZoneResolution,
+  timeZoneSourceLabel,
+} from "../core/config.ts";
 import {
   countSummarizedSinceV3,
   listDiagnosticSummariesV3,
@@ -130,6 +137,7 @@ export async function runChecks(): Promise<Check[]> {
     checkBun(),
     checkRipgrep(),
     checkHarneryDir(),
+    timeZoneCheck(inspectTimeZone(root)),
     checkAdapterHooks(installed),
     ...(codexAuthorization ? [codexAuthorization] : []),
     checkGitHookRegions(),
@@ -216,6 +224,27 @@ export function codexHookRunsCheck(
       `(${events}; latest ${runs.latest}); their tools proceeded without those hooks' checks`,
     hint: "a hook that outlives its timeout is killed; look for a stalled WSL session or a slow hook",
   };
+}
+
+/**
+ * Report the zone used for human-facing times and journal stamps. An explicit
+ * setting that names no known zone fails here; at runtime it only warns and
+ * falls through, so hooks never break over it.
+ */
+export function timeZoneCheck(resolution: TimeZoneResolution): Check {
+  const using = `${resolution.zone} (${timeZoneSourceLabel(resolution.source)})`;
+  if (resolution.invalid.length > 0) {
+    const bad = resolution.invalid
+      .map((b) => `${JSON.stringify(b.value)} from ${timeZoneSourceLabel(b.source)}`)
+      .join("; ");
+    return {
+      name: "time zone",
+      severity: "fail",
+      detail: `invalid setting ${bad}; using ${using}`,
+      hint: 'set an IANA zone name such as "Europe/Berlin" or "UTC", or remove the setting to use the system zone',
+    };
+  }
+  return { name: "time zone", severity: "ok", detail: using };
 }
 
 /** Report the per-project Windows bridge opt-in, or an invalid value init ignored. */

@@ -123,7 +123,7 @@ function renderSelf(s: NonNullable<ContextReport["self"]>): string[] {
 }
 
 function renderTime(t: NonNullable<ContextReport["time"]>): string[] {
-  return section("time", [`  ${t.chicago}  (UTC: ${t.utc})`]);
+  return section("time", [`  ${t.local}  (UTC: ${t.utc})`]);
 }
 
 function renderRepo(r: NonNullable<ContextReport["repo"]>): string[] {

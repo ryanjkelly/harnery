@@ -97,6 +97,7 @@ import {
   agentsGitSyncCommand,
   coordFreshnessSeconds,
   resolveBinName,
+  resolveTimeZone,
   sessionFinalizationConfig,
 } from "../core/config.ts";
 import {
@@ -1889,7 +1890,7 @@ function truncate(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;
 }
 
-/** "1:29 AM CDT": short local-time form for inline use. */
+/** "1:29 AM CST": short local-time form for inline use, in the resolved zone. */
 function formatLocalShort(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
@@ -1898,7 +1899,7 @@ function formatLocalShort(iso: string): string {
     minute: "2-digit",
     timeZoneName: "short",
     hour12: true,
-    timeZone: "America/Chicago",
+    timeZone: resolveTimeZone(),
   }).format(d);
 }
 
@@ -2979,7 +2980,7 @@ function readContextUsage(
 }
 
 function formatLocalTime(d: Date): string {
-  // "Sat, May 9, 2026, 3:48 AM CDT", rendered in the Chicago timezone.
+  // "Sat, May 9, 2026, 3:48 AM CDT", rendered in the resolved zone.
   return new Intl.DateTimeFormat("en-US", {
     weekday: "short",
     year: "numeric",
@@ -2989,7 +2990,7 @@ function formatLocalTime(d: Date): string {
     minute: "2-digit",
     timeZoneName: "short",
     hour12: true,
-    timeZone: "America/Chicago",
+    timeZone: resolveTimeZone(),
   }).format(d);
 }
 

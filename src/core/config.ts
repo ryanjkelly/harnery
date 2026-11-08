@@ -7,6 +7,7 @@
  *   2. `<project-root>/.harnery/config.jsonc` — project override (authoritative)
  *
  * Fields owned here: `binName` (host CLI name for agent-facing strings),
+ * `timeZone` (zone for human-facing times and journal stamps),
  * `hooksSetupHint`, `hooks`, `agents`, `instructions`, `tools`, `workflow`, `skills`, `presence`, plus the tunable
  * `coord` (heartbeat freshness), `logs` (structured-log storage budgets),
  * `artifacts` (working-file retention),
@@ -71,6 +72,11 @@ export interface AgentFinalizationRoot {
 interface HarneryConfig {
   /** Host CLI bin name, stamped by `harn init` for a consumer (e.g. "acme"). */
   binName?: string;
+  /**
+   * IANA time zone for human-facing times and new journal timestamps
+   * (e.g. "Europe/Berlin"). Read via `resolveTimeZone()`; unset → system zone.
+   */
+  timeZone?: unknown;
   /**
    * Host-specific command that (re)installs the project's git hooks, surfaced
    * verbatim in the "commit guard not wired" nudge. Optional: harnery doesn't
@@ -518,6 +524,134 @@ export function resolveBinName(coordRoot?: string | null): string {
 export function pinnedBinName(projectRoot: string): string | null {
   const binName = readProjectConfig(projectRoot).binName;
   return typeof binName === "string" && binName.trim() ? binName.trim() : null;
+}
+
+/** The last-resort zone when neither settings nor the system name one. */
+export const DEFAULT_TIME_ZONE = "UTC";
+
+/** Where `resolveTimeZone()` found its answer. */
+export type TimeZoneSource = "env" | "project" | "user" | "system" | "default";
+
+/** An explicit setting that names no zone this runtime knows. */
+export interface InvalidTimeZoneSetting {
+  source: "env" | "project" | "user";
+  value: string;
+}
+
+export interface TimeZoneResolution {
+  /** Canonical IANA name (or "UTC") the runtime will use. */
+  zone: string;
+  source: TimeZoneSource;
+  /** Explicit settings skipped because they were invalid, highest precedence first. */
+  invalid: InvalidTimeZoneSetting[];
+}
+
+/**
+ * The canonical name for `zone`, or null when this runtime's Intl data does
+ * not know it. Canonicalizing means `europe/berlin` resolves to
+ * `Europe/Berlin`, so every writer stamps the same spelling.
+ */
+export function canonicalTimeZone(zone: string): string | null {
+  const trimmed = zone.trim();
+  if (!trimmed) return null;
+  try {
+    return new Intl.DateTimeFormat("en-US", { timeZone: trimmed }).resolvedOptions().timeZone;
+  } catch {
+    return null;
+  }
+}
+
+function systemTimeZone(): string | null {
+  try {
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    return typeof zone === "string" ? canonicalTimeZone(zone) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve the time zone with its source and any skipped invalid settings.
+ * Precedence:
+ *   1. `HARNERY_TIME_ZONE` env
+ *   2. project `.harnery/config.jsonc` `timeZone`
+ *   3. user-global `~/.config/harnery/config.jsonc` `timeZone`
+ *   4. the system zone (Intl)
+ *   5. `"UTC"`
+ *
+ * An invalid explicit setting falls through to the next source; the caller
+ * decides whether that is a warning (runtime) or an error (`doctor`).
+ */
+export function inspectTimeZone(coordRoot?: string | null): TimeZoneResolution {
+  const invalid: InvalidTimeZoneSetting[] = [];
+  const consider = (
+    source: InvalidTimeZoneSetting["source"],
+    value: unknown,
+  ): TimeZoneResolution | null => {
+    if (value === undefined || value === null) return null;
+    if (typeof value === "string" && !value.trim()) return null;
+    const zone = typeof value === "string" ? canonicalTimeZone(value) : null;
+    if (zone) return { zone, source, invalid };
+    invalid.push({ source, value: typeof value === "string" ? value : JSON.stringify(value) });
+    return null;
+  };
+  const fromEnv = consider("env", coordEnv("TIME_ZONE"));
+  if (fromEnv) return fromEnv;
+  const root = coordRoot ?? findCoordRoot();
+  if (root) {
+    const fromProject = consider("project", readProjectConfig(root).timeZone);
+    if (fromProject) return fromProject;
+  }
+  const userPath = userConfigPath();
+  if (statSignature(userPath) !== null) {
+    const fromUser = consider("user", parseConfigFile(userPath).timeZone);
+    if (fromUser) return fromUser;
+  }
+  const system = systemTimeZone();
+  if (system) return { zone: system, source: "system", invalid };
+  return { zone: DEFAULT_TIME_ZONE, source: "default", invalid };
+}
+
+const warnedTimeZoneSettings = new Set<string>();
+
+/**
+ * The time zone for human-facing times and new journal timestamps. Never
+ * throws: an invalid explicit setting is skipped with one stderr warning per
+ * process, because hooks and status output must not fail over a typo.
+ * `harn doctor` reports the same setting as a failure.
+ */
+export function resolveTimeZone(coordRoot?: string | null): string {
+  const resolution = inspectTimeZone(coordRoot);
+  for (const bad of resolution.invalid) {
+    const key = `${bad.source}:${bad.value}`;
+    if (warnedTimeZoneSettings.has(key)) continue;
+    warnedTimeZoneSettings.add(key);
+    try {
+      process.stderr.write(
+        `harnery: ignoring invalid time zone ${JSON.stringify(bad.value)} from ${timeZoneSourceLabel(bad.source)}; ` +
+          `using ${resolution.zone} (${timeZoneSourceLabel(resolution.source)})\n`,
+      );
+    } catch {
+      // A closed stderr must not turn a warning into a failure.
+    }
+  }
+  return resolution.zone;
+}
+
+/** Plain-language name of a time zone source, for warnings and doctor output. */
+export function timeZoneSourceLabel(source: TimeZoneSource): string {
+  switch (source) {
+    case "env":
+      return "HARNERY_TIME_ZONE";
+    case "project":
+      return "project .harnery/config.jsonc timeZone";
+    case "user":
+      return "user config timeZone";
+    case "system":
+      return "system zone";
+    default:
+      return "default";
+  }
 }
 
 /**
