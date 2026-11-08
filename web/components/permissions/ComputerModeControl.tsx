@@ -4,11 +4,11 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { Tooltip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/cn";
-import type { ComputerModeChoice, ModeChangeOutcome } from "@/lib/permissions";
+import type { ComputerModeChoice, ModeChangeOutcome, SignInChoice } from "@/lib/permissions";
 import { TONE } from "@/lib/tone";
 
 export interface ComputerModeOption {
-  value: ComputerModeChoice;
+  value: ComputerModeChoice | SignInChoice;
   label: string;
   meaning: string;
   /** True when choosing it gives agents more freedom than now, so the CLI asks first. */
@@ -40,6 +40,10 @@ export function ComputerModeControl({
   reset,
   disabledReason,
   confirmSeconds,
+  endpoint = "/api/permissions/computer-mode",
+  field = "mode",
+  legend = "Your computer-use mode for this project",
+  keepWords = "keeps your current mode",
 }: {
   options: ComputerModeOption[];
   /** The mode in effect for this person now. */
@@ -49,6 +53,12 @@ export function ComputerModeControl({
   /** Set when this browser may not change the mode; the buttons are then read-only. */
   disabledReason?: string;
   confirmSeconds: number;
+  /** Where a click posts { [field]: value }; the computer-use mode by default. */
+  endpoint?: string;
+  field?: string;
+  legend?: string;
+  /** How the pop-up's No is described: "keeps your current mode". */
+  keepWords?: string;
 }) {
   const router = useRouter();
   const [pending, setPending] = useState<ComputerModeOption | null>(null);
@@ -68,10 +78,10 @@ export function ComputerModeControl({
     setResult(null);
     setPending(option);
     try {
-      const res = await fetch("/api/permissions/computer-mode", {
+      const res = await fetch(endpoint, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ mode: option.value }),
+        body: JSON.stringify({ [field]: option.value }),
       });
       let data: ModeChangeOutcome;
       try {
@@ -103,7 +113,7 @@ export function ComputerModeControl({
         disabled={locked}
         className="grid grid-cols-2 gap-1 rounded-lg border border-border bg-muted/40 p-1 sm:inline-grid sm:grid-flow-col sm:grid-cols-none"
       >
-        <legend className="sr-only">Your computer-use mode for this project</legend>
+        <legend className="sr-only">{legend}</legend>
         {options.map((o) => {
           const active = shown === o.value;
           const hint = `${o.meaning}${o.looser ? " Choosing it asks you to confirm in a pop-up on this computer's screen." : ""}`;
@@ -155,8 +165,8 @@ export function ComputerModeControl({
           )}
         >
           {pending.looser
-            ? `Answer the confirmation pop-up on this computer's screen: Yes makes the change, No keeps your current mode. It closes by itself in ${left} seconds, which also keeps your current mode.`
-            : `Changing your mode. If a confirmation pop-up appears on this computer's screen, answer it there (${elapsed} seconds so far).`}
+            ? `Answer the confirmation pop-up on this computer's screen: Yes makes the change, No ${keepWords}. It closes by itself in ${left} seconds, which also ${keepWords}.`
+            : `Changing it. If a confirmation pop-up appears on this computer's screen, answer it there (${elapsed} seconds so far).`}
         </div>
       ) : result ? (
         <div

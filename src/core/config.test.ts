@@ -30,6 +30,7 @@ import {
   stripJsonComments,
   syncJsoncConfig,
   writeComputerPreference,
+  writeSignInPreference,
 } from "./config.ts";
 
 function makeRoot(configBody?: string): string {
@@ -933,5 +934,45 @@ describe("readComputerConfig", () => {
     writeComputerPreference("/p", null, file);
     writeComputerPreference(null, null, file);
     expect(readComputerPreferences(file)).toEqual({});
+  });
+
+  test("agent sign-in is off unless the project allows it and the person turns it on", () => {
+    const root = makeRoot('{"computer":{"mode":"ask-each-task","sign_in":true}}');
+    expect(readComputerConfig(root, none)).toMatchObject({
+      sign_in: false,
+      project_sign_in: true,
+      sign_in_source: "default",
+    });
+    expect(readComputerConfig(root, { sign_in: true })).toMatchObject({
+      sign_in: true,
+      sign_in_source: "user-default",
+    });
+    expect(
+      readComputerConfig(root, { sign_in: true, sign_in_projects: { [root]: false } }),
+    ).toMatchObject({ sign_in: false, sign_in_source: "user-project" });
+    // Without desktop control, nobody's choice turns it on.
+    expect(readComputerConfig(root, { mode: "off", sign_in: true }).sign_in).toBe(false);
+    const notAllowed = makeRoot('{"computer":{"mode":"ask-each-task"}}');
+    expect(readComputerConfig(notAllowed, { sign_in: true })).toMatchObject({
+      sign_in: false,
+      project_sign_in: false,
+    });
+    const desktopOff = makeRoot('{"computer":{"mode":"off","sign_in":true}}');
+    expect(readComputerConfig(desktopOff, { sign_in: true }).project_sign_in).toBe(false);
+  });
+
+  test("sign-in choices round-trip beside the mode", () => {
+    const file = join(mkdtempSync(join(tmpdir(), "harnery-computer-prefs-")), "computer.json");
+    writeComputerPreference(null, "on", file);
+    writeSignInPreference("/p", true, file);
+    writeSignInPreference(null, false, file);
+    expect(readComputerPreferences(file)).toEqual({
+      mode: "on",
+      sign_in: false,
+      sign_in_projects: { "/p": true },
+    });
+    writeSignInPreference("/p", null, file);
+    writeSignInPreference(null, null, file);
+    expect(readComputerPreferences(file)).toEqual({ mode: "on" });
   });
 });

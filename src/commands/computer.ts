@@ -30,6 +30,7 @@ import {
   readComputerConfig,
   readComputerPreferences,
   writeComputerPreference,
+  writeSignInPreference,
 } from "../core/config.ts";
 import type { Confirm } from "../lib/computer/confirm.ts";
 import { DRIVER_IDS } from "../lib/computer/drivers.ts";
@@ -101,6 +102,7 @@ export interface ComputerDeps {
   prefs: {
     read: () => ComputerPreferences;
     write: (root: string | null, mode: ComputerMode | null) => ComputerPreferences;
+    writeSignIn: (root: string | null, on: boolean | null) => ComputerPreferences;
   };
   /** The project root personal choices are keyed by. */
   projectRoot: () => string | null;
@@ -114,7 +116,9 @@ export interface ComputerDeps {
 }
 
 export type ComputerDepsInput = Pick<ComputerDeps, "emit" | "binName"> &
-  Partial<ComputerDeps> & {
+  Partial<Omit<ComputerDeps, "prefs">> & {
+    /** Any of the preference functions; the rest read and write the real file. */
+    prefs?: Partial<ComputerDeps["prefs"]>;
     /** Shorthand for `drivers: [driver]` (tests). */
     driver?: DesktopDriver;
   };
@@ -210,9 +214,11 @@ async function resolveDeps(input: ComputerDepsInput): Promise<ComputerDeps> {
     defaultIdleMs: input.defaultIdleMs ?? (defaults?.defaultIdleMs as number),
     grants: input.grants ?? (defaults?.grants as GrantsApi),
     confirm: input.confirm ?? (defaults?.confirm as Confirm),
-    prefs: input.prefs ?? {
+    prefs: {
       read: () => readComputerPreferences(),
       write: (root, mode) => writeComputerPreference(root, mode),
+      writeSignIn: (root, on) => writeSignInPreference(root, on),
+      ...input.prefs,
     },
     projectRoot: input.projectRoot ?? (() => resolveCoordRoot()),
     owner: input.owner ?? (() => resolveLeaseOwner()),
@@ -279,6 +285,27 @@ function describeMode(mode: ComputerMode): string {
     case "on":
       return "on, no asking";
   }
+}
+
+function describeSignInSource(config: ComputerProjectConfig): string {
+  if (config.sign_in_source === "user-project") return "your setting for this project";
+  if (config.sign_in_source === "user-default") return "your setting for all projects";
+  return "the default";
+}
+
+/** The person's own sign-in choice for one project, before the project's and the desktop's gates. */
+function personSignIn(prefs: ComputerPreferences, root: string): boolean {
+  return prefs.sign_in_projects?.[root] ?? prefs.sign_in ?? false;
+}
+
+/** The `sign-in:` status line: whether agents may sign in to websites for this person, and why. */
+function describeSignIn(config: ComputerProjectConfig, bin: string): string {
+  if (!config.project_sign_in) return "off (this project does not allow agents to sign in for you)";
+  if (config.sign_in) {
+    return `on: agents may sign in to websites for you with your password manager (${describeSignInSource(config)})`;
+  }
+  if (!config.enabled) return "off (desktop control is off)";
+  return `off: you sign in yourself (${describeSignInSource(config)}; \`${bin} computer sign-in on\` lets agents do it)`;
 }
 
 function grantKindFor(mode: ComputerMode): GrantKind | null {
@@ -677,6 +704,9 @@ export function createComputerCommand(
             project_mode: config.project_mode,
             mode_source: config.mode_source,
             ...(config.config_error ? { config_error: config.config_error } : {}),
+            sign_in: config.sign_in,
+            project_sign_in: config.project_sign_in,
+            sign_in_source: config.sign_in_source,
             approval: grant,
             host: {
               kind: host.kind,
@@ -714,6 +744,7 @@ export function createComputerCommand(
                 }`,
               ]
             : []),
+          `sign-in:   ${describeSignIn(config, deps.binName)}`,
           `host:      ${host.kind}${host.reason ? ` (${host.reason})` : ""}${host.note ? ` (${host.note})` : ""}`,
         ];
         for (const { driver, installed, daemon, background } of drivers) {
@@ -1376,6 +1407,122 @@ export function createComputerCommand(
             deps.emit,
             `Desktop control for ${scope} is now ${after.mode}: ${describeMode(after.mode)}.`,
           );
+        },
+      ),
+    );
+
+  // ----------------------------------------------------------------- sign-in
+  computer
+    .command("sign-in [state]")
+    .description(
+      "Show or set whether agents may sign in to websites for you (on | off), in your own browser " +
+        "through your password manager's extension, where the project allows it. Off by default; " +
+        "turning it on asks the person at this computer first.",
+    )
+    .option("--all-projects", "Set it for every project instead of just this one.")
+    .option(
+      "--clear",
+      "Remove your own choice, so the default (off) or your all-projects choice applies.",
+    )
+    .option("--json", "Emit the result as JSON.")
+    .action(
+      guarded(
+        input,
+        async (
+          deps,
+          raw: string | undefined,
+          opts: { allProjects?: boolean; clear?: boolean; json?: boolean },
+        ) => {
+          const current = deps.config();
+          const report = (config: ComputerProjectConfig, scope?: "project" | "all-projects") =>
+            opts.json
+              ? deps.emit.data({
+                  sign_in: config.sign_in,
+                  project_sign_in: config.project_sign_in,
+                  sign_in_source: config.sign_in_source,
+                  ...(scope ? { scope } : {}),
+                })
+              : emitLine(deps.emit, `Agent sign-in: ${describeSignIn(config, deps.binName)}.`);
+          if (raw === undefined && !opts.clear) {
+            report(current);
+            return;
+          }
+          if (raw !== undefined && opts.clear) {
+            throw new ComputerError(
+              "computer_usage",
+              "Pass on, off or --clear, not more than one.",
+            );
+          }
+          if (raw !== undefined && raw !== "on" && raw !== "off") {
+            throw new ComputerError("computer_usage", "Agent sign-in must be on or off.");
+          }
+          if (!current.project_sign_in) {
+            throw new ComputerError(
+              "sign_in_not_allowed",
+              current.project_enabled
+                ? "This project does not let agents sign in for people (`computer.sign_in` in .harnery/config.jsonc), and a personal choice cannot turn it on."
+                : `This project has desktop control off, so agents cannot sign in for anyone. ${enableHint()}`,
+            );
+          }
+          const root = opts.allProjects ? null : deps.projectRoot();
+          if (!opts.allProjects && !root) {
+            throw new ComputerError("computer_usage", "Not inside a project; pass --all-projects.");
+          }
+          const on = raw === undefined ? null : raw === "on";
+          const prefs = deps.prefs.read();
+          const next: ComputerPreferences = {
+            ...prefs,
+            sign_in_projects: { ...(prefs.sign_in_projects ?? {}) },
+          };
+          if (root === null) {
+            if (on === null) delete next.sign_in;
+            else next.sign_in = on;
+          } else if (next.sign_in_projects) {
+            if (on === null) delete next.sign_in_projects[root];
+            else next.sign_in_projects[root] = on;
+          }
+          const after = deps.config(next);
+          const scope = root === null ? "all your projects" : "this project";
+          // Ask whenever the change lets agents sign in somewhere they could not:
+          // setting `on` where it was not, or clearing a project's `off` under an
+          // all-projects `on`.
+          const here = deps.projectRoot();
+          const previous = root === null ? prefs.sign_in : prefs.sign_in_projects?.[root];
+          const loosens =
+            (on === true && previous !== true) ||
+            (here !== null && personSignIn(next, here) && !personSignIn(prefs, here));
+          if (loosens) {
+            const answer = await deps.confirm({
+              title: "Let agents sign in for you?",
+              message: [
+                `Let AI agents sign in to websites for you in ${scope}.`,
+                "",
+                "They would use your own browser and choose your saved login in your password manager's extension. They never type a password themselves, and a locked password manager, a passkey or a code sent to you still comes to you.",
+              ].join("\n"),
+              timeoutMs: DEFAULT_CONFIRM_SECONDS * 1000,
+            });
+            if (answer.answer !== "approved") {
+              throw new ComputerError(
+                "computer_approval_declined",
+                `Not changed: turning agent sign-in on needs the person's approval, and ${answer.answer === "unavailable" ? `there was no way to ask (${answer.detail ?? "no prompt"})` : "it was not given"}.`,
+                EXIT_APPROVAL_REQUIRED,
+              );
+            }
+          }
+          deps.prefs.writeSignIn(root, on);
+          const host = deps.host();
+          if (host.kind !== "unsupported" && host.desktopStateDir) {
+            deps.grants.log(
+              deps.leaseDir(host.desktopStateDir),
+              {
+                event: "sign-in-changed",
+                ...(root ? { project: root } : {}),
+                detail: `${on === null ? "cleared" : on ? "on" : "off"} (${scope})`,
+              },
+              deps.now(),
+            );
+          }
+          report(after, root === null ? "all-projects" : "project");
         },
       ),
     );

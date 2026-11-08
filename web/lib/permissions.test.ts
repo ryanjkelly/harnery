@@ -7,10 +7,13 @@ import {
   CONFIRM_SECONDS,
   checkLocalWrite,
   interpretModeChange,
+  interpretSignInChange,
   isLoopbackHost,
   modeChangeArgs,
   parseModeChangeRequest,
+  parseSignInChangeRequest,
   requestLocality,
+  signInChangeArgs,
 } from "./permissions";
 import type { HarnResult } from "./run-harn";
 
@@ -160,6 +163,45 @@ describe("interpretModeChange", () => {
   });
 });
 
+describe("agent sign-in changes", () => {
+  test("accepts on, off and default, and nothing else", () => {
+    for (const choice of ["on", "off", "default"]) {
+      expect(parseSignInChangeRequest({ sign_in: choice })).toEqual({
+        ok: true,
+        choice: choice as never,
+      });
+    }
+    expect(parseSignInChangeRequest({ sign_in: true }).ok).toBe(false);
+    expect(parseSignInChangeRequest({ sign_in: "on", extra: 1 }).ok).toBe(false);
+    expect(parseSignInChangeRequest({ mode: "on" }).ok).toBe(false);
+  });
+
+  test("always changes this project only", () => {
+    expect(signInChangeArgs("on")).toEqual(["computer", "sign-in", "on", "--json"]);
+    expect(signInChangeArgs("default")).toEqual(["computer", "sign-in", "--clear", "--json"]);
+  });
+
+  test("reports the change, a No, and a project that does not allow it", () => {
+    const changed = interpretSignInChange(
+      result({ ok: true, exitCode: 0, stdout: '{"sign_in":true,"scope":"project"}' }),
+      3_000,
+    );
+    expect(changed.outcome).toBe("changed");
+    expect(changed.message).toContain("password manager");
+    expect(
+      interpretSignInChange(declined("Not changed: ... it was not given."), 5_000).outcome,
+    ).toBe("declined");
+    const refused = interpretSignInChange(
+      result({
+        stderr: '{"error":{"code":"sign_in_not_allowed","message":"not allowed"}}\n',
+      }),
+      100,
+    );
+    expect(refused).toMatchObject({ outcome: "refused" });
+    expect(refused.message).toContain("does not let agents sign in");
+  });
+});
+
 describe("requestLocality", () => {
   test("a browser on this computer is local", () => {
     expect(requestLocality(h(LOCAL))).toEqual({ local: true });
@@ -239,7 +281,7 @@ describe("checkLocalWrite", () => {
     expect(out).toEqual({
       ok: false,
       message:
-        "Not changed: your computer-use mode can be changed only from a browser on this computer.",
+        "Not changed: your computer-use settings can be changed only from a browser on this computer.",
     });
   });
   test("another site or another local port is refused", () => {

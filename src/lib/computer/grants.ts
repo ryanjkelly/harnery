@@ -70,7 +70,8 @@ export type GrantEvent =
   | "unavailable"
   | "ended"
   | "revoked"
-  | "mode-changed";
+  | "mode-changed"
+  | "sign-in-changed";
 
 export interface GrantLogEntry {
   at: string;

@@ -44,6 +44,9 @@ function cfg(
     project_mode: mode,
     project_enabled: mode !== "off",
     mode_source: "project",
+    sign_in: false,
+    project_sign_in: false,
+    sign_in_source: "default",
     ...extra,
   };
 }
@@ -104,12 +107,17 @@ function fakePrefs(initial: ComputerPreferences = {}) {
   const state = {
     prefs: initial,
     writes: [] as { root: string | null; mode: ComputerMode | null }[],
+    signInWrites: [] as { root: string | null; on: boolean | null }[],
   };
   return {
     state,
     read: () => state.prefs,
     write: (root: string | null, mode: ComputerMode | null) => {
       state.writes.push({ root, mode });
+      return state.prefs;
+    },
+    writeSignIn: (root: string | null, on: boolean | null) => {
+      state.signInWrites.push({ root, on });
       return state.prefs;
     },
   };
@@ -819,6 +827,89 @@ describe("computer mode", () => {
     const cap = await run(["mode", "on"], { prefs, config: evaluate("off") });
     expect(cap.errors[0]?.code).toBe("computer_disabled");
     expect(prefs.state.writes).toHaveLength(0);
+  });
+});
+
+describe("computer sign-in", () => {
+  /** A project that allows agent sign-in; the person's choice comes from `prefs`. */
+  const allowing =
+    (projectSignIn = true, mode: ComputerMode = "ask-each-task") =>
+    (prefs?: ComputerPreferences) => {
+      const personal = prefs?.sign_in_projects?.["/proj"] ?? prefs?.sign_in;
+      return cfg(mode, {
+        project_sign_in: projectSignIn && mode !== "off",
+        sign_in: projectSignIn && mode !== "off" && personal === true,
+        sign_in_source:
+          prefs?.sign_in_projects?.["/proj"] !== undefined
+            ? "user-project"
+            : prefs?.sign_in !== undefined
+              ? "user-default"
+              : "default",
+      });
+    };
+
+  test("is off by default and status says so", async () => {
+    const status = await run(["status"], { config: allowing() });
+    expect(status.text.join("\n")).toContain("sign-in:   off: you sign in yourself (the default;");
+    const shown = await run(["sign-in", "--json"], { config: allowing() });
+    expect(shown.data[0]).toMatchObject({ sign_in: false, project_sign_in: true });
+    const notAllowed = await run(["status"], { config: allowing(false) });
+    expect(notAllowed.text.join("\n")).toContain(
+      "sign-in:   off (this project does not allow agents to sign in for you)",
+    );
+  });
+
+  test("turning it on asks the person first; turning it off does not", async () => {
+    const confirm = fakeConfirm();
+    const prefs = fakePrefs();
+    const on = await run(["sign-in", "on", "--json"], {
+      confirm,
+      prefs,
+      config: allowing(),
+    });
+    expect(on.exitCode()).toBe(0);
+    expect(confirm.asked).toHaveLength(1);
+    expect(confirm.asked[0]?.title).toBe("Let agents sign in for you?");
+    expect(prefs.state.signInWrites).toEqual([{ root: "/proj", on: true }]);
+    expect(on.data[0]).toMatchObject({ sign_in: true, scope: "project" });
+
+    prefs.state.prefs = { sign_in_projects: { "/proj": true } };
+    const off = await run(["sign-in", "off"], { confirm, prefs, config: allowing() });
+    expect(off.exitCode()).toBe(0);
+    expect(confirm.asked).toHaveLength(1);
+    expect(prefs.state.signInWrites.at(-1)).toEqual({ root: "/proj", on: false });
+  });
+
+  test("clearing a project's off under an all-projects on asks first", async () => {
+    const confirm = fakeConfirm({ answer: "denied", via: "dialog" });
+    const prefs = fakePrefs({ sign_in: true, sign_in_projects: { "/proj": false } });
+    const cap = await run(["sign-in", "--clear"], { confirm, prefs, config: allowing() });
+    expect(confirm.asked).toHaveLength(1);
+    expect(cap.exitCode()).toBe(EXIT_APPROVAL_REQUIRED);
+    expect(prefs.state.signInWrites).toHaveLength(0);
+  });
+
+  test("a declined pop-up changes nothing", async () => {
+    const prefs = fakePrefs();
+    const cap = await run(["sign-in", "on", "--all-projects"], {
+      confirm: fakeConfirm({ answer: "denied", via: "dialog" }),
+      prefs,
+      config: allowing(),
+    });
+    expect(cap.exitCode()).toBe(EXIT_APPROVAL_REQUIRED);
+    expect(prefs.state.signInWrites).toHaveLength(0);
+  });
+
+  test("a personal choice cannot turn it on where the project does not allow it", async () => {
+    const prefs = fakePrefs();
+    const cap = await run(["sign-in", "on"], { prefs, config: allowing(false) });
+    expect(cap.errors[0]?.code).toBe("sign_in_not_allowed");
+    expect(prefs.state.signInWrites).toHaveLength(0);
+  });
+
+  test("rejects anything but on or off", async () => {
+    const cap = await run(["sign-in", "yes"], { config: allowing() });
+    expect(cap.errors[0]?.code).toBe("computer_usage");
   });
 });
 

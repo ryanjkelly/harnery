@@ -564,8 +564,10 @@ coming.
 4. A sign-in is missing or expired: run \`${b} browse --login --detach <url>\`,
    which returns once a separate Chrome window is open, and pass its
    sentence on to the person. When they say they are done, read the log it
-   named and continue. After a bot check or an unusual-sign-in warning, stop
-   and tell them; never retry it automatically.
+   named and continue. If \`${b} computer status\` shows \`sign-in: on\`, you
+   may sign in in that window yourself instead, the way "Signing in for the
+   person" below describes. After a bot check or an unusual-sign-in warning,
+   stop and tell them; never retry it automatically.
 5. The desktop (\`${b} computer\`) only for a desktop program with no file or
    API route, a site that refuses the headless browser even when signed in,
    or work the person will continue in a state no link can hand them.
@@ -739,7 +741,7 @@ lists them.
   refs, or cua element tokens from \`get_window_state\` on that window. That
   route attaches nothing, so sites see the person's own browser. Open a new
   tab rather than taking over theirs, and if a page needs a sign-in, the person
-  signs in there. cua's \`browser_prepare\` with
+  signs in there unless they let agents do it (below). cua's \`browser_prepare\` with
   \`strategy: {"kind": "existing_profile"}\` needs a driver-level grant that
   covers every agent on the machine, so do not ask for it to save a step.
 - Never type a password, username, or one-time code into a sign-in page
@@ -753,6 +755,28 @@ lists them.
   sign-in form), ask them to close it first. Prefer one window over the
   full screen.
 - Only close apps you launched (cua \`kill_app\`, agent-desktop \`close-app\`).
+
+## Signing in for the person
+
+Off by default: the person signs in. When \`${b} computer status\` shows
+\`sign-in: on\`, they let agents sign in to websites for them
+(\`${b} computer sign-in\`, or the dashboard's Permissions page). Then, in
+their running browser through the screen-reader route above, or in a
+\`${b} browse --login --detach\` window:
+
+1. Open the sign-in page in a new tab.
+2. Open their password manager's browser extension and choose the login
+   that matches the site, so it fills the username, password and any
+   one-time code. Never type any of them yourself.
+3. A locked password manager, a passkey, a hardware key, a system prompt
+   (Windows Hello, Touch ID), a code sent by email or text, or a window with
+   no password manager goes to the person, with exactly what to press.
+
+Even with sign-in on, never sign in inside an isolated or
+automation-controlled browser (\`--headed\`, \`--attached\`, a driver-owned
+browser), and never in your agent app's own browser. After a bot check or an
+unusual-sign-in warning, stop and tell the person; never retry it
+automatically.
 
 ## One desktop, one holder
 

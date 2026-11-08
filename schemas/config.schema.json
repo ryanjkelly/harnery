@@ -358,6 +358,11 @@
           "maximum": 3600,
           "default": 30,
           "description": "How long `computer call` waits for another agent's lease before failing. `--wait` overrides per call."
+        },
+        "sign_in": {
+          "type": "boolean",
+          "default": false,
+          "description": "Let each person allow agents to sign in to websites for them, in their own browser through their password manager's extension. Even when true, it stays off for each person until they turn it on with `computer sign-in on` or the dashboard's Permissions page. Needs a mode other than `off`."
         }
       }
     },

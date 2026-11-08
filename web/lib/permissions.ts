@@ -3,9 +3,10 @@
  * agents on this computer may do. Read through `harn permissions --json` and
  * `harn computer status --json`, so the page shows what the CLI reports.
  *
- * The page's one write, the person's own computer-use mode for this project,
- * also goes through the CLI (`harn computer mode`), and only from a request
- * made on this computer: see `requestLocality`.
+ * The page's writes, the person's own computer-use mode and agent sign-in
+ * choice for this project, also go through the CLI (`harn computer mode`,
+ * `harn computer sign-in`), and only from a request made on this computer:
+ * see `requestLocality`.
  */
 
 import type { PermissionsReport } from "../../src/core/permissions";
@@ -20,6 +21,10 @@ export interface ComputerStatus {
   project_mode: string;
   mode_source: string;
   config_error?: string;
+  /** Agents may sign in to websites for this person (older CLIs omit these). */
+  sign_in?: boolean;
+  project_sign_in?: boolean;
+  sign_in_source?: string;
   host: { kind: string; reason?: string; note?: string };
   default_driver: string | null;
   drivers: Array<{
@@ -160,6 +165,40 @@ export function computerModeLooser(a: ComputerMode, b: ComputerMode): boolean {
   return COMPUTER_MODES.indexOf(a) > COMPUTER_MODES.indexOf(b);
 }
 
+/** The agent sign-in choices: off, on, or back to the default (off). */
+export const SIGN_IN_CHOICES = ["off", "on", PROJECT_DEFAULT_CHOICE] as const;
+export type SignInChoice = (typeof SIGN_IN_CHOICES)[number];
+
+export const SIGN_IN_MEANINGS: Record<"off" | "on", string> = {
+  off: "You sign in to websites yourself when an agent needs it.",
+  on: "Agents sign in to websites for you in your own browser by choosing your login in your password manager's extension. A locked password manager, a passkey or a code sent to you still comes to you.",
+};
+
+/** Validate a sign-in change request body: exactly `{ "sign_in": "on" | "off" | "default" }`. */
+export function parseSignInChangeRequest(
+  body: unknown,
+): { ok: true; choice: SignInChoice } | { ok: false; message: string } {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return { ok: false, message: 'Send the new choice as { "sign_in": "..." }.' };
+  }
+  const keys = Object.keys(body);
+  if (keys.length !== 1 || keys[0] !== "sign_in") {
+    return { ok: false, message: "Send only the new choice." };
+  }
+  const value = (body as { sign_in: unknown }).sign_in;
+  if ((SIGN_IN_CHOICES as readonly unknown[]).includes(value)) {
+    return { ok: true, choice: value as SignInChoice };
+  }
+  return { ok: false, message: `The choice must be one of ${SIGN_IN_CHOICES.join(", ")}.` };
+}
+
+/** The CLI arguments for one validated sign-in choice. Always this project, never every project. */
+export function signInChangeArgs(choice: SignInChoice): string[] {
+  return choice === PROJECT_DEFAULT_CHOICE
+    ? ["computer", "sign-in", "--clear", "--json"]
+    : ["computer", "sign-in", choice, "--json"];
+}
+
 /** Validate a change request body: exactly `{ "mode": <mode or "default"> }`. */
 export function parseModeChangeRequest(
   body: unknown,
@@ -218,29 +257,74 @@ function cliError(stderr: string): { code?: string; message?: string } {
  * refusal that took about as long as the pop-up waits counts as unanswered.
  */
 export function interpretModeChange(result: HarnResult, elapsedMs: number): ModeChangeOutcome {
+  return interpretChange(result, elapsedMs, {
+    changed: (stdout) => {
+      let mode: string | undefined;
+      try {
+        const parsed = JSON.parse(stdout) as { mode?: unknown };
+        if (typeof parsed.mode === "string") mode = parsed.mode;
+      } catch {
+        // changed, but with no readable answer
+      }
+      const meaning = mode ? MEANINGS.computerMode[mode] : undefined;
+      return {
+        outcome: "changed",
+        ...(mode ? { mode } : {}),
+        message: mode
+          ? `Changed. Your computer-use mode for this project is now ${mode}${meaning ? `: ${meaning}` : "."}`
+          : "Changed.",
+      };
+    },
+    refusedCode: "computer_disabled",
+    refused:
+      "Not changed: this project does not allow agents to use the desktop, and your own mode cannot turn it on.",
+    command: "harn computer mode",
+  });
+}
+
+/** Turn `harn computer sign-in`'s answer into plain words; see `interpretModeChange`. */
+export function interpretSignInChange(result: HarnResult, elapsedMs: number): ModeChangeOutcome {
+  return interpretChange(result, elapsedMs, {
+    changed: (stdout) => {
+      let on: boolean | undefined;
+      try {
+        const parsed = JSON.parse(stdout) as { sign_in?: unknown };
+        if (typeof parsed.sign_in === "boolean") on = parsed.sign_in;
+      } catch {
+        // changed, but with no readable answer
+      }
+      return {
+        outcome: "changed",
+        message:
+          on === undefined
+            ? "Changed."
+            : `Changed. ${on ? SIGN_IN_MEANINGS.on : SIGN_IN_MEANINGS.off}`,
+      };
+    },
+    refusedCode: "sign_in_not_allowed",
+    refused:
+      "Not changed: this project does not let agents sign in for people, and your own choice cannot turn it on.",
+    command: "harn computer sign-in",
+  });
+}
+
+function interpretChange(
+  result: HarnResult,
+  elapsedMs: number,
+  words: {
+    changed: (stdout: string) => ModeChangeOutcome;
+    refusedCode: string;
+    refused: string;
+    command: string;
+  },
+): ModeChangeOutcome {
   if (result.timedOut) {
     return {
       outcome: "timed-out",
       message: "Not changed: the confirmation pop-up got no answer in time.",
     };
   }
-  if (result.ok) {
-    let mode: string | undefined;
-    try {
-      const parsed = JSON.parse(result.stdout) as { mode?: unknown };
-      if (typeof parsed.mode === "string") mode = parsed.mode;
-    } catch {
-      // changed, but with no readable answer
-    }
-    const meaning = mode ? MEANINGS.computerMode[mode] : undefined;
-    return {
-      outcome: "changed",
-      ...(mode ? { mode } : {}),
-      message: mode
-        ? `Changed. Your computer-use mode for this project is now ${mode}${meaning ? `: ${meaning}` : "."}`
-        : "Changed.",
-    };
-  }
+  if (result.ok) return words.changed(result.stdout);
   const error = cliError(result.stderr);
   if (error.code === "computer_approval_declined") {
     const noWay = /no way to ask(?: \((.*)\))?/.exec(error.message ?? "");
@@ -261,16 +345,12 @@ export function interpretModeChange(result: HarnResult, elapsedMs: number): Mode
       message: "Not changed: you answered No in the confirmation pop-up.",
     };
   }
-  if (error.code === "computer_disabled") {
-    return {
-      outcome: "refused",
-      message:
-        "Not changed: this project does not allow agents to use the desktop, and your own mode cannot turn it on.",
-    };
+  if (error.code === words.refusedCode) {
+    return { outcome: "refused", message: words.refused };
   }
   return {
     outcome: "failed",
-    message: `Not changed: ${error.message ?? (errorLine(result.stderr) || "harn computer mode gave no answer")}`,
+    message: `Not changed: ${error.message ?? (errorLine(result.stderr) || `${words.command} gave no answer`)}`,
   };
 }
 
@@ -279,6 +359,13 @@ export async function changeComputerMode(choice: ComputerModeChoice): Promise<Mo
   const started = Date.now();
   const result = await runHarn(modeChangeArgs(choice), { timeoutMs: MODE_CHANGE_TIMEOUT_MS });
   return interpretModeChange(result, Date.now() - started);
+}
+
+/** Change the person's own agent sign-in choice for this project. Call only after `checkLocalWrite`. */
+export async function changeSignIn(choice: SignInChoice): Promise<ModeChangeOutcome> {
+  const started = Date.now();
+  const result = await runHarn(signInChangeArgs(choice), { timeoutMs: MODE_CHANGE_TIMEOUT_MS });
+  return interpretSignInChange(result, Date.now() - started);
 }
 
 // ------------------------------------------------------------------ local requests only
@@ -379,7 +466,7 @@ export function checkLocalWrite(h: HeaderSource): { ok: true } | { ok: false; me
     return {
       ok: false,
       message:
-        "Not changed: your computer-use mode can be changed only from a browser on this computer.",
+        "Not changed: your computer-use settings can be changed only from a browser on this computer.",
     };
   }
   return checkWriteOrigin(h);

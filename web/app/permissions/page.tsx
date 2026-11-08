@@ -36,6 +36,7 @@ import {
   PROJECT_DEFAULT_CHOICE,
   readPermissionsPage,
   requestLocality,
+  SIGN_IN_MEANINGS,
 } from "@/lib/permissions";
 import { TONE } from "@/lib/tone";
 
@@ -103,6 +104,72 @@ function resetOption(status: ComputerStatus): ComputerModeOption | undefined {
       "Removes your choice for this project, so the project's default applies, or your choice for all your projects if you made one.",
     looser: computerModeLooser(projectMode, current),
   };
+}
+
+const SIGN_IN_SOURCE: Record<string, string> = {
+  default: "Off unless you turn it on.",
+  "user-project": "You chose this for this project.",
+  "user-default": "You chose this for all your projects.",
+};
+
+/**
+ * Whether agents may sign in to websites for this person. Shown only where
+ * the project allows it; off until the person turns it on.
+ */
+function SignInSetting({
+  status,
+  bin,
+  local,
+}: {
+  status: ComputerStatus;
+  bin: string;
+  local: boolean;
+}) {
+  const on = status.sign_in === true;
+  const options: ComputerModeOption[] = [
+    { value: "off", label: "Off", meaning: SIGN_IN_MEANINGS.off, looser: false },
+    { value: "on", label: "On", meaning: SIGN_IN_MEANINGS.on, looser: !on },
+  ];
+  const desktopOff = !computerAllowed(status) || status.mode === "off";
+  return (
+    <div className="space-y-1.5 border-t border-border pt-3">
+      <p className="text-sm font-medium">Signing in to websites for you</p>
+      <ComputerModeControl
+        options={options}
+        selected={on ? "on" : "off"}
+        reset={
+          status.sign_in_source === "user-project"
+            ? {
+                value: PROJECT_DEFAULT_CHOICE,
+                label: "Remove your choice for this project.",
+                meaning:
+                  "Your choice for all your projects applies if you made one; otherwise agent sign-in is off.",
+                looser: false,
+              }
+            : undefined
+        }
+        disabledReason={
+          !local
+            ? "This can be changed only from a browser on this computer."
+            : desktopOff
+              ? "Agents need computer use to sign in for you; it is off."
+              : undefined
+        }
+        confirmSeconds={CONFIRM_SECONDS}
+        endpoint="/api/permissions/sign-in"
+        field="sign_in"
+        legend="Whether agents may sign in to websites for you in this project"
+        keepWords="keeps it off"
+      />
+      <p className="text-xs text-muted-foreground">
+        {on ? SIGN_IN_MEANINGS.on : SIGN_IN_MEANINGS.off}{" "}
+        {SIGN_IN_SOURCE[status.sign_in_source ?? "default"] ?? ""}
+        {" Turning it on asks you to confirm in a pop-up on this computer's screen. Or run "}
+        <Code>{`${bin} computer sign-in --help`}</Code>
+        {"."}
+      </p>
+    </div>
+  );
 }
 
 function ComputerRow({
@@ -184,6 +251,7 @@ function ComputerRow({
           </p>
         </div>
       ) : null}
+      {status.project_sign_in ? <SignInSetting status={status} bin={bin} local={local} /> : null}
       <KeyValueList
         className="text-xs"
         items={[

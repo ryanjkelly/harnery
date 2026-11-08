@@ -246,6 +246,13 @@ interface HarneryConfig {
     grant_minutes?: number;
     idle_seconds?: number;
     wait_seconds?: number;
+    /**
+     * Whether each person may let agents sign in to websites for them, in
+     * their own browser through their password manager's extension. Off
+     * unless true; even then each person turns it on for themselves
+     * (`computer sign-in on`).
+     */
+    sign_in?: boolean;
   };
   /**
    * Activity-fired project self-update (ADR 0229). Inert unless `enabled` is
@@ -963,7 +970,20 @@ export interface ComputerProjectConfig {
   grant_minutes?: number;
   /** Default desktop driver id from `computer.driver` (ADR 0231); the command validates it. */
   driver?: string;
+  /**
+   * Agents may sign in to websites for this person: the project allows it
+   * (`computer.sign_in`), desktop control is not `off`, and the person turned
+   * it on. Off by default.
+   */
+  sign_in: boolean;
+  /** The project lets each person turn agent sign-in on for themselves. */
+  project_sign_in: boolean;
+  /** Where the person's sign-in choice came from; `default` means they made none (off). */
+  sign_in_source: SignInSource;
 }
+
+/** Where a person's agent sign-in choice came from. */
+export type SignInSource = "default" | "user-project" | "user-default";
 
 /** One person's own desktop-control choices, kept outside every project. */
 export interface ComputerPreferences {
@@ -971,6 +991,10 @@ export interface ComputerPreferences {
   mode?: ComputerMode;
   /** Mode for one project, keyed by its absolute root. Wins over `mode`. */
   projects?: Record<string, ComputerMode>;
+  /** Agent sign-in for every project that allows it. */
+  sign_in?: boolean;
+  /** Agent sign-in for one project, keyed by its absolute root. Wins over `sign_in`. */
+  sign_in_projects?: Record<string, boolean>;
 }
 
 /** `~/.config/harnery/computer.json` (honors `XDG_CONFIG_HOME`). */
@@ -996,7 +1020,46 @@ export function readComputerPreferences(path = computerPreferencesPath()): Compu
     }
     if (Object.keys(projects).length > 0) out.projects = projects;
   }
+  if (typeof value.sign_in === "boolean") out.sign_in = value.sign_in;
+  if (isPlainObject(value.sign_in_projects)) {
+    const signIn: Record<string, boolean> = {};
+    for (const [root, on] of Object.entries(value.sign_in_projects)) {
+      if (typeof on === "boolean") signIn[root] = on;
+    }
+    if (Object.keys(signIn).length > 0) out.sign_in_projects = signIn;
+  }
   return out;
+}
+
+function savePreferences(prefs: ComputerPreferences, path: string): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = `${path}.${process.pid}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify(prefs, null, 2)}\n`);
+  renameSync(tmp, path);
+}
+
+/**
+ * Save the person's agent sign-in choice for one project (`root`) or for
+ * every project (`root` null). `on` null clears that choice.
+ */
+export function writeSignInPreference(
+  root: string | null,
+  on: boolean | null,
+  path = computerPreferencesPath(),
+): ComputerPreferences {
+  const prefs = readComputerPreferences(path);
+  if (root === null) {
+    if (on === null) delete prefs.sign_in;
+    else prefs.sign_in = on;
+  } else {
+    const projects = { ...(prefs.sign_in_projects ?? {}) };
+    if (on === null) delete projects[root];
+    else projects[root] = on;
+    if (Object.keys(projects).length > 0) prefs.sign_in_projects = projects;
+    else delete prefs.sign_in_projects;
+  }
+  savePreferences(prefs, path);
+  return prefs;
 }
 
 /**
@@ -1019,10 +1082,7 @@ export function writeComputerPreference(
     if (Object.keys(projects).length > 0) prefs.projects = projects;
     else delete prefs.projects;
   }
-  mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.${process.pid}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(prefs, null, 2)}\n`);
-  renameSync(tmp, path);
+  savePreferences(prefs, path);
   return prefs;
 }
 
@@ -1079,6 +1139,9 @@ export function readComputerConfig(
     project_mode: "off",
     project_enabled: false,
     mode_source: "project",
+    sign_in: false,
+    project_sign_in: false,
+    sign_in_source: "default",
   };
   if (!root) return off;
   const raw = readProjectConfig(root).computer;
@@ -1101,12 +1164,26 @@ export function readComputerConfig(
   const wait = record.wait_seconds;
   const waitOk = typeof wait === "number" && Number.isFinite(wait) && wait >= 0 && wait <= 3600;
   const grantMinutes = positiveNumber(record.grant_minutes, 24 * 60);
+  // Signing in for the person drives their browser, so it needs desktop
+  // control; it is never on unless both the project and the person say so.
+  const projectSignIn = project.mode !== "off" && record.sign_in === true;
+  const personalSignIn = prefs.sign_in_projects?.[root];
+  const signInSource: SignInSource =
+    personalSignIn !== undefined
+      ? "user-project"
+      : prefs.sign_in !== undefined
+        ? "user-default"
+        : "default";
+  const personSignIn = personalSignIn ?? prefs.sign_in ?? false;
   return {
     enabled: mode !== "off",
     mode,
     project_mode: project.mode,
     project_enabled: project.mode !== "off",
     mode_source: source,
+    sign_in: projectSignIn && mode !== "off" && personSignIn,
+    project_sign_in: projectSignIn,
+    sign_in_source: signInSource,
     ...(project.error ? { config_error: project.error } : {}),
     ...(idle !== undefined ? { idle_seconds: idle } : {}),
     ...(waitOk ? { wait_seconds: wait } : {}),

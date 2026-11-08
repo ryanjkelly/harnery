@@ -91,6 +91,31 @@ project, so committed files do not change. A personal mode never turns on a
 project that is `off`. Loosening it shows the person a Yes/No prompt first;
 tightening does not.
 
+### Agent sign-in
+
+By default the person signs in to websites themselves, and the
+`harn-computer` skill tells agents never to type a password, username or
+one-time code. A project can let each person change that:
+
+```jsonc
+// .harnery/config.jsonc
+{
+  "computer": { "mode": "ask-each-task", "sign_in": true }
+}
+```
+
+Each person's choice still starts off. `harn computer sign-in on` (this
+project, or `--all-projects`) turns it on after a Yes/No prompt; `off` turns
+it off and `--clear` removes the choice. It is stored in `computer.json`
+beside the mode. `status` shows a `sign-in:` line, and with it on the skill
+tells agents to sign in in the person's running browser (or a
+`browse --login --detach` window) by choosing the matching login in their
+password manager's browser extension, never typing it. A locked password
+manager, a passkey, a hardware key, a system prompt, or a code sent by email
+or text still goes to the person, and agents never sign in inside an
+isolated or automation-controlled browser. A person whose own mode is `off`
+gets no agent sign-in either.
+
 ## Approval
 
 In an ask mode, `call` and `lease acquire` refuse with exit 4 until the agent

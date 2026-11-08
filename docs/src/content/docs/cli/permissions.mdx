@@ -51,6 +51,11 @@ and loosening the mode first shows you the CLI's confirmation pop-up. The
 page waits for your answer (up to two minutes) and then says whether the
 mode changed, you answered No, or the pop-up closed unanswered.
 
+Where the project sets `computer.sign_in`, the computer-use row also has an
+Off/On choice for whether agents may sign in to websites for you
+([`harn computer sign-in`](/cli/computer/#agent-sign-in)). It starts off,
+and turning it on shows the same kind of confirmation pop-up.
+
 The change is accepted only from a browser on this computer. The dashboard
 listens on `127.0.0.1`, and the page refuses a request that arrives through
 a tunnel or proxy (a forwarded host or address, or a Cloudflare or Tailscale

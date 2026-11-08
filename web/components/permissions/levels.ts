@@ -71,8 +71,8 @@ export function computerSummary(status?: ComputerStatus, error?: string): ToolSu
   return {
     level: known?.level ?? status.mode,
     tone: known?.tone ?? "neutral",
-    sentence: MEANINGS.computerMode[status.mode] ?? `Mode: ${status.mode}.`,
-    raw: `mode: ${status.mode} (from ${status.mode_source}), project default: ${status.project_mode}`,
+    sentence: `${MEANINGS.computerMode[status.mode] ?? `Mode: ${status.mode}.`}${status.sign_in ? " Agents may also sign in to websites for you." : ""}`,
+    raw: `mode: ${status.mode} (from ${status.mode_source}), project default: ${status.project_mode}${status.project_sign_in ? `, sign-in: ${status.sign_in ? "on" : "off"}` : ""}`,
   };
 }
 
