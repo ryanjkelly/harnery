@@ -333,6 +333,26 @@ function assertNoLinks(path: string, leaf: "file" | "directory", anchor: string)
   }
 }
 
+/**
+ * Replace `path` with `temp`. On Windows a scanner or indexer can hold a
+ * just-written archive open for a moment, and replacing it then fails with
+ * EPERM/EACCES/EBUSY, so retry briefly there.
+ */
+function renameReplacing(temp: string, path: string): void {
+  const deadline = Date.now() + (process.platform === "win32" ? 2_000 : 0);
+  for (;;) {
+    try {
+      renameSync(temp, path);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      const transient = code === "EPERM" || code === "EACCES" || code === "EBUSY";
+      if (!transient || Date.now() >= deadline) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+    }
+  }
+}
+
 function writeAtomic(path: string, bytes: Uint8Array, overwrite: boolean, anchor: string): void {
   assertNoLinks(path, "file", anchor);
   if (!overwrite && statIfPresent(path)) throw new Error(`ZIP output already exists: ${path}`);
@@ -350,7 +370,7 @@ function writeAtomic(path: string, bytes: Uint8Array, overwrite: boolean, anchor
     closeSync(fd);
     fd = undefined;
     assertNoLinks(path, "file", anchor);
-    if (overwrite) renameSync(temp, path);
+    if (overwrite) renameReplacing(temp, path);
     else {
       linkSync(temp, path);
       unlinkSync(temp);

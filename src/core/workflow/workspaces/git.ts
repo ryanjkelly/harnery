@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, realpathSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const MAX_GIT_OUTPUT = 8 * 1024 * 1024;
@@ -117,21 +118,36 @@ function isolatedGitEnvironment(): NodeJS.ProcessEnv {
     if (key.startsWith("GIT_")) delete env[key];
   }
   env.GIT_TERMINAL_PROMPT = "0";
-  env.GIT_CONFIG_NOSYSTEM = "1";
+  // Git for Windows sets core.autocrlf in its system config, and checkouts made
+  // under it have CRLF files; skipping the system config would make them look
+  // modified. Keep only that value, at system level, so a user's global or
+  // repository setting still overrides it as usual.
+  const systemConfig = minimalSystemConfig();
+  if (systemConfig) env.GIT_CONFIG_SYSTEM = systemConfig;
+  else env.GIT_CONFIG_NOSYSTEM = "1";
   env.GCM_INTERACTIVE = "Never";
   env.GIT_CONFIG_COUNT = "1";
   env.GIT_CONFIG_KEY_0 = "core.hooksPath";
   env.GIT_CONFIG_VALUE_0 = process.platform === "win32" ? "NUL" : "/dev/null";
-  // Git for Windows sets core.autocrlf in its system config, and checkouts made
-  // under it have CRLF files. Skipping the system config would make those
-  // files look modified, so carry that one value through.
-  const autocrlf = systemAutocrlf();
-  if (autocrlf) {
-    env.GIT_CONFIG_COUNT = "2";
-    env.GIT_CONFIG_KEY_1 = "core.autocrlf";
-    env.GIT_CONFIG_VALUE_1 = autocrlf;
-  }
   return env;
+}
+
+let cachedSystemConfig: string | null | undefined;
+
+/** A system config holding only core.autocrlf (Windows, when set); null otherwise. */
+function minimalSystemConfig(): string | null {
+  if (cachedSystemConfig !== undefined) return cachedSystemConfig;
+  cachedSystemConfig = null;
+  const autocrlf = systemAutocrlf();
+  if (!autocrlf) return null;
+  const path = join(tmpdir(), `harnery-git-system-autocrlf-${autocrlf.toLowerCase()}.gitconfig`);
+  try {
+    writeFileSync(path, `[core]\n\tautocrlf = ${autocrlf}\n`, "utf8");
+    cachedSystemConfig = path;
+  } catch {
+    // Without the file, fall back to skipping the system config entirely.
+  }
+  return cachedSystemConfig;
 }
 
 let cachedAutocrlf: string | null | undefined;
