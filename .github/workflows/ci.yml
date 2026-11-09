@@ -73,12 +73,14 @@ jobs:
     # The full partitioned suite takes about 25 minutes on Windows (each hook and
     # CLI test starts a fresh Bun process, which is slower there).
     timeout-minutes: 50
-    # The runner's default %TEMP% is an 8.3 short path (C:\Users\RUNNER~1\...),
-    # which Git and native realpath report in long form. Use a long-form temp dir.
-    env:
-      TEMP: ${{ runner.temp }}
-      TMP: ${{ runner.temp }}
     steps:
+      # The runner's default %TEMP% is an 8.3 short path (C:\Users\RUNNER~1\...),
+      # which Git reports in long form. Use the long-form runner temp directory.
+      - name: Use a long-form temp directory
+        run: |
+          "TEMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+          "TMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+
       # Fixtures compare exact bytes; keep the checkout's LF line endings.
       - name: Keep LF line endings
         run: git config --global core.autocrlf false
