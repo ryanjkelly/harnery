@@ -106,7 +106,8 @@ describe("prompt-context provider runner", () => {
     expect(capture.env.HARNERY_PRIVATE_TEST).toBeUndefined();
     expect(capture.env.SERVICE_TOKEN).toBeUndefined();
     expect(capture.env.PATH).toBeDefined();
-    expect(capture.env.PATH).toBe(process.env.PATH!);
+    // Windows may name the variable `Path`, and Bun's process.env is case-sensitive.
+    expect(capture.env.PATH).toBe((process.env.PATH ?? process.env.Path)!);
   });
 
   // The hook runs inside WSL here and receives a Windows-side UNC path to a Linux

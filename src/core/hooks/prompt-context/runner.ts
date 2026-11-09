@@ -199,11 +199,23 @@ function fingerprintContext(coordRoot: string, context: string): string {
   return `hmac-sha256:${digest}`;
 }
 
-function providerEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+function providerEnvironment(
+  source: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const name of PROVIDER_ENV_ALLOWLIST) {
     const value = source[name];
     if (value !== undefined) env[name] = value;
+  }
+  if (platform === "win32") {
+    // Windows variable names are case-insensitive (`Path` is PATH), but a copied
+    // environment object is not; match the allowlist ignoring case there.
+    const allowed = new Map(PROVIDER_ENV_ALLOWLIST.map((name) => [name.toUpperCase(), name]));
+    for (const [key, value] of Object.entries(source)) {
+      const name = allowed.get(key.toUpperCase());
+      if (name && value !== undefined && env[name] === undefined) env[name] = value;
+    }
   }
   return env;
 }
