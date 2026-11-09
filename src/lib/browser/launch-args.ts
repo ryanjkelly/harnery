@@ -117,8 +117,47 @@ export function explainSandboxLaunchError(error: unknown, sandbox: boolean): unk
   );
 }
 
-/** Full `major.minor.build.patch` version a Chrome or Chromium binary reports. */
-export function chromeVersionFromExecutable(executable: string): string | undefined {
+/**
+ * `major.minor.build.patch` product version from a Windows executable's
+ * version resource (`VS_VERSION_INFO` → `VS_FIXEDFILEINFO`), or `undefined`
+ * when the image carries none. Reads bytes only; nothing runs.
+ */
+export function peProductVersion(image: Uint8Array): string | undefined {
+  const buf = Buffer.from(image.buffer, image.byteOffset, image.byteLength);
+  const key = Buffer.from("VS_VERSION_INFO\0", "utf16le");
+  for (let at = buf.indexOf(key); at !== -1; at = buf.indexOf(key, at + 1)) {
+    // VS_FIXEDFILEINFO follows the key after padding to a 32-bit boundary.
+    for (let fixed = at + key.length; fixed <= at + key.length + 4; fixed += 2) {
+      if (fixed + 24 > buf.length) break;
+      if (buf.readUInt32LE(fixed) !== 0xfeef04bd) continue;
+      const ms = buf.readUInt32LE(fixed + 16); // dwProductVersionMS
+      const ls = buf.readUInt32LE(fixed + 20); // dwProductVersionLS
+      return `${ms >>> 16}.${ms & 0xffff}.${ls >>> 16}.${ls & 0xffff}`;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Full `major.minor.build.patch` version of a Chrome or Chromium binary.
+ *
+ * On Windows the binary is never run: `chrome.exe` has no console
+ * `--version`, so running it starts the browser, and when the operator's
+ * Chrome is already open it hands the command line to that instance, which
+ * opens a blank New Tab window. Windows reads the executable's version
+ * resource instead.
+ */
+export function chromeVersionFromExecutable(
+  executable: string,
+  platform: NodeJS.Platform = process.platform,
+): string | undefined {
+  if (platform === "win32" || /\.exe$/i.test(executable)) {
+    try {
+      return peProductVersion(readFileSync(executable));
+    } catch {
+      return undefined;
+    }
+  }
   try {
     const res = spawnSync(executable, ["--version"], {
       windowsHide: true,

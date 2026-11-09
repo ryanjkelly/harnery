@@ -1,7 +1,8 @@
-import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
+
+import { chromeVersionFromExecutable } from "./launch-args.ts";
 
 /**
  * Present as a normal browser.
@@ -42,18 +43,15 @@ export function parseChromeMajor(versionOutput: string): number | undefined {
   return match ? Number(match[1]) : undefined;
 }
 
-/** Ask an installed Chrome binary for its major version. */
-export function chromeMajorFromExecutable(executable: string): number | undefined {
-  try {
-    const res = spawnSync(executable, ["--version"], {
-      windowsHide: true,
-      encoding: "utf8",
-      timeout: 5000,
-    });
-    return parseChromeMajor(`${res.stdout ?? ""}${res.stderr ?? ""}`);
-  } catch {
-    return undefined;
-  }
+/**
+ * Major version of an installed Chrome binary. Goes through
+ * `chromeVersionFromExecutable`, which never runs the binary on Windows.
+ */
+export function chromeMajorFromExecutable(
+  executable: string,
+  platform: NodeJS.Platform = process.platform,
+): number | undefined {
+  return parseChromeMajor(chromeVersionFromExecutable(executable, platform) ?? "");
 }
 
 export interface StoredUserAgent {

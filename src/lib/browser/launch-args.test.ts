@@ -1,16 +1,69 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   AUTOMATION_DEFAULT_ARGS_TO_DROP,
   assertSandboxArgs,
   automationDisguiseArgs,
   browserSandboxEnabled,
+  chromeVersionFromExecutable,
   compareChromeVersions,
   explainSandboxLaunchError,
   installedChromeChannel,
   installedChromePath,
+  peProductVersion,
   preferredChromeChannel,
 } from "./launch-args.ts";
+import { chromeMajorFromExecutable } from "./user-agent.ts";
+
+/** Bytes shaped like a PE version resource: VS_VERSIONINFO header, key, padding, VS_FIXEDFILEINFO. */
+function versionResource(
+  product: [number, number, number, number],
+  signature = 0xfeef04bd,
+): Buffer {
+  const [major, minor, build, patch] = product;
+  const header = Buffer.alloc(6);
+  const key = Buffer.from("VS_VERSION_INFO\0", "utf16le");
+  const padding = Buffer.alloc(2);
+  const fixed = Buffer.alloc(52);
+  fixed.writeUInt32LE(signature, 0);
+  fixed.writeUInt32LE(0x00010000, 4);
+  fixed.writeUInt32LE(0x00010002, 8); // file version 1.2.3.4, distinct from the product version
+  fixed.writeUInt32LE(0x00030004, 12);
+  fixed.writeUInt32LE(((major << 16) | minor) >>> 0, 16);
+  fixed.writeUInt32LE(((build << 16) | patch) >>> 0, 20);
+  return Buffer.concat([Buffer.alloc(1024, 0x90), header, key, padding, fixed, Buffer.alloc(64)]);
+}
+
+describe("Chrome version without running the binary", () => {
+  test("reads the product version from a PE version resource", () => {
+    expect(peProductVersion(versionResource([155, 0, 8059, 86]))).toBe("155.0.8059.86");
+  });
+
+  test("returns undefined when there is no valid version resource", () => {
+    expect(peProductVersion(Buffer.alloc(4096))).toBeUndefined();
+    expect(peProductVersion(versionResource([155, 0, 8059, 86], 0xdeadbeef))).toBeUndefined();
+  });
+
+  test("never executes a .exe or a win32 binary", () => {
+    // The fake binaries cannot run, so a version proves it came from the bytes.
+    const dir = mkdtempSync(join(tmpdir(), "harnery-chrome-version-"));
+    try {
+      const exe = join(dir, "chrome.exe");
+      writeFileSync(exe, versionResource([156, 0, 8078, 80]));
+      expect(chromeVersionFromExecutable(exe, "linux")).toBe("156.0.8078.80");
+      expect(chromeMajorFromExecutable(exe, "linux")).toBe(156);
+      const bare = join(dir, "chrome");
+      writeFileSync(bare, versionResource([154, 0, 1, 2]));
+      expect(chromeVersionFromExecutable(bare, "win32")).toBe("154.0.1.2");
+      expect(chromeVersionFromExecutable(join(dir, "missing.exe"), "win32")).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("installedChromeChannel", () => {
   test("returns chrome when a known Chrome binary exists on linux", () => {
