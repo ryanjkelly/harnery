@@ -170,8 +170,13 @@ describe("no-clobber workspace leases", () => {
     });
     const contenderNow = now + 2_000;
     const moduleUrl = pathToFileURL(resolve(import.meta.dir, "leases.ts")).href;
+    // The winner holds the lease until every other contender has finished. A
+    // fixed hold let a contender whose process started late (slow on a loaded
+    // Windows machine) find the lease already released and win it again.
+    const releaseSignal = `${path}.release`;
     const code = `
       const { acquireNoClobberLease } = await import(${JSON.stringify(moduleUrl)});
+      const { existsSync } = await import("node:fs");
       try {
         const lease = acquireNoClobberLease({
           path: ${JSON.stringify(path)},
@@ -182,7 +187,10 @@ describe("no-clobber workspace leases", () => {
           validateStaleOwner: owner => owner.authority_sha256 === ${JSON.stringify(DIGEST)}
         });
         process.stdout.write("won:" + process.pid + "\\n");
-        await new Promise(resolve => setTimeout(resolve, 300));
+        const deadline = Date.now() + 20000;
+        while (!existsSync(${JSON.stringify(releaseSignal)}) && Date.now() < deadline) {
+          await new Promise(resolve => setTimeout(resolve, 25));
+        }
         lease.release();
       } catch (error) {
         process.stdout.write("lost:" + error.message + "\\n");
@@ -195,6 +203,7 @@ describe("no-clobber workspace leases", () => {
         stderr: "pipe",
       }),
     );
+    let finished = 0;
     const results = await Promise.all(
       children.map(async (child) => {
         const [exitCode, stdout, stderr] = await Promise.all([
@@ -202,6 +211,9 @@ describe("no-clobber workspace leases", () => {
           new Response(child.stdout).text(),
           new Response(child.stderr).text(),
         ]);
+        // Every contender but the winner has finished: let the winner release.
+        finished += 1;
+        if (finished === children.length - 1) writeFileSync(releaseSignal, "");
         return { exitCode, stdout, stderr };
       }),
     );
