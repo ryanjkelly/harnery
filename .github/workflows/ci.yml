@@ -73,6 +73,11 @@ jobs:
     # The full partitioned suite takes about 25 minutes on Windows (each hook and
     # CLI test starts a fresh Bun process, which is slower there).
     timeout-minutes: 50
+    # The runner's default %TEMP% is an 8.3 short path (C:\Users\RUNNER~1\...),
+    # which Git and native realpath report in long form. Use a long-form temp dir.
+    env:
+      TEMP: ${{ runner.temp }}
+      TMP: ${{ runner.temp }}
     steps:
       # Fixtures compare exact bytes; keep the checkout's LF line endings.
       - name: Keep LF line endings

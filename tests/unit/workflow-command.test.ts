@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Command } from "commander";
 import { registerWorkflowCommand } from "../../src/commands/workflow.ts";
@@ -7,12 +8,15 @@ import { writeWorkflowProof } from "../../src/core/workflow/proof.ts";
 import { writeWorkflowRunManifest } from "../../src/core/workflow/run-state.ts";
 import type { WorkflowProof } from "../../src/core/workflow/types.ts";
 
+// Windows has no /tmp; elsewhere keep the short /tmp root.
+const TEMP_ROOT = process.platform === "win32" ? tmpdir() : "/tmp";
+
 let root: string;
 let previousCwd: string;
 
 beforeEach(() => {
   previousCwd = process.cwd();
-  root = join("/tmp", `workflow-command-test-${process.pid}-${Date.now()}-${Math.random()}`);
+  root = join(TEMP_ROOT, `workflow-command-test-${process.pid}-${Date.now()}-${Math.random()}`);
   mkdirSync(join(root, ".harnery", "workflows", "wf-command"), { recursive: true });
   writeWorkflowRunManifest({
     coordRoot: root,

@@ -81,7 +81,18 @@ afterEach(() => {
   process.env.PATH = savedPath;
   if (savedForced === undefined) delete process.env.HARNERY_HEADLESS_BACKEND;
   else process.env.HARNERY_HEADLESS_BACKEND = savedForced;
-  rmSync(binDir, { recursive: true, force: true });
+  // A fake CLI that just exited can keep its folder busy briefly on Windows.
+  const deadline = Date.now() + (process.platform === "win32" ? 10_000 : 0);
+  for (;;) {
+    try {
+      rmSync(binDir, { recursive: true, force: true });
+      break;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if ((code !== "EBUSY" && code !== "EPERM") || Date.now() > deadline) throw error;
+      Bun.sleepSync(100);
+    }
+  }
 });
 
 describe("whichBin / availability", () => {

@@ -7,6 +7,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHarneryProgram, type EmitContext, loadLazyCommand } from "../commander.ts";
 import { createGovernor } from "../core/governor/index.ts";
@@ -17,6 +18,9 @@ import {
   type WorkRecord,
 } from "../core/work/index.ts";
 import { renderAttemptBudget, renderAttemptRow } from "./work.ts";
+
+// Windows has no /tmp; elsewhere keep the short /tmp root.
+const TEMP_ROOT = process.platform === "win32" ? tmpdir() : "/tmp";
 
 const roots: string[] = [];
 
@@ -59,7 +63,7 @@ describe("work command", () => {
   });
 
   test("a workspace root without worktree isolation is refused, not quietly ignored", async () => {
-    const root = mkdtempSync(join("/tmp", "harnery-work-wsroot-"));
+    const root = mkdtempSync(join(TEMP_ROOT, "harnery-work-wsroot-"));
     roots.push(root);
     // The engine only honours a writable root under worktree isolation, so the
     // combination is a mistake worth naming rather than a silent no-op. The
@@ -81,7 +85,7 @@ describe("work command", () => {
   });
 
   test("work show explains why an attempt transcript is unreadable", async () => {
-    const root = mkdtempSync(join("/tmp", "harnery-work-command-"));
+    const root = mkdtempSync(join(TEMP_ROOT, "harnery-work-command-"));
     roots.push(root);
     const workflowPath = join(root, "workflow.mjs");
     writeFileSync(workflowPath, "export default async () => 'ok';\n");
@@ -120,7 +124,7 @@ describe("work command", () => {
   });
 
   test("work list reports unreadable records and continues", async () => {
-    const root = mkdtempSync(join("/tmp", "harnery-work-list-command-"));
+    const root = mkdtempSync(join(TEMP_ROOT, "harnery-work-list-command-"));
     roots.push(root);
     const workflowPath = join(root, "workflow.mjs");
     writeFileSync(workflowPath, "export default async () => 'ok';\n");
@@ -158,7 +162,7 @@ describe("work command", () => {
   });
 
   test("work reopen skips unreadable governors and reports the warning", async () => {
-    const root = mkdtempSync(join("/tmp", "harnery-work-reopen-command-"));
+    const root = mkdtempSync(join(TEMP_ROOT, "harnery-work-reopen-command-"));
     roots.push(root);
     const workflowPath = join(root, "workflow.mjs");
     writeFileSync(workflowPath, "export default async () => 'ok';\n");

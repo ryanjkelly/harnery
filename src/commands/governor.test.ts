@@ -1,9 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHarneryProgram, type EmitContext, loadLazyCommand } from "../commander.ts";
 import { createGovernor, runGovernor } from "../core/governor/index.ts";
 import { createWorkItem } from "../core/work/index.ts";
+
+// Windows has no /tmp; elsewhere keep the short /tmp root.
+const TEMP_ROOT = process.platform === "win32" ? tmpdir() : "/tmp";
 
 const roots: string[] = [];
 let cwd: string | undefined;
@@ -78,7 +82,7 @@ describe("governor command", () => {
 
   test("list and show expose planner no-proposal replan exhaustion", async () => {
     cwd = process.cwd();
-    const root = mkdtempSync(join("/tmp", "harnery-governor-cli-"));
+    const root = mkdtempSync(join(TEMP_ROOT, "harnery-governor-cli-"));
     roots.push(root);
     const passing = join(root, "passing.mjs");
     writeFileSync(
@@ -168,7 +172,7 @@ describe("governor command", () => {
 
   test("list reports an unreadable goal without hiding readable goals", async () => {
     cwd = process.cwd();
-    const root = mkdtempSync(join("/tmp", "harnery-governor-cli-list-"));
+    const root = mkdtempSync(join(TEMP_ROOT, "harnery-governor-cli-list-"));
     roots.push(root);
     const workflow = join(root, "workflow.mjs");
     writeFileSync(workflow, "export default async () => 'ok';\n");
@@ -212,7 +216,7 @@ describe("governor command", () => {
 
   test("create names an unsupported specialist profile key", async () => {
     cwd = process.cwd();
-    const root = mkdtempSync(join("/tmp", "harnery-governor-cli-create-"));
+    const root = mkdtempSync(join(TEMP_ROOT, "harnery-governor-cli-create-"));
     roots.push(root);
     const workflow = join(root, "workflow.mjs");
     const team = join(root, "team.json");

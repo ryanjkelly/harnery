@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { basename, dirname } from "node:path";
 import { Readable } from "node:stream";
 import { readStdinText, runProcess, runProcessSync, sleepSync, which } from "./process.ts";
 
@@ -62,8 +63,20 @@ describe("runProcessSync", () => {
 
 describe("helpers", () => {
   test("which finds a system shell and rejects a missing name", () => {
-    // Every POSIX host has `sh`; every Windows host has `cmd` (cmd.exe via PATHEXT).
-    expect(which(process.platform === "win32" ? "cmd" : "sh")).toBeString();
+    if (process.platform === "win32") {
+      // Look up this runtime on a PATH set here (PATHEXT supplies .exe), so the
+      // result does not depend on what earlier tests left in PATH.
+      const saved = process.env.PATH;
+      process.env.PATH = dirname(process.execPath);
+      try {
+        expect(which(basename(process.execPath, ".exe"))).toBeString();
+      } finally {
+        process.env.PATH = saved;
+      }
+    } else {
+      // Every POSIX host has `sh`.
+      expect(which("sh")).toBeString();
+    }
     expect(which("definitely-not-a-real-binary-xyz")).toBeUndefined();
   });
 

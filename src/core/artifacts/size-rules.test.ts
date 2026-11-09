@@ -130,49 +130,54 @@ describe("artifact size rules", () => {
 
   // Regression for a 17 GB listening-test workspace deleted 13 minutes after
   // its owner went idle while a human was still reviewing it.
-  test("never delete a large workspace a human is waiting on at session start", () => {
-    const root = repo();
-    setEnv("HARNERY_ARTIFACT_MAX_UNIT_BYTES", String(16 * MiB));
-    setEnv("HARNERY_ARTIFACT_MAX_BYTES", String(64 * MiB));
-    initializeV3Fixture(root);
-    seedV3Session(root, "agent_waiting01");
-    const waiting = createArtifact(root, {
-      slug: "tts-bakeoff",
-      purpose: "Listening page",
-      retentionDays: 3,
-      actor: { instance_id: "agent_waiting01" },
-    });
-    writeFileSync(join(waiting.path, "envs.bin"), randomBytes(20 * MiB));
-    writeFileSync(join(waiting.path, "index.html"), "<h1>Listen</h1>\n");
-    const held = createArtifact(root, {
-      slug: "provider-images",
-      purpose: "Sparse images",
-      retentionDays: 3,
-      big: true,
-      actor: { instance_id: "agent_holder02" },
-      holds: [{ id: "images", reason: "Still in use" }],
-    });
-    writeFileSync(join(held.path, "images.img"), "");
-    truncateSync(join(held.path, "images.img"), 40 * 1024 * MiB);
+  // The 40 GiB file is sparse on Linux and macOS; NTFS reserves the space,
+  // which a CI disk does not have.
+  test.skipIf(process.platform === "win32")(
+    "never delete a large workspace a human is waiting on at session start",
+    () => {
+      const root = repo();
+      setEnv("HARNERY_ARTIFACT_MAX_UNIT_BYTES", String(16 * MiB));
+      setEnv("HARNERY_ARTIFACT_MAX_BYTES", String(64 * MiB));
+      initializeV3Fixture(root);
+      seedV3Session(root, "agent_waiting01");
+      const waiting = createArtifact(root, {
+        slug: "tts-bakeoff",
+        purpose: "Listening page",
+        retentionDays: 3,
+        actor: { instance_id: "agent_waiting01" },
+      });
+      writeFileSync(join(waiting.path, "envs.bin"), randomBytes(20 * MiB));
+      writeFileSync(join(waiting.path, "index.html"), "<h1>Listen</h1>\n");
+      const held = createArtifact(root, {
+        slug: "provider-images",
+        purpose: "Sparse images",
+        retentionDays: 3,
+        big: true,
+        actor: { instance_id: "agent_holder02" },
+        holds: [{ id: "images", reason: "Still in use" }],
+      });
+      writeFileSync(join(held.path, "images.img"), "");
+      truncateSync(join(held.path, "images.img"), 40 * 1024 * MiB);
 
-    // Owner live: kept, with a warning that names the ceiling.
-    const live = inventoryArtifacts(root).find((row) => row.path === waiting.path);
-    expect(live?.classification).toBe("managed-active");
-    expect(live?.warning).toContain("per-workspace ceiling");
+      // Owner live: kept, with a warning that names the ceiling.
+      const live = inventoryArtifacts(root).find((row) => row.path === waiting.path);
+      expect(live?.classification).toBe("managed-active");
+      expect(live?.warning).toContain("per-workspace ceiling");
 
-    // Owner idle 13 minutes, then 2 hours: the heartbeat is stale, but the
-    // grace has not run out, so session-start cleanup deletes nothing.
-    for (const hours of [13 / 60, 2]) {
-      const now = later(hours);
-      const row = inventoryArtifacts(root, { now }).find((item) => item.path === waiting.path);
-      expect(row).toMatchObject({ classification: "managed-current", action: "keep" });
-      expect(row?.warning).toContain("cleanup will delete it after");
-      setEnv("HARNERY_ARTIFACT_AUTO_CLEAN_INTERVAL_HOURS", "0.0001");
-      expect(autoCleanArtifacts(root, { now }).deleted).toBe(0);
-      expect(existsSync(waiting.path)).toBe(true);
-    }
-    expect(existsSync(held.path)).toBe(true);
-  });
+      // Owner idle 13 minutes, then 2 hours: the heartbeat is stale, but the
+      // grace has not run out, so session-start cleanup deletes nothing.
+      for (const hours of [13 / 60, 2]) {
+        const now = later(hours);
+        const row = inventoryArtifacts(root, { now }).find((item) => item.path === waiting.path);
+        expect(row).toMatchObject({ classification: "managed-current", action: "keep" });
+        expect(row?.warning).toContain("cleanup will delete it after");
+        setEnv("HARNERY_ARTIFACT_AUTO_CLEAN_INTERVAL_HOURS", "0.0001");
+        expect(autoCleanArtifacts(root, { now }).deleted).toBe(0);
+        expect(existsSync(waiting.path)).toBe(true);
+      }
+      expect(existsSync(held.path)).toBe(true);
+    },
+  );
 
   test("record each deletion so its owner can find out what happened", () => {
     const root = repo();

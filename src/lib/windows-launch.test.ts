@@ -51,17 +51,22 @@ describe("windowsLaunch", () => {
     });
   });
 
-  test("runs an npm .cmd launcher's script directly, keeping every argument", () => {
-    const root = fixture();
-    const bin = join(root, "bin");
-    mkdirSync(join(bin, "node_modules", "pkg"), { recursive: true });
-    const script = join(bin, "node_modules", "pkg", "cli.js");
-    writeFileSync(script, "");
-    npmShim(bin, "fakecli", "node_modules\\pkg\\cli.js");
-    const env = { PATH: bin, PATHEXT: ".EXE;.CMD" };
-    const launch = windowsLaunch("fakecli", ["-p", 'a "quoted" & prompt'], env, "win32");
-    expect(launch).toMatchObject({ args: [script, "-p", 'a "quoted" & prompt'] });
-  });
+  // The launcher names its script with Windows separators, which only Windows
+  // path resolution reads as directories.
+  test.skipIf(process.platform !== "win32")(
+    "runs an npm .cmd launcher's script directly, keeping every argument",
+    () => {
+      const root = fixture();
+      const bin = join(root, "bin");
+      mkdirSync(join(bin, "node_modules", "pkg"), { recursive: true });
+      const script = join(bin, "node_modules", "pkg", "cli.js");
+      writeFileSync(script, "");
+      npmShim(bin, "fakecli", "node_modules\\pkg\\cli.js");
+      const env = { PATH: bin, PATHEXT: ".EXE;.CMD" };
+      const launch = windowsLaunch("fakecli", ["-p", 'a "quoted" & prompt'], env, "win32");
+      expect(launch).toMatchObject({ args: [script, "-p", 'a "quoted" & prompt'] });
+    },
+  );
 
   test("reports a launcher it cannot read instead of spawning it", () => {
     const root = fixture();

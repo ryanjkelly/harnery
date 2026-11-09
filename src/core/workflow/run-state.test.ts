@@ -8,7 +8,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { hostname } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { processStartToken } from "../agents/state/proc-start.ts";
 import { acquireWorkflowResumeLease } from "./resume-lock.ts";
@@ -18,10 +18,13 @@ import {
   writeWorkflowRunManifest,
 } from "./run-state.ts";
 
+// Windows has no /tmp; elsewhere keep the short /tmp root.
+const TEMP_ROOT = process.platform === "win32" ? tmpdir() : "/tmp";
+
 let root: string;
 
 beforeEach(() => {
-  root = join("/tmp", `workflow-run-state-${process.pid}-${Date.now()}-${Math.random()}`);
+  root = join(TEMP_ROOT, `workflow-run-state-${process.pid}-${Date.now()}-${Math.random()}`);
   mkdirSync(join(root, ".harnery"), { recursive: true });
 });
 

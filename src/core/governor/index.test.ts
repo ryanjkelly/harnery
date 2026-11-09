@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cancelWorkItem, createWorkItem, readWorkItem, reopenWorkItem } from "../work/index.ts";
 import { resolveWorkflowApproval, type Spawner, type SpawnRequest } from "../workflow/index.ts";
@@ -18,6 +19,9 @@ import {
   runGovernor,
 } from "./index.ts";
 
+// Windows has no /tmp; elsewhere keep the short /tmp root.
+const TEMP_ROOT = process.platform === "win32" ? tmpdir() : "/tmp";
+
 const roots: string[] = [];
 
 afterEach(() => {
@@ -25,7 +29,7 @@ afterEach(() => {
 });
 
 function fixture() {
-  const root = mkdtempSync(join("/tmp", "harnery-governor-"));
+  const root = mkdtempSync(join(TEMP_ROOT, "harnery-governor-"));
   roots.push(root);
   const passing = join(root, "passing.mjs");
   writeFileSync(
