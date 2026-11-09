@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import type { Adapter } from "../adapter.ts";
 import { initializeEventLedgerV3 } from "../events/v3/bootstrap.ts";
 import { buildEventV3 } from "../events/v3/builder.ts";
@@ -474,7 +474,8 @@ describe("live V3 coordination", () => {
         }),
       ).state,
     ).toBe("recorded");
-    expect(readHeartbeat(root, "operator")?.files_touched).toEqual([external]);
+    // Claim identities use forward slashes on every OS.
+    expect(readHeartbeat(root, "operator")?.files_touched).toEqual([external.split(sep).join("/")]);
 
     expect(
       recordLiveClaimChangeV3(

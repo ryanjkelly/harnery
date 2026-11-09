@@ -545,7 +545,10 @@ function within(root: string, path: string | null): boolean {
 }
 
 function mentions(command: string, root: string): boolean {
-  return command.split(/\s+/).some((arg) => arg === root || arg.startsWith(`${root}/`));
+  // A Windows command line names paths with `\`, so accept either separator.
+  return command
+    .split(/\s+/)
+    .some((arg) => arg === root || arg.startsWith(`${root}/`) || arg.startsWith(`${root}\\`));
 }
 
 function hours(value: number): number {

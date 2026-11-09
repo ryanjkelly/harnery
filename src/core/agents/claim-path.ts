@@ -18,6 +18,22 @@ export function canonicalClaimPath(coordRoot: string, value: string): string {
   return portable(absolute);
 }
 
+/**
+ * Strip the coordination root from an absolute path inside it, giving the
+ * forward-slash repository-relative form; any other value is returned as is.
+ * Unlike a `${root}/` prefix test, this matches Windows `C:\repo\file` paths.
+ */
+export function stripCoordRoot(coordRoot: string, value: string): string {
+  if (!isAbsolute(value)) return value;
+  const fromRoot = relative(resolve(coordRoot), value);
+  const contained =
+    fromRoot !== "" &&
+    fromRoot !== ".." &&
+    !fromRoot.startsWith(`..${sep}`) &&
+    !isAbsolute(fromRoot);
+  return contained ? portable(fromRoot) : value;
+}
+
 function portable(value: string): string {
   return value.split(sep).join("/");
 }

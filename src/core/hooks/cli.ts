@@ -23,6 +23,7 @@ import { dirname, join } from "node:path";
 import { coordEnv } from "../../lib/env.ts";
 import { buildInstructionBundle } from "../../lib/instructions/bundle.ts";
 import { type Adapter, adapterFromPlatform as sharedAdapterFromPlatform } from "../adapter.ts";
+import { canonicalClaimPath } from "../agents/claim-path.ts";
 import { resolveCoordRoot } from "../agents/coord-client.ts";
 import {
   type ClaimFinalizationDecision,
@@ -2435,13 +2436,9 @@ function releaseClaimOnFailure(
   }
   if (!filePath) return;
 
-  // Canonicalize path relative to coordRoot
-  let canonical = filePath;
-  if (filePath.startsWith("/")) {
-    canonical = filePath.startsWith(`${coordRoot}/`)
-      ? filePath.slice(coordRoot.length + 1)
-      : filePath;
-  }
+  // The same identity the claim was stored under, so a Windows `C:\...` target
+  // matches its repo-relative claim.
+  const canonical = canonicalClaimPath(coordRoot, filePath);
 
   // In V3 the release is an authority event, not a heartbeat mutation. Avoid
   // creating a disposable cache for a failure that never acquired a claim,

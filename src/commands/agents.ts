@@ -28,6 +28,7 @@ import { basename, join, resolve } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
 import type { Adapter } from "../core/adapter.ts";
+import { stripCoordRoot } from "../core/agents/claim-path.ts";
 import { coordBinPath, spawnCoordBinSync } from "../core/agents/coord-bin.ts";
 import {
   checkGitFinalization,
@@ -2069,8 +2070,7 @@ function runReleaseClaim(path: string | undefined, opts: { all?: boolean } = {})
 
   // Canonicalize: absolute paths under coordRoot get the prefix stripped;
   // relative paths pass through unchanged.
-  let canonical = path as string;
-  if (canonical.startsWith(`${root}/`)) canonical = canonical.slice(root.length + 1);
+  const canonical = stripCoordRoot(root, path as string);
   process.stdout.write(releaseOne(canonical)); // lint-ok-emission: raw JSON pass-through from agent-coord release-claim; mirrors runSetTask which writes the same envelope
 }
 

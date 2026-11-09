@@ -14,6 +14,7 @@
  * not, which is worse than refusing and worse than never offering the feature.
  */
 
+import { sep } from "node:path";
 import { builtinAdapterProfile } from "../adapters/profiles.ts";
 import type { AdapterSandboxProjection } from "../adapters/types.ts";
 import type { GitAdministrativeGrant, SpawnFilesystemPolicy, SpawnRequest } from "./types.ts";
@@ -93,8 +94,16 @@ export function resolveSandboxProjection(
 /** True when `candidate` is `root` or lies beneath it, comparing whole path
  * segments so `/a/bc` is not treated as inside `/a/b`. */
 function isWithin(root: string, candidate: string): boolean {
-  const normalizedRoot = root.endsWith("/") ? root.slice(0, -1) : root;
-  return candidate === normalizedRoot || candidate.startsWith(`${normalizedRoot}/`);
+  // Windows paths use `\` as a segment boundary too; elsewhere it is a filename
+  // character.
+  const windows = sep === "\\";
+  const normalizedRoot =
+    root.endsWith("/") || (windows && root.endsWith("\\")) ? root.slice(0, -1) : root;
+  return (
+    candidate === normalizedRoot ||
+    candidate.startsWith(`${normalizedRoot}/`) ||
+    (windows && candidate.startsWith(`${normalizedRoot}\\`))
+  );
 }
 
 /**

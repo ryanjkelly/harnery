@@ -777,6 +777,12 @@ function buildEngineInvocation(
   membership: boolean,
 ): [string, string[], DecodeMode] {
   if (opts.files) {
+    // On Windows `find` is FIND.exe, a text search with different arguments.
+    if (engine !== "rg" && process.platform === "win32") {
+      throw new Error(
+        "--files needs ripgrep on Windows. Install it (for example `winget install BurntSushi.ripgrep.MSVC`) or set HARNERY_RG_PATH.",
+      );
+    }
     // Filename mode keeps its existing rg/find framing (plain lines).
     return engine === "rg"
       ? [rgBin, buildRgFilesArgs(pattern, paths, opts, extraExcludeDirs), "plainLines"]

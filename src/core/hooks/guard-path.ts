@@ -1,3 +1,5 @@
+import { isAbsolute, relative, sep } from "node:path";
+
 /**
  * Canonicalize a write-tool target path for the claim guard.
  *
@@ -28,7 +30,12 @@
 export function canonicalize(coordRoot: string, p: string): string | null {
   if (!p) return null;
   if (p === coordRoot) return ".";
-  if (p.startsWith(`${coordRoot}/`)) return p.slice(coordRoot.length + 1);
-  if (p.startsWith("/")) return null; // absolute + not under coordRoot → out-of-repo
-  return p; // relative → treat as repo-relative
+  // Windows targets arrive as `C:\repo\file` (or with forward slashes), so test
+  // absoluteness and containment with the platform's path rules, then key the
+  // claim with forward slashes like every other claim path.
+  if (!isAbsolute(p)) return sep === "\\" ? p.replaceAll("\\", "/") : p; // repo-relative
+  const rel = relative(coordRoot, p);
+  if (rel === "") return ".";
+  if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return null; // out-of-repo
+  return rel.split(sep).join("/");
 }

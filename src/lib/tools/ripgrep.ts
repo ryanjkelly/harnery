@@ -207,6 +207,14 @@ export async function resolveSearchEngine(
     // Forced rg with none findable: let the spawn error surface loudly.
     return { engine: "rg", rgBin: "rg" };
   }
+  if (process.platform === "win32" && !isExecutable("grep")) {
+    // No pinned Windows artifact to install and no GNU grep to fall back to:
+    // say so instead of failing on a missing binary.
+    throw new Error(
+      `${resolveBinName()} ${hintKey} needs ripgrep on Windows. Install it ` +
+        "(for example `winget install BurntSushi.ripgrep.MSVC`) or set HARNERY_RG_PATH.",
+    );
+  }
   if (rgInstallSupported()) {
     if (ripgrepAutoInstall()) {
       try {

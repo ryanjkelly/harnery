@@ -20,6 +20,7 @@ import { join } from "node:path";
 import { adapterFromPlatform as sharedAdapterFromPlatform } from "../../adapter.ts";
 import { resolveBinName } from "../../config.ts";
 import { writeProducerDiagnosticV3 } from "../../events/v3/producers/intake.ts";
+import { stripCoordRoot } from "../claim-path.ts";
 import { LiveCoordinationAuthorityV3Error, recordLiveClaimChangeV3 } from "../live-authority-v3.ts";
 import { readLiveCoordinationRows } from "../state/live-coordination-view.ts";
 
@@ -230,7 +231,7 @@ function isFresh(lastHeartbeat: string): boolean {
 function isFileCommittedClean(coordRoot: string, relPath: string): boolean {
   // Tool payloads can provide either absolute-under-coordRoot or canonical
   // monorepo-relative paths.
-  const rel = relPath.startsWith(`${coordRoot}/`) ? relPath.slice(coordRoot.length + 1) : relPath;
+  const rel = stripCoordRoot(coordRoot, relPath);
   const abs = join(coordRoot, rel);
   if (!existsSync(abs)) return false;
   try {

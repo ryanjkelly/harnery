@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { dirname, join, resolve } from "node:path";
 import { canonicalize } from "./guard-path.ts";
 
 // canonicalize decides which write-tool targets enter the claim guard. The key
@@ -45,5 +46,22 @@ describe("canonicalize (claim-guard path)", () => {
     // Sanity-check the hazard the null guards against: had it passed through raw,
     // the string compare would have ranked it before the held repo file.
     expect("/tmp/x/journal/fix.py" < held).toBe(true);
+  });
+});
+
+// Native paths: on Windows these are `C:\...` with backslashes, which a `/`
+// prefix test never matched.
+describe("canonicalize with the platform's own absolute paths", () => {
+  const root = resolve("harnery-guard-root", "repo");
+
+  test("an absolute path inside the root becomes a forward-slash relative path", () => {
+    expect(canonicalize(root, join(root, "app-web", "docs", "notes.md"))).toBe(
+      "app-web/docs/notes.md",
+    );
+  });
+
+  test("an absolute path outside the root is not claimed", () => {
+    expect(canonicalize(root, join(dirname(root), "other", "notes.md"))).toBeNull();
+    expect(canonicalize(root, join(dirname(root), "repo-other", "notes.md"))).toBeNull();
   });
 });

@@ -1,3 +1,5 @@
+import { stripCoordRoot } from "../claim-path.ts";
+
 /**
  * A heuristic parser that extracts file paths likely to be mutated by a
  * shell command. Used by
@@ -39,6 +41,6 @@ export function shellMutationPaths(cmd: string, coordRoot: string | null = null)
 
   return out
     .map((p) => p.replace(/^\.\//, ""))
-    .map((p) => (coordRoot && p.startsWith(`${coordRoot}/`) ? p.slice(coordRoot.length + 1) : p))
+    .map((p) => (coordRoot ? stripCoordRoot(coordRoot, p) : p))
     .filter((p) => p.length > 0);
 }

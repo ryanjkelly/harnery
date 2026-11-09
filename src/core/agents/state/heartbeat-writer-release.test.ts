@@ -9,7 +9,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import { acquireClaim, findGroupClaims, releaseClaim } from "./heartbeat-writer.ts";
 
 let root: string;
@@ -81,7 +81,8 @@ describe("releaseClaim path-form robustness", () => {
     const external = join(dirname(root), "approved-output", "artifact.txt");
     seedSelf([relative(root, external)]);
     acquireClaim(root, "self", external);
-    expect(selfFiles()).toEqual([external]);
+    // Claim identities use forward slashes on every OS.
+    expect(selfFiles()).toEqual([external.split(sep).join("/")]);
   });
 
   test("no match → unchanged", () => {
