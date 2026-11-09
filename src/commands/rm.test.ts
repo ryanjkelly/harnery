@@ -268,6 +268,8 @@ test("CLI clean clone mode retains the held artifact, its manifest and unrelated
   writeFileSync(input.record, JSON.stringify(manifest));
   const before = readFileSync(input.record, "utf8");
   const preview = await copyCommand(input, { cleanClone: true, target: input.clone });
+  // Name the refusal when the preview fails, so a failure is diagnosable.
+  if (preview.code() !== 0) throw new Error(JSON.stringify(preview.errors));
   expect(preview.code()).toBe(0);
   expect(preview.data[0]).toMatchObject({ applied: false, protected: [join(input.clone, ".git")] });
   const textPreview = await copyCommand(input, {

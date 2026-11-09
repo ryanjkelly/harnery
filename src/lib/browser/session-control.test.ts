@@ -172,15 +172,11 @@ async function start(
 }
 
 describe("browser session control transport", () => {
-  test("publishes owner-only descriptor and Unix socket, then cleans up idempotently", async () => {
+  test("publishes a descriptor for the platform transport, then cleans up idempotently", async () => {
     const { server, controlFile } = await start();
     const descriptor = readBrowserSessionDescriptor(controlFile);
 
-    expect(descriptor.transport.kind).toBe("unix");
-    expect(statSync(controlFile).mode & 0o777).toBe(0o600);
-    if (descriptor.transport.kind === "unix") {
-      expect(statSync(descriptor.transport.address).mode & 0o777).toBe(0o600);
-    }
+    expect(descriptor.transport.kind).toBe(process.platform === "win32" ? "pipe" : "unix");
     expect(readFileSync(controlFile, "utf8")).not.toContain("Fixture");
 
     await server.cleanup();
@@ -190,6 +186,22 @@ describe("browser session control transport", () => {
       expect(existsSync(descriptor.transport.address)).toBe(false);
   });
 
+  // Windows has no POSIX mode bits or Unix sockets (it uses a named pipe), so
+  // this is skipped there, not passed.
+  test.skipIf(process.platform === "win32")(
+    "publishes owner-only descriptor and Unix socket",
+    async () => {
+      const { controlFile } = await start();
+      const descriptor = readBrowserSessionDescriptor(controlFile);
+
+      expect(descriptor.transport.kind).toBe("unix");
+      expect(statSync(controlFile).mode & 0o777).toBe(0o600);
+      if (descriptor.transport.kind === "unix") {
+        expect(statSync(descriptor.transport.address).mode & 0o777).toBe(0o600);
+      }
+    },
+  );
+
   test("constructs a random local named pipe for Windows without opening TCP", () => {
     const transport = browserSessionTransport("C:\\private\\control.json", "win32");
     expect(transport.kind).toBe("pipe");
@@ -197,13 +209,17 @@ describe("browser session control transport", () => {
     expect(transport.address).not.toContain("://");
   });
 
-  test("refuses insecure parents and stale descriptors", async () => {
+  // Windows has no POSIX mode bits, and the parent check is a no-op there, so
+  // this is skipped there, not passed.
+  test.skipIf(process.platform === "win32")("refuses insecure parents", async () => {
     const insecure = mkdtempSync(join(tmpdir(), "harnery-browser-insecure-"));
     chmodSync(insecure, 0o755);
     await expect(
       startBrowserSessionServer(join(insecure, "control.json"), new FakeTarget()),
     ).rejects.toMatchObject({ code: "parent_mode" });
+  });
 
+  test("refuses stale descriptors", async () => {
     const dir = privateDir();
     const controlFile = join(dir, "control.json");
     writeFileSync(controlFile, "stale", { mode: 0o600 });

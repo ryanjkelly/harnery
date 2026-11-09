@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { exec } from "./exec.ts";
+import { whichBin } from "./which.ts";
 
 test.skipIf(process.platform !== "win32")(
   "background subprocesses have no visible Windows console",
@@ -33,24 +34,29 @@ describe("exec surfaces the spawn errno (ADR 0046)", () => {
     expect(result.spawnErrno).toBe("ENOENT");
   });
 
-  test("a shell that exits 127 has no errno — indistinguishable from a real 127", async () => {
-    const result = await exec(["sh", "-c", "exit 127"]);
+  test("a process that exits 127 has no errno — indistinguishable from a real 127", async () => {
+    const result = await exec([process.execPath, "-e", "process.exit(127)"]);
     expect(result.exitCode).toBe(127);
-    // The shell itself ran and exited; nothing failed to spawn.
+    // The process itself ran and exited; nothing failed to spawn.
     expect(result.spawnErrno).toBeUndefined();
   });
 
-  test("a shell running a missing command has no errno — the shell spawned fine", async () => {
-    const result = await exec(["sh", "-c", "harnery-missing-inner-command-xyz"]);
-    // sh reports 127 for a not-found command, but sh itself was found, so the
-    // spawn produced no errno. This is the case the structural signal must NOT
-    // misread as a missing vendor binary.
-    expect(result.exitCode).toBe(127);
-    expect(result.spawnErrno).toBeUndefined();
-  });
+  // The 127-for-a-missing-command convention belongs to a POSIX shell; native
+  // Windows has no `sh` on PATH (cmd.exe reports 9009 instead).
+  test.skipIf(!whichBin("sh"))(
+    "a shell running a missing command has no errno — the shell spawned fine",
+    async () => {
+      const result = await exec(["sh", "-c", "harnery-missing-inner-command-xyz"]);
+      // sh reports 127 for a not-found command, but sh itself was found, so the
+      // spawn produced no errno. This is the case the structural signal must NOT
+      // misread as a missing vendor binary.
+      expect(result.exitCode).toBe(127);
+      expect(result.spawnErrno).toBeUndefined();
+    },
+  );
 
   test("an ordinary non-127 exit carries no errno", async () => {
-    const result = await exec(["sh", "-c", "exit 3"]);
+    const result = await exec([process.execPath, "-e", "process.exit(3)"]);
     expect(result.exitCode).toBe(3);
     expect(result.spawnErrno).toBeUndefined();
   });

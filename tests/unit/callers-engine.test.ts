@@ -12,6 +12,9 @@ import { join } from "node:path";
  */
 
 const hasRg = spawnSync("rg", ["--version"], { stdio: "ignore" }).status === 0;
+// Every case runs the GNU grep engine; native Windows has no `grep` unless Git
+// for Windows' usr/bin is on PATH. Linux and macOS always have one.
+const hasGrep = spawnSync("grep", ["--version"], { stdio: "ignore" }).status === 0;
 
 let fixtureRoot: string;
 let origCwd: string;
@@ -115,7 +118,7 @@ afterAll(() => {
   rmSync(fixtureRoot, { recursive: true, force: true });
 });
 
-describe("callers engine parity", () => {
+describe.skipIf(!hasGrep)("callers engine parity", () => {
   test("finds callers, excludes node_modules, searches hidden dirs", async () => {
     const r = await bothEngines("doThing", []);
     const files = r.callers.map((c) => c.file);

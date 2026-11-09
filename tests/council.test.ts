@@ -9,12 +9,13 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { resolve, sep } from "node:path";
 
 import {
-  COUNCIL_SCHEMA_VERSION,
   buildCouncilId,
   buildInviteMarkdown,
+  COUNCIL_SCHEMA_VERSION,
+  type CouncilManifest,
   contributionPath,
   contributorsInRound,
   councilBodyDir,
@@ -31,7 +32,6 @@ import {
   roundDir,
   writeContribution,
   writeManifest,
-  type CouncilManifest,
 } from "../src/lib/council/index.ts";
 
 describe("deriveSlug", () => {
@@ -41,9 +41,7 @@ describe("deriveSlug", () => {
     );
   });
   it("strips non-alphanumeric chars", () => {
-    expect(deriveSlug("Coord/UI: ship Phase 2b done?")).toBe(
-      "coord-ui-ship-phase-2b",
-    );
+    expect(deriveSlug("Coord/UI: ship Phase 2b done?")).toBe("coord-ui-ship-phase-2b");
   });
   it("falls back to 'council' when the input has nothing usable", () => {
     expect(deriveSlug("!!! ???")).toBe("council");
@@ -98,10 +96,7 @@ describe("buildInviteMarkdown", () => {
     objective: "Test objective",
     target_doc: "docs/some-plan.md",
     members: ["agent-Juno", "agent-Beau"],
-    member_ids: [
-      "00000000-0000-0000-0000-000000000001",
-      "00000000-0000-0000-0000-000000000002",
-    ],
+    member_ids: ["00000000-0000-0000-0000-000000000001", "00000000-0000-0000-0000-000000000002"],
     current_round: 1,
     round_status: "open",
     status: "active",
@@ -164,10 +159,7 @@ function sampleManifest(overrides: Partial<CouncilManifest> = {}): CouncilManife
     objective: "Sample",
     target_doc: null,
     members: ["agent-Juno", "agent-Beau"],
-    member_ids: [
-      "00000000-0000-0000-0000-000000000001",
-      "00000000-0000-0000-0000-000000000002",
-    ],
+    member_ids: ["00000000-0000-0000-0000-000000000001", "00000000-0000-0000-0000-000000000002"],
     current_round: 1,
     round_status: "open",
     status: "active",
@@ -218,8 +210,14 @@ describe("writeManifest + readManifest", () => {
 
 describe("listManifests", () => {
   it("returns every manifest in active dir, excluding archive", () => {
-    const a = sampleManifest({ council_id: "alpha-2026-05-22-aaaa", created_at: "2026-05-22T09:00:00Z" });
-    const b = sampleManifest({ council_id: "bravo-2026-05-22-bbbb", created_at: "2026-05-22T10:00:00Z" });
+    const a = sampleManifest({
+      council_id: "alpha-2026-05-22-aaaa",
+      created_at: "2026-05-22T09:00:00Z",
+    });
+    const b = sampleManifest({
+      council_id: "bravo-2026-05-22-bbbb",
+      created_at: "2026-05-22T10:00:00Z",
+    });
     writeManifest(a);
     writeManifest(b);
     // Move one to archive
@@ -258,10 +256,12 @@ describe("contributionPath", () => {
       "foo-2026-05-22-aaaa",
       "round-2",
     );
-    expect(p?.startsWith(`${expectedRoundDir}/`)).toBe(true);
+    expect(p?.startsWith(`${expectedRoundDir}${sep}`)).toBe(true);
     // Filename is `<uuid>.md`, the UUID is whatever ensureIdentity minted
     // for this agent. Assert shape, not content.
-    expect(p?.match(/\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.md$/)).not.toBeNull();
+    expect(
+      p?.match(/[\\/][0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.md$/),
+    ).not.toBeNull();
   });
   it("resolves a bare name through the identity registry the same way", () => {
     // Bare "Juno" and "agent-Juno" should mint/find the SAME identity, so
@@ -302,9 +302,7 @@ describe("writeContribution + contributorsInRound", () => {
 describe("roundDir", () => {
   it("resolves to <body>/round-N/", () => {
     const rd = roundDir("foo-2026-05-22-aaaa", 3);
-    expect(rd).toBe(
-      resolve(sandboxRoot, ".harnery", "councils", "foo-2026-05-22-aaaa", "round-3"),
-    );
+    expect(rd).toBe(resolve(sandboxRoot, ".harnery", "councils", "foo-2026-05-22-aaaa", "round-3"));
   });
 });
 
@@ -320,9 +318,7 @@ describe("pendingCouncilsForMember", () => {
     });
     writeManifest(a);
     writeManifest(b);
-    expect(pendingCouncilsForMember("agent-Juno")).toEqual([
-      "needs-action-2026-05-22-aaaa",
-    ]);
+    expect(pendingCouncilsForMember("agent-Juno")).toEqual(["needs-action-2026-05-22-aaaa"]);
   });
 
   it("excludes councils once the member has contributed to the current round", () => {
@@ -331,9 +327,7 @@ describe("pendingCouncilsForMember", () => {
       members: ["agent-Juno"],
     });
     writeManifest(m);
-    expect(pendingCouncilsForMember("agent-Juno")).toEqual([
-      "already-done-2026-05-22-aaaa",
-    ]);
+    expect(pendingCouncilsForMember("agent-Juno")).toEqual(["already-done-2026-05-22-aaaa"]);
     writeContribution(m.council_id, 1, "agent-Juno", "done");
     expect(pendingCouncilsForMember("agent-Juno")).toEqual([]);
   });
@@ -360,9 +354,7 @@ describe("pendingCouncilsForMember", () => {
       members: ["agent-Juno"],
     });
     writeManifest(m);
-    expect(pendingCouncilsForMember("Juno")).toEqual([
-      "bare-name-2026-05-22-aaaa",
-    ]);
+    expect(pendingCouncilsForMember("Juno")).toEqual(["bare-name-2026-05-22-aaaa"]);
   });
 });
 
@@ -373,11 +365,7 @@ describe("moveToArchive", () => {
     const body = councilBodyDir(m.council_id);
     if (!body) throw new Error("no body dir");
     mkdirSync(body, { recursive: true });
-    require("node:fs").writeFileSync(
-      resolve(body, "invite.md"),
-      "test invite\n",
-      "utf8",
-    );
+    require("node:fs").writeFileSync(resolve(body, "invite.md"), "test invite\n", "utf8");
     moveToArchive(m.council_id);
 
     const archive = councilsArchiveDir();
@@ -386,11 +374,7 @@ describe("moveToArchive", () => {
     const archivedBody = resolve(archive, m.council_id);
     expect(require("node:fs").existsSync(archived)).toBe(true);
     expect(require("node:fs").existsSync(archivedBody)).toBe(true);
-    expect(
-      require("node:fs").existsSync(
-        resolve(archive, m.council_id, "invite.md"),
-      ),
-    ).toBe(true);
+    expect(require("node:fs").existsSync(resolve(archive, m.council_id, "invite.md"))).toBe(true);
 
     // Original locations should be gone
     expect(listManifests().length).toBe(0);

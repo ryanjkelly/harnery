@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -8,12 +8,13 @@ import {
   runHeadlessOn,
   whichBin,
 } from "../../src/lib/headless/index.ts";
+import { plantFakeCli } from "../helpers/fake-cli.ts";
 
 /**
- * The suite fakes each harness CLI with a shell script on a temp PATH, so it
- * exercises real process spawning, argv shapes, stdout/file output parsing,
- * and the fallback walk — without any harness installed. POSIX-only (the
- * scripts are #!/bin/sh); CI and the dev machines are Linux/macOS.
+ * The suite fakes each harness CLI with a small JS program on a temp PATH (a
+ * shell shim on POSIX, a real `.exe` on Windows), so it exercises real process
+ * spawning, argv shapes, stdout/file output parsing, and the fallback walk —
+ * without any harness installed.
  */
 
 let binDir: string;
@@ -21,22 +22,33 @@ let savedPath: string | undefined;
 let savedForced: string | undefined;
 
 function fakeBin(name: string, script: string): string {
-  const path = join(binDir, name);
-  writeFileSync(path, `#!/bin/sh\n${script}\n`);
-  chmodSync(path, 0o755);
-  return path;
+  return plantFakeCli(binDir, name, script);
+}
+
+/** An installed-but-broken backend: exits 1. */
+function failingBin(name: string): string {
+  return fakeBin(name, "process.exit(1);");
+}
+
+/** Fake-script lines that record argv one per line in `<binDir>/<file>`. */
+function recordArgv(file: string): string[] {
+  return [
+    `import { writeFileSync } from "node:fs";`,
+    `const args = process.argv.slice(2);`,
+    `writeFileSync(${JSON.stringify(join(binDir, file))}, args.map((a) => a + "\\n").join(""));`,
+  ];
 }
 
 /** A fake `claude` that emits the headless JSON envelope. */
 function fakeClaude(result: string, opts: { error?: boolean } = {}) {
   const envelope = JSON.stringify({ is_error: opts.error ?? false, result });
-  // argv capture lets tests assert flag shapes without parsing in sh.
+  // argv capture lets tests assert flag shapes.
   fakeBin(
     "claude",
     [
-      `printf '%s\\n' "$@" > "${join(binDir, "claude.argv")}"`,
-      `printf '%s' "\${ENABLE_CLAUDEAI_MCP_SERVERS-unset}" > "${join(binDir, "claude.switch")}"`,
-      `printf '%s' '${envelope}'`,
+      ...recordArgv("claude.argv"),
+      `writeFileSync(${JSON.stringify(join(binDir, "claude.switch"))}, process.env.ENABLE_CLAUDEAI_MCP_SERVERS ?? "unset");`,
+      `process.stdout.write(${JSON.stringify(envelope)});`,
     ].join("\n"),
   );
 }
@@ -46,17 +58,15 @@ function fakeCodex(reply: string) {
   fakeBin(
     "codex",
     [
-      `printf '%s\\n' "$@" > "${join(binDir, "codex.argv")}"`,
-      // walk argv for --output-last-message and write the reply there
-      `out=""; prev=""`,
-      `for a in "$@"; do [ "$prev" = "--output-last-message" ] && out="$a"; prev="$a"; done`,
-      `[ -n "$out" ] && printf '%s' '${reply}' > "$out"`,
+      ...recordArgv("codex.argv"),
+      `const out = args[args.indexOf("--output-last-message") + 1];`,
+      `if (args.includes("--output-last-message") && out) writeFileSync(out, ${JSON.stringify(reply)});`,
     ].join("\n"),
   );
 }
 
 function fakeCursor(reply: string) {
-  fakeBin("cursor-agent", `printf '%s' '${reply}'`);
+  fakeBin("cursor-agent", `process.stdout.write(${JSON.stringify(reply)});`);
 }
 
 beforeEach(() => {
@@ -80,7 +90,10 @@ describe("whichBin / availability", () => {
     fakeCursor("x");
     fakeClaude("x");
     expect(availableHeadlessBackends()).toEqual(["claude-code", "cursor"]);
-    expect(whichBin("claude")).toBe(join(binDir, "claude"));
+    // Windows resolves the planted .exe through PATHEXT.
+    expect(whichBin("claude")).toBe(
+      join(binDir, process.platform === "win32" ? "claude.exe" : "claude"),
+    );
     expect(whichBin("nonexistent-harness")).toBeUndefined();
   });
 });
@@ -165,20 +178,20 @@ describe("runHeadlessOn", () => {
 
 describe("runHeadless (chain)", () => {
   test("falls back past an installed-but-failing backend", async () => {
-    fakeBin("claude", "exit 1"); // installed, broken
+    failingBin("claude"); // installed, broken
     fakeCodex("recovered");
     const res = await runHeadless({ prompt: "hi" });
     expect(res).toEqual({ text: "recovered", backend: "codex" });
   });
 
   test("reports every failure when the whole chain fails", async () => {
-    fakeBin("claude", "exit 1");
-    fakeBin("codex", "exit 1");
+    failingBin("claude");
+    failingBin("codex");
     expect(runHeadless({ prompt: "hi" })).rejects.toThrow(/claude-code:.*\n.*codex:/s);
   });
 
   test("fallback:false stops after the first backend", async () => {
-    fakeBin("claude", "exit 1");
+    failingBin("claude");
     fakeCodex("never reached");
     expect(runHeadless({ prompt: "hi" }, { fallback: false })).rejects.toThrow(
       "every headless backend failed",
@@ -193,7 +206,7 @@ describe("runHeadless (chain)", () => {
   });
 
   test("HARNERY_HEADLESS_BACKEND forces one backend with no fallback", async () => {
-    fakeBin("claude", "exit 1");
+    failingBin("claude");
     fakeCursor("cursor says");
     process.env.HARNERY_HEADLESS_BACKEND = "claude-code";
     expect(runHeadless({ prompt: "hi" })).rejects.toThrow();

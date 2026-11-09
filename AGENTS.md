@@ -45,6 +45,7 @@ bun install
 bun test <paths...>      # edit loop: run only the behavior you changed
 bun run test             # full unit + alongside-source suite, with browser process isolation
 bun run test:list        # list the full runner's partitions without executing them
+bun run test --keep-going # run every partition and list all failing ones (platform sweeps)
 bun run test:integration
 bun run typecheck        # tsc --noEmit (strict mode)
 bun run lint             # Biome check + assists in src/, openclaw-plugin/, opencode-plugin/ (read-only)

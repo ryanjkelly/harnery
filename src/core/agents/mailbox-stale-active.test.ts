@@ -111,7 +111,9 @@ describe("stale active message acceptance", () => {
       "message",
       "surfaced",
     ]);
-    expect(statSync(inboxPath(root, "stale-active")).mode & 0o777).toBe(0o600);
+    // Windows has no POSIX permission bits; stat reports 0o666 for any writable file.
+    if (process.platform !== "win32")
+      expect(statSync(inboxPath(root, "stale-active")).mode & 0o777).toBe(0o600);
   });
 
   test("an ended instance's new ping survives name reuse and its normal same-instance reopen", () => {

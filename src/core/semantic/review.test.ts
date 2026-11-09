@@ -116,7 +116,8 @@ describe("semantic inference review", () => {
       expect(body).not.toContain(source.generation_id);
       expect(body).not.toContain(EVENT_ONE);
       expect(body).not.toContain(EVENT_TWO);
-      expect(statSync(target).mode & 0o777).toBe(0o600);
+      // Windows has no POSIX permission bits; stat reports 0o666 for any writable file.
+      if (process.platform !== "win32") expect(statSync(target).mode & 0o777).toBe(0o600);
       expect(listSemanticReviewCandidates(root)).toHaveLength(1);
     } finally {
       rmSync(root, { recursive: true, force: true });

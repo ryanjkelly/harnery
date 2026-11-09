@@ -21,7 +21,7 @@ describe("processMayBeAlive", () => {
   });
 
   test("an exited process is gone", () => {
-    const child = Bun.spawnSync(["true"]);
+    const child = Bun.spawnSync([process.execPath, "-e", ""]);
     expect(processMayBeAlive(child.pid)).toBe(false);
   });
 

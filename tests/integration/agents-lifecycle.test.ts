@@ -22,7 +22,8 @@ import {
 import { readLedgerV3 } from "../../src/core/events/v3/reader.ts";
 
 const HARNERY_DIR = path.resolve(import.meta.dir, "../..");
-const HARN = path.join(HARNERY_DIR, "bin", "harn");
+// Run the CLI entry directly: the bin/harn shell wrapper cannot be spawned on Windows.
+const HARN = path.join(HARNERY_DIR, "src", "cli.ts");
 const OWNER = "45f21628-043a-463d-a394-4128789f2276";
 const sandboxes: string[] = [];
 
@@ -111,7 +112,7 @@ function makeMidFlightSandbox(materializeHeartbeat = true): string {
 }
 
 function harn(root: string, args: string[]): RunResult {
-  const result = spawnSync("bash", [HARN, ...args], {
+  const result = spawnSync(process.execPath, [HARN, ...args], {
     cwd: root,
     encoding: "utf8",
     env: { ...process.env, HARNERY_COORD_ROOT_OVERRIDE: root },
@@ -121,7 +122,7 @@ function harn(root: string, args: string[]): RunResult {
 
 function harnAsync(root: string, args: string[]): Promise<RunResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn("bash", [HARN, ...args], {
+    const child = spawn(process.execPath, [HARN, ...args], {
       cwd: root,
       env: { ...process.env, HARNERY_COORD_ROOT_OVERRIDE: root },
     });
@@ -396,7 +397,7 @@ describe("harn agents lifecycle on the V3 ledger", () => {
     expect(lifecycleEvents(root)).toHaveLength(0);
 
     const release = (args: string[]) =>
-      spawnSync("bash", [HARN, "agents", "release-claim", ...args], {
+      spawnSync(process.execPath, [HARN, "agents", "release-claim", ...args], {
         cwd: root,
         encoding: "utf8",
         env: {
@@ -516,7 +517,7 @@ describe("harn agents lifecycle on the V3 ledger", () => {
       { flag: "a" },
     );
     const asFork = (args: string[]): RunResult => {
-      const result = spawnSync("bash", [HARN, ...args], {
+      const result = spawnSync(process.execPath, [HARN, ...args], {
         cwd: root,
         encoding: "utf8",
         env: {

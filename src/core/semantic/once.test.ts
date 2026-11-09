@@ -150,7 +150,7 @@ describe("semantic once", () => {
     const source = evidence();
     const calls = { count: 0 };
     try {
-      expect(semanticPaths(root).root.endsWith("/.harnery/semantic/v2")).toBe(true);
+      expect(semanticPaths(root).root).toBe(join(root, ".harnery", "semantic", "v2"));
       const first = await runSemanticOnce({
         coordRoot: root,
         evidence: [source],

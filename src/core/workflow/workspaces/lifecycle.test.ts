@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import type { WorkflowRunManifest } from "../run-state.ts";
 import type { WorkflowProof } from "../types.ts";
 import {
@@ -22,6 +24,10 @@ const identity: FilesystemIdentity = {
   inode: "1",
 };
 
+// Absolute and already resolved on every OS (the binding validator requires both).
+const writableRoot = resolve(tmpdir(), "root");
+const workspaceRoot = join(writableRoot, "workspace");
+
 function binding(): WorkspaceBinding {
   return {
     schema_version: 1,
@@ -32,11 +38,11 @@ function binding(): WorkspaceBinding {
     provider: { id: "provider", version: "1", capability_digest: "c".repeat(64) },
     isolation: "worktree",
     network_access: "unknown",
-    workspace_root: "/tmp/root/workspace",
+    workspace_root: workspaceRoot,
     workspace_root_identity: identity,
-    active_root: "/tmp/root/workspace",
+    active_root: workspaceRoot,
     active_root_identity: identity,
-    writable_root: { configured: "/tmp/root", realpath: "/tmp/root", identity },
+    writable_root: { configured: writableRoot, realpath: writableRoot, identity },
     generation: 1,
     recovery_token: "d".repeat(64),
     request_sha256: "a".repeat(64),

@@ -854,7 +854,8 @@ describe("runWorkflow", () => {
 
     expect(report.proofPath).toEndWith("proof.json");
     expect(report.acceptance).toEqual({ satisfied: 1, unsatisfied: 0, unknown: 0, total: 1 });
-    expect(statSync(report.proofPath).mode & 0o777).toBe(0o600);
+    // POSIX mode bits only: Windows synthesizes them and keeps inherited ACLs.
+    if (process.platform !== "win32") expect(statSync(report.proofPath).mode & 0o777).toBe(0o600);
     const proof = JSON.parse(readFileSync(report.proofPath, "utf8")) as WorkflowProof;
     expect(proof.schema_version).toBe(2);
     expect(proof.run.status).toBe("succeeded");

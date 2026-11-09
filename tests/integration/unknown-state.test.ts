@@ -30,7 +30,8 @@ import {
 
 const HARNERY_DIR = resolve(import.meta.dir, "../..");
 const CLI = join(HARNERY_DIR, "src", "cli.ts");
-const HOOK = join(HARNERY_DIR, "bin", "agent-hook");
+// Run the hook entry directly: the bin/agent-hook shell wrapper cannot be spawned on Windows.
+const HOOK = join(HARNERY_DIR, "src", "core", "hooks", "cli.ts");
 const SESSION = "unknown-state-fixture";
 const roots: string[] = [];
 
@@ -50,7 +51,8 @@ describe.skipIf(!hasGit())("unknown state CLI conformance", () => {
           configDigest: sha256V3("config"),
           approvalRecordId: "unknown-state-fixture",
         });
-        symlinkSync(HARNERY_DIR, join(repo, "harnery"));
+        // A junction needs no symlink privilege on Windows; other platforms ignore the type.
+        symlinkSync(HARNERY_DIR, join(repo, "harnery"), "junction");
         writeFileSync(join(repo, ".git", "info", "exclude"), ".harnery/\nharnery\n");
         const startup = hook(repo, { session_id: SESSION, source: "startup", cwd: repo });
         expect(startup.status).toBe(0);
@@ -71,14 +73,22 @@ describe.skipIf(!hasGit())("unknown state CLI conformance", () => {
           recoveryCwd = repo;
           const bin = join(host, "fault-bin");
           mkdirSync(bin);
-          const realGit = spawnSync("which", ["git"], { encoding: "utf8" }).stdout.trim();
+          const realGit = Bun.which("git") ?? "";
           expect(realGit).not.toBe("");
-          const shim = join(bin, "git");
-          writeFileSync(
-            shim,
-            `#!/bin/sh\nif [ "$1" = "status" ]; then\n  echo 'forced status read failure' >&2\n  exit 128\nfi\nexec '${realGit.replaceAll("'", "'\\''")}' "$@"\n`,
-          );
-          chmodSync(shim, 0o755);
+          if (process.platform === "win32") {
+            // Windows resolves a git.cmd on PATH; a #!/bin/sh shim cannot run there.
+            writeFileSync(
+              join(bin, "git.cmd"),
+              `@echo off\r\nif "%~1"=="status" (\r\n  echo forced status read failure 1>&2\r\n  exit /b 128\r\n)\r\n"${realGit}" %*\r\nexit /b %ERRORLEVEL%\r\n`,
+            );
+          } else {
+            const shim = join(bin, "git");
+            writeFileSync(
+              shim,
+              `#!/bin/sh\nif [ "$1" = "status" ]; then\n  echo 'forced status read failure' >&2\n  exit 128\nfi\nexec '${realGit.replaceAll("'", "'\\''")}' "$@"\n`,
+            );
+            chmodSync(shim, 0o755);
+          }
           extraEnv.PATH = `${bin}${delimiter}${process.env.PATH ?? ""}`;
         }
         const recovery = hook(
@@ -266,7 +276,7 @@ function harn(root: string, args: string[]) {
 }
 
 function hook(root: string, payload: object, extraEnv: Record<string, string> = {}) {
-  return spawnSync("bash", [HOOK, "session-start", "--adapter", "claude-code"], {
+  return spawnSync(process.execPath, [HOOK, "session-start", "--adapter", "claude-code"], {
     cwd: root,
     input: JSON.stringify(payload),
     encoding: "utf8",

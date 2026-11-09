@@ -10,7 +10,8 @@ import {
   resolveLiveEventLedgerRouteV3,
 } from "../../src/core/events/v3/live-routing.ts";
 
-const HARN = join(resolve(import.meta.dir, "../.."), "bin", "harn");
+// Run the CLI entry directly: the bin/harn shell wrapper cannot be spawned on Windows.
+const HARN = join(resolve(import.meta.dir, "../.."), "src", "cli.ts");
 const OWNER = "quality-fixture";
 const sandboxes: string[] = [];
 
@@ -117,7 +118,7 @@ function sandbox(mode: "shadow" | "report"): string {
 }
 
 function harn(root: string, args: string[]) {
-  return spawnSync("bash", [HARN, ...args], {
+  return spawnSync(process.execPath, [HARN, ...args], {
     cwd: root,
     encoding: "utf8",
     env: {

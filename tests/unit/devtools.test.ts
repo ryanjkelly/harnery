@@ -104,7 +104,10 @@ describe("readDevtools — claude-code", () => {
     const dir = path.join(home, ".claude", "projects", "p");
     mkdirSync(dir, { recursive: true });
     const lines = [
-      JSON.stringify({ type: "assistant", message: { usage: { input_tokens: 10, output_tokens: 5 } } }),
+      JSON.stringify({
+        type: "assistant",
+        message: { usage: { input_tokens: 10, output_tokens: 5 } },
+      }),
       JSON.stringify({
         type: "assistant",
         message: { usage: { cache_read_input_tokens: 100, cache_creation_input_tokens: 20 } },
@@ -113,7 +116,10 @@ describe("readDevtools — claude-code", () => {
     ].join("\n");
     writeFileSync(path.join(dir, "t.jsonl"), lines);
 
-    const cc = byTool(readDevtools({ home, now: NOW, usage: true, windowDays: 3650 }).tools, "claude-code");
+    const cc = byTool(
+      readDevtools({ home, now: NOW, usage: true, windowDays: 3650 }).tools,
+      "claude-code",
+    );
     expect(cc.tokensUsed).toBe(135);
   });
 
@@ -121,7 +127,13 @@ describe("readDevtools — claude-code", () => {
     const dir = path.join(home, ".claude", "projects", "p");
     mkdirSync(dir, { recursive: true });
     const t = path.join(dir, "t.jsonl");
-    writeFileSync(t, JSON.stringify({ type: "assistant", message: { usage: { input_tokens: 40, output_tokens: 2 } } }));
+    writeFileSync(
+      t,
+      JSON.stringify({
+        type: "assistant",
+        message: { usage: { input_tokens: 40, output_tokens: 2 } },
+      }),
+    );
 
     // No --usage flag: the total is computed anyway (always-on card field).
     expect(byTool(readDevtools({ home, now: NOW }).tools, "claude-code").tokensUsed).toBe(42);
@@ -135,13 +147,18 @@ describe("readDevtools — claude-code", () => {
     expect(byTool(readDevtools({ home, now: NOW }).tools, "claude-code").tokensUsed).toBe(999_999);
 
     // --usage forces a fresh, cache-bypassing recompute.
-    expect(byTool(readDevtools({ home, now: NOW, usage: true }).tools, "claude-code").tokensUsed).toBe(42);
+    expect(
+      byTool(readDevtools({ home, now: NOW, usage: true }).tools, "claude-code").tokensUsed,
+    ).toBe(42);
 
     // Changing the transcript (size/mtime move) invalidates the entry → real re-read.
     writeFileSync(
       t,
       [
-        JSON.stringify({ type: "assistant", message: { usage: { input_tokens: 40, output_tokens: 2 } } }),
+        JSON.stringify({
+          type: "assistant",
+          message: { usage: { input_tokens: 40, output_tokens: 2 } },
+        }),
         JSON.stringify({ type: "assistant", message: { usage: { output_tokens: 8 } } }),
       ].join("\n"),
     );
@@ -154,11 +171,19 @@ describe("readDevtools — claude-code", () => {
     mkdirSync(dir, { recursive: true });
     const recent = path.join(dir, "recent.jsonl");
     const old = path.join(dir, "old.jsonl");
-    writeFileSync(recent, JSON.stringify({ type: "assistant", message: { usage: { output_tokens: 30 } } }));
-    writeFileSync(old, JSON.stringify({ type: "assistant", message: { usage: { output_tokens: 9999 } } }));
+    writeFileSync(
+      recent,
+      JSON.stringify({ type: "assistant", message: { usage: { output_tokens: 30 } } }),
+    );
+    writeFileSync(
+      old,
+      JSON.stringify({ type: "assistant", message: { usage: { output_tokens: 9999 } } }),
+    );
     utimesSync(old, new Date(NOW - 30 * 86_400_000), new Date(NOW - 30 * 86_400_000));
 
-    expect(byTool(readDevtools({ home, now: NOW, windowDays: 7 }).tools, "claude-code").tokensUsed).toBe(30);
+    expect(
+      byTool(readDevtools({ home, now: NOW, windowDays: 7 }).tools, "claude-code").tokensUsed,
+    ).toBe(30);
   });
 
   test("expired refresh token => not logged in", () => {
@@ -167,7 +192,11 @@ describe("readDevtools — claude-code", () => {
     writeFileSync(
       path.join(dir, ".credentials.json"),
       JSON.stringify({
-        claudeAiOauth: { expiresAt: NOW - 1000, refreshTokenExpiresAt: NOW - 1000, subscriptionType: "pro" },
+        claudeAiOauth: {
+          expiresAt: NOW - 1000,
+          refreshTokenExpiresAt: NOW - 1000,
+          subscriptionType: "pro",
+        },
       }),
     );
     const cc = byTool(readDevtools({ home, now: NOW }).tools, "claude-code");
@@ -205,7 +234,11 @@ describe("readDevtools — codex", () => {
           info: { total_token_usage: { total_tokens: 1500 } },
           rate_limits: {
             plan_type: "plus", // live plan should win over the id_token's "team"
-            primary: { used_percent: 6, window_minutes: 300, resets_at: Math.floor(NOW / 1000) + 3600 },
+            primary: {
+              used_percent: 6,
+              window_minutes: 300,
+              resets_at: Math.floor(NOW / 1000) + 3600,
+            },
           },
         },
       }),
@@ -221,6 +254,8 @@ describe("readDevtools — codex", () => {
     );
     put.run("t1", rollout, Date.parse("2026-07-11T00:00:00Z"), 1000);
     put.run("t2", "/nonexistent/old.jsonl", Date.parse("2026-07-01T00:00:00Z"), 500);
+    // An unfinalized statement keeps the file open on Windows, so the temp home cannot be removed.
+    put.finalize();
     db.close();
 
     const cx = byTool(readDevtools({ home, now: NOW, usage: true }).tools, "codex");
@@ -263,23 +298,42 @@ describe("readDevtools — codex", () => {
           info: { total_token_usage: { total_tokens: 4242 } },
           rate_limits: {
             plan_type: "team",
-            primary: { used_percent: 12, window_minutes: 300, resets_at: Math.floor(NOW / 1000) + 3600 },
-            secondary: { used_percent: 40, window_minutes: 10080, resets_at: Math.floor(NOW / 1000) + 86400 },
+            primary: {
+              used_percent: 12,
+              window_minutes: 300,
+              resets_at: Math.floor(NOW / 1000) + 3600,
+            },
+            secondary: {
+              used_percent: 40,
+              window_minutes: 10080,
+              resets_at: Math.floor(NOW / 1000) + 86400,
+            },
           },
         },
       }),
     ].join("\n");
     writeFileSync(path.join(day, "rollout-2026-07-01T00-00-00-abc.jsonl"), rollout);
 
-    const cx = byTool(readDevtools({ home, now: NOW, usage: true, windowDays: 3650 }).tools, "codex");
+    const cx = byTool(
+      readDevtools({ home, now: NOW, usage: true, windowDays: 3650 }).tools,
+      "codex",
+    );
     expect(cx.installed).toBe(true);
     expect(cx.loggedIn).toBe(true);
     expect(cx.account).toBe("codex@example.com");
     expect(cx.plan).toBe("team");
     expect(cx.sessions).toBe(1);
     expect(cx.quota).toEqual([
-      { window: "5h", usedPercent: 12, resetsAt: new Date((Math.floor(NOW / 1000) + 3600) * 1000).toISOString() },
-      { window: "weekly", usedPercent: 40, resetsAt: new Date((Math.floor(NOW / 1000) + 86400) * 1000).toISOString() },
+      {
+        window: "5h",
+        usedPercent: 12,
+        resetsAt: new Date((Math.floor(NOW / 1000) + 3600) * 1000).toISOString(),
+      },
+      {
+        window: "weekly",
+        usedPercent: 40,
+        resetsAt: new Date((Math.floor(NOW / 1000) + 86400) * 1000).toISOString(),
+      },
     ]);
     expect(cx.tokensUsed).toBe(4242);
     expect(JSON.stringify(cx)).not.toContain("at-secret");
@@ -322,7 +376,11 @@ describe("readDevtools — codex", () => {
           type: "token_count",
           rate_limits: {
             plan_type: "plus",
-            primary: { used_percent: percent, window_minutes: windowMin, resets_at: Math.floor(NOW / 1000) + 3600 },
+            primary: {
+              used_percent: percent,
+              window_minutes: windowMin,
+              resets_at: Math.floor(NOW / 1000) + 3600,
+            },
           },
         },
       });
@@ -336,7 +394,11 @@ describe("readDevtools — codex", () => {
 
     const cx = byTool(readDevtools({ home, now: NOW }).tools, "codex");
     expect(cx.quota).toEqual([
-      { window: "weekly", usedPercent: 1, resetsAt: new Date((Math.floor(NOW / 1000) + 3600) * 1000).toISOString() },
+      {
+        window: "weekly",
+        usedPercent: 1,
+        resetsAt: new Date((Math.floor(NOW / 1000) + 3600) * 1000).toISOString(),
+      },
     ]);
   });
 
@@ -350,7 +412,10 @@ describe("readDevtools — codex", () => {
         payload: { type: "token_count", info: { total_token_usage: { total_tokens: total } } },
       });
     // Session A: two cumulative readings — the LAST (larger) is the session total.
-    writeFileSync(path.join(day, "rollout-2026-07-13T02-00-00-a.jsonl"), `${tc(1000)}\n${tc(3200)}\n`);
+    writeFileSync(
+      path.join(day, "rollout-2026-07-13T02-00-00-a.jsonl"),
+      `${tc(1000)}\n${tc(3200)}\n`,
+    );
     // Session B: one reading.
     writeFileSync(path.join(day, "rollout-2026-07-13T05-00-00-b.jsonl"), `${tc(800)}\n`);
 
@@ -394,7 +459,11 @@ describe("readDevtools — codex", () => {
           rate_limits: {
             plan_type: "plus",
             rate_limit_reached_type: "secondary",
-            primary: { used_percent: 100, window_minutes: 10080, resets_at: Math.floor(NOW / 1000) + 3600 },
+            primary: {
+              used_percent: 100,
+              window_minutes: 10080,
+              resets_at: Math.floor(NOW / 1000) + 3600,
+            },
             secondary: null,
           },
         },
@@ -414,7 +483,11 @@ describe("readDevtools — codex", () => {
           rate_limits: {
             plan_type: "plus",
             rate_limit_reached_type: null,
-            primary: { used_percent: 1, window_minutes: 10080, resets_at: Math.floor(NOW / 1000) + 3600 },
+            primary: {
+              used_percent: 1,
+              window_minutes: 10080,
+              resets_at: Math.floor(NOW / 1000) + 3600,
+            },
           },
         },
       }),
@@ -450,6 +523,7 @@ describe("readDevtools — cursor", () => {
         ],
       }),
     );
+    put.finalize();
     db.close();
 
     const cu = byTool(readDevtools({ home, now: NOW }).tools, "cursor");
@@ -468,7 +542,10 @@ describe("readDevtools — cursor", () => {
   test("falls back to login-presence when no vscdb is present", () => {
     const dir = path.join(home, ".cursor");
     mkdirSync(path.join(dir, "projects", "proj-x"), { recursive: true });
-    writeFileSync(path.join(dir, "statsig-cache.json"), JSON.stringify({ userID: "user-abc", data: {} }));
+    writeFileSync(
+      path.join(dir, "statsig-cache.json"),
+      JSON.stringify({ userID: "user-abc", data: {} }),
+    );
     const serverDir = path.join(home, ".cursor-server");
     mkdirSync(serverDir, { recursive: true });
     writeFileSync(path.join(serverDir, ".deadbeef.token"), "tok");
@@ -563,6 +640,7 @@ describe("enrichFromApi — cursor usage (session token)", () => {
     const put = db.prepare("INSERT INTO ItemTable (key, value) VALUES (?, ?)");
     put.run("cursorAuth/accessToken", accessToken);
     if (version) put.run("cursor.startupMetrics.lastVersion", version);
+    put.finalize();
     db.close();
   }
 
@@ -632,7 +710,8 @@ describe("enrichFromApi — cursor usage (session token)", () => {
 
   test("a failed usage fetch degrades to a note, never throws", async () => {
     seedVscdb(jwt({ sub: "auth0|user_XYZ", exp: VALID_EXP_S }));
-    globalThis.fetch = (async () => new Response("nope", { status: 500 })) as unknown as typeof fetch;
+    globalThis.fetch = (async () =>
+      new Response("nope", { status: 500 })) as unknown as typeof fetch;
     const report = readDevtools({ home, now: NOW, only: ["cursor"] });
     await enrichFromApi(report, { cursorKey: null, home });
     const cu = byTool(report.tools, "cursor");
@@ -669,7 +748,10 @@ describe("enrichFromApi — claude-code usage (oauth token)", () => {
     // A session transcript stamps the live client version; the UA must mirror it.
     const proj = path.join(home, ".claude", "projects", "p");
     mkdirSync(proj, { recursive: true });
-    writeFileSync(path.join(proj, "s.jsonl"), `${JSON.stringify({ version: "9.9.9", type: "user" })}\n`);
+    writeFileSync(
+      path.join(proj, "s.jsonl"),
+      `${JSON.stringify({ version: "9.9.9", type: "user" })}\n`,
+    );
     let auth: string | undefined;
     let userAgent: string | undefined;
     let xApp: string | undefined;
@@ -683,7 +765,12 @@ describe("enrichFromApi — claude-code usage (oauth token)", () => {
           JSON.stringify({
             limits: [
               { kind: "session", percent: 87, resets_at: "2026-07-13T10:30:00+00:00", scope: null },
-              { kind: "weekly_all", percent: 27, resets_at: "2026-07-18T07:00:00+00:00", scope: null },
+              {
+                kind: "weekly_all",
+                percent: 27,
+                resets_at: "2026-07-18T07:00:00+00:00",
+                scope: null,
+              },
               {
                 kind: "weekly_scoped",
                 percent: 37,
@@ -712,8 +799,16 @@ describe("enrichFromApi — claude-code usage (oauth token)", () => {
     expect(userAgent).toBe("claude-cli/9.9.9 (external, cli)");
     expect(xApp).toBe("cli");
     expect(cc.quota).toEqual([
-      { window: "5h", usedPercent: 87, resetsAt: new Date("2026-07-13T10:30:00+00:00").toISOString() },
-      { window: "weekly", usedPercent: 27, resetsAt: new Date("2026-07-18T07:00:00+00:00").toISOString() },
+      {
+        window: "5h",
+        usedPercent: 87,
+        resetsAt: new Date("2026-07-13T10:30:00+00:00").toISOString(),
+      },
+      {
+        window: "weekly",
+        usedPercent: 27,
+        resetsAt: new Date("2026-07-18T07:00:00+00:00").toISOString(),
+      },
       {
         window: "weekly · Fable",
         usedPercent: 37,
@@ -744,7 +839,9 @@ describe("enrichFromApi — claude-code usage (oauth token)", () => {
   test("a rate-limited (429) usage fetch degrades to a note, never throws", async () => {
     seedClaude("sk-ant-oat-OK", VALID_EXP_MS, VALID_EXP_MS);
     globalThis.fetch = (async () =>
-      new Response('{"error":{"type":"rate_limit_error"}}', { status: 429 })) as unknown as typeof fetch;
+      new Response('{"error":{"type":"rate_limit_error"}}', {
+        status: 429,
+      })) as unknown as typeof fetch;
     const report = readDevtools({ home, now: NOW, only: ["claude-code"] });
     await enrichFromApi(report, { home });
     const cc = byTool(report.tools, "claude-code");
@@ -780,7 +877,9 @@ describe("enrichFromApi — claude-code usage (oauth token)", () => {
       const auth = ((init?.headers ?? {}) as Record<string, string>).Authorization ?? "";
       const pct = auth.includes("ACCT-A") ? 10 : 90;
       return new Response(
-        JSON.stringify({ limits: [{ kind: "session", percent: pct, resets_at: "2026-07-13T10:30:00+00:00" }] }),
+        JSON.stringify({
+          limits: [{ kind: "session", percent: pct, resets_at: "2026-07-13T10:30:00+00:00" }],
+        }),
         { status: 200 },
       );
     }) as unknown as typeof fetch;

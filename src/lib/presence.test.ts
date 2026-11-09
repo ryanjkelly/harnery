@@ -131,7 +131,8 @@ describe("file I/O", () => {
 
   afterAll(() => {
     if (originalHome !== undefined) process.env.HOME = originalHome;
-    else process.env.HOME = undefined;
+    // Assigning undefined stores the text "undefined"; remove the key instead.
+    else delete process.env.HOME;
     rmSync(tmpHome, { recursive: true, force: true });
   });
 

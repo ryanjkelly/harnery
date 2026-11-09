@@ -47,14 +47,17 @@ function state(overrides: Partial<TunnelState> = {}): TunnelState {
 
 /** A PID that is guaranteed dead: spawn something trivial and reap it. */
 async function deadPid(): Promise<number> {
-  const p = spawn("true", [], { stdio: "ignore" });
+  const p = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
   await new Promise((r) => p.once("exit", r));
   return p.pid as number;
 }
 
+/** Inline script that idles for 30s; this runtime keeps the tests free of POSIX tools. */
+const IDLE_30S = "setTimeout(() => {}, 30000)";
+
 /** A PID that is guaranteed alive for the life of the test, plus its killer. */
 function livePid(): { pid: number; kill: () => void } {
-  const p = spawn("sleep", ["30"], { stdio: "ignore" });
+  const p = spawn(process.execPath, ["-e", IDLE_30S], { stdio: "ignore" });
   return { pid: p.pid as number, kill: () => p.kill() };
 }
 
@@ -114,9 +117,12 @@ describe("downOne", () => {
     const before = process.env[TUNNEL_DIR_ENV];
     process.env[TUNNEL_DIR_ENV] = dir;
     const port = 9099;
-    // The live owner's gate and provider, with command lines the port sweep matches.
+    // The live owner's gate and provider, with command lines the port sweep
+    // matches: an idle script file whose trailing argv mimics the real launch.
+    const idleScript = join(dir, "idle.js");
+    writeFileSync(idleScript, IDLE_30S);
     const spawnLike = (...args: string[]) => {
-      const child = spawn("bash", ["-c", "sleep 30; :", "x", ...args], { stdio: "ignore" });
+      const child = spawn(process.execPath, [idleScript, ...args], { stdio: "ignore" });
       const handle = { child, exited: false };
       child.once("exit", () => {
         handle.exited = true;

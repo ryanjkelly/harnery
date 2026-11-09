@@ -38,6 +38,13 @@ function config(dir: string, capacity = 1, extra: Partial<AdmissionConfig> = {})
   return { dir, resource: "res", capacity, pollMs: 25, ...extra };
 }
 
+/** Run a no-op child to completion, leaving its pid dead. Windows has no /bin/true. */
+function spawnReapedChild(): ReturnType<typeof spawnSync> {
+  return process.platform === "win32"
+    ? spawnSync(process.execPath, ["-e", "process.exit(0)"])
+    : spawnSync("/bin/true");
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
 }
@@ -139,7 +146,7 @@ describe("acquireAdmission", () => {
 
   test("dead-PID holder is pruned so a new acquire admits immediately", async () => {
     const dir = fixture();
-    const spawned = spawnSync("/bin/true");
+    const spawned = spawnReapedChild();
     const deadPid = spawned.pid;
     expect(deadPid).toBeGreaterThan(1);
     expect(processMayBeAlive(deadPid)).toBe(false);
@@ -228,7 +235,7 @@ describe("admission history", () => {
 
   test("a dead holder pruned by a peer is recorded once as abandoned", async () => {
     const dir = fixture();
-    const pid = spawnSync("/bin/true").pid as number;
+    const pid = spawnReapedChild().pid as number;
     const created = new Date(Date.now() - 5_000).toISOString();
     const acquired = new Date(Date.now() - 4_000).toISOString();
     seedEntry(dir, "held", {
@@ -282,7 +289,9 @@ describe("admission history", () => {
       delete process.env.HARNERY_ADMISSION_HISTORY_DIR;
       process.env.XDG_STATE_HOME = "/state";
       for (const shared of ["/tmp/harnery-admission", "/tmp/user-1000/harnery-admission"]) {
-        expect(resolveAdmissionHistoryDir(shared)).toBe("/state/harnery/admission-history");
+        expect(resolveAdmissionHistoryDir(shared)).toBe(
+          join("/state", "harnery", "admission-history"),
+        );
       }
       expect(resolveAdmissionHistoryDir("/tmp/harnery-admission-x1")).toBe(
         "/tmp/harnery-admission-x1-history",

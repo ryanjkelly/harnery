@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -29,6 +29,8 @@ function init(path: string, bare = false): void {
   git(path, "config", "user.email", "test@example.invalid");
   git(path, "config", "user.name", "Test");
   git(path, "config", "core.hooksPath", "/dev/null");
+  // Git for Windows ships core.autocrlf=true system-wide; keep checkouts byte-exact.
+  git(path, "config", "core.autocrlf", "false");
 }
 function commit(repo: string, path: string, value: string): void {
   writeFileSync(join(repo, path), value);
@@ -53,6 +55,8 @@ function fixture() {
     repo,
     "-c",
     "protocol.file.allow=always",
+    "-c",
+    "core.autocrlf=false",
     "submodule",
     "add",
     "-b",
@@ -83,6 +87,7 @@ function fixture() {
   git(child, "config", "user.email", "test@example.invalid");
   git(child, "config", "user.name", "Test");
   git(child, "config", "core.hooksPath", "/dev/null");
+  git(child, "config", "core.autocrlf", "false");
   git(child, "fetch", "--quiet", "origin", "next");
   git(repo, "update-index", "--cacheinfo", `160000,${target},generated`);
   git(repo, "commit", "--quiet", "-m", "peer generated pointer");
@@ -90,6 +95,9 @@ function fixture() {
   return { repo, child, seed, old, target, remote };
 }
 const recover = { reconcilePeerSubmodules: true };
+// Git and Bun process start-up is several times slower on Windows, where one fixture takes ~12s.
+const TIMEOUT_MS = process.platform === "win32" ? 60_000 : 15_000;
+setDefaultTimeout(TIMEOUT_MS);
 
 describe("end-turn peer submodule recovery", () => {
   test.each([
@@ -227,7 +235,7 @@ describe("end-turn peer submodule recovery", () => {
       {
         cwd: repo,
         encoding: "utf8",
-        timeout: 15_000,
+        timeout: TIMEOUT_MS,
         env: {
           ...process.env,
           HARNERY_COORD_ROOT_OVERRIDE: repo,
@@ -242,7 +250,7 @@ describe("end-turn peer submodule recovery", () => {
     expect(result.status).toBe(0);
     expect(JSON.parse(result.stdout)).toMatchObject({ finalization: { ok: true } });
     expect(git(child, "rev-parse", "HEAD")).toBe(target);
-  }, 15_000);
+  });
 
   test("rechecks owned work after a merge hook runs", () => {
     const { repo, child, target } = fixture();

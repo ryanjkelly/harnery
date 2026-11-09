@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import {
@@ -38,8 +38,9 @@ function commitAll(repo: string, message: string): void {
 }
 
 beforeEach(() => {
-  const base = process.platform === "win32" ? join("/tmp") : tmpdir();
-  mkdirSync(base, { recursive: true });
+  // "/tmp" is drive-relative on Windows, and Git rejects it as a clone source;
+  // the long-form real temp path keeps Git's and Node's spellings identical.
+  const base = process.platform === "win32" ? realpathSync.native(tmpdir()) : tmpdir();
   temp = mkdtempSync(join(base, "harnery-finalization-"));
 });
 
@@ -434,30 +435,34 @@ describe("checkGitFinalization", () => {
     expect(message).not.toContain("Commit and push the owned Git work");
   });
 
-  test("normalizes relative and WSL UNC forms of one authorized sibling claim", () => {
-    if (process.platform === "win32") return;
-    const coord = join(temp, "coord");
-    const sibling = join(temp, "sibling");
-    initRepo(coord);
-    writeFileSync(join(coord, "seed.txt"), "coord\n");
-    commitAll(coord, "coord");
-    initRepo(sibling);
-    writeFileSync(join(sibling, "owned.txt"), "base\n");
-    commitAll(sibling, "initial");
-    configureFinalizationRoots(coord, [{ path: relative(coord, sibling), disposition: "git" }]);
-    const uncPath = `\\\\wsl.localhost\\Ubuntu-22.04${join(sibling, "owned.txt").replaceAll("/", "\\")}`;
+  // The WSL UNC form only arises when Linux paths are seen from Windows tooling;
+  // this case asserts the Linux-side normalization, so it is skipped on Windows.
+  test.skipIf(process.platform === "win32")(
+    "normalizes relative and WSL UNC forms of one authorized sibling claim",
+    () => {
+      const coord = join(temp, "coord");
+      const sibling = join(temp, "sibling");
+      initRepo(coord);
+      writeFileSync(join(coord, "seed.txt"), "coord\n");
+      commitAll(coord, "coord");
+      initRepo(sibling);
+      writeFileSync(join(sibling, "owned.txt"), "base\n");
+      commitAll(sibling, "initial");
+      configureFinalizationRoots(coord, [{ path: relative(coord, sibling), disposition: "git" }]);
+      const uncPath = `\\\\wsl.localhost\\Ubuntu-22.04${join(sibling, "owned.txt").replaceAll("/", "\\")}`;
 
-    expect(classifyWriteClaimFinalization(coord, "../sibling/owned.txt")).toMatchObject({
-      allow: true,
-      path: "../sibling/owned.txt",
-      descriptor: { disposition: "git" },
-    });
-    expect(classifyWriteClaimFinalization(coord, uncPath)).toMatchObject({
-      allow: true,
-      path: "../sibling/owned.txt",
-      descriptor: { disposition: "git" },
-    });
-  });
+      expect(classifyWriteClaimFinalization(coord, "../sibling/owned.txt")).toMatchObject({
+        allow: true,
+        path: "../sibling/owned.txt",
+        descriptor: { disposition: "git" },
+      });
+      expect(classifyWriteClaimFinalization(coord, uncPath)).toMatchObject({
+        allow: true,
+        path: "../sibling/owned.txt",
+        descriptor: { disposition: "git" },
+      });
+    },
+  );
 });
 
 function configureFinalizationRoots(

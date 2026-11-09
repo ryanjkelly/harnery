@@ -39,57 +39,72 @@ import { clearRemediationCount, DEFAULT_STOP_REMEDIATION_CAP } from "./remediati
 const HARNERY_DIR = resolve(import.meta.dir, "../../..");
 const AGENT_HOOK = join(HARNERY_DIR, "bin", "agent-hook");
 const HARN = join(HARNERY_DIR, "bin", "harn");
+const ENTRY: Record<string, string> = {
+  [AGENT_HOOK]: join(HARNERY_DIR, "src", "core", "hooks", "cli.ts"),
+  [HARN]: join(HARNERY_DIR, "src", "cli.ts"),
+};
 const roots: string[] = [];
 
 // Each CLI scenario includes several processes and durable ledger transactions.
 // Use one integration hang guard, including the Stop remediation scenarios.
-setDefaultTimeout(15_000);
+// Windows process startup is several times slower, so its guards are wider.
+function windowsSlack(ms: number): number {
+  return process.platform === "win32" ? Math.max(ms * 4, 90_000) : ms;
+}
+setDefaultTimeout(windowsSlack(15_000));
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  // On Windows a detached maintenance worker still running with the root as
+  // its cwd blocks deletion (EBUSY) until it exits, so retry for up to 30s.
+  const retries = process.platform === "win32" ? { maxRetries: 120, retryDelay: 250 } : {};
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, ...retries });
 });
 
 describe("agent-hook V3 hard cut", () => {
-  test("queues heavy shell checks when the project configures an admission guard", () => {
-    for (const adapter of ["claude-code", "codex"] as const) {
-      const root = candidateRoot(adapter);
-      const session = `admission-${adapter}`;
-      const hook = (tool: string, input: Record<string, unknown>, id: string) =>
-        run(
-          AGENT_HOOK,
-          ["pre-tool-use", "--adapter", adapter],
-          {
-            session_id: session,
-            conversation_id: session,
-            thread_id: session,
-            cwd: root,
-            tool_name: tool,
-            tool_input: input,
-            tool_use_id: id,
-          },
-          root,
-          { HARNERY_BIN: "acme" },
+  // admissionHookOutput is defined to return null on win32 (a native shell is outside the guarded queue).
+  test.skipIf(process.platform === "win32")(
+    "queues heavy shell checks when the project configures an admission guard",
+    () => {
+      for (const adapter of ["claude-code", "codex"] as const) {
+        const root = candidateRoot(adapter);
+        const session = `admission-${adapter}`;
+        const hook = (tool: string, input: Record<string, unknown>, id: string) =>
+          run(
+            AGENT_HOOK,
+            ["pre-tool-use", "--adapter", adapter],
+            {
+              session_id: session,
+              conversation_id: session,
+              thread_id: session,
+              cwd: root,
+              tool_name: tool,
+              tool_input: input,
+              tool_use_id: id,
+            },
+            root,
+            { HARNERY_BIN: "acme" },
+          );
+        const unconfigured = hook("Bash", { command: "npx tsc --noEmit" }, `${adapter}-off`);
+        expect(unconfigured.stdout).not.toContain("updatedInput");
+        writeFileSync(
+          join(root, ".harnery", "config.jsonc"),
+          '{ "admission": { "guard": { "resource": "build" } } }',
         );
-      const unconfigured = hook("Bash", { command: "npx tsc --noEmit" }, `${adapter}-off`);
-      expect(unconfigured.stdout).not.toContain("updatedInput");
-      writeFileSync(
-        join(root, ".harnery", "config.jsonc"),
-        '{ "admission": { "guard": { "resource": "build" } } }',
-      );
-      const queued = hook("Bash", { command: "npx tsc --noEmit" }, `${adapter}-on`);
-      expect(queued.status).toBe(0);
-      const output = JSON.parse(queued.stdout).hookSpecificOutput;
-      expect(output.updatedInput.command).toBe(
-        `acme admission run --resource build --project-root ${root} --label 'agent: npx tsc --noEmit' -- npx tsc --noEmit`,
-      );
-      expect(output.permissionDecision).toBe(adapter === "codex" ? "allow" : undefined);
-      const light = hook("Bash", { command: "ls" }, `${adapter}-light`);
-      expect(light.stdout).not.toContain("updatedInput");
-      const plumbing = hook("Bash", { command: "git commit-tree $t -m x" }, `${adapter}-plumb`);
-      expect(JSON.parse(plumbing.stdout).hookSpecificOutput.permissionDecision).toBe("deny");
-      expect(plumbing.stdout).toContain("acme admission status");
-    }
-  });
+        const queued = hook("Bash", { command: "npx tsc --noEmit" }, `${adapter}-on`);
+        expect(queued.status).toBe(0);
+        const output = JSON.parse(queued.stdout).hookSpecificOutput;
+        expect(output.updatedInput.command).toBe(
+          `acme admission run --resource build --project-root ${root} --label 'agent: npx tsc --noEmit' -- npx tsc --noEmit`,
+        );
+        expect(output.permissionDecision).toBe(adapter === "codex" ? "allow" : undefined);
+        const light = hook("Bash", { command: "ls" }, `${adapter}-light`);
+        expect(light.stdout).not.toContain("updatedInput");
+        const plumbing = hook("Bash", { command: "git commit-tree $t -m x" }, `${adapter}-plumb`);
+        expect(JSON.parse(plumbing.stdout).hookSpecificOutput.permissionDecision).toBe("deny");
+        expect(plumbing.stdout).toContain("acme admission status");
+      }
+    },
+  );
 
   test("denies inline waiters through each shell adapter and permits immediate reads", () => {
     for (const adapter of ["claude-code", "cursor", "codex"] as const) {
@@ -141,31 +156,35 @@ describe("agent-hook V3 hard cut", () => {
     }
   });
 
-  test("session start returns before storage maintenance, which a worker still runs", async () => {
-    const root = candidateRoot();
-    const binDir = join(root, "probe-bin");
-    const probe = join(root, "janitor.log");
-    mkdirSync(binDir, { recursive: true });
-    writeFileSync(
-      join(binDir, "harn"),
-      '#!/bin/sh\ncase "$*" in *janitor*) sleep 4; printf "%s\\n" "$*" >> "$HARNERY_JANITOR_PROBE";; esac\n',
-      "utf8",
-    );
-    chmodSync(join(binDir, "harn"), 0o755);
-    const result = run(
-      AGENT_HOOK,
-      ["session-start", "--adapter", "claude-code"],
-      { session_id: "maintenance-detach-owner", cwd: root, source: "startup" },
-      root,
-      { HARNERY_BIN_DIR: binDir, HARNERY_JANITOR_PROBE: probe },
-    );
-    expect(result.status).toBe(0);
-    // A synchronous janitor would have written the probe before the hook exited.
-    expect(existsSync(probe)).toBeFalse();
-    const deadline = Date.now() + 20_000;
-    while (!existsSync(probe) && Date.now() < deadline) await Bun.sleep(100);
-    expect(readFileSync(probe, "utf8")).toContain("journal janitor --quiet");
-  }, 40_000);
+  test(
+    "session start returns before storage maintenance, which a worker still runs",
+    async () => {
+      const root = candidateRoot();
+      const binDir = join(root, "probe-bin");
+      const probe = join(root, "janitor.log");
+      mkdirSync(binDir, { recursive: true });
+      writeFakeCoordBin(
+        binDir,
+        "harn",
+        '#!/bin/sh\ncase "$*" in *janitor*) sleep 4; printf "%s\\n" "$*" >> "$HARNERY_JANITOR_PROBE";; esac\n',
+        'const args = process.argv.slice(2).join(" ");\nif (args.includes("janitor")) setTimeout(() => appendFileSync(process.env.HARNERY_JANITOR_PROBE, args + "\\n"), 4000);\n',
+      );
+      const result = run(
+        AGENT_HOOK,
+        ["session-start", "--adapter", "claude-code"],
+        { session_id: "maintenance-detach-owner", cwd: root, source: "startup" },
+        root,
+        { HARNERY_BIN_DIR: binDir, HARNERY_JANITOR_PROBE: probe },
+      );
+      expect(result.status).toBe(0);
+      // A synchronous janitor would have written the probe before the hook exited.
+      expect(existsSync(probe)).toBeFalse();
+      const deadline = Date.now() + 20_000;
+      while (!existsSync(probe) && Date.now() < deadline) await Bun.sleep(100);
+      expect(readFileSync(probe, "utf8")).toContain("journal janitor --quiet");
+    },
+    windowsSlack(40_000),
+  );
 
   test("runs coordination effects in-process without spawning agent-coord", () => {
     const root = candidateRoot();
@@ -173,12 +192,12 @@ describe("agent-hook V3 hard cut", () => {
     const binDir = join(root, "probe-bin");
     const probe = join(root, "agent-coord-spawns.log");
     mkdirSync(binDir, { recursive: true });
-    writeFileSync(
-      join(binDir, "agent-coord"),
+    writeFakeCoordBin(
+      binDir,
+      "agent-coord",
       '#!/bin/sh\nprintf "%s\\n" "$*" >> "$HARNERY_FANOUT_PROBE"\n',
-      "utf8",
+      'appendFileSync(process.env.HARNERY_FANOUT_PROBE, process.argv.slice(2).join(" ") + "\\n");\n',
     );
-    chmodSync(join(binDir, "agent-coord"), 0o755);
     const env = {
       HARNERY_BIN_DIR: binDir,
       HARNERY_FANOUT_PROBE: probe,
@@ -1488,137 +1507,143 @@ describe("agent-hook V3 hard cut", () => {
     });
   });
 
-  test("Stop rechecks an owned path changed after guarded status and permits later clean work", () => {
-    const root = candidateRoot();
-    const owner = `stop-git-owner-${randomUUID()}`;
-    const turnId = "owned-path-finalization-turn";
-    writeFileSync(
-      join(root, ".harnery", "config.jsonc"),
-      JSON.stringify({ agents: { requireGitFinalization: true } }),
-    );
-    const hook = (event: string, payload: Record<string, unknown> = {}) =>
-      run(
-        AGENT_HOOK,
-        [event, "--adapter", "claude-code"],
-        { session_id: owner, cwd: root, turn_id: turnId, ...payload },
-        root,
-      );
-    const coord = (args: string[]) =>
-      run(HARN, args, {}, root, { HARNERY_AGENT_COORD_SESSION_ID: owner });
-    const gitChecks = () =>
-      readFileSync(join(root, ".harnery", "logs", "agent-hook-debug", "active.jsonl"), "utf8")
-        .trim()
-        .split("\n")
-        .map((line) => (JSON.parse(line) as { fields?: Record<string, unknown> }).fields)
-        .filter((fields) => fields?.effect === "stop-git-finalization");
-
-    try {
-      expect(hook("session-start", { source: "startup" }).status).toBe(0);
-      expect(hook("user-prompt-submit", { prompt: "Verify the owned file" }).status).toBe(0);
-      expect(
-        hook("pre-tool-use", {
-          tool_name: "Bash",
-          tool_use_id: "set-task",
-          tool_input: { command: "harn agents set-task Verify owned file" },
-        }).status,
-      ).toBe(0);
-      const task = coord(["agents", "set-task", "Verify owned file", "--session-id", owner]);
-      expect(task.status).toBe(0);
-      const name = (JSON.parse(task.stdout) as { suggested_session_name: string })
-        .suggested_session_name;
-      const transcript = join(root, "owned-path-transcript.jsonl");
+  test(
+    "Stop rechecks an owned path changed after guarded status and permits later clean work",
+    () => {
+      const root = candidateRoot();
+      const owner = `stop-git-owner-${randomUUID()}`;
+      const turnId = "owned-path-finalization-turn";
       writeFileSync(
-        transcript,
-        `${[
-          {
-            type: "user",
-            message: { content: [{ type: "tool_result", content: task.stdout }] },
-          },
-          {
-            type: "assistant",
-            message: { content: [{ type: "text", text: `\`\`\`\n${name}\n\`\`\`` }] },
-          },
-        ]
-          .map((row) => JSON.stringify(row))
-          .join("\n")}\n`,
+        join(root, ".harnery", "config.jsonc"),
+        JSON.stringify({ agents: { requireGitFinalization: true } }),
       );
-      expect(
-        hook("post-tool-use", {
+      const hook = (event: string, payload: Record<string, unknown> = {}) =>
+        run(
+          AGENT_HOOK,
+          [event, "--adapter", "claude-code"],
+          { session_id: owner, cwd: root, turn_id: turnId, ...payload },
+          root,
+        );
+      const coord = (args: string[]) =>
+        run(HARN, args, {}, root, { HARNERY_AGENT_COORD_SESSION_ID: owner });
+      const gitChecks = () =>
+        readFileSync(join(root, ".harnery", "logs", "agent-hook-debug", "active.jsonl"), "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => (JSON.parse(line) as { fields?: Record<string, unknown> }).fields)
+          .filter((fields) => fields?.effect === "stop-git-finalization");
+
+      try {
+        expect(hook("session-start", { source: "startup" }).status).toBe(0);
+        expect(hook("user-prompt-submit", { prompt: "Verify the owned file" }).status).toBe(0);
+        expect(
+          hook("pre-tool-use", {
+            tool_name: "Bash",
+            tool_use_id: "set-task",
+            tool_input: { command: "harn agents set-task Verify owned file" },
+          }).status,
+        ).toBe(0);
+        const task = coord(["agents", "set-task", "Verify owned file", "--session-id", owner]);
+        expect(task.status).toBe(0);
+        const name = (JSON.parse(task.stdout) as { suggested_session_name: string })
+          .suggested_session_name;
+        const transcript = join(root, "owned-path-transcript.jsonl");
+        writeFileSync(
+          transcript,
+          `${[
+            {
+              type: "user",
+              message: { content: [{ type: "tool_result", content: task.stdout }] },
+            },
+            {
+              type: "assistant",
+              message: { content: [{ type: "text", text: `\`\`\`\n${name}\n\`\`\`` }] },
+            },
+          ]
+            .map((row) => JSON.stringify(row))
+            .join("\n")}\n`,
+        );
+        expect(
+          hook("post-tool-use", {
+            transcript_path: transcript,
+            tool_name: "Bash",
+            tool_use_id: "set-task",
+            tool_response: task.stdout,
+          }).status,
+        ).toBe(0);
+
+        const seed = join(root, "seed.txt");
+        const write = {
+          transcript_path: transcript,
+          tool_name: "Write",
+          tool_use_id: "claim-clean-seed",
+          tool_input: { file_path: seed, content: "seed\n" },
+        };
+        const allowedWrite = hook("pre-tool-use", write);
+        expect(allowedWrite.status).toBe(0);
+        expect(allowedWrite.stdout).not.toContain('"permissionDecision":"deny"');
+        writeFileSync(seed, "seed\n");
+        expect(hook("post-tool-use", { ...write, tool_response: "written" }).status).toBe(0);
+        expect(readLiveCoordinationRows(root)[0]?.files_touched).toContain("seed.txt");
+
+        const statusTool = {
           transcript_path: transcript,
           tool_name: "Bash",
-          tool_use_id: "set-task",
-          tool_response: task.stdout,
-        }).status,
-      ).toBe(0);
+          tool_use_id: "guarded-status",
+          tool_input: { command: "harn agents status --end-turn" },
+        };
+        expect(hook("pre-tool-use", statusTool).status).toBe(0);
+        const status = coord(["agents", "status", "--end-turn", "--session-id", owner]);
+        expect(status.status).toBe(0);
+        expect(status.stdout).toContain("┌─ agent-");
+        expect(hook("post-tool-use", { ...statusTool, tool_response: status.stdout }).status).toBe(
+          0,
+        );
+        const earlierBox = `\`\`\`\n${status.stdout.trim()}\n\`\`\``;
 
-      const seed = join(root, "seed.txt");
-      const write = {
-        transcript_path: transcript,
-        tool_name: "Write",
-        tool_use_id: "claim-clean-seed",
-        tool_input: { file_path: seed, content: "seed\n" },
-      };
-      const allowedWrite = hook("pre-tool-use", write);
-      expect(allowedWrite.status).toBe(0);
-      expect(allowedWrite.stdout).not.toContain('"permissionDecision":"deny"');
-      writeFileSync(seed, "seed\n");
-      expect(hook("post-tool-use", { ...write, tool_response: "written" }).status).toBe(0);
-      expect(readLiveCoordinationRows(root)[0]?.files_touched).toContain("seed.txt");
+        // No later tool event can invalidate the earlier witness; Stop must
+        // inspect the owned path itself to catch this intervening write.
+        writeFileSync(seed, "changed after closing status\n");
+        const dirtyStop = hook("stop", {
+          transcript_path: transcript,
+          last_assistant_message: earlierBox,
+          stop_hook_active: false,
+        });
+        expect(dirtyStop.status).toBe(2);
+        expect(dirtyStop.stderr).toContain("seed.txt");
+        expect(gitChecks().at(-1)).toMatchObject({
+          effect: "stop-git-finalization",
+          state: "observed",
+          ok: false,
+        });
 
-      const statusTool = {
-        transcript_path: transcript,
-        tool_name: "Bash",
-        tool_use_id: "guarded-status",
-        tool_input: { command: "harn agents status --end-turn" },
-      };
-      expect(hook("pre-tool-use", statusTool).status).toBe(0);
-      const status = coord(["agents", "status", "--end-turn", "--session-id", owner]);
-      expect(status.status).toBe(0);
-      expect(status.stdout).toContain("┌─ agent-");
-      expect(hook("post-tool-use", { ...statusTool, tool_response: status.stdout }).status).toBe(0);
-      const earlierBox = `\`\`\`\n${status.stdout.trim()}\n\`\`\``;
-
-      // No later tool event can invalidate the earlier witness; Stop must
-      // inspect the owned path itself to catch this intervening write.
-      writeFileSync(seed, "changed after closing status\n");
-      const dirtyStop = hook("stop", {
-        transcript_path: transcript,
-        last_assistant_message: earlierBox,
-        stop_hook_active: false,
-      });
-      expect(dirtyStop.status).toBe(2);
-      expect(dirtyStop.stderr).toContain("seed.txt");
-      expect(gitChecks().at(-1)).toMatchObject({
-        effect: "stop-git-finalization",
-        state: "observed",
-        ok: false,
-      });
-
-      writeFileSync(seed, "seed\n");
-      const read = {
-        transcript_path: transcript,
-        tool_name: "Read",
-        tool_use_id: "harmless-later-read",
-        tool_input: { file_path: seed },
-      };
-      expect(hook("pre-tool-use", read).status).toBe(0);
-      expect(hook("post-tool-use", { ...read, tool_response: "seed\n" }).status).toBe(0);
-      const cleanStop = hook("stop", {
-        transcript_path: transcript,
-        last_assistant_message: earlierBox,
-        stop_hook_active: true,
-      });
-      expect(cleanStop.stderr).toBe("");
-      expect(cleanStop.status).toBe(0);
-      expect(gitChecks().at(-1)).toMatchObject({
-        effect: "stop-git-finalization",
-        state: "observed",
-        ok: true,
-      });
-    } finally {
-      clearRemediationCount(owner);
-    }
-  }, 30_000);
+        writeFileSync(seed, "seed\n");
+        const read = {
+          transcript_path: transcript,
+          tool_name: "Read",
+          tool_use_id: "harmless-later-read",
+          tool_input: { file_path: seed },
+        };
+        expect(hook("pre-tool-use", read).status).toBe(0);
+        expect(hook("post-tool-use", { ...read, tool_response: "seed\n" }).status).toBe(0);
+        const cleanStop = hook("stop", {
+          transcript_path: transcript,
+          last_assistant_message: earlierBox,
+          stop_hook_active: true,
+        });
+        expect(cleanStop.stderr).toBe("");
+        expect(cleanStop.status).toBe(0);
+        expect(gitChecks().at(-1)).toMatchObject({
+          effect: "stop-git-finalization",
+          state: "observed",
+          ok: true,
+        });
+      } finally {
+        clearRemediationCount(owner);
+      }
+    },
+    windowsSlack(30_000),
+  );
 
   test("Claude Stop remediation accumulates recovered status and current assistant-box evidence", () => {
     const root = candidateRoot();
@@ -1824,164 +1849,168 @@ describe("agent-hook V3 hard cut", () => {
     );
   });
 
-  test("Claude name recovery supersedes a failed display across a resumed day boundary", () => {
-    const root = candidateRoot();
-    const owner = `name-recovery-${randomUUID()}`;
-    const turnId = "resumed-name-recovery";
-    const hook = (event: string, payload: Record<string, unknown>) =>
-      run(
-        AGENT_HOOK,
-        [event, "--adapter", "claude-code"],
-        {
-          session_id: owner,
-          cwd: root,
-          turn_id: turnId,
-          ...payload,
-        },
-        root,
-      );
-    const coord = (args: string[]) =>
-      run(HARN, [...args, "--session-id", owner], {}, root, {
-        HARNERY_AGENT_COORD_SESSION_ID: owner,
-      });
-    const transcript = join(root, "resumed-name.jsonl");
-    const rows: Record<string, unknown>[] = [];
-    const append = (row: Record<string, unknown>) => {
-      rows.push(row);
-      writeFileSync(transcript, `${rows.map((value) => JSON.stringify(value)).join("\n")}\n`);
-    };
-    try {
-      expect(hook("session-start", { source: "startup" }).status).toBe(0);
-      expect(hook("user-prompt-submit", { prompt: "complete the work" }).status).toBe(0);
-      const task = coord(["agents", "set-task", "Resume recovery"]);
-      expect(task.status).toBe(0);
-      const name = JSON.parse(task.stdout).suggested_session_name as string;
-      expect(name).toMatch(/^Agent /);
-      append({
-        type: "user",
-        timestamp: "2026-09-11T23:59:00Z",
-        message: {
-          content: [{ type: "tool_result", content: task.stdout }],
-        },
-      });
-      append({
-        type: "assistant",
-        timestamp: "2026-09-11T23:59:01Z",
-        message: {
-          content: [{ type: "text", text: "Working before displaying the name." }],
-        },
-      });
-      // Every hook/CLI invocation above and below runs in a separate process.
-      expect(hook("session-start", { source: "resume", transcript_path: transcript }).status).toBe(
-        0,
-      );
-      expect(hook("user-prompt-submit", { prompt: "continue after resume" }).status).toBe(0);
-      expect(coord(["agents", "set-task", "Resume recovery"]).status).toBe(0);
-      expect(
-        hook("pre-tool-use", {
+  test(
+    "Claude name recovery supersedes a failed display across a resumed day boundary",
+    () => {
+      const root = candidateRoot();
+      const owner = `name-recovery-${randomUUID()}`;
+      const turnId = "resumed-name-recovery";
+      const hook = (event: string, payload: Record<string, unknown>) =>
+        run(
+          AGENT_HOOK,
+          [event, "--adapter", "claude-code"],
+          {
+            session_id: owner,
+            cwd: root,
+            turn_id: turnId,
+            ...payload,
+          },
+          root,
+        );
+      const coord = (args: string[]) =>
+        run(HARN, [...args, "--session-id", owner], {}, root, {
+          HARNERY_AGENT_COORD_SESSION_ID: owner,
+        });
+      const transcript = join(root, "resumed-name.jsonl");
+      const rows: Record<string, unknown>[] = [];
+      const append = (row: Record<string, unknown>) => {
+        rows.push(row);
+        writeFileSync(transcript, `${rows.map((value) => JSON.stringify(value)).join("\n")}\n`);
+      };
+      try {
+        expect(hook("session-start", { source: "startup" }).status).toBe(0);
+        expect(hook("user-prompt-submit", { prompt: "complete the work" }).status).toBe(0);
+        const task = coord(["agents", "set-task", "Resume recovery"]);
+        expect(task.status).toBe(0);
+        const name = JSON.parse(task.stdout).suggested_session_name as string;
+        expect(name).toMatch(/^Agent /);
+        append({
+          type: "user",
+          timestamp: "2026-09-11T23:59:00Z",
+          message: {
+            content: [{ type: "tool_result", content: task.stdout }],
+          },
+        });
+        append({
+          type: "assistant",
+          timestamp: "2026-09-11T23:59:01Z",
+          message: {
+            content: [{ type: "text", text: "Working before displaying the name." }],
+          },
+        });
+        // Every hook/CLI invocation above and below runs in a separate process.
+        expect(
+          hook("session-start", { source: "resume", transcript_path: transcript }).status,
+        ).toBe(0);
+        expect(hook("user-prompt-submit", { prompt: "continue after resume" }).status).toBe(0);
+        expect(coord(["agents", "set-task", "Resume recovery"]).status).toBe(0);
+        expect(
+          hook("pre-tool-use", {
+            transcript_path: transcript,
+            tool_name: "Bash",
+            tool_use_id: "resume-status",
+            tool_input: { command: "harn agents status" },
+          }).status,
+        ).toBe(0);
+        const status = coord(["agents", "status"]);
+        expect(status.status).toBe(0);
+        expect(
+          hook("post-tool-use", {
+            transcript_path: transcript,
+            tool_name: "Bash",
+            tool_use_id: "resume-status",
+            tool_response: status.stdout,
+          }).status,
+        ).toBe(0);
+        const firstStop = hook("stop", {
           transcript_path: transcript,
-          tool_name: "Bash",
-          tool_use_id: "resume-status",
-          tool_input: { command: "harn agents status" },
-        }).status,
-      ).toBe(0);
-      const status = coord(["agents", "status"]);
-      expect(status.status).toBe(0);
-      expect(
-        hook("post-tool-use", {
-          transcript_path: transcript,
-          tool_name: "Bash",
-          tool_use_id: "resume-status",
-          tool_response: status.stdout,
-        }).status,
-      ).toBe(0);
-      const firstStop = hook("stop", {
-        transcript_path: transcript,
-        last_assistant_message: `\`\`\`\n${status.stdout.trim()}\n\`\`\``,
-        stop_hook_active: false,
-      });
-      expect(firstStop).toMatchObject({ status: 2 });
-      expect(firstStop.stderr).toContain("rule=stop-hook.session_name");
+          last_assistant_message: `\`\`\`\n${status.stdout.trim()}\n\`\`\``,
+          stop_hook_active: false,
+        });
+        expect(firstStop).toMatchObject({ status: 2 });
+        expect(firstStop.stderr).toContain("rule=stop-hook.session_name");
 
-      for (let block = 2; block <= DEFAULT_STOP_REMEDIATION_CAP; block += 1) {
-        const unchanged = hook("stop", {
+        for (let block = 2; block <= DEFAULT_STOP_REMEDIATION_CAP; block += 1) {
+          const unchanged = hook("stop", {
+            transcript_path: transcript,
+            last_assistant_message: `\`\`\`\n${status.stdout.trim()}\n\`\`\``,
+            stop_hook_active: true,
+          });
+          expect(unchanged.status).toBe(2);
+          expect(unchanged.stderr).toContain("rule=stop-hook.session_name");
+        }
+        const exhausted = hook("stop", {
           transcript_path: transcript,
           last_assistant_message: `\`\`\`\n${status.stdout.trim()}\n\`\`\``,
           stop_hook_active: true,
         });
-        expect(unchanged.status).toBe(2);
-        expect(unchanged.stderr).toContain("rule=stop-hook.session_name");
+        expect(exhausted.status).toBe(0);
+        expect(
+          readFileSync(join(root, ".harnery", "logs", "agent-hook-debug", "active.jsonl"), "utf8"),
+        ).toContain('"blocked_rule":"stop-hook.session_name"');
+
+        // Repeating the title late cannot repair the first post-mint reply.
+        append({
+          type: "assistant",
+          timestamp: "2026-09-12T00:00:01Z",
+          message: {
+            content: [{ type: "text", text: `\`\`\`\n${name}\n\`\`\`` }],
+          },
+        });
+        const stale = hook("pre-tool-use", {
+          transcript_path: transcript,
+          tool_name: "Read",
+          tool_use_id: "stale-name-read",
+          tool_input: { file_path: join(root, "seed.txt") },
+        });
+        expect(stale.stdout).toContain('"permissionDecision":"deny"');
+        expect(firstStop.stderr).toContain("agents suggest-name --json");
+
+        const retry = coord(["agents", "suggest-name", "--json"]);
+        expect(retry.status).toBe(0);
+        expect(JSON.parse(retry.stdout)).toMatchObject({
+          session_name_retry: true,
+          suggested_session_name: name,
+        });
+        append({
+          type: "user",
+          timestamp: "2026-09-12T00:00:02Z",
+          message: {
+            content: [{ type: "tool_result", content: retry.stdout }],
+          },
+        });
+        append({
+          type: "assistant",
+          timestamp: "2026-09-12T00:00:03Z",
+          message: {
+            content: [{ type: "text", text: `\`\`\`\n${name}\n\`\`\`` }],
+          },
+        });
+        const recovered = hook("pre-tool-use", {
+          transcript_path: transcript,
+          tool_name: "Read",
+          tool_use_id: "recovered-name-read",
+          tool_input: { file_path: join(root, "seed.txt") },
+        });
+        expect(recovered.status).toBe(0);
+        expect(recovered.stdout).not.toContain('"permissionDecision":"deny"');
+        expect(readLiveCoordinationRows(root)[0]?.session_name_seen_for).toBe(name);
+        const nextStop = hook("stop", {
+          transcript_path: transcript,
+          last_assistant_message: `\`\`\`\n${status.stdout.trim()}\n\`\`\``,
+          stop_hook_active: true,
+        });
+        expect(nextStop.status).toBe(0);
+        expect(nextStop.stderr).not.toContain("rule=stop-hook.session_name");
+        expect(JSON.parse(coord(["agents", "suggest-name", "--json"]).stdout)).toMatchObject({
+          session_name_retry: false,
+        });
+      } finally {
+        clearRemediationCount(owner);
       }
-      const exhausted = hook("stop", {
-        transcript_path: transcript,
-        last_assistant_message: `\`\`\`\n${status.stdout.trim()}\n\`\`\``,
-        stop_hook_active: true,
-      });
-      expect(exhausted.status).toBe(0);
-      expect(
-        readFileSync(join(root, ".harnery", "logs", "agent-hook-debug", "active.jsonl"), "utf8"),
-      ).toContain('"blocked_rule":"stop-hook.session_name"');
-
-      // Repeating the title late cannot repair the first post-mint reply.
-      append({
-        type: "assistant",
-        timestamp: "2026-09-12T00:00:01Z",
-        message: {
-          content: [{ type: "text", text: `\`\`\`\n${name}\n\`\`\`` }],
-        },
-      });
-      const stale = hook("pre-tool-use", {
-        transcript_path: transcript,
-        tool_name: "Read",
-        tool_use_id: "stale-name-read",
-        tool_input: { file_path: join(root, "seed.txt") },
-      });
-      expect(stale.stdout).toContain('"permissionDecision":"deny"');
-      expect(firstStop.stderr).toContain("agents suggest-name --json");
-
-      const retry = coord(["agents", "suggest-name", "--json"]);
-      expect(retry.status).toBe(0);
-      expect(JSON.parse(retry.stdout)).toMatchObject({
-        session_name_retry: true,
-        suggested_session_name: name,
-      });
-      append({
-        type: "user",
-        timestamp: "2026-09-12T00:00:02Z",
-        message: {
-          content: [{ type: "tool_result", content: retry.stdout }],
-        },
-      });
-      append({
-        type: "assistant",
-        timestamp: "2026-09-12T00:00:03Z",
-        message: {
-          content: [{ type: "text", text: `\`\`\`\n${name}\n\`\`\`` }],
-        },
-      });
-      const recovered = hook("pre-tool-use", {
-        transcript_path: transcript,
-        tool_name: "Read",
-        tool_use_id: "recovered-name-read",
-        tool_input: { file_path: join(root, "seed.txt") },
-      });
-      expect(recovered.status).toBe(0);
-      expect(recovered.stdout).not.toContain('"permissionDecision":"deny"');
-      expect(readLiveCoordinationRows(root)[0]?.session_name_seen_for).toBe(name);
-      const nextStop = hook("stop", {
-        transcript_path: transcript,
-        last_assistant_message: `\`\`\`\n${status.stdout.trim()}\n\`\`\``,
-        stop_hook_active: true,
-      });
-      expect(nextStop.status).toBe(0);
-      expect(nextStop.stderr).not.toContain("rule=stop-hook.session_name");
-      expect(JSON.parse(coord(["agents", "suggest-name", "--json"]).stdout)).toMatchObject({
-        session_name_retry: false,
-      });
-    } finally {
-      clearRemediationCount(owner);
-    }
-  }, 15_000);
+    },
+    windowsSlack(15_000),
+  );
 
   test("Claude accepted name survives a later-day resume in a fresh hook process", () => {
     const root = candidateRoot();
@@ -2033,76 +2062,80 @@ describe("agent-hook V3 hard cut", () => {
     expect(nextTool.stdout).not.toContain('"permissionDecision":"deny"');
   });
 
-  test("Claude Stop cap releases an unsatisfied cycle with a retained diagnostic", () => {
-    const root = candidateRoot();
-    const owner = `cap-owner-${randomUUID()}`;
-    const turnId = "unsatisfied-remediation-turn";
-    const hook = (event: string, payload: Record<string, unknown>) =>
-      run(AGENT_HOOK, [event, "--adapter", "claude-code"], payload, root);
+  test(
+    "Claude Stop cap releases an unsatisfied cycle with a retained diagnostic",
+    () => {
+      const root = candidateRoot();
+      const owner = `cap-owner-${randomUUID()}`;
+      const turnId = "unsatisfied-remediation-turn";
+      const hook = (event: string, payload: Record<string, unknown>) =>
+        run(AGENT_HOOK, [event, "--adapter", "claude-code"], payload, root);
 
-    try {
-      expect(
-        hook("session-start", { session_id: owner, cwd: root, source: "startup" }).status,
-      ).toBe(0);
-      expect(
-        hook("user-prompt-submit", {
-          session_id: owner,
-          cwd: root,
-          turn_id: turnId,
-          prompt: "never paste the required box",
-        }).status,
-      ).toBe(0);
+      try {
+        expect(
+          hook("session-start", { session_id: owner, cwd: root, source: "startup" }).status,
+        ).toBe(0);
+        expect(
+          hook("user-prompt-submit", {
+            session_id: owner,
+            cwd: root,
+            turn_id: turnId,
+            prompt: "never paste the required box",
+          }).status,
+        ).toBe(0);
 
-      for (let block = 1; block <= DEFAULT_STOP_REMEDIATION_CAP; block += 1) {
-        const denied = hook("stop", {
+        for (let block = 1; block <= DEFAULT_STOP_REMEDIATION_CAP; block += 1) {
+          const denied = hook("stop", {
+            session_id: owner,
+            cwd: root,
+            turn_id: turnId,
+            last_assistant_message: "Still no box.",
+            stop_hook_active: block > 1,
+          });
+          expect(denied.status).toBe(2);
+        }
+        const released = hook("stop", {
           session_id: owner,
           cwd: root,
           turn_id: turnId,
           last_assistant_message: "Still no box.",
-          stop_hook_active: block > 1,
+          stop_hook_active: true,
         });
-        expect(denied.status).toBe(2);
-      }
-      const released = hook("stop", {
-        session_id: owner,
-        cwd: root,
-        turn_id: turnId,
-        last_assistant_message: "Still no box.",
-        stop_hook_active: true,
-      });
-      expect(released.status).toBe(0);
+        expect(released.status).toBe(0);
 
-      const diagnostics = readFileSync(
-        join(root, ".harnery", "logs", "agent-hook-debug", "active.jsonl"),
-        "utf8",
-      )
-        .trim()
-        .split("\n")
-        .map((line) => JSON.parse(line) as Record<string, unknown>);
-      const exhausted = diagnostics
-        .reverse()
-        .find(
-          (record) =>
-            record.event === "agent_hook.diagnostic" &&
-            (record.fields as Record<string, unknown> | undefined)?.skipped ===
-              "stop-remediation-cap-exhausted",
+        const diagnostics = readFileSync(
+          join(root, ".harnery", "logs", "agent-hook-debug", "active.jsonl"),
+          "utf8",
+        )
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line) as Record<string, unknown>);
+        const exhausted = diagnostics
+          .reverse()
+          .find(
+            (record) =>
+              record.event === "agent_hook.diagnostic" &&
+              (record.fields as Record<string, unknown> | undefined)?.skipped ===
+                "stop-remediation-cap-exhausted",
+          );
+        expect(exhausted).toMatchObject({
+          event: "agent_hook.diagnostic",
+          fields: {
+            skipped: "stop-remediation-cap-exhausted",
+            blocked_rule: "stop-hook.rule_2_3",
+            blocked_count: DEFAULT_STOP_REMEDIATION_CAP + 1,
+            session_id: owner,
+          },
+        });
+        expect((exhausted?.fields as Record<string, unknown>)?.remediation_cycle_anchor).toMatch(
+          /^tid_/,
         );
-      expect(exhausted).toMatchObject({
-        event: "agent_hook.diagnostic",
-        fields: {
-          skipped: "stop-remediation-cap-exhausted",
-          blocked_rule: "stop-hook.rule_2_3",
-          blocked_count: DEFAULT_STOP_REMEDIATION_CAP + 1,
-          session_id: owner,
-        },
-      });
-      expect((exhausted?.fields as Record<string, unknown>)?.remediation_cycle_anchor).toMatch(
-        /^tid_/,
-      );
-    } finally {
-      clearRemediationCount(owner);
-    }
-  }, 15_000);
+      } finally {
+        clearRemediationCount(owner);
+      }
+    },
+    windowsSlack(15_000),
+  );
 
   test("stop hook completes an explicit end queued by its own open tool span", () => {
     const root = candidateRoot();
@@ -2350,6 +2383,21 @@ function candidateRoot(adapter: "claude-code" | "codex" | "cursor" = "claude-cod
   return root;
 }
 
+/**
+ * Stand in for a bundled coord binary under HARNERY_BIN_DIR. POSIX spawns the
+ * extensionless script; Windows spawns its `.mjs` sibling with the runtime
+ * (spawnCoordBinSync), so the same probe is written in both forms.
+ */
+function writeFakeCoordBin(dir: string, name: string, posix: string, js: string): void {
+  writeFileSync(join(dir, name), posix, "utf8");
+  chmodSync(join(dir, name), 0o755);
+  writeFileSync(
+    join(dir, `${name}.mjs`),
+    `import { appendFileSync } from "node:fs";\n${js}`,
+    "utf8",
+  );
+}
+
 function enablePromptContextProvider(root: string): void {
   writeFileSync(
     join(root, ".harnery", "config.jsonc"),
@@ -2404,12 +2452,19 @@ function run(
   ]) {
     delete env[key];
   }
-  const result = spawnSync("bash", [bin, ...args], {
-    input: Object.keys(payload).length > 0 ? JSON.stringify(payload) : "",
-    cwd: root,
-    encoding: "utf8",
-    env: { ...env, HARNERY_COORD_ROOT_OVERRIDE: root, ...extraEnv },
-  });
+  // Windows has no POSIX shell for the bin wrappers; run the TypeScript entry
+  // each wrapper execs, with this runtime.
+  const native = process.platform === "win32";
+  const result = spawnSync(
+    native ? process.execPath : "bash",
+    [native ? ENTRY[bin] : bin, ...args],
+    {
+      input: Object.keys(payload).length > 0 ? JSON.stringify(payload) : "",
+      cwd: root,
+      encoding: "utf8",
+      env: { ...env, HARNERY_COORD_ROOT_OVERRIDE: root, ...extraEnv },
+    },
+  );
   return { stdout: result.stdout ?? "", stderr: result.stderr ?? "", status: result.status };
 }
 

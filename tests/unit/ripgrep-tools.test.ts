@@ -1,13 +1,36 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  linkSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ripgrepAutoInstall } from "../../src/core/config.ts";
 import { findRg, hintOncePerDay, managedRgPath, toolsDir } from "../../src/lib/tools/ripgrep.ts";
 
-/** Plant a fake executable that answers `--version` with exit 0. */
+const win32 = process.platform === "win32";
+
+/**
+ * Plant a fake executable that answers `--version` with exit 0. Windows runs
+ * no shebang scripts, so there it is a link to (or copy of) this runtime's own
+ * binary, which also answers `--version` with exit 0; the path must end in
+ * `.exe` for Windows to spawn it.
+ */
 function plantFakeRg(path: string): void {
   mkdirSync(join(path, ".."), { recursive: true });
+  if (win32) {
+    try {
+      linkSync(process.execPath, path);
+    } catch {
+      copyFileSync(process.execPath, path);
+    }
+    return;
+  }
   writeFileSync(path, "#!/bin/sh\necho fake-ripgrep 0.0.0\n");
   chmodSync(path, 0o755);
 }
@@ -41,7 +64,7 @@ describe("ripgrep tools dir + resolution", () => {
   test("HARNERY_RG_PATH override wins over managed install", () => {
     process.env.XDG_DATA_HOME = join(tmp, "xdg");
     plantFakeRg(managedRgPath());
-    const override = join(tmp, "custom-rg");
+    const override = join(tmp, win32 ? "custom-rg.exe" : "custom-rg");
     plantFakeRg(override);
     process.env.HARNERY_RG_PATH = override;
     expect(findRg()).toBe(override);
@@ -52,7 +75,9 @@ describe("ripgrep tools dir + resolution", () => {
     expect(findRg()).toBeNull();
   });
 
-  test("managed install found before PATH probe", () => {
+  // Windows has no managed install (no pinned artifact), and the managed path
+  // has no `.exe`, so nothing planted there can be spawned.
+  test.skipIf(win32)("managed install found before PATH probe", () => {
     process.env.XDG_DATA_HOME = join(tmp, "xdg");
     plantFakeRg(managedRgPath());
     expect(findRg()).toBe(managedRgPath());

@@ -179,7 +179,8 @@ describe("the gitdir cross-check is a consistency assertion, not spoof detection
     renameSync(join(repo, ".git"), join(repo, ".gitdir-real"));
     writeFileSync(join(repo, ".git"), `gitdir: ${join(decoy, ".git")}\n`);
 
-    expect(git(repo, "rev-parse", "--git-dir")).toContain(join(decoy, ".git"));
+    // resolve() puts Git's forward-slash output in native form (identity on POSIX).
+    expect(resolve(repo, git(repo, "rev-parse", "--git-dir"))).toContain(join(decoy, ".git"));
 
     const probed = await probeShape({ requested_cwd: repo, writable_roots: [host] });
     expect(probed.supported).toBe(true);

@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { PNG } from "pngjs";
 import { type CritiqueProvider, type CritiqueTile, DEFAULT_CRITIQUE_RUBRIC } from "./critique.ts";
 import {
@@ -405,7 +405,7 @@ function makeFakeExec(config: FakeExecConfig): {
         return ok();
       }
       // Deterministic gate / interaction capture.
-      const contextId = outPrefix.split("/").pop() ?? "";
+      const contextId = basename(outPrefix);
       const delay = config.gateDelayMs?.[contextId];
       if (delay) await new Promise((resolveDelay) => setTimeout(resolveDelay, delay));
       const hardError = config.gateError?.[contextId];
@@ -2492,26 +2492,37 @@ describe("defaultQaRunExec timeout enforcement", () => {
     expect(elapsed).toBeLessThan(1_000 + QA_RUN_KILL_GRACE_MS + 10_000);
   }, 30_000);
 
-  test("a grandchild in the child's process group dies with the group", async () => {
-    const pidFile = join(outDir(), "grandchild.pid");
-    const res = await defaultQaRunExec(
-      ["bash", "-c", `trap '' TERM; (trap '' TERM; echo $BASHPID > ${pidFile}; sleep 60) & wait`],
-      { timeoutMs: 1_000, env: process.env },
-    );
-    expect(res.error).toContain("timed out");
-    const grandchildPid = Number(readFileSync(pidFile, "utf8").trim());
-    expect(Number.isInteger(grandchildPid)).toBe(true);
-    // The group SIGKILL is delivered before the exec promise settles; give
-    // the kernel a beat to reap, then prove the grandchild is gone.
-    await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
-    let alive = true;
-    try {
-      process.kill(grandchildPid, 0);
-    } catch {
-      alive = false;
-    }
-    expect(alive).toBe(false);
-  }, 30_000);
+  // Windows has no process groups to kill, and a bash pid there is not a Windows pid.
+  test.skipIf(process.platform === "win32")(
+    "a grandchild in the child's process group dies with the group",
+    async () => {
+      const pidFile = join(outDir(), "grandchild.pid");
+      // Hand the path over through the environment: spliced into the script,
+      // a path's backslashes or spaces would be reinterpreted by the shell.
+      const res = await defaultQaRunExec(
+        [
+          "bash",
+          "-c",
+          `trap '' TERM; (trap '' TERM; echo $BASHPID > "$QA_RUN_PID_FILE"; sleep 60) & wait`,
+        ],
+        { timeoutMs: 1_000, env: { ...process.env, QA_RUN_PID_FILE: pidFile } },
+      );
+      expect(res.error).toContain("timed out");
+      const grandchildPid = Number(readFileSync(pidFile, "utf8").trim());
+      expect(Number.isInteger(grandchildPid)).toBe(true);
+      // The group SIGKILL is delivered before the exec promise settles; give
+      // the kernel a beat to reap, then prove the grandchild is gone.
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
+      let alive = true;
+      try {
+        process.kill(grandchildPid, 0);
+      } catch {
+        alive = false;
+      }
+      expect(alive).toBe(false);
+    },
+    30_000,
+  );
 
   test("a child that exits 0 after the deadline still reports a timeout error", async () => {
     const res = await defaultQaRunExec(["bash", "-c", "trap 'exit 0' TERM; sleep 60"], {
@@ -2572,10 +2583,14 @@ describe("runQaMatrix run deadline", () => {
         contexts,
         checks: { deterministic: ["overflow"], interaction: [], visual: "full-page" },
       }),
-      critique: { outcome: "pass", delayMs: 120, concurrency: 2 },
+      // The deadline must land inside the judge, not in capture. Capture writes
+      // a review pack per context, which can take a few hundred ms on a slow
+      // filesystem (Windows), so leave it ample room; nine tiles at two
+      // concurrent 800ms calls still need far longer than the deadline.
+      critique: { outcome: "pass", delayMs: 800, concurrency: 2 },
     });
     const result = await runQaMatrix({
-      job: job({ policy: { run_deadline_ms: 150 } }),
+      job: job({ policy: { run_deadline_ms: 1_000 } }),
       outParent: outDir(),
       browseArgv: BROWSE_ARGV,
       exec: fake.exec,

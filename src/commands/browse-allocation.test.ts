@@ -35,9 +35,9 @@ test("failed gate still emits a plan; capture uses exact IDs and refuses source 
   let n = 0;
   const run = (args: string[]) =>
     spawnSync(
-      "bash",
+      process.execPath,
       [
-        resolve(import.meta.dir, "../../bin/harn"),
+        resolve(import.meta.dir, "../cli.ts"),
         "browse",
         ...base,
         "--out",

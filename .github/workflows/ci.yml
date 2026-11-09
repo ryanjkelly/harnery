@@ -67,6 +67,39 @@ jobs:
         run: bun run check:local integration
         if: github.event.pull_request.head.repo.full_name == github.repository || github.event_name == 'push'
 
+  windows:
+    name: Unit tests on Windows
+    runs-on: windows-latest
+    # The full partitioned suite takes about 25 minutes on Windows (each hook and
+    # CLI test starts a fresh Bun process, which is slower there).
+    timeout-minutes: 50
+    steps:
+      # Fixtures compare exact bytes; keep the checkout's LF line endings.
+      - name: Keep LF line endings
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v7
+
+      - name: Setup Node 24
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24.22.1"
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install Playwright Chromium
+        run: bun x playwright install chromium
+
+      # --keep-going reports every failing partition in one run.
+      - name: Unit tests
+        run: bun scripts/test.mjs --keep-going
+
   smoke:
     name: Published-package smoke test (Node ${{ matrix.node }})
     runs-on: ubuntu-latest

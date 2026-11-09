@@ -113,10 +113,23 @@ function jobsBase(): string {
   return dir;
 }
 
+// Windows has no /bin/true, /bin/false or sh; the runtime itself stands in.
+const WINDOWS = process.platform === "win32";
+const TRUE_ARGV = WINDOWS ? [process.execPath, "-e", "process.exit(0)"] : ["/bin/true"];
+const FALSE_ARGV = WINDOWS ? [process.execPath, "-e", "process.exit(1)"] : ["/bin/false"];
+const HELD_CHECK_ARGV = WINDOWS
+  ? [
+      process.execPath,
+      "-e",
+      'process.exit(process.env.HARNERY_ADMISSION_HELD === "cmd-test" ? 0 : 1)',
+    ]
+  : ["sh", "-c", 'test "$HARNERY_ADMISSION_HELD" = cmd-test'];
+
 /** A PID that is guaranteed not to be running: a reaped child's. */
 function deadPid(): number {
-  const pid = spawnSync("/bin/true").pid;
-  if (typeof pid !== "number") throw new Error("cannot obtain a reaped child pid");
+  const [command, ...args] = TRUE_ARGV as [string, ...string[]];
+  const pid = spawnSync(command, args).pid;
+  if (typeof pid !== "number" || pid <= 0) throw new Error("cannot obtain a reaped child pid");
   return pid;
 }
 
@@ -181,7 +194,7 @@ describe("admission run", () => {
     const { emit, errors } = captureEmit();
     process.exitCode = undefined;
     await buildProgram(emit).parseAsync(
-      ["admission", "run", "--resource", "cmd-test", "--", "/bin/true"],
+      ["admission", "run", "--resource", "cmd-test", "--", ...TRUE_ARGV],
       { from: "user" },
     );
     expect(errors).toEqual([]);
@@ -193,7 +206,7 @@ describe("admission run", () => {
     const { emit } = captureEmit();
     process.exitCode = undefined;
     await buildProgram(emit).parseAsync(
-      ["admission", "run", "--resource", "cmd-test", "--", "/bin/false"],
+      ["admission", "run", "--resource", "cmd-test", "--", ...FALSE_ARGV],
       { from: "user" },
     );
     expect(process.exitCode ?? 0).toBe(1);
@@ -205,16 +218,7 @@ describe("admission run passthrough", () => {
     fixtureBaseDir();
     process.exitCode = undefined;
     await buildProgram(captureEmit().emit).parseAsync(
-      [
-        "admission",
-        "run",
-        "--resource",
-        "cmd-test",
-        "--",
-        "sh",
-        "-c",
-        'test "$HARNERY_ADMISSION_HELD" = cmd-test',
-      ],
+      ["admission", "run", "--resource", "cmd-test", "--", ...HELD_CHECK_ARGV],
       { from: "user" },
     );
     expect(process.exitCode ?? 0).toBe(0);
@@ -231,7 +235,7 @@ describe("admission run passthrough", () => {
       try {
         process.exitCode = undefined;
         await buildProgram(captureEmit().emit).parseAsync(
-          ["admission", "run", "--resource", "cmd-test", "--", "/bin/false"],
+          ["admission", "run", "--resource", "cmd-test", "--", ...FALSE_ARGV],
           { from: "user" },
         );
         expect(process.exitCode as number | undefined).toBe(1);
@@ -252,7 +256,7 @@ describe("admission history", () => {
     fixtureBaseDir();
     process.exitCode = undefined;
     await buildProgram(captureEmit().emit).parseAsync(
-      ["admission", "run", "--resource", "cmd-test", "--label", "check one", "--", "/bin/false"],
+      ["admission", "run", "--resource", "cmd-test", "--label", "check one", "--", ...FALSE_ARGV],
       { from: "user" },
     );
     process.exitCode = undefined;
@@ -304,7 +308,7 @@ describe("admission run --detach", () => {
         "--label",
         "detached smoke",
         "--",
-        "/bin/true",
+        ...TRUE_ARGV,
       ],
       { from: "user" },
     );
@@ -320,7 +324,7 @@ describe("admission run --detach", () => {
     const document = JSON.parse(
       readFileSync(join(envelope.job_dir, DURABLE_JOB_DOCUMENT_FILENAME), "utf8"),
     ) as DurableJobDocument;
-    expect(document.argv).toEqual(["/bin/true"]);
+    expect(document.argv).toEqual(TRUE_ARGV);
     expect(document.resource).toBe("cmd-test");
     expect(document.label).toBe("detached smoke");
     expect(readJobStatus(envelope.job_dir)?.state).toBe("launching");
@@ -338,7 +342,7 @@ describe("admission supervise", () => {
       resource: "cmd-test",
       capacity: 1,
       label: "supervised /bin/false",
-      argv: ["/bin/false"],
+      argv: FALSE_ARGV,
       cwd: tmpdir(),
       created_at: new Date().toISOString(),
     });
@@ -371,7 +375,7 @@ describe("admission supervise: held resource and pressure setting", () => {
       resource: "cmd-test",
       capacity: 1,
       label: "held check",
-      argv: ["sh", "-c", 'test "$HARNERY_ADMISSION_HELD" = cmd-test'],
+      argv: HELD_CHECK_ARGV,
       cwd: tmpdir(),
       created_at: new Date().toISOString(),
       // A threshold no machine exceeds, so the run never actually defers.

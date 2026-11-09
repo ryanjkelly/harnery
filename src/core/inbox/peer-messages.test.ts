@@ -195,11 +195,13 @@ test("one operation preserves child bytes, marks only the direct parent, and ret
   expect(peerInbox(root).pending("other-parent")).toHaveLength(0);
   expect(spy).toHaveBeenCalledTimes(1);
   const directory = join(root, ".harnery/peer-operations");
-  expect(statSync(directory).mode & 0o777).toBe(0o700);
-  expect(
-    statSync(join(directory, readdirSync(directory).find((p) => p.endsWith(".jsonl"))!)).mode &
-      0o777,
-  ).toBe(0o600);
+  const receipt = readdirSync(directory).find((p) => p.endsWith(".jsonl"));
+  expect(receipt).toBeDefined();
+  // Windows has no POSIX permission bits; stat reports 0o666 for any writable entry.
+  if (process.platform !== "win32") {
+    expect(statSync(directory).mode & 0o777).toBe(0o700);
+    expect(statSync(join(directory, receipt!)).mode & 0o777).toBe(0o600);
+  }
 });
 
 test("child capacity failure still delivers safe parent and cannot become overall success", () => {
@@ -489,7 +491,9 @@ test("instance histories remain private and expose IDs and exact reply binding",
   const root = fixture();
   send(root, "private task body");
   const path = inboxPath(root, "original-instance");
-  expect(statSync(path).mode & 0o777).toBe(0o600);
+  expect(existsSync(path)).toBe(true);
+  // Windows has no POSIX permission bits; stat reports 0o666 for any writable file.
+  if (process.platform !== "win32") expect(statSync(path).mode & 0o777).toBe(0o600);
   const rendered = formatPeerInbox(root, peerInbox(root).prepareSurface("original-instance"));
   expect(rendered).toContain("msg_");
   expect(rendered).toContain("--instance-id sender-instance");

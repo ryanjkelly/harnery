@@ -38,7 +38,9 @@ describe("tokens --format", () => {
     const out = await run("--format", "plain", small, join(dir, "missing.md"));
     expect(out.data).toEqual([]);
     const lines = out.text.join("\n").split("\n");
-    expect(lines[0]).toMatch(new RegExp(`^\\d+\\t${small}$`));
+    // Escape the path: a Windows separator would otherwise read as a regex escape.
+    const smallPattern = small.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    expect(lines[0]).toMatch(new RegExp(`^\\d+\\t${smallPattern}$`));
     expect(lines[1]).toStartWith(`error\t${join(dir, "missing.md")}\t`);
   });
 

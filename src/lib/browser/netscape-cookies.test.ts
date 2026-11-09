@@ -31,12 +31,23 @@ describe("Netscape cookie export", () => {
     );
   });
 
-  test("writes credential-bearing output with owner-only permissions", () => {
+  function writeFixture(): string {
     const dir = mkdtempSync(join(tmpdir(), "harn-cookies-"));
     tempDirs.push(dir);
     const path = join(dir, "nested", "cookies.txt");
     writeNetscapeCookieFile(path, [cookie]);
-    expect(statSync(path).mode & 0o777).toBe(0o600);
-    expect(readFileSync(path, "utf8")).toContain("SID\tsecret-value");
+    return path;
+  }
+
+  test("writes the cookie file into a new nested directory", () => {
+    expect(readFileSync(writeFixture(), "utf8")).toContain("SID\tsecret-value");
   });
+
+  // Windows has no POSIX mode bits to check, so this is skipped there, not passed.
+  test.skipIf(process.platform === "win32")(
+    "writes credential-bearing output with owner-only permissions",
+    () => {
+      expect(statSync(writeFixture()).mode & 0o777).toBe(0o600);
+    },
+  );
 });

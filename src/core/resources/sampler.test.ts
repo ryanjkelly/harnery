@@ -6,6 +6,10 @@ import { parseLinuxProcessStat, redactCommand, sampleResources } from "./sampler
 
 const roots: string[] = [];
 
+// These tests feed a fixture procfs, which only the Linux sampler reads; darwin and
+// win32 sample natively (native.ts) and ignore procRoot.
+const procfsTest = test.skipIf(process.platform !== "linux");
+
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -46,7 +50,7 @@ describe("resource sampler", () => {
     expect(command).toContain("https://<redacted>@example.test/path");
   });
 
-  test("computes machine and process CPU from consecutive samples", () => {
+  procfsTest("computes machine and process CPU from consecutive samples", () => {
     const root = mkdtempSync(join(tmpdir(), "harnery-resources-"));
     roots.push(root);
     const procRoot = join(root, "proc");
@@ -77,7 +81,7 @@ describe("resource sampler", () => {
     expect(second.snapshot.processes[0]?.rss_bytes).toBe(40_960);
   });
 
-  test("carries kernel reclaim rates onto the snapshot", () => {
+  procfsTest("carries kernel reclaim rates onto the snapshot", () => {
     const root = mkdtempSync(join(tmpdir(), "harnery-resources-vmstat-"));
     roots.push(root);
     const procRoot = join(root, "proc");
@@ -110,7 +114,7 @@ describe("resource sampler", () => {
     });
   });
 
-  test("attributes descendants to the nearest live service anchor", () => {
+  procfsTest("attributes descendants to the nearest live service anchor", () => {
     const root = mkdtempSync(join(tmpdir(), "harnery-resources-service-"));
     roots.push(root);
     const procRoot = join(root, "proc");
@@ -147,7 +151,7 @@ describe("resource sampler", () => {
     ]);
   });
 
-  test("attributes a Codex WSL process tree from exact live session identity", () => {
+  procfsTest("attributes a Codex WSL process tree from exact live session identity", () => {
     const root = mkdtempSync(join(tmpdir(), "harnery-resources-codex-wsl-"));
     roots.push(root);
     const procRoot = join(root, "proc");
@@ -210,64 +214,67 @@ describe("resource sampler", () => {
     );
   });
 
-  test("rejects incomplete, mismatched, delegated, stale, and ambiguous bridge identity", () => {
-    const cases = [
-      {
-        name: "missing bridge marker",
-        environment: codexWslEnvironment("session-1").filter(
-          (entry) => !entry.startsWith("HARNERY_AGENT_COORD_BRIDGE="),
-        ),
-        owners: [liveCodexOwner()],
-      },
-      {
-        name: "mismatched native session",
-        environment: codexWslEnvironment("session-1", "session-2"),
-        owners: [liveCodexOwner()],
-      },
-      {
-        name: "delegated-only session",
-        environment: codexWslEnvironment("session-1"),
-        owners: [{ ...liveCodexOwner(), kind: "subagent" }],
-      },
-      {
-        name: "stale session",
-        environment: codexWslEnvironment("session-1"),
-        owners: [],
-      },
-      {
-        name: "ambiguous session",
-        environment: codexWslEnvironment("session-1"),
-        owners: [liveCodexOwner(), { ...liveCodexOwner(), instanceId: "agent-2" }],
-      },
-    ];
+  procfsTest(
+    "rejects incomplete, mismatched, delegated, stale, and ambiguous bridge identity",
+    () => {
+      const cases = [
+        {
+          name: "missing bridge marker",
+          environment: codexWslEnvironment("session-1").filter(
+            (entry) => !entry.startsWith("HARNERY_AGENT_COORD_BRIDGE="),
+          ),
+          owners: [liveCodexOwner()],
+        },
+        {
+          name: "mismatched native session",
+          environment: codexWslEnvironment("session-1", "session-2"),
+          owners: [liveCodexOwner()],
+        },
+        {
+          name: "delegated-only session",
+          environment: codexWslEnvironment("session-1"),
+          owners: [{ ...liveCodexOwner(), kind: "subagent" }],
+        },
+        {
+          name: "stale session",
+          environment: codexWslEnvironment("session-1"),
+          owners: [],
+        },
+        {
+          name: "ambiguous session",
+          environment: codexWslEnvironment("session-1"),
+          owners: [liveCodexOwner(), { ...liveCodexOwner(), instanceId: "agent-2" }],
+        },
+      ];
 
-    for (const fixture of cases) {
-      const root = mkdtempSync(join(tmpdir(), "harnery-resources-rejected-"));
-      roots.push(root);
-      const procRoot = join(root, "proc");
-      mkdirSync(procRoot, { recursive: true });
-      writeSystemFiles(procRoot, { total: 1_000, idle: 500 });
-      writeProcess(procRoot, {
-        pid: 200,
-        ppid: 1,
-        startTicks: 100,
-        processTicks: 20,
-        environment: fixture.environment,
-      });
-      const result = sampleResources(root, undefined, {
-        procRoot,
-        nowMs: 1_000,
-        clockTicks: 100,
-        pageSize: 4_096,
-        sessionOwners: fixture.owners,
-        unattributedRssFloor: 0,
-      });
-      expect(result.snapshot.processes[0]?.owner_kind, fixture.name).toBe("unattributed");
-      expect(result.snapshot.processes[0]?.owner_source, fixture.name).toBeUndefined();
-    }
-  });
+      for (const fixture of cases) {
+        const root = mkdtempSync(join(tmpdir(), "harnery-resources-rejected-"));
+        roots.push(root);
+        const procRoot = join(root, "proc");
+        mkdirSync(procRoot, { recursive: true });
+        writeSystemFiles(procRoot, { total: 1_000, idle: 500 });
+        writeProcess(procRoot, {
+          pid: 200,
+          ppid: 1,
+          startTicks: 100,
+          processTicks: 20,
+          environment: fixture.environment,
+        });
+        const result = sampleResources(root, undefined, {
+          procRoot,
+          nowMs: 1_000,
+          clockTicks: 100,
+          pageSize: 4_096,
+          sessionOwners: fixture.owners,
+          unattributedRssFloor: 0,
+        });
+        expect(result.snapshot.processes[0]?.owner_kind, fixture.name).toBe("unattributed");
+        expect(result.snapshot.processes[0]?.owner_source, fixture.name).toBeUndefined();
+      }
+    },
+  );
 
-  test("revalidates cached bridge proof against current live coordination", () => {
+  procfsTest("revalidates cached bridge proof against current live coordination", () => {
     const root = mkdtempSync(join(tmpdir(), "harnery-resources-cached-owner-"));
     roots.push(root);
     const procRoot = join(root, "proc");

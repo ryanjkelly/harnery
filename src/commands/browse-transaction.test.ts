@@ -21,9 +21,9 @@ test("real capture repeats gates on its fresh page and rejects mutation and insu
   const run = (args: string[]) => {
     const prefix = join(dir, `visit-${visit++}`);
     const result = spawnSync(
-      "bash",
+      process.execPath,
       [
-        resolve(import.meta.dir, "../../bin/harn"),
+        resolve(import.meta.dir, "../cli.ts"),
         "browse",
         pathToFileURL(file).href,
         "--json",
@@ -127,9 +127,9 @@ test("a lazy image changing the document bottom retries full gates and native co
   );
   const run = (name: string, args: string[]) =>
     spawnSync(
-      "bash",
+      process.execPath,
       [
-        resolve(import.meta.dir, "../../bin/harn"),
+        resolve(import.meta.dir, "../cli.ts"),
         "browse",
         pathToFileURL(file).href,
         "--json",

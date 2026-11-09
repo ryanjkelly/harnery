@@ -7,6 +7,20 @@ import { CookieJar } from "../cookies/index.ts";
 import { PaceGate, pacePolicyFromEnv } from "../pace/index.ts";
 import { Browser } from "./client.ts";
 
+// Windows can keep the closed Chrome profile busy for a moment after close.
+async function removeDir(dir: string): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (attempt >= 40 || (code !== "EBUSY" && code !== "EPERM")) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
+}
+
 test("a cookie guard stops the session when a response swaps a cookie, and nothing is saved", async () => {
   const dir = mkdtempSync(join(tmpdir(), "harnery-cookie-guard-"));
   const arrivals: string[] = [];
@@ -62,7 +76,7 @@ test("a cookie guard stops the session when a response swaps a cookie, and nothi
   } finally {
     await browser.close();
     await new Promise((resolve) => server.close(resolve));
-    rmSync(dir, { recursive: true, force: true });
+    await removeDir(dir);
   }
 }, 60_000);
 
@@ -97,6 +111,6 @@ test("a cookie guard that never throws leaves the session and the jar alone", as
   } finally {
     await browser.close();
     await new Promise((resolve) => server.close(resolve));
-    rmSync(dir, { recursive: true, force: true });
+    await removeDir(dir);
   }
 }, 60_000);

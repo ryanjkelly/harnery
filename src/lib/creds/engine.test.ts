@@ -9,7 +9,7 @@ import {
   utimesSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { OpClient } from "../op/client.ts";
 import { CredsTargetError, createCredsEngine, OpMissingError } from "./engine.ts";
@@ -123,7 +123,7 @@ describe("fileReady", () => {
   test("resolves repository and home-relative paths", () => {
     const e = engine([]);
     expect(e.filePath({ path: "x.env", repo: "sub" })).toBe(join(sub, "x.env"));
-    expect(e.filePath({ path: "~/.ssh/key" })).toBe(join(process.env.HOME ?? "", ".ssh/key"));
+    expect(e.filePath({ path: "~/.ssh/key" })).toBe(join(homedir(), ".ssh", "key"));
     expect(() => e.filePath({ path: "x", repo: "nope" })).toThrow('unknown repository "nope"');
   });
 });

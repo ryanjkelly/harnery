@@ -206,8 +206,12 @@ describe("diagnostic summary gate", () => {
     const v3Dir = join(root, ".harnery", "ledgers", "v3");
     rmSync(diagnosticSummariesRootV3(root), { recursive: true, force: true });
     // Freeze the v3 directory so the summaries subtree cannot be created;
-    // the loose spool directory itself stays writable.
-    chmodSync(v3Dir, 0o500);
+    // the loose spool directory itself stays writable. Windows ignores
+    // directory permission bits, so there a plain file squats on the
+    // summaries path instead.
+    const freeze = process.platform !== "win32";
+    if (freeze) chmodSync(v3Dir, 0o500);
+    else writeFileSync(diagnosticSummariesRootV3(root), "");
     try {
       const path = writeProducerDiagnosticV3(root, "fail_open", {
         reason: "r",
@@ -218,7 +222,7 @@ describe("diagnostic summary gate", () => {
       expect(path).toContain("diagnostics");
       expect(looseFiles(root, "fail_open")).toHaveLength(DIAGNOSTIC_LOOSE_EXEMPLAR_LIMIT + 1);
     } finally {
-      chmodSync(v3Dir, 0o700);
+      if (freeze) chmodSync(v3Dir, 0o700);
     }
   });
 

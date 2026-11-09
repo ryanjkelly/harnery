@@ -21,6 +21,17 @@ import {
  */
 
 const hasRg = spawnSync("rg", ["--version"], { stdio: "ignore" }).status === 0;
+const hasGrep = spawnSync("grep", ["--version"], { stdio: "ignore" }).status === 0;
+const win32 = process.platform === "win32";
+
+// The GNU grep engine needs a `grep` binary; native Windows has none unless Git
+// for Windows' usr/bin is on PATH. Linux and macOS always have one.
+const testWithGrep = test.skipIf(!hasGrep);
+// The files-mode fallback is POSIX `find`; on Windows `find` is FIND.exe, so
+// grep.ts refuses that fallback there and only rg serves --files.
+const testWithFind = test.skipIf(!hasGrep || win32);
+// A spawned CLI picks its own engine, and on Windows it needs rg or grep.
+const testWithEngine = test.skipIf(!hasGrep && !hasRg);
 
 function supportsUnreadableFixture(): boolean {
   if (typeof process.getuid === "function" && process.getuid() === 0) return false;
@@ -39,6 +50,12 @@ function supportsUnreadableFixture(): boolean {
 const canTestUnreadableFiles = supportsUnreadableFixture();
 
 let fixtureRoot: string;
+
+/** A result path relative to the fixture root, with `/` separators on every OS. */
+function fromRoot(file: string): string {
+  const posix = (p: string) => p.replaceAll("\\", "/");
+  return posix(file).replace(`${posix(fixtureRoot)}/`, "");
+}
 
 /** Strip the run-specific fields so envelopes can be deep-compared across engines. */
 function comparable(r: GrepResult): Omit<GrepResult, "engine" | "elapsed_ms"> {
@@ -104,7 +121,8 @@ beforeAll(() => {
 
   // NUL-framing fixtures: paths that break punctuation-based parsers.
   write("framing/note-2-draft.md", "quark here\n");
-  write("framing/odd:colon.txt", "quark line\n");
+  // NTFS forbids ":" in a name (Windows would write an alternate data stream).
+  if (!win32) write("framing/odd:colon.txt", "quark line\n");
   write("framing/with space.txt", "quark spaced\n");
 
   // Context fixtures. ctx/main.txt: matches on lines 1 and 5 of 8.
@@ -138,10 +156,10 @@ afterAll(() => {
 });
 
 describe("grep engine parity", () => {
-  test("explicit path search finds expected files only", async () => {
+  testWithGrep("explicit path search finds expected files only", async () => {
     const r = await bothEngines("needle", [fixtureRoot], {});
     const files = new Set(r.repos.flatMap((repo) => repo.matches.map((m) => m.file)));
-    const names = [...files].map((f) => f.replace(`${fixtureRoot}/`, ""));
+    const names = [...files].map((f) => fromRoot(f));
     expect(names).toContain("alpha.ts");
     expect(names).toContain("beta.md");
     expect(names).toContain(".dotconf/hidden.ts");
@@ -149,15 +167,17 @@ describe("grep engine parity", () => {
     expect(names).not.toContain("node_modules/dep/index.js");
   });
 
-  test("matches are sorted by (file, line) for stable cross-engine output", async () => {
+  testWithGrep("matches are sorted by (file, line) for stable cross-engine output", async () => {
     const r = await bothEngines("needle", [fixtureRoot], {});
     const flat = r.repos.flatMap((repo) => repo.matches.map((m) => `${m.file}:${m.line}`));
     const sorted = [...flat].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
     // Same file ordering; within-file line order preserved numerically.
-    expect(flat.map((f) => f.split(":")[0])).toEqual(sorted.map((f) => f.split(":")[0]));
+    // Split at the LAST colon: a Windows path carries a drive colon.
+    const fileOf = (row: string) => row.slice(0, row.lastIndexOf(":"));
+    expect(flat.map(fileOf)).toEqual(sorted.map(fileOf));
   });
 
-  test("-l files-only mode", async () => {
+  testWithGrep("-l files-only mode", async () => {
     const r = await bothEngines("needle", [fixtureRoot], { filesOnly: true });
     for (const repo of r.repos) {
       for (const m of repo.matches) {
@@ -168,7 +188,7 @@ describe("grep engine parity", () => {
     expect(r.total_matches).toBeGreaterThan(0);
   });
 
-  test("-c count mode filters zero-count rows on both engines", async () => {
+  testWithGrep("-c count mode filters zero-count rows on both engines", async () => {
     const r = await bothEngines("needle", [fixtureRoot], { count: true });
     for (const repo of r.repos) {
       for (const m of repo.matches) expect(m.line).toBeGreaterThan(0);
@@ -178,7 +198,7 @@ describe("grep engine parity", () => {
     expect(files.some((f) => f.endsWith("clean.txt"))).toBe(false);
   });
 
-  test("case-insensitive + whole-word + literal flags", async () => {
+  testWithGrep("case-insensitive + whole-word + literal flags", async () => {
     const r = await bothEngines("NEEDLE", [fixtureRoot], {
       ignoreCase: true,
       wholeWord: true,
@@ -193,7 +213,7 @@ describe("grep engine parity", () => {
     expect(alphaMatches.every((m) => m.line === 1)).toBe(true);
   });
 
-  test("--include glob narrows to one extension", async () => {
+  testWithGrep("--include glob narrows to one extension", async () => {
     const r = await bothEngines("needle", [fixtureRoot], { include: ["*.md"] });
     const files = r.repos.flatMap((repo) => repo.matches.map((m) => m.file));
     expect(files.length).toBeGreaterThan(0);
@@ -203,7 +223,7 @@ describe("grep engine parity", () => {
     expect(files.some((f) => f.includes("node_modules"))).toBe(false);
   });
 
-  test("--limit truncates and flags the envelope", async () => {
+  testWithGrep("--limit truncates and flags the envelope", async () => {
     // Pages are cut from one sorted order, so both engines select the SAME rows.
     const r = await bothEngines("needle", [fixtureRoot], { limit: "2" });
     expect(r.total_matches).toBe(2);
@@ -211,42 +231,48 @@ describe("grep engine parity", () => {
     expect(r.next_page).toBe(2);
   });
 
-  test("no matches is normal (exit 1), not an error", async () => {
+  testWithGrep("no matches is normal (exit 1), not an error", async () => {
     const r = await bothEngines("definitely-not-present-zzz", [fixtureRoot], {});
     expect(r.total_matches).toBe(0);
     expect(r.truncated).toBe(false);
   });
 
-  test("host grepExcludeDirs hides mirror dirs; --no-default-excludes restores them", async () => {
-    const context = { grepExcludeDirs: [".mirror-data"] };
-    const r = await bothEngines("needle", [fixtureRoot], {}, context);
-    const files = r.repos.flatMap((repo) => repo.matches.map((m) => m.file));
-    expect(files.some((f) => f.includes(".mirror-data"))).toBe(false);
+  testWithGrep(
+    "host grepExcludeDirs hides mirror dirs; --no-default-excludes restores them",
+    async () => {
+      const context = { grepExcludeDirs: [".mirror-data"] };
+      const r = await bothEngines("needle", [fixtureRoot], {}, context);
+      const files = r.repos.flatMap((repo) => repo.matches.map((m) => m.file));
+      expect(files.some((f) => f.includes(".mirror-data"))).toBe(false);
 
-    const rAll = await bothEngines("needle", [fixtureRoot], { noDefaultExcludes: true }, context);
-    const allFiles = rAll.repos.flatMap((repo) => repo.matches.map((m) => m.file));
-    expect(allFiles.some((f) => f.includes(".mirror-data"))).toBe(true);
-    expect(allFiles.some((f) => f.includes("node_modules"))).toBe(true);
-  });
+      const rAll = await bothEngines("needle", [fixtureRoot], { noDefaultExcludes: true }, context);
+      const allFiles = rAll.repos.flatMap((repo) => repo.matches.map((m) => m.file));
+      expect(allFiles.some((f) => f.includes(".mirror-data"))).toBe(true);
+      expect(allFiles.some((f) => f.includes("node_modules"))).toBe(true);
+    },
+  );
 
-  test("--all-repos prunes submodule dirs from the parent scan (no double-reporting)", async () => {
-    const context = { repoRoot: fixtureRoot, submodules: ["subrepo"] };
-    const r = await bothEngines("needle", [], { allRepos: true }, context);
+  testWithGrep(
+    "--all-repos prunes submodule dirs from the parent scan (no double-reporting)",
+    async () => {
+      const context = { repoRoot: fixtureRoot, submodules: ["subrepo"] };
+      const r = await bothEngines("needle", [], { allRepos: true }, context);
 
-    const parent = r.repos.find((repo) => repo.name === "parent");
-    const sub = r.repos.find((repo) => repo.name === "subrepo");
-    expect(parent).toBeDefined();
-    expect(sub).toBeDefined();
+      const parent = r.repos.find((repo) => repo.name === "parent");
+      const sub = r.repos.find((repo) => repo.name === "subrepo");
+      expect(parent).toBeDefined();
+      expect(sub).toBeDefined();
 
-    // The submodule's match appears exactly once: under the submodule.
-    expect(sub?.matches.map((m) => m.file)).toContain("inner.ts");
-    expect(parent?.matches.some((m) => m.file.includes("subrepo"))).toBe(false);
+      // The submodule's match appears exactly once: under the submodule.
+      expect(sub?.matches.map((m) => m.file)).toContain("inner.ts");
+      expect(parent?.matches.some((m) => m.file.includes("subrepo"))).toBe(false);
 
-    // Parent still finds its own files.
-    expect(parent?.matches.some((m) => m.file.endsWith("alpha.ts"))).toBe(true);
-  });
+      // Parent still finds its own files.
+      expect(parent?.matches.some((m) => m.file.endsWith("alpha.ts"))).toBe(true);
+    },
+  );
 
-  test("envelope reports which engine ran", async () => {
+  testWithGrep("envelope reports which engine ran", async () => {
     const viaGrep = await runWith("grep", "needle", [fixtureRoot], {});
     expect(viaGrep.engine).toBe("grep");
     if (hasRg) {
@@ -263,31 +289,32 @@ describe("grep engine parity", () => {
 });
 
 describe("grep --files filename mode (rg --files vs find fallback)", () => {
-  test("basename glob matches at any depth, hidden included, node_modules pruned", async () => {
-    const r = await bothEngines("*.ts", [fixtureRoot], { files: true });
-    expect(r.mode).toBe("files");
-    const names = r.repos
-      .flatMap((repo) => repo.matches.map((m) => m.file.replace(`${fixtureRoot}/`, "")))
-      .sort();
-    expect(names).toContain("alpha.ts");
-    expect(names).toContain(".dotconf/hidden.ts");
-    expect(names).toContain("subrepo/inner.ts");
-    expect(names.some((f) => f.includes("node_modules"))).toBe(false);
-    for (const repo of r.repos) {
-      for (const m of repo.matches) {
-        expect(m.line).toBe(0);
-        expect(m.text).toBe("");
+  testWithFind(
+    "basename glob matches at any depth, hidden included, node_modules pruned",
+    async () => {
+      const r = await bothEngines("*.ts", [fixtureRoot], { files: true });
+      expect(r.mode).toBe("files");
+      const names = r.repos.flatMap((repo) => repo.matches.map((m) => fromRoot(m.file))).sort();
+      expect(names).toContain("alpha.ts");
+      expect(names).toContain(".dotconf/hidden.ts");
+      expect(names).toContain("subrepo/inner.ts");
+      expect(names.some((f) => f.includes("node_modules"))).toBe(false);
+      for (const repo of r.repos) {
+        for (const m of repo.matches) {
+          expect(m.line).toBe(0);
+          expect(m.text).toBe("");
+        }
       }
-    }
-  });
+    },
+  );
 
-  test("case-insensitive filename glob (-i)", async () => {
+  testWithFind("case-insensitive filename glob (-i)", async () => {
     const r = await bothEngines("ALPHA.TS", [fixtureRoot], { files: true, ignoreCase: true });
     const names = r.repos.flatMap((repo) => repo.matches.map((m) => m.file));
     expect(names.some((f) => f.endsWith("alpha.ts"))).toBe(true);
   });
 
-  test("host grepExcludeDirs prunes mirrors in files mode too", async () => {
+  testWithFind("host grepExcludeDirs prunes mirrors in files mode too", async () => {
     const context = { grepExcludeDirs: [".mirror-data"] };
     const r = await bothEngines("*.md", [fixtureRoot], { files: true }, context);
     const names = r.repos.flatMap((repo) => repo.matches.map((m) => m.file));
@@ -295,14 +322,14 @@ describe("grep --files filename mode (rg --files vs find fallback)", () => {
     expect(names.some((f) => f.includes(".mirror-data"))).toBe(false);
   });
 
-  test("--exclude file glob applies", async () => {
+  testWithFind("--exclude file glob applies", async () => {
     const r = await bothEngines("*.ts", [fixtureRoot], { files: true, exclude: ["hidden.ts"] });
     const names = r.repos.flatMap((repo) => repo.matches.map((m) => m.file));
     expect(names.some((f) => f.endsWith("hidden.ts"))).toBe(false);
     expect(names.some((f) => f.endsWith("alpha.ts"))).toBe(true);
   });
 
-  test("--limit truncates file lists", async () => {
+  testWithFind("--limit truncates file lists", async () => {
     const viaFind = await runWith("grep", "*.ts", [fixtureRoot], { files: true, limit: "1" });
     expect(viaFind.total_matches).toBe(1);
     expect(viaFind.truncated).toBe(true);
@@ -320,18 +347,37 @@ describe("grep --files filename mode (rg --files vs find fallback)", () => {
       expect(runWith("grep", "*.ts", [fixtureRoot], opts)).rejects.toThrow(/--files/);
     }
   });
+
+  // Windows-only behaviour: FIND.exe is not POSIX find, so the fallback is refused.
+  test.skipIf(!win32)("the find fallback is refused on Windows with an install hint", async () => {
+    await expect(runWith("grep", "*.ts", [fixtureRoot], { files: true })).rejects.toThrow(
+      /--files needs ripgrep on Windows/,
+    );
+  });
 });
 
 describe("NUL framing", () => {
-  test("hyphenated, colon-bearing, and spaced paths decode correctly", async () => {
+  // The colon fixture exists only off Windows (see beforeAll).
+  const framingFiles = win32 ? 2 : 3;
+
+  async function framingRows(): Promise<{ r: GrepResult; byFile: Map<string, Match> }> {
     const r = await bothEngines("quark", [join(fixtureRoot, "framing")], {});
     const rows = r.repos.flatMap((repo) => repo.matches);
-    const byFile = new Map(rows.map((m) => [m.file.split("/").at(-1), m]));
+    return { r, byFile: new Map(rows.map((m) => [m.file.split(/[\\/]/).at(-1) ?? "", m])) };
+  }
+
+  testWithGrep("hyphenated and spaced paths decode correctly", async () => {
+    const { r, byFile } = await framingRows();
     expect(byFile.get("note-2-draft.md")).toMatchObject({ line: 1, text: "quark here" });
-    expect(byFile.get("odd:colon.txt")).toMatchObject({ line: 1, text: "quark line" });
     expect(byFile.get("with space.txt")).toMatchObject({ line: 1, text: "quark spaced" });
-    expect(r.total_matches).toBe(3);
-    expect(r.total_files).toBe(3);
+    expect(r.total_matches).toBe(framingFiles);
+    expect(r.total_files).toBe(framingFiles);
+  });
+
+  // NTFS forbids ":" in a file name, so this fixture cannot exist on Windows.
+  test.skipIf(!hasGrep || win32)("colon-bearing paths decode correctly", async () => {
+    const { byFile } = await framingRows();
+    expect(byFile.get("odd:colon.txt")).toMatchObject({ line: 1, text: "quark line" });
   });
 
   test("decoder survives a chunk boundary at every byte offset (incl. inside UTF-8)", () => {
@@ -400,7 +446,7 @@ describe("context materialization (-C/-A/-B)", () => {
     return r.repos.flatMap((repo) => repo.matches.map((m) => ({ line: m.line, kind: m.kind })));
   }
 
-  test("-C 1: disjoint windows, correct kinds, context excluded from totals", async () => {
+  testWithGrep("-C 1: disjoint windows, correct kinds, context excluded from totals", async () => {
     const r = await bothEngines("cmark", [join(ctxDir(), "main.txt")], { context: "1" });
     expect(shape(r)).toEqual([
       { line: 1, kind: "match" },
@@ -413,7 +459,7 @@ describe("context materialization (-C/-A/-B)", () => {
     expect(r.total_files).toBe(1);
   });
 
-  test("-C 2: overlapping windows merge into one contiguous block", async () => {
+  testWithGrep("-C 2: overlapping windows merge into one contiguous block", async () => {
     const r = await bothEngines("cmark", [join(ctxDir(), "main.txt")], { context: "2" });
     expect(shape(r).map((s) => s.line)).toEqual([1, 2, 3, 4, 5, 6, 7]);
     expect(
@@ -424,7 +470,7 @@ describe("context materialization (-C/-A/-B)", () => {
     expect(r.total_matches).toBe(2);
   });
 
-  test("-A/-B override -C per side, independent of order", async () => {
+  testWithGrep("-A/-B override -C per side, independent of order", async () => {
     const r = await bothEngines("cmark", [join(ctxDir(), "main.txt")], {
       context: "2",
       afterContext: "0",
@@ -438,19 +484,19 @@ describe("context materialization (-C/-A/-B)", () => {
     ]);
   });
 
-  test("windows clamp at file start and end", async () => {
+  testWithGrep("windows clamp at file start and end", async () => {
     const r = await bothEngines("cmark", [join(ctxDir(), "main.txt")], { context: "10" });
     expect(shape(r).map((s) => s.line)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
   });
 
-  test("context text with colons and dashes stays intact", async () => {
+  testWithGrep("context text with colons and dashes stays intact", async () => {
     const r = await bothEngines("cmark", [join(ctxDir(), "tricky.txt")], { context: "1" });
     const rows = r.repos.flatMap((repo) => repo.matches);
     expect(rows.map((m) => m.text)).toEqual(["pre:fix-line", "a:b-c cmark d:e", "post-line:9"]);
     expect(rows.map((m) => m.kind)).toEqual(["context", "match", "context"]);
   });
 
-  test("CRLF file: engines and materializer agree", async () => {
+  testWithGrep("CRLF file: engines and materializer agree", async () => {
     const r = await bothEngines("crmark", [join(ctxDir(), "crlf.txt")], { context: "1" });
     const rows = r.repos.flatMap((repo) => repo.matches);
     expect(rows.map((m) => ({ line: m.line, kind: m.kind }))).toEqual([
@@ -472,32 +518,35 @@ describe("context materialization (-C/-A/-B)", () => {
 });
 
 describe("truncation exactness", () => {
-  test("exactly N results with --limit N is NOT truncated", async () => {
+  testWithGrep("exactly N results with --limit N is NOT truncated", async () => {
     const r = await bothEngines("xmark", [join(fixtureRoot, "ctx", "exact.txt")], { limit: "3" });
     expect(r.total_matches).toBe(3);
     expect(r.truncated).toBe(false);
   });
 
-  test("N+1 results with --limit N IS truncated", async () => {
+  testWithGrep("N+1 results with --limit N IS truncated", async () => {
     const r = await bothEngines("xmark", [join(fixtureRoot, "ctx", "exact.txt")], { limit: "2" });
     expect(r.total_matches).toBe(2);
     expect(r.truncated).toBe(true);
   });
 
-  test("--limit counts match rows only; selected rows keep full trailing context", async () => {
-    const r = await bothEngines("cmark", [join(fixtureRoot, "ctx", "main.txt")], {
-      context: "1",
-      limit: "1",
-    });
-    expect(r.total_matches).toBe(1);
-    expect(r.truncated).toBe(true);
-    const rows = r.repos.flatMap((repo) => repo.matches);
-    // Selected match is line 1 (sorted); its full window [1,2] survives.
-    expect(rows.map((m) => ({ line: m.line, kind: m.kind }))).toEqual([
-      { line: 1, kind: "match" },
-      { line: 2, kind: "context" },
-    ]);
-  });
+  testWithGrep(
+    "--limit counts match rows only; selected rows keep full trailing context",
+    async () => {
+      const r = await bothEngines("cmark", [join(fixtureRoot, "ctx", "main.txt")], {
+        context: "1",
+        limit: "1",
+      });
+      expect(r.total_matches).toBe(1);
+      expect(r.truncated).toBe(true);
+      const rows = r.repos.flatMap((repo) => repo.matches);
+      // Selected match is line 1 (sorted); its full window [1,2] survives.
+      expect(rows.map((m) => ({ line: m.line, kind: m.kind }))).toEqual([
+        { line: 1, kind: "match" },
+        { line: 2, kind: "context" },
+      ]);
+    },
+  );
 });
 
 describe("boolean composition (--and / --without)", () => {
@@ -509,21 +558,24 @@ describe("boolean composition (--and / --without)", () => {
     ].sort() as string[];
   }
 
-  test("--and keeps only files containing every pattern; rows stay primary-pattern rows", async () => {
-    const r = await bothEngines("zapple", [compDir()], { and: ["zbanana"] });
-    expect(fileNames(r)).toEqual(["all3.md", "both.md"]);
-    for (const m of r.repos.flatMap((repo) => repo.matches)) {
-      expect(m.text).toContain("zapple");
-    }
-    expect(r.and_patterns).toEqual(["zbanana"]);
-  });
+  testWithGrep(
+    "--and keeps only files containing every pattern; rows stay primary-pattern rows",
+    async () => {
+      const r = await bothEngines("zapple", [compDir()], { and: ["zbanana"] });
+      expect(fileNames(r)).toEqual(["all3.md", "both.md"]);
+      for (const m of r.repos.flatMap((repo) => repo.matches)) {
+        expect(m.text).toContain("zapple");
+      }
+      expect(r.and_patterns).toEqual(["zbanana"]);
+    },
+  );
 
-  test("repeated --and intersects all patterns", async () => {
+  testWithGrep("repeated --and intersects all patterns", async () => {
     const r = await bothEngines("zapple", [compDir()], { and: ["zbanana", "zcherry"] });
     expect(fileNames(r)).toEqual(["all3.md"]);
   });
 
-  test("--without drops files containing any listed pattern", async () => {
+  testWithGrep("--without drops files containing any listed pattern", async () => {
     const r = await bothEngines("zapple", [compDir()], {
       and: ["zbanana"],
       without: ["zcherry"],
@@ -532,13 +584,13 @@ describe("boolean composition (--and / --without)", () => {
     expect(r.without_patterns).toEqual(["zcherry"]);
   });
 
-  test("no qualifying files yields empty, not truncated", async () => {
+  testWithGrep("no qualifying files yields empty, not truncated", async () => {
     const r = await bothEngines("zapple", [compDir()], { and: ["zzz-not-present"] });
     expect(r.total_matches).toBe(0);
     expect(r.truncated).toBe(false);
   });
 
-  test("REGRESSION: --limit cannot be consumed by non-qualifying files", async () => {
+  testWithGrep("REGRESSION: --limit cannot be consumed by non-qualifying files", async () => {
     // comp/a-first.md matches the primary pattern but NOT --and; with the old
     // filter-after-limit design, limit 1 could select it and then filter to 0.
     const r = await bothEngines("zapple", [compDir()], { and: ["zbanana"], limit: "1" });
@@ -548,8 +600,8 @@ describe("boolean composition (--and / --without)", () => {
   });
 
   // Root and some mounted temporary filesystems cannot represent an unreadable
-  // fixture, so the trigger cannot fire there.
-  test.skipIf(!canTestUnreadableFiles)(
+  // fixture, so the trigger cannot fire there; the grep engine also needs grep.
+  test.skipIf(!canTestUnreadableFiles || !hasGrep)(
     "partial membership scan REJECTS the command (incomplete set can't prove absence)",
     async () => {
       const strictDir = join(fixtureRoot, "strict");
@@ -581,7 +633,7 @@ describe("boolean composition (--and / --without)", () => {
     },
   );
 
-  test("--and works with -l and -c output modes", async () => {
+  testWithGrep("--and works with -l and -c output modes", async () => {
     const l = await bothEngines("zapple", [compDir()], { and: ["zbanana"], filesOnly: true });
     expect(fileNames(l)).toEqual(["all3.md", "both.md"]);
     const c = await bothEngines("zapple", [compDir()], { and: ["zbanana"], count: true });
@@ -591,7 +643,7 @@ describe("boolean composition (--and / --without)", () => {
 });
 
 describe("multi-value --lang", () => {
-  test("comma-separated and repeated forms produce identical unions", async () => {
+  testWithGrep("comma-separated and repeated forms produce identical unions", async () => {
     const comma = await bothEngines("quarklang", [join(fixtureRoot, "lang")], {
       lang: ["ts,tsx"],
     });
@@ -603,7 +655,7 @@ describe("multi-value --lang", () => {
     expect(names.sort()).toEqual(["x.ts", "y.tsx"]);
   });
 
-  test("single --lang keeps its existing narrow meaning", async () => {
+  testWithGrep("single --lang keeps its existing narrow meaning", async () => {
     const r = await bothEngines("quarklang", [join(fixtureRoot, "lang")], { lang: "ts" });
     const names = r.repos.flatMap((repo) => repo.matches.map((m) => m.file.split("/").at(-1)));
     expect(names).toEqual(["x.ts"]);
@@ -647,41 +699,54 @@ describe("numeric validation and flag compatibility", () => {
 
 describe("quiet mode exit codes (spawned CLI)", () => {
   const harneryRoot = join(import.meta.dir, "..", "..");
-  const harn = join(harneryRoot, "bin", "harn");
+  // bin/harn is a bash wrapper; the .mjs launcher runs the same CLI on every OS.
+  const harn = join(harneryRoot, "bin", "harn.mjs");
 
-  test("exit 0 on hit, exit 1 on miss, no stdout either way", () => {
-    const hit = spawnSync(harn, ["grep", "-q", "needle", "alpha.ts"], {
+  testWithEngine("exit 0 on hit, exit 1 on miss, no stdout either way", () => {
+    const hit = spawnSync(process.execPath, [harn, "grep", "-q", "needle", "alpha.ts"], {
       cwd: fixtureRoot,
       encoding: "utf8",
     });
     expect(hit.status).toBe(0);
     expect(hit.stdout).toBe("");
 
-    const miss = spawnSync(harn, ["grep", "-q", "zz-definitely-absent-zz", "alpha.ts"], {
-      cwd: fixtureRoot,
-      encoding: "utf8",
-    });
+    const miss = spawnSync(
+      process.execPath,
+      [harn, "grep", "-q", "zz-definitely-absent-zz", "alpha.ts"],
+      {
+        cwd: fixtureRoot,
+        encoding: "utf8",
+      },
+    );
     expect(miss.status).toBe(1);
     expect(miss.stdout).toBe("");
   });
 
-  test("quiet respects --and qualification", () => {
-    const miss = spawnSync(harn, ["grep", "-q", "zapple", "--and", "zz-absent", "comp"], {
-      cwd: fixtureRoot,
-      encoding: "utf8",
-    });
+  testWithEngine("quiet respects --and qualification", () => {
+    const miss = spawnSync(
+      process.execPath,
+      [harn, "grep", "-q", "zapple", "--and", "zz-absent", "comp"],
+      {
+        cwd: fixtureRoot,
+        encoding: "utf8",
+      },
+    );
     expect(miss.status).toBe(1);
 
-    const hit = spawnSync(harn, ["grep", "-q", "zapple", "--and", "zbanana", "comp"], {
-      cwd: fixtureRoot,
-      encoding: "utf8",
-    });
+    const hit = spawnSync(
+      process.execPath,
+      [harn, "grep", "-q", "zapple", "--and", "zbanana", "comp"],
+      {
+        cwd: fixtureRoot,
+        encoding: "utf8",
+      },
+    );
     expect(hit.status).toBe(0);
   });
 });
 
 describe("envelope contract", () => {
-  test("top-level, repo, and row keys are pinned exactly", async () => {
+  testWithGrep("top-level, repo, and row keys are pinned exactly", async () => {
     const r = await runWith("grep", "cmark", [join(fixtureRoot, "ctx", "main.txt")], {
       context: "1",
     });
@@ -715,9 +780,9 @@ describe("output and paging", () => {
   const pageDir = () => join(fixtureRoot, "page");
   const rows = (r: GrepResult) =>
     r.repos.flatMap((repo) => repo.matches.filter((m) => m.kind === "match"));
-  const key = (m: Match) => `${m.file.replace(`${fixtureRoot}/`, "")}:${m.line}`;
+  const key = (m: Match) => `${fromRoot(m.file)}:${m.line}`;
 
-  test("pages continue exactly where the previous page stopped", async () => {
+  testWithGrep("pages continue exactly where the previous page stopped", async () => {
     const all = await bothEngines("pmark", [pageDir()], {});
     expect(all.total_matches).toBe(9);
     expect(all.limit).toBeNull();
@@ -738,7 +803,7 @@ describe("output and paging", () => {
     expect(seen).toEqual(rows(all).map(key));
   });
 
-  test("a page boundary inside one file splits that file's rows", async () => {
+  testWithGrep("a page boundary inside one file splits that file's rows", async () => {
     // a.txt has 3 rows; page 1 of size 2 takes a1,a2 and page 2 starts at a3.
     const p2 = await bothEngines("pmark", [pageDir()], { limit: "2", page: "2" });
     expect(rows(p2).map(key)).toEqual(["page/a.txt:4", "page/b.txt:1"]);
@@ -746,7 +811,7 @@ describe("output and paging", () => {
     expect(p2.omitted_files).toBe(1); // c.txt has no row on this page
   });
 
-  test("context lines ride along with a later page without consuming it", async () => {
+  testWithGrep("context lines ride along with a later page without consuming it", async () => {
     const r = await bothEngines("pmark", [pageDir()], { limit: "2", page: "4", context: "1" });
     // Rows 7-8 of the global order are c2 (line 3) and c3 (line 4).
     expect(rows(r).map(key)).toEqual(["page/c.txt:3", "page/c.txt:4"]);
@@ -755,30 +820,30 @@ describe("output and paging", () => {
     expect(r.total_matches).toBe(2);
   });
 
-  test("--and qualification still applies on later pages", async () => {
+  testWithGrep("--and qualification still applies on later pages", async () => {
     const r = await bothEngines("pmark", [pageDir()], { and: ["filler"], limit: "2", page: "2" });
     expect(r.available_matches).toBe(3);
     expect(rows(r).map(key)).toEqual(["page/a.txt:4"]);
     expect(r.next_page).toBeNull();
   });
 
-  test("files-only and count modes page by file", async () => {
+  testWithGrep("files-only and count modes page by file", async () => {
     const l = await bothEngines("pmark", [pageDir()], { filesOnly: true, limit: "2", page: "2" });
-    expect(rows(l).map((m) => m.file.replace(`${fixtureRoot}/`, ""))).toEqual(["page/c.txt"]);
+    expect(rows(l).map((m) => fromRoot(m.file))).toEqual(["page/c.txt"]);
     expect(l.available_matches).toBe(3);
     const c = await bothEngines("pmark", [pageDir()], { count: true, limit: "1" });
     expect(rows(c).map(key)).toEqual(["page/a.txt:3"]);
     expect(c.next_page).toBe(2);
   });
 
-  test("a page past the end is empty and says so", async () => {
+  testWithGrep("a page past the end is empty and says so", async () => {
     const r = await bothEngines("pmark", [pageDir()], { limit: "5", page: "3" });
     expect(r.total_matches).toBe(0);
     expect(r.next_page).toBeNull();
     expect(renderResult(r, {})).toContain("Page 3 is past the end");
   });
 
-  test("long lines are clipped by default and whole with --max-columns 0", async () => {
+  testWithGrep("long lines are clipped by default and whole with --max-columns 0", async () => {
     // 500, set by the context bench's v2 tune split (300 cut a line holding an answer).
     expect(DEFAULT_MAX_COLUMNS).toBe(500);
     const r = await bothEngines("lmark", [join(fixtureRoot, "long")], {});
@@ -792,25 +857,28 @@ describe("output and paging", () => {
     expect(rows(whole)[0]?.clipped).toBeUndefined();
   });
 
-  test("no row bound without --limit; --limit pages and states what is left out", async () => {
-    const bulk = [join(fixtureRoot, "bulk")];
-    const d = await bothEngines("bmark", bulk, {});
-    expect(d.total_matches).toBe(60);
-    expect(d.limit).toBeNull();
-    expect(d.truncated).toBe(false);
-    expect(d.omitted_matches).toBe(0);
-    expect(renderResult(d, {})).not.toContain("left out");
-    const paged = await bothEngines("bmark", bulk, { limit: "50" });
-    expect(paged.total_matches).toBe(50);
-    expect(paged.limit).toBe(50);
-    expect(paged.omitted_matches).toBe(10);
-    const text = renderResult(paged, {});
-    expect(text).toContain("Showing matches 1-50 of 60 (in 1 file)");
-    expect(text).toContain("Next: --page 2.");
-    expect(text).not.toContain("--all");
-  });
+  testWithGrep(
+    "no row bound without --limit; --limit pages and states what is left out",
+    async () => {
+      const bulk = [join(fixtureRoot, "bulk")];
+      const d = await bothEngines("bmark", bulk, {});
+      expect(d.total_matches).toBe(60);
+      expect(d.limit).toBeNull();
+      expect(d.truncated).toBe(false);
+      expect(d.omitted_matches).toBe(0);
+      expect(renderResult(d, {})).not.toContain("left out");
+      const paged = await bothEngines("bmark", bulk, { limit: "50" });
+      expect(paged.total_matches).toBe(50);
+      expect(paged.limit).toBe(50);
+      expect(paged.omitted_matches).toBe(10);
+      const text = renderResult(paged, {});
+      expect(text).toContain("Showing matches 1-50 of 60 (in 1 file)");
+      expect(text).toContain("Next: --page 2.");
+      expect(text).not.toContain("--all");
+    },
+  );
 
-  test("a search that fits prints no left-out notice", async () => {
+  testWithGrep("a search that fits prints no left-out notice", async () => {
     const r = await bothEngines("pmark", [pageDir()], {});
     expect(r.omitted_matches).toBe(0);
     expect(r.truncated).toBe(false);
@@ -830,12 +898,16 @@ describe("output and paging", () => {
     }
   });
 
-  test("--json carries the page fields (spawned CLI)", () => {
-    const harn = join(import.meta.dir, "..", "..", "bin", "harn");
-    const out = spawnSync(harn, ["grep", "pmark", "page", "--limit", "4", "--json"], {
-      cwd: fixtureRoot,
-      encoding: "utf8",
-    });
+  testWithEngine("--json carries the page fields (spawned CLI)", () => {
+    const harn = join(import.meta.dir, "..", "..", "bin", "harn.mjs");
+    const out = spawnSync(
+      process.execPath,
+      [harn, "grep", "pmark", "page", "--limit", "4", "--json"],
+      {
+        cwd: fixtureRoot,
+        encoding: "utf8",
+      },
+    );
     expect(out.status).toBe(0);
     const parsed = JSON.parse(out.stdout);
     const env = parsed.data ?? parsed;

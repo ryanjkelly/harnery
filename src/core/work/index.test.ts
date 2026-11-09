@@ -8,6 +8,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   resolveWorkflowApproval,
@@ -29,6 +30,8 @@ import {
   runWorkItem,
 } from "./index.ts";
 
+// Windows has no /tmp; POSIX keeps the short fixed root it has always used.
+const TEMP_ROOT = process.platform === "win32" ? tmpdir() : "/tmp";
 const roots: string[] = [];
 
 afterEach(() => {
@@ -36,7 +39,7 @@ afterEach(() => {
 });
 
 function fixture(script = "export default async () => 'ok';\n") {
-  const root = mkdtempSync(join("/tmp", "harnery-work-"));
+  const root = mkdtempSync(join(TEMP_ROOT, "harnery-work-"));
   roots.push(root);
   const workflowPath = join(root, "workflow.mjs");
   writeFileSync(workflowPath, script);
@@ -61,12 +64,15 @@ describe("durable work ledger", () => {
     expect(record.projection.state).toBe("ready");
     expect(record.projection.next_action).toBe("run");
     expect(record.events.map((event) => event.event)).toEqual(["work.created"]);
-    expect(
-      statSync(join(root, ".harnery", "work", "work-fixture", "intent.json")).mode & 0o777,
-    ).toBe(0o600);
-    expect(
-      statSync(join(root, ".harnery", "work", "work-fixture", "events.jsonl")).mode & 0o777,
-    ).toBe(0o600);
+    // POSIX mode bits only: Windows synthesizes them and keeps inherited ACLs.
+    if (process.platform !== "win32") {
+      expect(
+        statSync(join(root, ".harnery", "work", "work-fixture", "intent.json")).mode & 0o777,
+      ).toBe(0o600);
+      expect(
+        statSync(join(root, ".harnery", "work", "work-fixture", "events.jsonl")).mode & 0o777,
+      ).toBe(0o600);
+    }
     expect(() =>
       createWorkItem({
         coordRoot: root,
@@ -807,7 +813,7 @@ describe("durable work ledger", () => {
   });
 
   test("cancelling a parked attempt records authority without consuming another attempt", async () => {
-    const host = mkdtempSync(join("/tmp", "harnery-work-cancel-"));
+    const host = mkdtempSync(join(TEMP_ROOT, "harnery-work-cancel-"));
     roots.push(host);
     const workflowPath = join(host, "workflow.mjs");
     writeFileSync(

@@ -97,25 +97,34 @@ describe("decideLoginSync", () => {
 
 describe("sync state file", () => {
   test("lives beside the cookie store", () => {
-    expect(loginSyncStatePath("/a/b/cookies.json")).toBe("/a/b/cookies.login-sync.json");
-    expect(loginSyncStatePath("/a/store")).toBe("/a/store.login-sync.json");
+    expect(loginSyncStatePath(join("/a", "b", "cookies.json"))).toBe(
+      join("/a", "b", "cookies.login-sync.json"),
+    );
+    expect(loginSyncStatePath(join("/a", "store"))).toBe(join("/a", "store.login-sync.json"));
   });
 
-  test("round-trips owner-only and tolerates a missing or corrupt file", () => {
+  const loginSyncState = {
+    version: 1 as const,
+    domains: {
+      "example.com": { syncedAt: "t", cookieDbMtimeMs: 5, fingerprint: "f", cookies: 2 },
+    },
+  };
+
+  test("round-trips and tolerates a missing or corrupt file", () => {
     const dir = storeDir();
     const path = join(dir, "nested", "cookies.login-sync.json");
     expect(readLoginSyncState(path)).toEqual({ version: 1, domains: {} });
-    const state = {
-      version: 1 as const,
-      domains: {
-        "example.com": { syncedAt: "t", cookieDbMtimeMs: 5, fingerprint: "f", cookies: 2 },
-      },
-    };
-    writeLoginSyncState(path, state);
-    expect(readLoginSyncState(path)).toEqual(state);
-    expect(statSync(path).mode & 0o777).toBe(0o600);
+    writeLoginSyncState(path, loginSyncState);
+    expect(readLoginSyncState(path)).toEqual(loginSyncState);
     writeFileSync(path, "not json");
     expect(readLoginSyncState(path)).toEqual({ version: 1, domains: {} });
+  });
+
+  // Windows has no POSIX mode bits to check, so this is skipped there, not passed.
+  test.skipIf(process.platform === "win32")("writes the state file owner-only", () => {
+    const path = join(storeDir(), "nested", "cookies.login-sync.json");
+    writeLoginSyncState(path, loginSyncState);
+    expect(statSync(path).mode & 0o777).toBe(0o600);
   });
 
   test("records hashes, never cookie values", () => {
@@ -268,8 +277,8 @@ describe("syncLoginCookies", () => {
 describe("profile helpers", () => {
   test("reads the newest cookie database location", () => {
     const times: Record<string, number> = {
-      "/p/Default/Network/Cookies": 50,
-      "/p/Default/Cookies": 70,
+      [join("/p", "Default", "Network", "Cookies")]: 50,
+      [join("/p", "Default", "Cookies")]: 70,
     };
     expect(profileCookieDbMtimeMs("/p", (path) => times[path])).toBe(70);
     expect(profileCookieDbMtimeMs("/p", () => undefined)).toBeUndefined();

@@ -1,7 +1,8 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { TUNNEL_DIR_ENV } from "../../lib/tunnel/state.ts";
 import {
   ARTIFACT_DELIVERY_AUTO_ITEM_LIMIT,
   readArtifactDeliveryManifest,
@@ -11,6 +12,19 @@ import {
 import { createArtifact } from "./index.ts";
 
 describe("artifact delivery cards", () => {
+  // The tunnel fixtures live under each repo's .cache/tunnel; a tunnel-dir
+  // override left in the environment (by the host shell or an earlier test
+  // in the same process) would point the lookup elsewhere.
+  let tunnelDirBefore: string | undefined;
+  beforeEach(() => {
+    tunnelDirBefore = process.env[TUNNEL_DIR_ENV];
+    delete process.env[TUNNEL_DIR_ENV];
+  });
+  afterEach(() => {
+    if (tunnelDirBefore === undefined) delete process.env[TUNNEL_DIR_ENV];
+    else process.env[TUNNEL_DIR_ENV] = tunnelDirBefore;
+  });
+
   test("needs no manifest and inventories safe visible root items", () => {
     const repoRoot = mkdtempSync(join(tmpdir(), "harnery-delivery-card-auto-"));
     Bun.spawnSync(["git", "init", "-q"], { cwd: repoRoot });

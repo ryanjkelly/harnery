@@ -49,16 +49,30 @@ beforeEach(() => {
   root = realpathSync(mkdtempSync(join(tmpdir(), "harnery-servers-")));
 });
 
-afterEach(() => {
+afterEach(async () => {
+  const exits: Promise<void>[] = [];
   for (const child of children.splice(0)) {
+    if (child.exitCode === null && child.signalCode === null)
+      exits.push(new Promise((resolve) => child.once("exit", () => resolve())));
     try {
-      if (child.pid) process.kill(-child.pid, "SIGKILL");
+      if (child.pid) killServerChild(child.pid);
     } catch {
       child.kill("SIGKILL");
     }
   }
+  // Windows refuses to delete a directory a live process still uses as its cwd.
+  await Promise.all(exits);
   rmSync(root, { recursive: true, force: true });
 });
+
+/**
+ * Kill a child started by `startChildServer`. On POSIX it leads its own
+ * process group (detached), so the whole group goes. Windows has no process
+ * groups; the Bun server spawns nothing, so the pid alone is the same set.
+ */
+function killServerChild(pid: number): void {
+  process.kill(process.platform === "win32" ? pid : -pid, "SIGKILL");
+}
 
 /** Start a detached Bun HTTP server in `cwd`; resolves with its pid and port. */
 async function startChildServer(cwd: string): Promise<{ pid: number; port: number }> {
@@ -166,7 +180,7 @@ describe("listing", () => {
     const leaderExited = new Promise<void>((resolve) => {
       children.find((child) => child.pid === leader.pid)!.once("exit", () => resolve());
     });
-    process.kill(-leader.pid, "SIGKILL");
+    killServerChild(leader.pid);
     await leaderExited;
     const report = listServers({ coordRoot: root, scan: false });
     expect(report.servers[0]?.state).toBe("unknown");
@@ -263,8 +277,11 @@ describe("listing", () => {
       { id: "gone", kind: "session", type: "preview", pid, owner: null },
       { coordRoot: root },
     );
-    process.kill(-pid, "SIGKILL");
-    await Bun.sleep(150);
+    const exited = new Promise<void>((resolve) => {
+      children.find((child) => child.pid === pid)!.once("exit", () => resolve());
+    });
+    killServerChild(pid);
+    await exited;
     const report = listServers({ coordRoot: root, scan: false });
     expect(report.pruned).toEqual(["gone"]);
     expect(report.servers).toEqual([]);
@@ -620,16 +637,20 @@ describe("port ranges", () => {
     expect(serverGcConfig(root)).toEqual({ idle_hours: 4 });
   });
 
-  test("skip listening and registered ports", async () => {
-    const { pid, port } = await startChildServer(root);
-    writeConfig(root, { port_ranges: { p: [port, port + 2] } });
-    registerServer(
-      { id: "claims-next", kind: "session", type: "p", pid, port: port + 1, owner: null },
-      { coordRoot: root },
-    );
-    expect(allocateServerPort("p", { coordRoot: root })).toBe(port + 2);
-    expect(allocateServerPort("none", { coordRoot: root })).toBeNull();
-  });
+  // Listening ports come from procfs, lsof, or netstat on Windows.
+  test.skipIf(scanSupport() === "unsupported" && process.platform !== "win32")(
+    "skip listening and registered ports",
+    async () => {
+      const { pid, port } = await startChildServer(root);
+      writeConfig(root, { port_ranges: { p: [port, port + 2] } });
+      registerServer(
+        { id: "claims-next", kind: "session", type: "p", pid, port: port + 1, owner: null },
+        { coordRoot: root },
+      );
+      expect(allocateServerPort("p", { coordRoot: root })).toBe(port + 2);
+      expect(allocateServerPort("none", { coordRoot: root })).toBeNull();
+    },
+  );
 });
 
 describe("adoption", () => {

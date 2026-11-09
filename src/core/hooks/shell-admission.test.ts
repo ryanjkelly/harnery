@@ -276,36 +276,40 @@ describe("rewritten command execution", () => {
     for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
   });
 
-  test("a stub wrapper keeps cd, pipes, and the exit code", () => {
-    const root = mkdtempSync(join(tmpdir(), "shell-admission-"));
-    roots.push(root);
-    const bin = join(root, "fakebin");
-    mkdirSync(bin);
-    mkdirSync(join(root, "sub"));
-    const log = join(root, "slot.log");
-    const stub = join(bin, "slot");
-    writeFileSync(
-      stub,
-      '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$SLOT_LOG"\n' +
-        'while [ "$1" != "--" ]; do shift; done; shift\nHELD=1 exec "$@"\n',
-    );
-    chmodSync(stub, 0o755);
-    writeFileSync(join(bin, "npx"), '#!/usr/bin/env bash\necho "ran $* held=$HELD"; exit 3\n');
-    chmodSync(join(bin, "npx"), 0o755);
-    const command = rewriteHeavyCommand(
-      // biome-ignore lint/suspicious/noTemplateCurlyInString: shell parameter expansion
-      "cd sub && npx tsc --noEmit -p . | tr a-z A-Z; echo rc=${PIPESTATUS[0]} dir=${PWD##*/}",
-      stub,
-    );
-    expect(command).not.toBeNull();
-    const out = spawnSync("bash", ["-c", command as string], {
-      cwd: root,
-      encoding: "utf8",
-      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, SLOT_LOG: log },
-    });
-    expect(out.stdout).toBe("RAN TSC --NOEMIT -P . HELD=1\nrc=3 dir=sub\n");
-    expect(readFileSync(log, "utf8")).toBe(
-      "--label agent: npx tsc --noEmit -p . -- npx tsc --noEmit -p .\n",
-    );
-  });
+  // The rewrite targets POSIX shell scripts and is never applied on win32 (admissionHookOutput).
+  test.skipIf(process.platform === "win32")(
+    "a stub wrapper keeps cd, pipes, and the exit code",
+    () => {
+      const root = mkdtempSync(join(tmpdir(), "shell-admission-"));
+      roots.push(root);
+      const bin = join(root, "fakebin");
+      mkdirSync(bin);
+      mkdirSync(join(root, "sub"));
+      const log = join(root, "slot.log");
+      const stub = join(bin, "slot");
+      writeFileSync(
+        stub,
+        '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$SLOT_LOG"\n' +
+          'while [ "$1" != "--" ]; do shift; done; shift\nHELD=1 exec "$@"\n',
+      );
+      chmodSync(stub, 0o755);
+      writeFileSync(join(bin, "npx"), '#!/usr/bin/env bash\necho "ran $* held=$HELD"; exit 3\n');
+      chmodSync(join(bin, "npx"), 0o755);
+      const command = rewriteHeavyCommand(
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: shell parameter expansion
+        "cd sub && npx tsc --noEmit -p . | tr a-z A-Z; echo rc=${PIPESTATUS[0]} dir=${PWD##*/}",
+        stub,
+      );
+      expect(command).not.toBeNull();
+      const out = spawnSync("bash", ["-c", command as string], {
+        cwd: root,
+        encoding: "utf8",
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, SLOT_LOG: log },
+      });
+      expect(out.stdout).toBe("RAN TSC --NOEMIT -P . HELD=1\nrc=3 dir=sub\n");
+      expect(readFileSync(log, "utf8")).toBe(
+        "--label agent: npx tsc --noEmit -p . -- npx tsc --noEmit -p .\n",
+      );
+    },
+  );
 });

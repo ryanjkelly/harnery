@@ -11,6 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
+import { plantFakeCli } from "../../../../tests/helpers/fake-cli.ts";
 import {
   descriptorPathsAvailable,
   git,
@@ -21,6 +22,7 @@ import {
   tempRoot,
   writeScript,
 } from "../../../../tests/workspace-test-helpers.ts";
+import { whichBin } from "../../../lib/which.ts";
 import {
   cancelWorkItem,
   createWorkItem,
@@ -1292,18 +1294,16 @@ describe("local Git worktree allocation and recovery", () => {
     tracked(host);
     const wrapperDir = join(host, "git-version-wrapper");
     mkdirSync(wrapperDir);
-    const wrapper = join(wrapperDir, "git");
-    writeFileSync(
-      wrapper,
-      `#!/bin/sh
-if [ "$1" = "--version" ]; then
-  printf '%s\\n' 'git version 2.30.9'
-  exit 0
-fi
-exec "$HARNERY_REAL_GIT" "$@"
-`,
+    plantFakeCli(
+      wrapperDir,
+      "git",
+      `const args = process.argv.slice(2);
+if (args[0] === "--version") {
+  process.stdout.write("git version 2.30.9\\n");
+  process.exit(0);
+}
+${execRealGit("process.env")}`,
     );
-    chmodSync(wrapper, 0o700);
     const oldPath = process.env.PATH;
     process.env.HARNERY_REAL_GIT = findGitBinary();
     process.env.PATH = `${wrapperDir}${delimiter}${oldPath}`;
@@ -1412,14 +1412,14 @@ exec "$HARNERY_REAL_GIT" "$@"
     tracked(foreign.host);
     const wrapperDir = join(requested.host, "git-authority-wrapper");
     mkdirSync(wrapperDir);
-    const wrapper = join(wrapperDir, "git");
-    writeFileSync(
-      wrapper,
-      `#!/bin/sh
-GIT_DIR="$HARNERY_TEST_GIT_DIR" GIT_WORK_TREE="$HARNERY_TEST_WORK_TREE" exec "$HARNERY_REAL_GIT" "$@"
-`,
+    plantFakeCli(
+      wrapperDir,
+      "git",
+      `const args = process.argv.slice(2);
+${execRealGit(
+  "{ ...process.env, GIT_DIR: process.env.HARNERY_TEST_GIT_DIR, GIT_WORK_TREE: process.env.HARNERY_TEST_WORK_TREE }",
+)}`,
     );
-    chmodSync(wrapper, 0o700);
     const oldPath = process.env.PATH;
     process.env.HARNERY_REAL_GIT = findGitBinary();
     process.env.HARNERY_TEST_GIT_DIR = join(foreign.repo, ".git");
@@ -2537,11 +2537,18 @@ function rewriteEventTranscript(
 }
 
 function findGitBinary(): string {
-  for (const directory of (process.env.PATH ?? "").split(delimiter)) {
-    const candidate = join(directory, "git");
-    if (existsSync(candidate)) return realpathSync(candidate);
-  }
+  // whichBin honours PATHEXT, so Windows finds git.exe.
+  const found = whichBin("git");
+  if (found) return realpathSync(found);
   throw new Error("Git binary is unavailable");
+}
+
+/** Fake-git script tail that runs the real Git (HARNERY_REAL_GIT) on `args`
+ * with the given env expression and passes its exit status through. */
+function execRealGit(envExpression: string): string {
+  return `import { spawnSync } from "node:child_process";
+const real = spawnSync(process.env.HARNERY_REAL_GIT, args, { stdio: "inherit", env: ${envExpression} });
+process.exit(real.status ?? 1);`;
 }
 
 async function allocationCrashFixture(

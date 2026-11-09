@@ -34,19 +34,24 @@ afterAll(() => {
   for (const root of roots) rmSync(root, { recursive: true, force: true });
 });
 
-test("writes explicit exact-output receipts without relying on matching basenames", () => {
-  const { root, input } = fixture();
-  const relative = registerCaptureThumbnail(input);
-  expect(relative).toMatch(/\.thumbnail-preview-[a-f0-9]{24}\.json$/);
-  const result = JSON.parse(readFileSync(path.join(root, relative!), "utf8"));
-  expect(result).toMatchObject({
-    schema_version: 2,
-    producer: "browser-standalone-capture",
-    source: { path: ".harnery/artifacts/capture/snapshot.html" },
-    preview: { path: ".harnery/artifacts/capture/different-name.png", ...input.preview },
-  });
-  expect(result.source.sha256).toHaveLength(64);
-});
+// Registration anchors its write on a /proc/self/fd or /dev/fd directory
+// descriptor, which Windows lacks, so it always skips there; this is skipped, not passed.
+test.skipIf(process.platform === "win32")(
+  "writes explicit exact-output receipts without relying on matching basenames",
+  () => {
+    const { root, input } = fixture();
+    const relative = registerCaptureThumbnail(input);
+    expect(relative).toMatch(/\.thumbnail-preview-[a-f0-9]{24}\.json$/);
+    const result = JSON.parse(readFileSync(path.join(root, relative!), "utf8"));
+    expect(result).toMatchObject({
+      schema_version: 2,
+      producer: "browser-standalone-capture",
+      source: { path: ".harnery/artifacts/capture/snapshot.html" },
+      preview: { path: ".harnery/artifacts/capture/different-name.png", ...input.preview },
+    });
+    expect(result.source.sha256).toHaveLength(64);
+  },
+);
 
 test("skips selector or viewport fragments and snapshots with unresolved assets", () => {
   const { input } = fixture();

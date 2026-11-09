@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   CLOUDFLARED_ENV,
   ensureCloudflared,
@@ -150,11 +150,14 @@ describe("isTunnelStateLive", () => {
 
 describe("tunnelDir", () => {
   test("defaults to <root>/.cache/tunnel and honors the directory override", () => {
-    expect(tunnelDir("/work/repo", {})).toBe("/work/repo/.cache/tunnel");
+    // resolve() gives the platform's absolute form: unchanged on POSIX, drive-
+    // qualified with backslashes on Windows.
+    const defaultDir = resolve("/work/repo", ".cache", "tunnel");
+    expect(tunnelDir("/work/repo", {})).toBe(defaultDir);
     expect(tunnelDir("/work/repo", { [TUNNEL_DIR_ENV]: "/kit/.harnery/tunnel" })).toBe(
-      "/kit/.harnery/tunnel",
+      resolve("/kit/.harnery/tunnel"),
     );
-    expect(tunnelDir("/work/repo", { [TUNNEL_DIR_ENV]: "  " })).toBe("/work/repo/.cache/tunnel");
+    expect(tunnelDir("/work/repo", { [TUNNEL_DIR_ENV]: "  " })).toBe(defaultDir);
   });
 
   test("config round-trips the automatic-entry and cloudflared fields, and survives a bad file", () => {
