@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -12,6 +12,7 @@ import {
   resolveCollectSpec,
   runCollect,
 } from "../../src/lib/browser/collect/index.ts";
+import { removeDir } from "../helpers/remove-dir.ts";
 
 const fixtureUrl = (total: number) =>
   `${pathToFileURL(resolve(import.meta.dir, "../fixtures/collect-feed/index.html")).href}?total=${total}`;
@@ -24,7 +25,7 @@ function tempDir(): string {
 }
 
 afterEach(() => {
-  for (const path of dirs.splice(0)) rmSync(path, { recursive: true, force: true });
+  for (const path of dirs.splice(0)) removeDir(path);
 });
 
 const fastPacing = {

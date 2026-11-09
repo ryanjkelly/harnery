@@ -1,14 +1,15 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PNG } from "pngjs";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { compareBand, cropNativePng, pngDimensions } from "./capture-fidelity.ts";
 import { Browser } from "./client.ts";
 
 const profiles: string[] = [];
 afterEach(() => {
-  for (const p of profiles.splice(0)) rmSync(p, { recursive: true, force: true });
+  for (const p of profiles.splice(0)) removeDir(p);
 });
 
 /**

@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Browser } from "../../src/lib/browser/client.ts";
 import { buildRuntsCheck } from "../../src/lib/browser/runts.ts";
+import { removeDir } from "../helpers/remove-dir.ts";
 
 const fixtureUrl = pathToFileURL(
   resolve(import.meta.dir, "../fixtures/layout-lint/index.html"),
@@ -24,7 +25,7 @@ function profile(): string {
 }
 
 afterEach(() => {
-  for (const path of profiles.splice(0)) rmSync(path, { recursive: true, force: true });
+  for (const path of profiles.splice(0)) removeDir(path);
 });
 
 describe("browse layout lint", () => {

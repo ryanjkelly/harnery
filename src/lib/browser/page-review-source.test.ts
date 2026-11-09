@@ -1,13 +1,14 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { retainPageReviewSourceIdentity } from "./page-review-source.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
-  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  for (const dir of dirs.splice(0)) removeDir(dir);
 });
 
 test("receipt preserves the exact existing digest bytes and both retry inputs privately", () => {

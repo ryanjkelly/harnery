@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PNG } from "pngjs";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import type { CritiqueFinding } from "./critique.ts";
 import {
   PAGE_REVIEW_DECISIONS_SCHEMA,
@@ -53,7 +54,7 @@ function temp() {
   return root;
 }
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 const context = { viewport: "desktop", theme: "light" as const, state: "default" };
 const target = "https://example.test/page";

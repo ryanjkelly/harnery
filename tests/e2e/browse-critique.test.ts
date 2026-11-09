@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -12,6 +12,7 @@ import {
   runCritique,
   tilesFromFullPage,
 } from "../../src/lib/browser/critique.ts";
+import { removeDir } from "../helpers/remove-dir.ts";
 
 /** A solid-color full-page PNG buffer for crop tests. */
 function fakePagePng(width: number, height: number): Buffer {
@@ -32,7 +33,7 @@ function profile(): string {
 }
 
 afterEach(() => {
-  for (const path of profiles.splice(0)) rmSync(path, { recursive: true, force: true });
+  for (const path of profiles.splice(0)) removeDir(path);
 });
 
 describe("critique tiling + orchestration", () => {

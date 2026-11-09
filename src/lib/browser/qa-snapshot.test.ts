@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import type { QaContext, QaSignature } from "./qa-plan.ts";
 import {
   listQaSnapshotTargets,
@@ -29,7 +30,7 @@ function tmpRoot(): string {
   return root;
 }
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 describe("qaSnapshotKey", () => {
