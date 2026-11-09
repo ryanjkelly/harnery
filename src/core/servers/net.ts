@@ -149,7 +149,40 @@ export function listListeningPorts(): Set<number> {
         .map((row) => row.localPort),
     );
   if (support === "lsof") return new Set(listListeningSockets().map((socket) => socket.port));
+  if (process.platform === "win32") {
+    const result = spawnSync("netstat", ["-ano", "-p", "TCP"], {
+      windowsHide: true,
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    const v6 = spawnSync("netstat", ["-ano", "-p", "TCPv6"], {
+      windowsHide: true,
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    return new Set([
+      ...parseNetstatListening(result.stdout ?? ""),
+      ...parseNetstatListening(v6.stdout ?? ""),
+    ]);
+  }
   return new Set();
+}
+
+/**
+ * Listening TCP ports from Windows `netstat -ano` output. The state column is
+ * localized, so a listening socket is recognized by its unconnected remote
+ * address (`0.0.0.0:0` or `[::]:0`) instead of the word LISTENING.
+ */
+export function parseNetstatListening(output: string): number[] {
+  const ports: number[] = [];
+  for (const line of output.split(/\r?\n/)) {
+    const fields = line.trim().split(/\s+/);
+    if (fields[0]?.toUpperCase() !== "TCP" || fields.length < 5) continue;
+    if (!/^(?:0\.0\.0\.0|\[::\]):0$/.test(fields[2] ?? "")) continue;
+    const port = Number(/:(\d+)$/.exec(fields[1] ?? "")?.[1]);
+    if (Number.isInteger(port) && port > 0) ports.push(port);
+  }
+  return ports;
 }
 
 /** Parse `lsof -Fpn` output for listening sockets. */

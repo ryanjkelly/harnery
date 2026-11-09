@@ -14,7 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { FINGERPRINT_KEY_STORE_RELATIVE_PATH } from "../../events/v3/fingerprint-keys.ts";
-import { runPromptContext } from "./runner.ts";
+import { resolveProvider, runPromptContext } from "./runner.ts";
 
 const roots: string[] = [];
 
@@ -109,21 +109,26 @@ describe("prompt-context provider runner", () => {
     expect(capture.env.PATH).toBe(process.env.PATH!);
   });
 
-  test("translates a Codex WSL UNC cwd before starting the provider", async () => {
-    const fixture = createFixture();
-    writeProvider(
-      fixture.root,
-      providerFromStdin(`
+  // The hook runs inside WSL here and receives a Windows-side UNC path to a Linux
+  // workspace; on native Windows the fixture workspace is not a Linux path.
+  test.skipIf(process.platform === "win32")(
+    "translates a Codex WSL UNC cwd before starting the provider",
+    async () => {
+      const fixture = createFixture();
+      writeProvider(
+        fixture.root,
+        providerFromStdin(`
         process.stdout.write(JSON.stringify(${JSON.stringify(successResult("<record>safe</record>"))}));
       `),
-    );
-    const uncCwd = `\\\\wsl.localhost\\Ubuntu-22.04${fixture.workspace.replaceAll("/", "\\\\")}`;
+      );
+      const uncCwd = `\\\\wsl.localhost\\Ubuntu-22.04${fixture.workspace.replaceAll("/", "\\\\")}`;
 
-    const result = await runFixture(fixture, { cwd: uncCwd });
+      const result = await runFixture(fixture, { cwd: uncCwd });
 
-    expect(result.context).toBe("<record>safe</record>");
-    expect(result.audit.status).toBe("delivered");
-  });
+      expect(result.context).toBe("<record>safe</record>");
+      expect(result.audit.status).toBe("delivered");
+    },
+  );
 
   test("returns no context for a valid no-match result", async () => {
     const fixture = createFixture();
@@ -311,11 +316,35 @@ function createFixture(
 }
 
 function writeProvider(root: string, body: string): void {
-  const path = join(root, "scripts", "hooks", "harness", "extensions", "prompt-context");
-  mkdirSync(dirname(path), { recursive: true });
+  const base = join(root, "scripts", "hooks", "harness", "extensions", "prompt-context");
+  mkdirSync(dirname(base), { recursive: true });
+  // Windows cannot start the extensionless script; its provider form is a
+  // `.js` file the runner starts with the current runtime.
+  const path = process.platform === "win32" ? `${base}.js` : base;
   writeFileSync(path, `#!/usr/bin/env node\n${body}\n`, { mode: 0o700 });
   chmodSync(path, 0o700);
 }
+
+describe("resolveProvider", () => {
+  test("uses the extensionless file on POSIX and only .exe, .mjs or .js on Windows", () => {
+    const root = mkdtempSync(join(tmpdir(), "harnery-provider-"));
+    try {
+      const base = join(root, "prompt-context");
+      writeFileSync(base, "#!/usr/bin/env node\n");
+      expect(resolveProvider(base, "linux")).toEqual({ executable: base, args: [] });
+      expect(resolveProvider(base, "win32")).toBeNull();
+      writeFileSync(`${base}.js`, "");
+      expect(resolveProvider(base, "win32")).toEqual({
+        executable: process.execPath,
+        args: [`${base}.js`],
+      });
+      writeFileSync(`${base}.exe`, "");
+      expect(resolveProvider(base, "win32")).toEqual({ executable: `${base}.exe`, args: [] });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
 
 function providerFromStdin(onEnd: string): string {
   return `

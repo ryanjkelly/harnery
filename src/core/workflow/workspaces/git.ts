@@ -122,5 +122,30 @@ function isolatedGitEnvironment(): NodeJS.ProcessEnv {
   env.GIT_CONFIG_COUNT = "1";
   env.GIT_CONFIG_KEY_0 = "core.hooksPath";
   env.GIT_CONFIG_VALUE_0 = process.platform === "win32" ? "NUL" : "/dev/null";
+  // Git for Windows sets core.autocrlf in its system config, and checkouts made
+  // under it have CRLF files. Skipping the system config would make those
+  // files look modified, so carry that one value through.
+  const autocrlf = systemAutocrlf();
+  if (autocrlf) {
+    env.GIT_CONFIG_COUNT = "2";
+    env.GIT_CONFIG_KEY_1 = "core.autocrlf";
+    env.GIT_CONFIG_VALUE_1 = autocrlf;
+  }
   return env;
+}
+
+let cachedAutocrlf: string | null | undefined;
+
+/** The system-level core.autocrlf on Windows (read once per process); null elsewhere. */
+function systemAutocrlf(): string | null {
+  if (process.platform !== "win32") return null;
+  if (cachedAutocrlf !== undefined) return cachedAutocrlf;
+  const result = spawnSync("git", ["config", "--system", "--get", "core.autocrlf"], {
+    windowsHide: true,
+    encoding: "utf8",
+    timeout: GIT_TIMEOUT_MS,
+  });
+  const value = result.status === 0 ? result.stdout.trim() : "";
+  cachedAutocrlf = /^(true|false|input)$/i.test(value) ? value : null;
+  return cachedAutocrlf;
 }

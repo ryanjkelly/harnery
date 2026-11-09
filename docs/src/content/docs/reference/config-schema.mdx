@@ -361,6 +361,12 @@ it authorizes an executable in the repository. Enabling it expects this file:
 scripts/hooks/harness/extensions/prompt-context
 ```
 
+Native Windows cannot start an extensionless script, and Harnery never runs the
+provider through a shell. There it looks for `prompt-context.exe`, then
+`prompt-context.mjs` or `prompt-context.js` beside that path, and runs a script
+with the same JavaScript runtime as the hook. A project that serves both can
+keep the extensionless file for Linux, macOS and WSL and add the `.mjs` form.
+
 The executable receives one `harnery.prompt-context-request/v1` JSON document
 on standard input and returns one `harnery.prompt-context-result/v1` document
 on standard output. Harnery validates the full response and fails open on a

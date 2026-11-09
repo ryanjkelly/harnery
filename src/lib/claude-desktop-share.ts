@@ -214,7 +214,11 @@ function readJson(p: string): Record<string, unknown> | null {
 export function remapHome(p: string, remoteHome: string | null, localHome: string): string {
   if (!remoteHome || remoteHome === localHome) return p;
   if (p === remoteHome) return localHome;
-  return p.startsWith(`${remoteHome}/`) ? localHome + p.slice(remoteHome.length) : p;
+  // Windows paths continue with `\` after the home folder.
+  const next = p[remoteHome.length];
+  return p.startsWith(remoteHome) && (next === "/" || next === "\\")
+    ? localHome + p.slice(remoteHome.length)
+    : p;
 }
 
 /** True when `prefixFile`'s bytes are exactly the start of `fullFile`. */

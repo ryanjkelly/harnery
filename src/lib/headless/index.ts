@@ -44,6 +44,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { coordEnv } from "../env.ts";
 import { whichBin } from "../which.ts";
+import { windowsLaunch } from "../windows-launch.ts";
 
 export { whichBin };
 
@@ -185,12 +186,16 @@ function execHarness(
   call: StagedCall,
   extraEnv: Record<string, string> = {},
 ) {
-  const pending = execFileAsync(bin, args, {
+  const env = Object.keys(extraEnv).length ? { ...process.env, ...extraEnv } : undefined;
+  // An npm `.cmd` launcher on Windows cannot be spawned without a shell.
+  const launch = windowsLaunch(bin, args, env);
+  if ("error" in launch) throw new Error(launch.error);
+  const pending = execFileAsync(launch.file, launch.args, {
     windowsHide: true,
     cwd: call.dir,
     timeout: call.timeoutMs,
     maxBuffer: MAX_BUFFER,
-    ...(Object.keys(extraEnv).length ? { env: { ...process.env, ...extraEnv } } : {}),
+    ...(env ? { env } : {}),
   });
   pending.child.stdin?.end();
   return pending;

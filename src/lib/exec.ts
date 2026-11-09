@@ -8,6 +8,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { windowsLaunch } from "./windows-launch.ts";
 
 export interface ExecResult {
   stdout: string;
@@ -43,12 +44,22 @@ export interface ExecOpts {
  * breaking any positional parser. Trailing newline still gets dropped.
  */
 export function exec(cmd: string[], opts: ExecOpts = {}): Promise<ExecResult> {
-  const [file, ...args] = cmd;
+  const env = opts.env ?? { ...process.env };
+  const launch = windowsLaunch(cmd[0] ?? "", cmd.slice(1), env);
+  if ("error" in launch) {
+    return Promise.resolve({
+      stdout: "",
+      stderr: launch.error,
+      exitCode: 127,
+      spawnErrno: "EINVAL",
+    });
+  }
+  const { file, args } = launch;
   return new Promise<ExecResult>((resolveResult) => {
     const proc = spawn(file, args, {
       windowsHide: true,
       cwd: opts.cwd ?? process.cwd(),
-      env: opts.env ?? { ...process.env },
+      env,
       stdio: ["ignore", "pipe", "pipe"],
     });
 

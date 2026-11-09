@@ -115,8 +115,8 @@ export async function runPromptContext(
     if (!config?.enabled) return finish("disabled");
     if (!input.prompt.trim()) return finish("no_prompt");
 
-    const executable = join(coordRoot, ...EXTENSION_RELATIVE_PATH);
-    if (!isRegularFile(executable)) return finish("missing_extension");
+    const provider = resolveProvider(join(coordRoot, ...EXTENSION_RELATIVE_PATH));
+    if (!provider) return finish("missing_extension");
 
     const reportedCwd =
       input.adapter === "codex"
@@ -131,7 +131,7 @@ export async function runPromptContext(
       prompt: input.prompt,
     });
     const child = await runExtension({
-      executable,
+      ...provider,
       cwd,
       stdin: `${JSON.stringify(request)}\n`,
       env: providerEnvironment(input.sourceEnv ?? process.env),
@@ -231,8 +231,28 @@ function isRegularFile(path: string): boolean {
   }
 }
 
+/**
+ * The provider command for `base` (the extensionless contract path). Windows
+ * cannot start an extensionless script and the runner never uses a shell, so
+ * there the provider is `base.exe`, or `base.mjs` / `base.js` run by this
+ * process's own runtime. Other platforms run `base` itself.
+ */
+export function resolveProvider(
+  base: string,
+  platform: NodeJS.Platform = process.platform,
+): { executable: string; args: string[] } | null {
+  if (platform !== "win32") return isRegularFile(base) ? { executable: base, args: [] } : null;
+  if (isRegularFile(`${base}.exe`)) return { executable: `${base}.exe`, args: [] };
+  for (const extension of [".mjs", ".js"]) {
+    const script = `${base}${extension}`;
+    if (isRegularFile(script)) return { executable: process.execPath, args: [script] };
+  }
+  return null;
+}
+
 function runExtension(options: {
   executable: string;
+  args: string[];
   cwd: string;
   stdin: string;
   env: NodeJS.ProcessEnv;
@@ -252,7 +272,7 @@ function runExtension(options: {
       clearTimeout(timer);
       resolveResult(result);
     };
-    const child = spawn(options.executable, [], {
+    const child = spawn(options.executable, options.args, {
       cwd: options.cwd,
       detached: process.platform !== "win32",
       env: options.env,
