@@ -56,8 +56,20 @@ setDefaultTimeout(windowsSlack(15_000));
 afterEach(() => {
   // On Windows a detached maintenance worker still running with the root as
   // its cwd blocks deletion (EBUSY) until it exits, so retry for up to 30s.
-  const retries = process.platform === "win32" ? { maxRetries: 120, retryDelay: 250 } : {};
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, ...retries });
+  // Bun's rmSync does not apply maxRetries, so retry explicitly.
+  for (const root of roots.splice(0)) {
+    const deadline = Date.now() + (process.platform === "win32" ? 30_000 : 0);
+    for (;;) {
+      try {
+        rmSync(root, { recursive: true, force: true });
+        break;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if ((code !== "EBUSY" && code !== "EPERM") || Date.now() > deadline) throw error;
+        Bun.sleepSync(250);
+      }
+    }
+  }
 });
 
 describe("agent-hook V3 hard cut", () => {
@@ -2404,7 +2416,9 @@ function enablePromptContextProvider(root: string): void {
     JSON.stringify({ hooks: { promptContext: { enabled: true } } }),
     "utf8",
   );
-  const executable = join(root, "scripts", "hooks", "harness", "extensions", "prompt-context");
+  const base = join(root, "scripts", "hooks", "harness", "extensions", "prompt-context");
+  // Windows cannot start the extensionless script; its provider form is `.js`.
+  const executable = process.platform === "win32" ? `${base}.js` : base;
   mkdirSync(dirname(executable), { recursive: true });
   writeFileSync(
     executable,
