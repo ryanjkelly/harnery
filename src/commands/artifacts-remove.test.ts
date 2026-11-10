@@ -73,3 +73,21 @@ test("CLI refuses a different agent and an outstanding hold without deleting fil
   expect(held.stderr.toString()).toContain("held: review");
   expect(existsSync(join(unit.path, "capture.png"))).toBe(true);
 }, 15_000);
+
+test("CLI removes a workspace a tool created under a stable actor when that actor is named", () => {
+  const { root, invoke } = fixture();
+  const tool = createArtifact(root, {
+    slug: "drive-checkout",
+    purpose: "Drive checkout",
+    retentionDays: 3,
+    actor: { instance_id: "binding_tool_123" },
+  });
+  const args = ["remove", tool.manifest.artifact_id, "--reason", "Synced", "--yes"];
+  expect(invoke(args).exitCode).toBe(1);
+  expect(existsSync(tool.path)).toBe(true);
+  expect(invoke([...args, "--actor", "binding_other_456"]).exitCode).toBe(1);
+  const removed = invoke([...args, "--actor", "binding_tool_123"]);
+  expect(removed.exitCode).toBe(0);
+  expect(JSON.parse(removed.stdout.toString())).toMatchObject({ deleted: true });
+  expect(existsSync(tool.path)).toBe(false);
+}, 15_000);

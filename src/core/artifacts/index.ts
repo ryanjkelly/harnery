@@ -139,6 +139,7 @@ export function artifactCapabilities() {
     minute_retention: true,
     discard_after_review: true,
     owner_scoped_remove: true,
+    actor_scoped_remove: true,
     allow_big_after_create: true,
     hold_expiry: true,
     persistent_holds: true,

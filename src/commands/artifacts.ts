@@ -353,12 +353,15 @@ export function registerArtifactsCommand(
     .description("Preview immediate removal of one owned artifact; --yes permanently deletes it.")
     .requiredOption("--reason <text>", "Why these reviewed files are no longer needed")
     .option("--yes", "Permanently delete this one workspace after safety checks")
-    .action((ref: string, opts: { reason: string; yes?: boolean }) => {
+    .option(
+      "--actor <instance-id>",
+      "Stable owner identity a tool created the workspace under; defaults to the current agent",
+    )
+    .action((ref: string, opts: { reason: string; yes?: boolean; actor?: string }) => {
       run(emit, () => {
         const repoRoot = requireRepoRoot(context);
-        emit.data(
-          removeArtifact(repoRoot, ref, opts.reason, { ...opts, actor: currentActor(repoRoot) }),
-        );
+        const actor = opts.actor ? { instance_id: opts.actor } : currentActor(repoRoot);
+        emit.data(removeArtifact(repoRoot, ref, opts.reason, { yes: opts.yes, actor }));
       });
     });
 
