@@ -185,4 +185,29 @@ describe("public-surface provenance guard", () => {
       rmSync(repo, { recursive: true, force: true });
     }
   });
+
+  test("outgoing history does not read a commit header as a deleted file's content", () => {
+    const repo = mkdtempSync(join(tmpdir(), "harnery-public-deleted-"));
+    const git = (...args: string[]) =>
+      execFileSync("git", args, { cwd: repo, encoding: "utf8" }).trim();
+    try {
+      git("init", "-q");
+      git("config", "user.email", "test@example.com");
+      // The author line is the only place the sentinel appears.
+      git("config", "user.name", "private fixture sentinel");
+      const page = join(repo, "web", "app", "items", "[id]");
+      mkdirSync(page, { recursive: true });
+      writeFileSync(join(page, "page.tsx"), "export default function Page() {}\n");
+      git("add", "web");
+      git("commit", "-qm", "base");
+      const base = git("rev-parse", "HEAD");
+
+      git("rm", "-q", "web/app/items/[id]/page.tsx");
+      git("commit", "-qm", "remove the page");
+
+      expect(scanPublicHistory(repo, `${base}..HEAD`)).toEqual([]);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
 });

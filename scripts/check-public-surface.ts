@@ -291,7 +291,10 @@ export function scanPublicHistory(root: string, range: string): PublicSurfaceVio
       .filter((path) => path && isScannableFile(path));
     for (const path of changed) {
       violations.push(...scanPublicText(path, `commit ${short} path ${path}`));
-      const content = spawnSync("git", ["show", `${commit}:${path}`], {
+      // `git cat-file` fails for a path the commit deleted. `git show` would
+      // instead read a path with glob characters (`[id]`) as a pathspec and
+      // print the newest commit's header, which is not this file's content.
+      const content = spawnSync("git", ["cat-file", "blob", `${commit}:${path}`], {
         cwd: root,
         encoding: "utf8",
         maxBuffer: 16 * 1024 * 1024,
