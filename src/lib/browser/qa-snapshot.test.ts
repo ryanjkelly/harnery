@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import type { QaContext, QaSignature } from "./qa-plan.ts";
 import {
+  isHeldLockError,
   listQaSnapshotTargets,
   loadQaSnapshot,
   qaSnapshotKey,
@@ -165,5 +166,26 @@ describe("resolveQaBaseline", () => {
       renderRevision: { label: "git:abc", render: async () => sig("R") },
     });
     expect(res.source).toBe("revision-render:git:abc");
+  });
+});
+
+describe("isHeldLockError", () => {
+  test("EEXIST means a held lock on every platform", () => {
+    for (const platform of ["win32", "linux", "darwin"] as const) {
+      expect(isHeldLockError("EEXIST", platform)).toBe(true);
+    }
+  });
+
+  test("EPERM means a lock being removed on Windows only", () => {
+    expect(isHeldLockError("EPERM", "win32")).toBe(true);
+    expect(isHeldLockError("EPERM", "linux")).toBe(false);
+    expect(isHeldLockError("EPERM", "darwin")).toBe(false);
+  });
+
+  test("other codes are real errors", () => {
+    for (const code of ["EACCES", "ENOENT", "EBUSY", undefined]) {
+      expect(isHeldLockError(code, "win32")).toBe(false);
+      expect(isHeldLockError(code, "linux")).toBe(false);
+    }
   });
 });

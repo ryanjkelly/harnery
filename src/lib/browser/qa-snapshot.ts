@@ -83,6 +83,17 @@ function snapshotDir(target: string, context: QaContext, opts: QaSnapshotStoreOp
   return resolve(opts.root ?? SNAPSHOT_DIR, qaSnapshotKey(target), contextDirName(context));
 }
 
+/** True when a lock `mkdir` error means another writer holds (or is
+ * releasing) the lock, so the caller should wait rather than fail. */
+export function isHeldLockError(
+  code: string | undefined,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  if (code === "EEXIST") return true;
+  // Windows returns EPERM for mkdir while another process is deleting the lock folder.
+  return code === "EPERM" && platform === "win32";
+}
+
 /** Serialize both owned slots across processes. A stuck writer fails closed. */
 function withStoreLock<T>(dir: string, operation: () => T): T {
   mkdirSync(dir, { recursive: true });
@@ -93,7 +104,7 @@ function withStoreLock<T>(dir: string, operation: () => T): T {
       mkdirSync(lock);
       break;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if (!isHeldLockError((error as NodeJS.ErrnoException).code)) throw error;
       if (Date.now() >= deadline) throw new Error(`Snapshot writer lock busy: ${dir}`);
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
     }
