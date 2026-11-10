@@ -1,5 +1,4 @@
 import {
-  Briefcase,
   Clapperboard,
   FolderTree,
   HardDrive,
@@ -14,8 +13,6 @@ import {
   Server,
   ShieldCheck,
   Stethoscope,
-  Target,
-  Users,
   Workflow,
   Wrench,
 } from "lucide-react";
@@ -94,27 +91,6 @@ export const APP_ROUTES: readonly AppRoute[] = [
     group: "direction",
     icon: Scale,
     keywords: ["docket", "tier", "review", "waiting", "precedent"],
-  },
-  {
-    href: "/councils",
-    label: "Councils",
-    group: "direction",
-    icon: Users,
-    keywords: ["rounds", "steward", "contributions", "deliberation"],
-  },
-  {
-    href: "/work",
-    label: "Work",
-    group: "execution",
-    icon: Briefcase,
-    keywords: ["durable work", "objectives", "attempts", "items"],
-  },
-  {
-    href: "/governors",
-    label: "Goals",
-    group: "execution",
-    icon: Target,
-    keywords: ["governors", "durable goals", "missions", "specialist teams", "sweeps"],
   },
   {
     href: "/workflows",

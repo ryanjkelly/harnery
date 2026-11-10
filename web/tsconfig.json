@@ -27,9 +27,6 @@
       "@/*": [
         "./*"
       ],
-      "harnery/core/governor/state": [
-        "../src/core/governor/read.ts"
-      ],
       "harnery/*": [
         "../src/*"
       ]

@@ -27,11 +27,8 @@ afterEach(() => {
 });
 const catalog: PaletteCatalog = {
   agents: [],
-  councils: [],
   decisions: [],
-  work: [],
   workflows: [],
-  goals: [],
 };
 
 function fixture(options: ConstructorParameters<typeof DashboardReaderClient>[1] = {}) {

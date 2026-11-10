@@ -8,9 +8,6 @@ export interface PaletteEntry {
 
 export interface PaletteCatalog {
   agents: PaletteEntry[];
-  councils: PaletteEntry[];
   decisions: PaletteEntry[];
-  work: PaletteEntry[];
   workflows: PaletteEntry[];
-  goals: PaletteEntry[];
 }

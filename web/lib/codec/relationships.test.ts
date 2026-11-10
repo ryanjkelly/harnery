@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import type { CodecPanelScene } from "./contracts";
-import { type DependencySourceItem, deriveRelationships } from "./relationships";
+import { deriveRelationships } from "./relationships";
 
 const NOW = "2026-08-16T12:00:00.000Z";
 
@@ -43,13 +43,9 @@ function panel(id: string, parent?: string): CodecPanelScene {
   };
 }
 
-function item(overrides: Partial<DependencySourceItem> & { id: string }): DependencySourceItem {
-  return { state: "running", dependencies: [], unresolved_dependencies: [], ...overrides };
-}
-
 describe("deriveRelationships", () => {
   test("parentage between rendered panels becomes a shared-coordination edge", () => {
-    const edges = deriveRelationships([panel("p"), panel("c", "p")], [], () => []);
+    const edges = deriveRelationships([panel("p"), panel("c", "p")]);
     expect(edges).toEqual([
       expect.objectContaining({
         kind: "shared-coordination",
@@ -61,66 +57,7 @@ describe("deriveRelationships", () => {
     ]);
   });
 
-  test("a dependency draws only when both items map to rendered panels", () => {
-    const items = [
-      item({
-        id: "w-a",
-        dependencies: ["w-b"],
-        unresolved_dependencies: ["w-b"],
-        latest_run_id: "run-a",
-      }),
-      item({ id: "w-b", latest_run_id: "run-b" }),
-    ];
-    const sessions: Record<string, string[]> = { "run-a": ["s-a"], "run-b": ["s-b"] };
-    const both = deriveRelationships(
-      [panel("s-a"), panel("s-b")],
-      items,
-      (run) => sessions[run] ?? [],
-    );
-    expect(both).toEqual([
-      expect.objectContaining({
-        kind: "dependency",
-        from_instance_id: "s-b",
-        to_instance_id: "s-a",
-        status: "waiting",
-      }),
-    ]);
-
-    // Prerequisite's panel missing: no edge, never guessed.
-    const oneSided = deriveRelationships([panel("s-a")], items, (run) => sessions[run] ?? []);
-    expect(oneSided).toEqual([]);
-  });
-
-  test("status maps from prerequisite/dependent state", () => {
-    const items = [
-      item({ id: "w-a", dependencies: ["w-b"], latest_run_id: "run-a" }),
-      item({ id: "w-b", state: "blocked", latest_run_id: "run-b" }),
-    ];
-    const edges = deriveRelationships([panel("s-a"), panel("s-b")], items, (run) =>
-      run === "run-a" ? ["s-a"] : ["s-b"],
-    );
-    expect(edges[0]?.status).toBe("blocked");
-
-    const resolved = deriveRelationships(
-      [panel("s-a"), panel("s-b")],
-      [
-        item({ id: "w-a", dependencies: ["w-b"], latest_run_id: "run-a" }),
-        item({ id: "w-b", state: "succeeded", latest_run_id: "run-b" }),
-      ],
-      (run) => (run === "run-a" ? ["s-a"] : ["s-b"]),
-    );
-    expect(resolved[0]?.status).toBe("active");
-  });
-
-  test("a throwing session resolver suppresses the edge", () => {
-    const items = [
-      item({ id: "w-a", dependencies: ["w-b"], latest_run_id: "run-a" }),
-      item({ id: "w-b", latest_run_id: "run-b" }),
-    ];
-    expect(
-      deriveRelationships([panel("s-a"), panel("s-b")], items, () => {
-        throw new Error("transcript gone");
-      }),
-    ).toEqual([]);
+  test("a parent that is not rendered draws no edge", () => {
+    expect(deriveRelationships([panel("c", "missing")])).toEqual([]);
   });
 });

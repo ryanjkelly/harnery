@@ -19,8 +19,6 @@ import {
   historyNameForInstance,
   readCachedAgentsForCodec,
 } from "@/lib/coord-reader";
-import { readDurableWork } from "@/lib/work-reader";
-import { readWorkflowChildSessionsFromCache } from "@/lib/workflow-reader";
 import {
   EVENT_V3_LIVE_RELATIVE_ROOT,
   type LiveDisplayRowV3,
@@ -469,21 +467,10 @@ export async function buildScene(now?: string, source?: CodecSceneSource): Promi
   } catch {
     // fallback pack stands
   }
-  // Relationship edges: parentage plus provable durable-work dependencies.
-  // Failure means no lines, never a degraded scene.
+  // Relationship edges: event-backed parentage. Failure means no lines,
+  // never a degraded scene.
   try {
-    const root = coordRoot();
-    const cachedChildren = [...snapshot.active, ...snapshot.stale, ...snapshot.terminal];
-    const items = readDurableWork(root).map((r) => ({
-      id: r.projection.id,
-      state: r.projection.state,
-      dependencies: r.intent.dependencies ?? [],
-      unresolved_dependencies: r.projection.unresolved_dependencies ?? [],
-      ...(r.projection.latest_run_id ? { latest_run_id: r.projection.latest_run_id } : {}),
-    }));
-    scene.relationships = deriveRelationships(scene.panels, items, (runId) =>
-      readWorkflowChildSessionsFromCache(root, runId, cachedChildren).map((c) => c.sessionId),
-    );
+    scene.relationships = deriveRelationships(scene.panels);
   } catch {
     scene.relationships = [];
   }
