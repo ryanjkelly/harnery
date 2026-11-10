@@ -10,11 +10,29 @@ describe("renderInstructionsBlock", () => {
     expect(block).toContain("acme agents whoami");
     expect(block).toContain("acme agents identity assume <name>");
     expect(block).toContain("acme decision file");
-    expect(block).toContain("acme council create");
+    expect(block).toContain("acme run <script>");
+    expect(block).toContain("acme approval list");
     expect(block).toContain("acme files url <repo-relative-path>");
     expect(block).toContain("acme rm --root <directory> <paths...>");
     // no un-substituted `harn <verb>` command leaked through
-    expect(block).not.toMatch(/\bharn (agents|decision|council|journal|web) /);
+    expect(block).not.toMatch(/\bharn (agents|decision|journal|run|approval|web) /);
+  });
+
+  test("starting other agents names the subagent tool and run, not retired features", () => {
+    const block = renderInstructionsBlock("acme");
+    expect(block).toContain("**Starting other agents.**");
+    expect(block).toContain("subagent tool");
+    for (const retired of [
+      "Dispatching a team",
+      "Councils",
+      "council",
+      "governor",
+      "work create",
+      "harn-team",
+      "harn-council",
+    ]) {
+      expect(block).not.toContain(retired);
+    }
   });
 
   test("defaults cleanly to `harn` when that's the bin", () => {
@@ -32,9 +50,7 @@ describe("renderInstructionsBlock", () => {
   test("keeps skill names literal (harn-*) regardless of bin", () => {
     const block = renderInstructionsBlock("acme");
     expect(block).toContain("harn-decide");
-    expect(block).toContain("harn-council");
     expect(block).toContain("harn-end");
-    expect(block).toContain("harn-team");
   });
 
   test("stays within the ~80-line orientation budget", () => {
@@ -42,7 +58,7 @@ describe("renderInstructionsBlock", () => {
     expect(lines).toBeLessThanOrEqual(80);
   });
 
-  test("names all six surfaces so an agent knows they exist", () => {
+  test("names every surface so an agent knows they exist", () => {
     const block = renderInstructionsBlock("harn").toLowerCase();
     for (const surface of [
       "identity",
@@ -50,7 +66,7 @@ describe("renderInstructionsBlock", () => {
       "intent",
       "journal",
       "decision docket",
-      "council",
+      "starting other agents",
     ]) {
       expect(block).toContain(surface);
     }
@@ -88,52 +104,37 @@ describe("renderInstructionsBlock", () => {
   test("with every skill excluded, points at CLI commands instead of dangling refs", () => {
     const block = renderInstructionsBlock("acme", {
       decide: false,
-      council: false,
       end: false,
-      team: false,
     });
     expect(block).not.toContain("`harn-decide` skill");
-    expect(block).not.toContain("`harn-council` skill");
-    expect(block).not.toContain("`harn-team` skill");
+    expect(block).not.toContain("`harn-end` skill");
     expect(block).toContain("acme decision --help");
-    expect(block).toContain("acme council --help");
     expect(block).toContain("acme agents status --end-turn --end-session");
-    expect(block).toContain("acme governor --help");
   });
 
   test("mixed availability names only the present skill", () => {
     const block = renderInstructionsBlock("acme", {
       decide: false,
-      council: true,
-      end: false,
-      team: false,
+      end: true,
     });
-    // intro + council pointer reference harn-council; decide falls back to --help
-    expect(block).toContain("`harn-council`");
+    // intro + end pointer reference harn-end; decide falls back to --help
+    expect(block).toContain("`harn-end` skill");
     expect(block).toContain("acme decision --help");
     expect(block).not.toContain("`harn-decide` skill");
     // intro lists only the present skill (singular "skill", no "harn-decide and")
     expect(block).not.toContain("`harn-decide` and");
   });
 
-  test("default (no arg) references all four skills", () => {
+  test("default (no arg) references both default skills", () => {
     const block = renderInstructionsBlock("harn");
     expect(block).toContain("`harn-decide` skill");
-    expect(block).toContain("`harn-council` skill");
     expect(block).toContain("`harn-end` skill");
-    expect(block).toContain("`harn-team` skill");
   });
 });
 
 describe("SKILLS", () => {
-  test("ships the four harn-prefixed engine skills plus the opt-in computer skill", () => {
-    expect(SKILLS.map((s) => s.id).sort()).toEqual([
-      "harn-computer",
-      "harn-council",
-      "harn-decide",
-      "harn-end",
-      "harn-team",
-    ]);
+  test("ships the two harn-prefixed engine skills plus the opt-in computer skill", () => {
+    expect(SKILLS.map((s) => s.id).sort()).toEqual(["harn-computer", "harn-decide", "harn-end"]);
     expect(SKILLS.filter((s) => s.optIn).map((s) => s.id)).toEqual(["harn-computer"]);
   });
 
@@ -142,9 +143,7 @@ describe("SKILLS", () => {
     expect(
       renderInstructionsBlock("acme", {
         decide: true,
-        council: true,
         end: true,
-        team: true,
         computer: true,
       }),
     ).toContain("`acme computer`");
@@ -160,12 +159,8 @@ describe("SKILLS", () => {
       const body = content.slice(content.indexOf("-->") + 3).trim();
       expect(checkOwnedSkill(content, body)).toBe("fresh");
       // bin substitution reached the body; no un-substituted `harn <verb>` leaked
-      expect(content).toMatch(
-        /\bacme (agents|decision|council|governor|work|artifacts|approval|computer) /,
-      );
-      expect(content).not.toMatch(
-        /\bharn (agents|decision|council|governor|work|artifacts|approval|web|computer) /,
-      );
+      expect(content).toMatch(/\bacme (agents|decision|artifacts|approval|computer) /);
+      expect(content).not.toMatch(/\bharn (agents|decision|artifacts|approval|web|computer) /);
     }
   });
 
@@ -173,13 +168,5 @@ describe("SKILLS", () => {
     for (const skill of SKILLS) {
       expect(skill.render("acme")).toBe(skill.render("acme"));
     }
-  });
-
-  test("council instructions resolve the project web port instead of assuming one", () => {
-    const council = SKILLS.find((skill) => skill.id === "harn-council");
-    expect(council).toBeDefined();
-    const content = council!.render("acme");
-    expect(content).toContain("configured `web.port`");
-    expect(content).not.toContain("localhost:4276");
   });
 });

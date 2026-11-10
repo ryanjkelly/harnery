@@ -30,12 +30,8 @@ export const HOST_ADDENDUM_REGION = "host-addendum";
 export interface BlockSkills {
   /** the `harn-decide` skill file is present */
   decide: boolean;
-  /** the `harn-council` skill file is present */
-  council: boolean;
   /** the `harn-end` skill file is present */
   end: boolean;
-  /** the `harn-team` skill file is present */
-  team: boolean;
   /**
    * the opt-in `harn-computer` skill file is present (only when the project
    * turns `computer` on through `mode` or `enabled`); absent from the default block entirely
@@ -48,7 +44,7 @@ export interface BlockSkills {
  * lines: it costs every agent context on every turn, so it states that each
  * surface *exists* and gives one line of *when* — the *how* lives in the skills
  * and each command's `--help`. Skill names are fixed (`harn-decide`,
- * `harn-council`, `harn-end`) even for a renamed bin; only command strings
+ * `harn-end`) even for a renamed bin; only command strings
  * track `binName`.
  *
  * The block only points at a skill that actually exists here: a host that
@@ -57,32 +53,23 @@ export interface BlockSkills {
  */
 export function renderInstructionsBlock(
   binName: string,
-  skills: BlockSkills = { decide: true, council: true, end: true, team: true },
+  skills: BlockSkills = { decide: true, end: true },
 ): string {
   const b = binName;
 
-  const named = [
-    skills.decide && "`harn-decide`",
-    skills.council && "`harn-council`",
-    skills.end && "`harn-end`",
-    skills.team && "`harn-team`",
-  ].filter(Boolean) as string[];
+  const named = [skills.decide && "`harn-decide`", skills.end && "`harn-end`"].filter(
+    Boolean,
+  ) as string[];
   const deeper =
     named.length > 0
       ? `Procedures for the deeper flows live in the ${named.join(" and ")} skill${named.length > 1 ? "s" : ""}.`
-      : `See \`${b} decision --help\` and \`${b} council --help\` for the deeper procedures.`;
+      : `See \`${b} decision --help\` and \`${b} agents --help\` for the deeper procedures.`;
   const decidePointer = skills.decide
     ? "The `harn-decide` skill has the file / claim / resolve-with-evidence procedure."
     : `See \`${b} decision --help\` for the file / claim / resolve-with-evidence procedure.`;
-  const councilPointer = skills.council
-    ? "The `harn-council` skill has the steward and member flow."
-    : `See \`${b} council --help\` for the steward and member flow.`;
   const endPointer = skills.end
     ? "When the whole session is genuinely finished, use the `harn-end` skill as the final workflow."
     : `When the whole session is genuinely finished, run \`${b} agents status --end-turn --end-session\` as the final tool action.`;
-  const teamPointer = skills.team
-    ? "The `harn-team` skill owns the tier choice, the governor artifacts, and the drive loop."
-    : `See \`${b} governor --help\` for the tier choice and the drive loop.`;
   // Opt-in surface: the default block stays byte-identical unless the project
   // enabled computer use and the skill is actually installed.
   const computerPointer = skills.computer
@@ -99,8 +86,8 @@ export function renderInstructionsBlock(
   return `## harnery coordination
 
 This project runs [harnery](https://harnery.com) for multi-agent coordination.
-You share this checkout with other agents; the surfaces below keep you oriented and out of each other's way, and let you dispatch a team of your own when a job
-is bigger than one session. Run \`${b} <command> --help\` for any command's full
+You share this checkout with other agents; the surfaces below keep you oriented
+and out of each other's way. Run \`${b} <command> --help\` for any command's full
 surface. ${deeper}
 
 **Identity + peers.** You are one of several agents in this repo.
@@ -116,20 +103,12 @@ it cannot proceed, \`${b} agents lifecycle done\` when it is complete, and
 written). Ordinary \`set-task\` calls never change lifecycle, and a transition
 that re-mints the session title tells you the new name to copy. ${endPointer}
 
-**Dispatching a team.** Everything else here coordinates the agents already
-present. These three start new ones, and they differ by how long the objective
-outlives a single execution. \`${b} run <script>\` is one bounded pass:
-plain JS stages fan out to headless subagents that are born
-coordination-registered, with deterministic code deciding the routing between
-stages. \`${b} work create <title> <workflow>\` wraps an objective that has to
-survive many such passes, holding it across retries, failures, and review.
-\`${b} governor create\` drives a whole graph of work toward a goal, choosing
-what runs next and how much it may settle without asking a human. Reach for the
-first when one pass will do, the second when the objective must outlive the
-attempt, and the third when a human would otherwise have to babysit the loop. A
-run that needs authorization parks durably instead of failing, so check
-\`${b} approval list\` when one appears to be waiting rather than stuck.
-${teamPointer}
+**Starting other agents.** Use your harness's own subagent tool to hand a
+bounded task to a helper. For a scripted fan-out, \`${b} run <script>\` runs
+plain JS stages that start headless subagents, already registered for
+coordination, with deterministic code deciding the routing between stages. A
+run that needs authorization parks instead of failing, so check
+\`${b} approval list\` when one seems to be waiting rather than stuck.
 
 **Durable role handoff.** When you are replacing a prior session in the same
 named role, run \`${b} agents identity assume <name>\` before declaring your task.
@@ -173,9 +152,7 @@ dashboard viewer. Use localhost links only when the operator shares this machine
 **Decision docket.** When you would otherwise stop to ask a human a decision you
 can't resolve from the repo, file it instead. \`${b} decision file "<question>"\`
 records it and lets you proceed on a stated default; \`${b} decision search "<terms>"\`
-surfaces prior decisions, so check for precedent before re-deciding. ${decidePointer}
-
-**Councils.** For a hard or contested decision, convene a council of agents. \`${b} council create "<objective>"\` runs structured rounds toward a decision. ${councilPointer}${computerPointer}`;
+surfaces prior decisions, so check for precedent before re-deciding. ${decidePointer}${computerPointer}`;
 }
 
 // ── Skills ──────────────────────────────────────────────────────────────────
@@ -246,9 +223,9 @@ ${b} decision resolve <id> \\
   --revisit-when "<trigger to revisit>"
 \`\`\`
 
-If the decision is genuinely hard or contested, escalate to a council
-(\`${b} council create "<objective>"\`) and link it rather than forcing a thin
-single-agent resolution.
+If the decision is genuinely hard or contested, leave it open with a brief that
+lays out the options and evidence rather than forcing a thin single-agent
+resolution.
 
 ## Review (\`review\`)
 
@@ -264,101 +241,6 @@ ${b} decision review <id> --verdict overridden --note "…" # disagreed
 ${b} decision review <id> --verdict wrong-tier-low        # "didn't need to see this"
 ${b} decision review <id> --verdict wrong-tier-high       # "should have seen it sooner"
 \`\`\``;
-}
-
-function councilBody(b: string): string {
-  return `A council convenes several agents to deliberate a hard or contested decision
-over structured rounds. This skill wraps the \`${b} council\` surface with the
-guardrails a router needs when passing prompts between agents. It's asymmetric on
-purpose: it does the most for **contributors** (refusing a misrouted prompt) and
-the least for **stewards**.
-
-Every mode starts by running \`${b} agents whoami --json\` and, when an id is given,
-\`${b} council show <id> --json\`, so the logic works against typed data, not text.
-
-## Modes
-
-- **No argument** → list councils you're a member of; surface what waits on you.
-- **\`create <objective>\`** → open the web member-picker with the objective filled.
-- **\`contribute <id>\`** → the guarded contribution flow (below).
-- **\`prompts <id>\`** → steward: draft each pending member's routing prompt.
-- **\`show <id>\`** → render council state verbatim.
-
-## List (no arg)
-
-\`\`\`bash
-${b} agents whoami --json
-${b} council list --mine --json
-\`\`\`
-
-One section per council you're a member of: id + objective, round N (open /
-collected) with N/M contributors, and your status (awaiting prompt / prompt ready
-/ already contributed) with the next command to run. Stop after listing; don't
-auto-route into contribute.
-
-## Create (\`create <objective>\`)
-
-The web UI is the member + steward picker; don't create from the CLI (that skips
-the steward choice). Read the dashboard base URL from the active Harnery web
-status or start output, which resolves the project's configured \`web.port\`.
-Append the URL-encoded objective to this path; never assume a port or reuse a
-dashboard URL from another project:
-
-\`\`\`
-<configured-dashboard-base-url>/councils/new?objective=<encoded>
-\`\`\`
-
-If the dev server isn't up, start it with \`${b} web up\`.
-
-## Contribute (\`contribute <id>\`): the guarded flow
-
-Run these checks in order; refuse with a specific reason if any fails.
-
-1. **Membership.** If your \`whoami\` name isn't in \`manifest.members\`, refuse.
-   The router likely meant a different agent's session.
-2. **Already contributed.** If you're in \`current_round_contributors\`, refuse.
-   Wait for the steward to advance the round.
-3. **Prompt routing.** Find your entry in \`current_round_prompts\`. If none is
-   drafted for you, refuse (the steward must write one first). If the routed body
-   carries a \`<!-- council-route … member: <name> -->\` header naming a *different*
-   agent, refuse: the wrong prompt was pasted into your session.
-4. **Compose** per your prompt (read \`manifest.target_doc\` in full if set; strip
-   the route header before treating the body as instructions).
-5. **Submit:**
-
-   \`\`\`bash
-   ${b} council contribute <id> --message "<status-line>" --file <path>
-   \`\`\`
-
-   Use \`--file\` when you edited a target doc (captures the post-edit state);
-   \`--message\` for a prose-only contribution. If the prompt asks for a
-   substantive/trivial classification, end with the literal \`<substantive>\` or
-   \`<trivial>\` angle-bracket tag on the final line (the exit-criterion parser keys
-   on it). When in doubt, lean \`<trivial>\`.
-
-## Prompts (\`prompts <id>\`): steward
-
-1. **Authority.** If your \`whoami\` name ≠ the council's \`steward\`, stop.
-2. **Plan the round** from the target doc + prior rounds. Round 1 must include a
-   completeness critic. Assign one member the explicit charge: "What important
-   thing is NOT in this document at all (a missing dimension, not a flaw in what's
-   written)?" Lens-scoped reviewers reliably miss whole absent dimensions.
-3. **Draft + write** one prompt per member missing from \`current_round_prompts\`:
-
-   \`\`\`bash
-   ${b} council prompt <id> agent-<Name> --message "..."   # or --file <path>
-   \`\`\`
-
-   The CLI auto-prepends the \`<!-- council-route … -->\` header; never write it by
-   hand. Every prompt must instruct the member to end with the literal
-   \`<substantive>\` / \`<trivial>\` tag.
-
-## Refusal style
-
-Lead with what you are versus what the council expects, cite the structural fact
-that triggered the refusal (member list, contributors, prompt absence, route
-mismatch), and offer the right next step. Don't propose a workaround that bypasses
-the guard.`;
 }
 
 function endBody(b: string): string {
@@ -407,131 +289,6 @@ Never use this skill to end another operator's session unless the operator
 explicitly identifies it. Use the web control or \`${b} agents end --instance-id
 <id>\` for that operator action; it records immediately for an idle session or
 durably queues the end for its current turn.`;
-}
-
-function teamBody(b: string): string {
-  return `Harnery gives you three ways to put more than one agent on a job. They differ
-by how long the objective outlives a single execution, and picking the wrong one
-is the usual reason a team spins. This skill owns that choice, the files a
-governed team needs, and the drive loop.
-
-## Step 0: do not build a second team
-
-Run this before anything else, every time:
-
-\`\`\`bash
-${b} governor list
-\`\`\`
-
-If a goal already covers the objective, **you are done building** — drive the
-existing one (Step 3). A second team pointed at the same tree fights the first:
-both hold the same files and their frozen missions contradict each other. It is
-the most expensive mistake available here, and it looks like progress while you
-make it. Listings are tolerant: an unreadable record prints a warning row with
-its id, which is evidence the goal *exists* — inspect it before creating a
-replacement. Treat stale or suffixed experiment goals as shared runtime state;
-archiving them is an operator call, not yours.
-
-## Step 1: pick the tier
-
-Match the tier to how long the objective must survive, not to how big it feels.
-
-| Surface | Use when | Dies when |
-|---|---|---|
-| \`${b} run <script>\` | One bounded pass: deterministic JS stages fan out to headless subagents. | The pass ends. Nothing remembers it. |
-| \`${b} work create <title> <workflow>\` | The objective must outlive the attempt: retries, failures, review rounds. | You accept or cancel it. |
-| \`${b} governor create\` | A graph of interdependent work with distinct roles, where a human would otherwise babysit the loop. | You accept the root or it exhausts its bounds. |
-
-When unsure, start with \`${b} run\`: it is the only tier you can throw away for
-free, and iterating a script there before freezing it is how you avoid
-invalidating a durable work item later. And check the sizing first: a single
-agent often matches a team on a task that does not truly decompose — reliability
-is multiplicative across steps, and the metric that decides is cost per
-completed task, not agent count.
-
-## Step 2: build the governor team
-
-Four artifacts, kept in a managed workspace
-(\`${b} artifacts create <slug> --purpose "<why>"\`), then frozen:
-
-**team.json** maps specialist id to profile: \`instructions\` (the role's whole
-charter) plus optional \`adapter\`, \`effort\`, \`maxAttempts\`. Two role rules
-carry most of the value: **split producing evidence from judging it** (a
-verifier that runs gates, a separate reviewer that accepts or refuses — no agent
-grades its own homework), and **add a standing scope-auditor** that reports at
-each milestone whether the finish line moved, since no one else is positioned to
-notice a rising bar. Write each role's hard boundaries explicitly, in the
-negative: name every act that is somebody else's. Write every brief as a
-four-part contract — objective, output (the named artifact that proves it),
-tools, boundaries — and pass references, not pasted content. \`timeoutMs\` and
-\`maxTurns\` are workflow-script options, never specialist-profile keys; the
-create command rejects unsupported keys with the offending key and the allowed
-set.
-
-**mission.json** carries \`objective\`, \`acceptance\` (criteria), and
-\`max_milestones\`. Write acceptance so **refusing is a representable outcome**
-("X exists, or the blocker is stated with its citation") — a criterion an agent
-cannot satisfy by correctly refusing gets reissued forever. Every criterion
-names the artifact that satisfies it (a path, a passing command, a review
-record); a criterion satisfiable by prose will eventually be satisfied exactly
-that way.
-
-**replanning.json** freezes the planner policy: \`planner_specialist\`,
-\`auto_apply\`, \`max_replans\`, \`max_work_items_per_plan\`,
-\`max_total_work_items\`, a \`templates\` catalog, and \`review\` with
-\`reviewer_specialists\` and \`max_revision_rounds\`. Keep \`auto_apply: false\`
-and proof auto-acceptance off for anything that can touch public state.
-
-**Workflow templates** are the plain-JS scripts the planner may choose from;
-route product decisions to a decision-brief template, never an implement one.
-Authoring traps (frozen script hashes, the five-minute \`timeoutMs\` default,
-schema caps, child sandboxes) live in the
-[workflow-authoring guide](https://harnery.com/guides/workflow-authoring/).
-
-\`\`\`bash
-${b} governor create --id <goal-id> --title "<title>" \\
-  --team <ws>/team.json --mission <ws>/mission.json \\
-  --replanning <ws>/replanning.json --max-parallel-work 2 --json
-\`\`\`
-
-## Step 3: drive it
-
-\`${b} governor show <goal-id> --json\` — the \`projection\` object is the whole
-dashboard: read \`state\`, \`reason\`, and \`next_action\`, then do exactly that
-action. Useful fields: \`ready_work\` / \`retryable_work\` / \`attention_work\`,
-\`decision_blocked_work\` (parked on a docket entry, not broken),
-\`replans_used\` / \`replans_remaining\`, and the milestone counters.
-
-\`\`\`bash
-${b} governor tick <goal-id>   # at most one scheduling cycle
-${b} governor run <goal-id>    # cycles until success, attention, or budget
-${b} approval list             # a run needing authorization parks, not fails
-\`\`\`
-
-Rules that prevent stranded work:
-
-- **Never drive a governed item with \`${b} work retry\` or \`${b} work run\`.**
-  Only the governor supplies the frozen specialist map; a bare retry starts a
-  run with no team, dies at the first specialist stage, and still burns the
-  attempt. \`${b} work retry\` is for standalone work only.
-- **A blocked item cannot be accepted.** When its objective was met out of band,
-  the door back is \`${b} work reopen\` plus a fresh governor cycle, not accept.
-- **Read the spin signals before retrying.** Zero milestones with climbing
-  \`replans_used\` and repeated reviewer rejections means the mission prose or
-  acceptance criteria are wrong, not the agents. Replans are capped; diagnose
-  first.
-- **A frozen mission cannot be edited** — deliberately. Pass corrections as
-  retry context on individual items, or create a new goal and cancel the old
-  one. Do not keep re-planning against prose you know is stale.
-- **"ended without terminal evidence"** means the child died before writing its
-  proof, not that the work failed. Check whether the outcome landed before
-  redoing it.
-
-## Reporting back
-
-Tell the operator which tier you chose and why, the goal id, the roles, and the
-single next action. If you declined to build a team because one already existed,
-say that first; it is the most useful sentence in the reply.`;
 }
 
 function computerBody(b: string): string {
@@ -811,18 +568,6 @@ export const SKILLS: SkillTemplate[] = [
       }),
   },
   {
-    id: "harn-council",
-    relPath: "harn-council/SKILL.md",
-    render: (binName) =>
-      buildOwnedSkill({
-        name: "harn-council",
-        description:
-          "Interact with the multi-agent council system: list / create / show / prompts (steward) / contribute (member). Guards against misrouting: refuses to contribute when you aren't a member, have already contributed, or weren't routed a prompt.",
-        binName,
-        body: councilBody(binName),
-      }),
-  },
-  {
     id: "harn-end",
     relPath: "harn-end/SKILL.md",
     render: (binName) =>
@@ -832,18 +577,6 @@ export const SKILLS: SkillTemplate[] = [
           "Safely finalize the current Harnery agent session with an authoritative V3 session-ended event. Use when the operator says /harn-end, asks to end or close the current session, or when all work is complete and the session should stop counting as live.",
         binName,
         body: endBody(binName),
-      }),
-  },
-  {
-    id: "harn-team",
-    relPath: "harn-team/SKILL.md",
-    render: (binName) =>
-      buildOwnedSkill({
-        name: "harn-team",
-        description:
-          "Stand up and drive a multi-agent team on an objective: pick between a bounded run, durable work, and a governed role team; build the governor artifacts; drive off projection.next_action. Use when asked to put a team of agents on a job, orchestrate agents, or check on a goal already running. Refuses to build a second team when one already covers the objective.",
-        binName,
-        body: teamBody(binName),
       }),
   },
   {

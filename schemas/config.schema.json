@@ -510,7 +510,7 @@
           "type": "array",
           "items": { "type": "string" },
           "default": [],
-          "description": "Shipped Harnery skills this repo suppresses. Installed skill IDs are harn-decide, harn-council, harn-end, harn-team, and (only when computer.enabled is true) harn-computer."
+          "description": "Shipped Harnery skills this repo suppresses. Installed skill IDs are harn-decide, harn-end, and (only when computer.enabled is true) harn-computer."
         }
       }
     },

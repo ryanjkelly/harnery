@@ -142,9 +142,7 @@ function blockSkills(projectRoot: string, adapter: string): BlockSkills {
   const exclude = readSkillsExclude(projectRoot);
   const skills: BlockSkills = {
     decide: supported && !exclude.has("harn-decide"),
-    council: supported && !exclude.has("harn-council"),
     end: supported && !exclude.has("harn-end"),
-    team: supported && !exclude.has("harn-team"),
   };
   // Only an enabled project's block mentions the opt-in skill, so every other
   // project's block stays byte-identical.
@@ -174,6 +172,36 @@ function removeOwnedSkillFile(skillPath: string): void {
     /* dir not empty or gone → leave it */
   }
 }
+
+/**
+ * Generated skill folders whose skill Harnery no longer ships: a direct child
+ * of the adapter skill dir whose `SKILL.md` carries the ownership marker under
+ * its own folder name, where that name is not in {@link SKILLS}. The marker is
+ * the only test, so a hand-written skill (no marker) is never returned.
+ */
+function retiredOwnedSkills(projectRoot: string, skillsDir: string): string[] {
+  const root = join(projectRoot, skillsDir);
+  const shipped = new Set(SKILLS.map((skill) => skill.relPath.split("/")[0]));
+  let names: string[];
+  try {
+    names = readdirSync(root, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && !shipped.has(e.name))
+      .map((e) => e.name)
+      .sort();
+  } catch {
+    return [];
+  }
+  return names.filter((name) => {
+    try {
+      const m = OWNED_SKILL_NAME_RE.exec(readFileSync(join(root, name, "SKILL.md"), "utf8"));
+      return m !== null && m[1] === name;
+    } catch {
+      return false;
+    }
+  });
+}
+
+const OWNED_SKILL_NAME_RE = /<!--\s*harnery:generated\s+(\S+)\s+v=[0-9a-f]*[\s\S]*?-->/;
 
 interface ApplyOpts {
   binName: string;
@@ -332,6 +360,13 @@ export function applyInstructions(projectRoot: string, opts: ApplyOpts): ApplyRe
       actions.push(
         `${fresh ? "+" : "~"} ${verbed(fresh ? "write" : "update", fresh ? "wrote" : "updated")} skill ${skill.id}`,
       );
+    }
+
+    // A skill Harnery stopped shipping leaves its generated folder behind in
+    // projects initialised earlier; take it back out.
+    for (const name of retiredOwnedSkills(projectRoot, skillsDir)) {
+      if (!opts.dryRun) removeOwnedSkillFile(join(projectRoot, skillsDir, name, "SKILL.md"));
+      actions.push(`+ ${verbed("remove", "removed")} skill ${name} (no longer shipped)`);
     }
   }
 
@@ -547,6 +582,9 @@ export function checkInstructions(
           continue;
         }
         note(`skill ${skill.id}`, checkOwnedSkill(c, skillBody(skill.render, opts.binName)));
+      }
+      for (const name of retiredOwnedSkills(projectRoot, skillsDir)) {
+        issues.push(`skill ${name}: no longer shipped (re-run init)`);
       }
     }
 

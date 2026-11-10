@@ -4,11 +4,11 @@ Multi-agent coordination for AI coding agents: Claude Code, Cursor, Codex, and O
 
 ## Portability is the prime constraint
 
-This package serves arbitrary host projects. Nothing host-specific may land in `src/`, `web/`, `docs/`, or `schemas/`: no host names, hostnames, business vocabulary, hardcoded `/home/<user>/...` paths, or single-bin assumptions. Bin name, project context, and event emit are injected by the host CLI; anything project-specific belongs in the host, not here. Runtime state lives in the **host project's** `.harnery/` directory (`ledgers/`, `active/`, `councils/`, `journal/`, `identities/`, `pid-map/`), resolved via `coordRoot()`, never a hardcoded location.
+This package serves arbitrary host projects. Nothing host-specific may land in `src/`, `web/`, `docs/`, or `schemas/`: no host names, hostnames, business vocabulary, hardcoded `/home/<user>/...` paths, or single-bin assumptions. Bin name, project context, and event emit are injected by the host CLI; anything project-specific belongs in the host, not here. Runtime state lives in the **host project's** `.harnery/` directory (`ledgers/`, `active/`, `journal/`, `identities/`, `pid-map/`), resolved via `coordRoot()`, never a hardcoded location.
 
 **Enforced, not just documented.** [scripts/check-portability.ts](scripts/check-portability.ts) scans committable source for host-specific tokens (a consumer's bin abbreviation, business name, submodule paths, dbt marts, skills, and `BP_`-style env prefixes) and fails on any hit. It runs as `bun run check:portability`, as the CI-gating [tests/unit/portability.test.ts](tests/unit/portability.test.ts), and (host-side) in the embedding monorepo's pre-commit hook. Env vars are the sneakiest leak: read every coord var through `coordEnv()` (which prepends `HARNERY_`), never a bare `process.env.BP_*`. Escape hatch for a genuine non-host use: `portability-allow: <reason>` on the line (rare; prefer a neutral token).
 
-**Bin name in agent-facing strings.** Any user-facing string that tells an agent to run a command (council prompts, end-of-turn nudges, command help/errors) must use `resolveBinName()` from [src/core/config.ts](src/core/config.ts), never a literal bin name. Commands can see the live program name, but the coord binaries (`agent-hook`/`agent-coord`) and the web UI run *as harnery* and can't, so the bin name is read back from `.harnery/config.jsonc` (`binName`). Resolution precedence: `HARNERY_BIN` env → config `binName` → `"harn"`. `harn init` stamps `binName` for a consumer (any bin ≠ `harn`); a host CLI commits its own `.harnery/config.jsonc` carrying its bin name.
+**Bin name in agent-facing strings.** Any user-facing string that tells an agent to run a command (end-of-turn nudges, command help/errors) must use `resolveBinName()` from [src/core/config.ts](src/core/config.ts), never a literal bin name. Commands can see the live program name, but the coord binaries (`agent-hook`/`agent-coord`) and the web UI run *as harnery* and can't, so the bin name is read back from `.harnery/config.jsonc` (`binName`). Resolution precedence: `HARNERY_BIN` env → config `binName` → `"harn"`. `harn init` stamps `binName` for a consumer (any bin ≠ `harn`); a host CLI commits its own `.harnery/config.jsonc` carrying its bin name.
 
 ## Public artifacts are source-neutral
 
@@ -18,7 +18,7 @@ Everything committed to Harnery is public, including its Git history. Keep inter
 
 ## Surface tiers (ADR 0010)
 
-The `package.json` exports map is the public-API tier boundary. **Product tier** (`.`, `./commander`, `./core/*`): the coordination layer, the reason the package exists, full semver care. **Toolkit tier** (every `./lib/*` subpath): supporting utilities for embedding hosts (http, cookies, format, readability, browser, machine, …), supported but secondary, allowed to evolve faster, never the pitch. Anything unexported is internal regardless of directory: `src/lib/` legitimately hosts unexported coordination libs (council, decision, identities); the directory is NOT the boundary, the exports map is.
+The `package.json` exports map is the public-API tier boundary. **Product tier** (`.`, `./commander`, `./core/*`): the coordination layer, the reason the package exists, full semver care. **Toolkit tier** (every `./lib/*` subpath): supporting utilities for embedding hosts (http, cookies, format, readability, browser, machine, …), supported but secondary, allowed to evolve faster, never the pitch. Anything unexported is internal regardless of directory: `src/lib/` legitimately hosts unexported coordination libs (decision, identities); the directory is NOT the boundary, the exports map is.
 
 Two rules follow, both enforced:
 
@@ -31,7 +31,7 @@ When writing README/docs/marketing copy, coordination leads and the toolkit is f
 
 - `src/commands/`: portable CLI commands (Commander pattern). New-command recipe: [CONTRIBUTING.md](CONTRIBUTING.md) § Adding a new command (register fn → wire in `src/commander.ts` → test → docs `.mdx` → changeset).
 - `src/core/`: coord layer (agents state, session events, hooks, journal).
-- `src/lib/`: shared libs (a mix of exported toolkit modules and unexported internals; see Surface tiers above). Notables: `lib/council/` (council state machine: `writePrompt` auto-prepends the `<!-- council-route -->` header and auto-appends the `<!-- council-submit-footer -->` block, both idempotent; never hand-write those markers) and `lib/docs-lint.ts` / `docs-sweep.ts` (powers `harn docs`).
+- `src/lib/`: shared libs (a mix of exported toolkit modules and unexported internals; see Surface tiers above). Notables: `lib/docs-lint.ts` / `docs-sweep.ts` (powers `harn docs`).
 - `bin/`: `harn`, `agent-coord`, `agent-hook` entrypoints.
 - `relay/`: the presence relay's Cloudflare Workers host (`relay/worker/`, deployed with wrangler; ADR 0016). The Bun self-host lives in `src/commands/relay.ts`; the shared wire protocol in `src/core/presence/relay-protocol.ts`.
 - `web/`: standalone Next.js dashboard (private, not published). Booted by `harn web up`; the port comes from `HARNERY_WEB_PORT` or the project's `.harnery/config.jsonc` `web.port`. Never assume a port when forming a URL. <!-- harnery-fact -->
@@ -78,7 +78,7 @@ Bun runs the TS source directly (zero build), which is the dev loop and how an e
 Next 16 App Router + React 19 + Tailwind v4 (geist font, lucide icons). `next dev --webpack`, not Turbopack. House rules:
 
 - **RSC-first.** Pages are server components reading `.harnery/` via `fs` per request; `"use client"` only at interactive leaves.
-- **Writes prefer the CLI.** Council mutations shell `bin/agent-coord` / `bin/harn` (`web/lib/council-writer.ts`). Direct fs writes are reserved for operator escape hatches (`web/lib/coord-writer.ts`: release claim, ping, end session; deliberately no flock since they're operator-initiated and low-frequency). New write paths default to shelling the CLI.
+- **Writes prefer the CLI.** New write paths shell `bin/agent-coord` / `bin/harn`. Direct fs writes are reserved for operator escape hatches (`web/lib/coord-writer.ts`: release claim, ping, end session; deliberately no flock since they're operator-initiated and low-frequency).
 - **Liveness:** ride the shared `useLiveSignal` hook (SSE with poll fallback; Cloudflare quick tunnels buffer SSE, so never EventSource-only) and the globally-mounted `LiveRefresher` (`router.refresh()` on coord-layer change). Don't roll new polling.
 - **Codec card discrepancies:** when a live `/codec` card looks stale, wrong, or missing, click
   **Snapshot and compare cards** before reloading. It keeps the values behind the visible cards
@@ -94,7 +94,7 @@ Next 16 App Router + React 19 + Tailwind v4 (geist font, lucide icons). `next de
 - **Colour grammar:** one map, `lib/tone.ts`: `act` = sky (act now / working live), `done` = emerald, `warn` = amber, `danger` = red, `accent` = purple, `neutral` = wait; `live-dot` = working live. Use a `tone` prop or `TONE[tone]`, never raw palette classes; don't invent state colours. Every page must work light and dark.
 - **Agent names:** every rendered agent name goes through `AgentChip` (hover card with plain-text fallback), never a bare `agent-Foo` string.
 - **Hover hints:** use `ui/tooltip`'s `<Tooltip content={…}>`, or the `title`/`tooltip` props on `Badge`/`Button`, which wrap it. Never the native `title` attribute (inconsistent chrome, invisible on touch). Note: React delegates `onMouseEnter` via `mouseover`, so synthetic-event tests must dispatch `mouseover`, not `mouseenter`.
-- **Operator attention:** when a page state waits on the HUMAN (copy a council prompt, advance a round), mount `<Attention request={{ key, label }} />` (`components/Attention.tsx`); pass `null` while the responsible agent is live-working. The root `AttentionProvider` drives title flash, favicon badge, chime, viewport edge pulse and cursor→target flow lines; dedupes by `key` in sessionStorage; and silences only on deliberate interaction (click/tap, or a keystroke in a focused form field; never scroll or stray keys). Flow lines aim at `[data-attention-target]`, else `.attention-ring` spotlights; tag the actionable element when a state has no ring. The ack-exempt NavBar bell (`[data-attention-replay]`) replays the last alert. Don't roll bespoke title or audio alerts. The default favicon is `app/icon.svg`; the badge draws over it and restores it on ack (never remove the icon link: browsers keep painting the last favicon).
+- **Operator attention:** when a page state waits on the HUMAN (a decision waiting for a human review), mount `<Attention request={{ key, label }} />` (`components/Attention.tsx`); pass `null` while the responsible agent is live-working. The root `AttentionProvider` drives title flash, favicon badge, chime, viewport edge pulse and cursor→target flow lines; dedupes by `key` in sessionStorage; and silences only on deliberate interaction (click/tap, or a keystroke in a focused form field; never scroll or stray keys). Flow lines aim at `[data-attention-target]`, else `.attention-ring` spotlights; tag the actionable element when a state has no ring. The ack-exempt NavBar bell (`[data-attention-replay]`) replays the last alert. Don't roll bespoke title or audio alerts. The default favicon is `app/icon.svg`; the badge draws over it and restores it on ack (never remove the icon link: browsers keep painting the last favicon).
 - **JSX whitespace trap:** a text segment that follows a `{expr}` with a same-line space and contains an HTML entity (`&apos;`, `&lt;`, …) anywhere in the segment, including continuation lines, loses that leading space at compile time (the "round 2once" bug; bitten three times). Render such phrases as a single template-literal expression (no entities needed in JS strings). Enforced: `web/scripts/check-jsx-entity-whitespace.ts`, run by the host repo's pre-commit on staged `web/**/*.tsx`.
 
 ## Embedding in a host monorepo
@@ -119,13 +119,13 @@ When more than one host checks out harnery (e.g. two separate monorepos each car
 
 This `AGENTS.md` is the canonical instructions file; `CLAUDE.md` is a verbatim mirror for Claude Code. Edit `AGENTS.md`, then copy it across.
 
-<!-- harnery:begin instructions v=2e310879 -->
+<!-- harnery:begin instructions v=6648b0fe -->
 ## harnery coordination
 
 This project runs [harnery](https://harnery.com) for multi-agent coordination.
-You share this checkout with other agents; the surfaces below keep you oriented and out of each other's way, and let you dispatch a team of your own when a job
-is bigger than one session. Run `harn <command> --help` for any command's full
-surface. Procedures for the deeper flows live in the `harn-decide` and `harn-council` and `harn-end` and `harn-team` skills.
+You share this checkout with other agents; the surfaces below keep you oriented
+and out of each other's way. Run `harn <command> --help` for any command's full
+surface. Procedures for the deeper flows live in the `harn-decide` and `harn-end` skills.
 
 **Identity + peers.** You are one of several agents in this repo.
 `harn agents whoami` is you; `harn agents status` shows your session plus the
@@ -140,20 +140,12 @@ it cannot proceed, `harn agents lifecycle done` when it is complete, and
 written). Ordinary `set-task` calls never change lifecycle, and a transition
 that re-mints the session title tells you the new name to copy. When the whole session is genuinely finished, use the `harn-end` skill as the final workflow.
 
-**Dispatching a team.** Everything else here coordinates the agents already
-present. These three start new ones, and they differ by how long the objective
-outlives a single execution. `harn run <script>` is one bounded pass:
-plain JS stages fan out to headless subagents that are born
-coordination-registered, with deterministic code deciding the routing between
-stages. `harn work create <title> <workflow>` wraps an objective that has to
-survive many such passes, holding it across retries, failures, and review.
-`harn governor create` drives a whole graph of work toward a goal, choosing
-what runs next and how much it may settle without asking a human. Reach for the
-first when one pass will do, the second when the objective must outlive the
-attempt, and the third when a human would otherwise have to babysit the loop. A
-run that needs authorization parks durably instead of failing, so check
-`harn approval list` when one appears to be waiting rather than stuck.
-The `harn-team` skill owns the tier choice, the governor artifacts, and the drive loop.
+**Starting other agents.** Use your harness's own subagent tool to hand a
+bounded task to a helper. For a scripted fan-out, `harn run <script>` runs
+plain JS stages that start headless subagents, already registered for
+coordination, with deterministic code deciding the routing between stages. A
+run that needs authorization parks instead of failing, so check
+`harn approval list` when one seems to be waiting rather than stuck.
 
 **Durable role handoff.** When you are replacing a prior session in the same
 named role, run `harn agents identity assume <name>` before declaring your task.
@@ -198,6 +190,4 @@ dashboard viewer. Use localhost links only when the operator shares this machine
 can't resolve from the repo, file it instead. `harn decision file "<question>"`
 records it and lets you proceed on a stated default; `harn decision search "<terms>"`
 surfaces prior decisions, so check for precedent before re-deciding. The `harn-decide` skill has the file / claim / resolve-with-evidence procedure.
-
-**Councils.** For a hard or contested decision, convene a council of agents. `harn council create "<objective>"` runs structured rounds toward a decision. The `harn-council` skill has the steward and member flow.
 <!-- harnery:end instructions -->

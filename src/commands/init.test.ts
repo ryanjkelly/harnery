@@ -162,7 +162,7 @@ describe("init --instructions-only", () => {
     expect(existsSync(join(root, ".harnery", "config.jsonc"))).toBe(false);
     expect(existsSync(join(root, ".git", "hooks", "pre-commit"))).toBe(false);
     expect(readFileSync(join(root, "AGENTS.md"), "utf8")).toContain("harnery:begin instructions");
-    expect(existsSync(join(root, ".agents", "skills", "harn-team", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(root, ".agents", "skills", "harn-end", "SKILL.md"))).toBe(true);
   });
 
   test("check ignores absent runtime wiring and reports only instruction drift", async () => {
@@ -258,7 +258,7 @@ describe("init --adapter opencode", () => {
     expect(existsSync(join(root, "opencode.json"))).toBe(false);
     expect(existsSync(join(root, "CLAUDE.md"))).toBe(false);
     expect(readFileSync(join(root, "AGENTS.md"), "utf8")).toContain("harnery:begin instructions");
-    expect(existsSync(join(root, ".agents", "skills", "harn-team", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(root, ".agents", "skills", "harn-end", "SKILL.md"))).toBe(true);
     expect(existsSync(join(root, ".claude", "skills"))).toBe(false);
 
     const check = await runInit(root, ["--adapter", "opencode", "--check"]);
