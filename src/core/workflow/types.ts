@@ -368,7 +368,7 @@ export interface WorkflowSpecialistProfile {
  *
  * - `environment`: the run never started — a precondition was missing (the
  *   vendor binary was absent). Uncharged AND not retried: retrying an unchanged
- *   environment cannot help, so the work item stops and names the precondition.
+ *   environment cannot help, so the run stops and names the precondition.
  * - `upstream`: the vendor was reached and refused (5xx, 429, circuit open).
  *   Uncharged, but retry stays available (bounded by max_uncharged_attempts).
  */
@@ -534,8 +534,8 @@ export interface WorkflowContext {
    *
    * This is not a failure and must not be used as one. Reach for it only when
    * the script determined something *correct* — that the question in front of
-   * it belongs to a person. The run ends uncharged and the work item stops
-   * naming the decision, so no automatic retry re-issues work that was already
+   * it belongs to a person. The run ends uncharged and stops naming the
+   * decision, so no automatic retry re-issues work that was already
    * answered correctly. A plain `throw` means the opposite: the work failed and
    * a retry might do better. */
   blocked: (input: BlockedInput) => never;
@@ -544,7 +544,7 @@ export interface WorkflowContext {
 /** Why a run stopped on a human. */
 export interface BlockedInput {
   /** What a human has to settle, in one sentence. Shown verbatim to the
-   * operator as the work item's reason, so write it for them, not for a log. */
+   * operator as the run's reason, so write it for them, not for a log. */
   reason: string;
   /** Docket id of the decision to resolve. Strongly preferred: without it the
    * operator gets prose and has to go find the question themselves. */

@@ -5,7 +5,7 @@
  *   1. Merges `agent-hook` entries into the adapter settings file
  *      (Claude Code `.claude/settings.json`, Cursor `.cursor/hooks.json`, or
  *      Codex `.codex/hooks.json`), or installs the OpenCode plugin directory.
- *   2. Creates the `.harnery/` coord root (runtime state: events, councils,
+ *   2. Creates the `.harnery/` coord root (runtime state: events,
  *      identities, journal) and stamps the host bin name into
  *      `.harnery/config.jsonc`.
  *
@@ -160,7 +160,7 @@ export function registerDeinitCommand(program: Command, emit: EmitContext, binNa
         if (!coordExists) {
           actions.push("· .harnery/ doesn't exist; nothing to purge");
         } else if (dryRun) {
-          actions.push("+ would delete .harnery/ and all coord state (events, councils, journal)");
+          actions.push("+ would delete .harnery/ and all coord state (events, identities, journal)");
         } else {
           rmSync(coordDir, { recursive: true, force: true });
           actions.push("+ deleted .harnery/ and all coord state");
@@ -208,7 +208,7 @@ export function engineRemovalHint(): string {
 function confirmDeleteState(coordDir: string): Promise<boolean> {
   process.stdout.write(
     "\nharnery saved this project's coordination history in .harnery/\n" +
-      "(its event log, councils, agent identities, and journals):\n" +
+      "(its event log, agent identities, and journals):\n" +
       `    ${coordDir}\n` +
       "Unwiring leaves that in place. Deleting it can't be undone.\n",
   );

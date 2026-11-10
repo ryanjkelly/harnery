@@ -17,7 +17,7 @@
     "binName": {
       "type": "string",
       "default": "harn",
-      "description": "Host CLI bin name used in agent-facing strings (council prompts, end-of-turn nudges, command help). The coord binaries + web UI run as harnery and read this back since they can't see a consumer CLI's name. Stamped by `harn init` for a consumer. Resolution: HARNERY_BIN env -> this field -> 'harn'."
+      "description": "Host CLI bin name used in agent-facing strings (end-of-turn nudges, command help). The coord binaries + web UI run as harnery and read this back since they can't see a consumer CLI's name. Stamped by `harn init` for a consumer. Resolution: HARNERY_BIN env -> this field -> 'harn'."
     },
     "timeZone": {
       "type": "string",
@@ -669,7 +669,7 @@
     "sync": {
       "type": "object",
       "additionalProperties": false,
-      "description": "`harn sync` (rclone) defaults for the curated cross-machine subset (identities/, journal/archived/, councils/). Env overrides: HARNERY_SYNC_REMOTE, HARNERY_SYNC_PREFIX. `harn sync init` also records these in ~/.config/harnery/sync.json (a lower-precedence fallback than this section).",
+      "description": "`harn sync` (rclone) defaults for the curated cross-machine subset (identities/, journal/archived/). Env overrides: HARNERY_SYNC_REMOTE, HARNERY_SYNC_PREFIX. `harn sync init` also records these in ~/.config/harnery/sync.json (a lower-precedence fallback than this section).",
       "properties": {
         "remote": {
           "type": "string",

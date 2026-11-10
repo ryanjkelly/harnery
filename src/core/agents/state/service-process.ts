@@ -1,6 +1,6 @@
 /**
- * One owner check for every singleton background service (governor, local
- * supervisor, legacy resource observer): is the recorded process still the
+ * One owner check for every singleton background service (local supervisor,
+ * legacy resource observer): is the recorded process still the
  * run that wrote the record, and how is a stop requested?
  */
 import { randomUUID } from "node:crypto";

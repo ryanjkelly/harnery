@@ -4,8 +4,8 @@
  * This module once housed `coordLog`, the writer for a human-readable
  * activity log. That log has been retired; the canonical V3 ledger is the
  * single source of truth, and the
- * per-event telemetry that had consumers (heals → health.*, councils →
- * council.*, shell-mutation candidates → decision.warn) is emitted there
+ * per-event telemetry that had consumers (heals → health.*, shell-mutation
+ * candidates → decision.warn) is emitted there
  * directly. `coordLog` and its call sites are gone; only `resolveShortName`
  * remains (still used for display-name resolution).
  */

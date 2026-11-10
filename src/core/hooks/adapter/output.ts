@@ -38,7 +38,7 @@ export interface StopOutputOptions {
   verdict?: { reason?: string; rule: string };
 }
 
-/** Emit a context-injection (peer table, wiring check, council pending, …). */
+/** Emit a context-injection (peer table, wiring check, …). */
 export function emitContext(adapter: Adapter, event: SystemEvent, text: string): boolean {
   if (!text) return false;
   const json = buildContextJson(adapter, event, text);

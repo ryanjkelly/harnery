@@ -86,7 +86,7 @@ confirm() {  # $1 = question; yes only on an explicit y / yes
 
 if [ "$INTERACTIVE" -eq 1 ] && [ "$PURGE_STATE" -eq 0 ] && [ -d "$COORD_DIR" ]; then
   echo "harnery saved this project's coordination history in .harnery/"
-  echo "(its event log, councils, agent identities, and scratchpads):"
+  echo "(its event log, agent identities, and scratchpads):"
   echo "    $COORD_DIR"
   echo "Unwiring leaves that in place. Deleting it can't be undone."
   if confirm "Delete this project's harnery history too? [y/N]"; then PURGE_STATE=1; fi

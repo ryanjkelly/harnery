@@ -891,7 +891,7 @@ function harneryCommandBundles({
     ),
     lazy(
       "sync",
-      "Cross-machine sync of curated .harnery/ subset (identities, archived journals, council manifests) via rclone. Google Drive is the expected remote; any rclone backend works.",
+      "Cross-machine sync of curated .harnery/ subset (identities and archived journals) via rclone. Google Drive is the expected remote; any rclone backend works.",
       async (program) => (await import("./commands/sync.ts")).registerSyncCommand(program, emit),
     ),
     {

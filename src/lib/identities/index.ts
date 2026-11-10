@@ -13,8 +13,6 @@
  * by name is a scan (small directory, ~100 personas tops in practice).
  *
  * Used as the canonical identifier in:
- *   - Council manifests (`created_by_id`, `steward_id`, `member_ids[]`)
- *   - Council body filenames (`<agent_id>.md` not `<name>.md`)
  *   - Session events ndjson (new `agent_id` field alongside `agent_name`)
  *   - Heartbeats (new `agent_id` field; existing CC subagent-call id
  *     renamed to `subagent_call_id`)
