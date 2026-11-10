@@ -1,0 +1,174 @@
+---
+title: "ADR 0238: Retire work, governor and council"
+description: Remove the durable work, governor and council features and their team skills, keep the run engine and the coordination primitives, and launch agent CLIs through one process supervisor.
+sidebar:
+  order: 238
+---
+
+**Date:** 2026-11-09
+**Status:** Accepted
+
+## Context
+
+Harnery had three ways to keep agents working on something larger than one
+pass, on top of `harn run`:
+
+- `harn work` held an objective across many bounded run attempts and retried
+  or accepted them.
+- `harn governor` drove a dependency graph of work items toward a goal, with
+  an optional background service that restarted it.
+- `harn council` convened agents for rounds of structured deliberation.
+
+The generated agent instructions described all three in a "Dispatching a
+team" paragraph and a "Councils" paragraph, and shipped `harn-team` and
+`harn-council` skills, so every session in every consuming project loaded
+guidance for them.
+
+In the largest consuming project, the stored records show when each was last
+used:
+
+| Feature | Records | Last created |
+|---|---:|---|
+| `harn work` | 127 | August 2026 |
+| `harn governor` | 25 | August 2026 |
+| Governor service | 1 state folder | July 2026 |
+| Councils | 4 | July 2026 |
+| Legacy mailbox store | 249 files | October 2026 |
+| `harn run` | 341 | November 2026 |
+| Decision docket | 945 | November 2026 |
+
+Most governor goals were Harnery building itself. The unused code had already
+broken: `harn council list` failed on a missing emitter, and the current
+schema could no longer read at least five stored governor goals. Meanwhile
+"team" had four meanings in the instructions and "workflow" had two.
+
+## Decision
+
+Delete the three features, the team and council skills, and the legacy
+mailbox. Keep the run engine and the coordination primitives that projects use
+every day. This is a pre-1.0 cut-over: no aliases, no compatibility readers,
+no hidden flags.
+
+### What is removed
+
+**Commands.** The `work`, `governor` and `council` registrations in
+`src/commander.ts`, with `src/commands/work.ts`, `src/commands/governor.ts`,
+and the council commands in `src/commands/agents.ts`.
+
+**Package exports.** Five keys leave `package.json`:
+
+- `./core/work`
+- `./core/work/state`
+- `./core/governor`
+- `./core/governor/state`
+- `./core/governor/plans`
+
+**Source.** `src/core/work/`, `src/core/governor/` (including the governor
+service in `service.ts` and `service-read.ts`), `src/lib/council/`,
+`src/core/agents/state/council.ts` and `src/core/agents/mailbox.ts`, with their
+tests. The run engine drops its work-item and attempt-context options
+(`work-context.ts` and `attempt-context.ts` go if nothing else uses them), and
+the workspace provider's `inspect`, `lifecycle`, `cancellation` and
+`integration` modules drop their imports of `core/work`. The supervisor stops
+discovering a governor service. The storage catalog drops `governor-service`,
+`governor-service-log`, `work-item-history`, `governor-history`,
+`council-history` and `agent-mailbox-history`.
+
+**Dashboard routes.** Pages:
+
+- `/work` and `/work/[workId]`
+- `/governors` and `/governors/[goalId]`
+- `/councils`, `/councils/new` and `/councils/[id]`
+
+API routes:
+
+- `/api/councils`
+- `/api/councils/[id]`
+- `/api/councils/[id]/advance`, `/archive`, `/close`, `/delete`,
+  `/set-steward` and `/unarchive`
+
+Their readers go with them: `web/lib/work-reader.ts`,
+`web/lib/governor-reader.ts`, `web/lib/council-attention.ts`,
+`web/lib/council-triviality.ts` and `web/lib/council-writer.ts`, plus every
+navigation link, palette entry and tile that pointed at them.
+
+**Skills and instructions.** The `harn-team` and `harn-council` skill
+definitions in `src/lib/instructions/templates.ts`. The "Dispatching a team"
+and "Councils" paragraphs become one short paragraph on starting other agents:
+the harness's own subagent tool for a bounded helper, `harn run` for a scripted
+fan-out, and `harn approval list` when a run is parked.
+
+**Docs.** The `cli/work`, `cli/governor` and `concepts/councils` pages. Earlier
+ADRs about these features stay as history.
+
+### Durable execution is retired without a replacement
+
+Automatic restart, retry and acceptance of a long objective goes away, and
+nothing in Harnery takes over that job. A plan file with checkboxes can record
+what is left, but it does not drive the work. We are not claiming a substitute.
+No one used the feature after August, and the stored governor goals had already
+stopped loading under current code. Keeping it would mean maintaining about
+14,000 lines of code and tests for a promise nobody relied on. If unattended
+long objectives become a real need again, that need gets its own design.
+
+### What stays
+
+- **The run engine:** `harn run`, with policy parking and `harn approval`. The
+  engine itself creates and reads approval records, so approvals stay with it.
+- **The isolated-workspace provider** under `src/core/workflow/workspaces/`,
+  which the event ledger and storage code import.
+- **Messaging:** `harn agents ping`, `harn inbox` and `harn messages`. Host
+  commands that ask a peer model for an opinion stay with the host and keep
+  working.
+- **Coordination primitives:** the decision docket (`harn decision`), file
+  claims, `harn admission`, gate runs, `harn artifacts` and `harn journal`.
+- **The `harn-decide`, `harn-end` and `harn-computer` skills.**
+- **The `/workflows` dashboard pages**, which show run history.
+
+### The event contract does not change
+
+The council event types in the V3 base contract
+(`src/core/events/v3/base-contract.ts`) stay on purpose. Removing them would
+change the contract's schema digest, and a digest change has invalidated
+ledger authority before. Nothing will emit these events any more, but the
+types cost nothing to keep.
+
+### One process supervisor for agent launches
+
+The run engine's spawn adapters (`spawn-claude`, `spawn-codex`,
+`spawn-cursor` and `spawn-opencode`) used to signal only the child process
+on timeout or cancellation, so a grandchild that ignored the signal could
+outlive its run. `src/lib/exec.ts` gains one supervisor option. It starts the
+child in its own process group and, on timeout, stops the whole group: TERM,
+then a grace period, then KILL. Windows keeps today's single-child kill. All
+four adapters use the option, and hosts that launch agent CLIs can call the
+same function instead of keeping a copy.
+
+## Alternatives considered
+
+- **Keep every engine and add a routing rule on top.** Rejected: most of the
+  options being routed between were unused, so the rule would have sent
+  agents to code nobody maintained.
+- **Rewrite Harnery from scratch.** Rejected: the adapters, identity, claims,
+  inbox and docket carry months of harness-specific fixes. Deletion solves
+  the stated problem at far lower risk.
+- **Retire `harn run` too.** Rejected: it is the only scripted fan-out that
+  works from every harness and from a headless shell, and it is in current use.
+- **Hide the features behind flags and keep the code.** Rejected: the
+  unreadable governor goals show that unused code decays anyway, and the
+  pre-1.0 policy rules out keeping dormant paths for compatibility.
+- **Remove `harn approval` with the rest.** Rejected: the run engine parks
+  policy requests and consumes approval records.
+
+## Consequences
+
+- `harn work`, `harn governor` and `harn council` stop existing, and any script
+  that calls them fails. The next npm release is a breaking change and its
+  changelog names each removed command and export.
+- Importers of the five removed exports must drop them.
+- Stored records under `.harnery/work`, `.harnery/governors`,
+  `.harnery/governor-service`, `.harnery/councils` and `.harnery/mailbox` are
+  no longer read. Projects that want them should archive the folders before
+  deleting them.
+- Past ADRs that describe these features remain accurate as history but no
+  longer describe the product.
