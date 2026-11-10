@@ -445,3 +445,23 @@ test("CLI entry limits remove ordinary output under valid current ownership", as
   expect(existsSync(ordinaryOutput)).toBe(false);
   expect(existsSync(input.record)).toBe(true);
 });
+
+test("CLI refusal for the live .harnery names the retire command, not --allow-protected", async () => {
+  const { root } = fixture();
+  const workspace = join(root, "workspace");
+  const state = join(workspace, ".harnery");
+  mkdirSync(join(state, "work"), { recursive: true });
+  writeFileSync(join(state, "work", "record.json"), "{}");
+  const output = capture();
+  const program = createHarneryProgram({ emit: output.emit, context: { repoRoot: workspace } });
+  await program.parseAsync(["rm", "--root", root, "--recursive", "--yes", "--", state], {
+    from: "user",
+  });
+  expect(output.code()).toBe(1);
+  const error = output.errors[0] as { code: string; message: string };
+  expect(error.code).toBe("removal_refused");
+  expect(error.message).toContain("live workspace");
+  expect(error.message).not.toContain("--allow-protected");
+  expect(error.message).toContain("storage retire");
+  expect(existsSync(join(state, "work", "record.json"))).toBe(true);
+});

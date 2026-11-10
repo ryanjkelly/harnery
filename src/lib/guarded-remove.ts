@@ -101,7 +101,7 @@ export function guardedRemove(
   assertEntryLimitAuthority();
   if (paths.length === 0 || paths.length > 100) throw new Error("Supply 1-100 explicit targets");
   // Relative targets name paths under --root, never under the process cwd.
-  const targets = paths.map((path) => checkedPath(path, allowed, false, root));
+  const targets = paths.map((path) => checkedPath(path, allowed, false, root, options.liveRoots));
   const snapshots = new Map<string, string>();
   const removedProtected = new Set<string>();
   const links: RemovalLink[] = [];
@@ -175,7 +175,7 @@ export function guardedRemove(
           cleanClones.add(clone);
           allowed.add(path);
         }
-        if (!allowed.has(path)) throw new Error(protectedMessage(path));
+        if (!allowed.has(path)) throw new Error(protectedMessage(path, options.liveRoots));
         removedProtected.add(path);
       }
       if (info.isSymbolicLink()) {
@@ -336,8 +336,28 @@ function insideArtifactWorkspace(path: string, state: string | null, orSelf = fa
   return false;
 }
 
-function protectedMessage(path: string): string {
+/**
+ * The refusal for a protected path. A live workspace's own Git metadata or
+ * Harnery state can never be allowed, so its refusal names no override.
+ */
+function protectedMessage(path: string, liveRoots: readonly string[] = []): string {
+  if (isLiveState(path, liveRoots))
+    return `Protected state cannot be removed: ${path}. It is the live workspace's own state, which this command never removes`;
   return `Protected state cannot be removed: ${path}. To remove it on purpose, name it with --allow-protected ${path}`;
+}
+
+function isLiveState(path: string, liveRoots: readonly string[]): boolean {
+  for (const dir of liveRoots) {
+    let live: string;
+    try {
+      live = realpathSync(dir);
+    } catch {
+      live = resolve(dir);
+    }
+    for (const name of [".git", ".harnery"])
+      if (resolve(path).toLowerCase() === resolve(live, name).toLowerCase()) return true;
+  }
+  return false;
 }
 
 function insideAllowed(path: string, allowed: ReadonlySet<string>): boolean {
@@ -449,6 +469,7 @@ function checkedPath(
   allowed: ReadonlySet<string> = new Set(),
   isRoot = false,
   base?: string,
+  liveRoots: readonly string[] = [],
 ): string {
   if (!input?.trim() || /[\0\r\n*?[\]$]/.test(input))
     throw new Error("Use a nonempty explicit path without wildcards or unresolved variables");
@@ -461,7 +482,9 @@ function checkedPath(
       !insideArtifactWorkspace(path, cursor, isRoot)
     )
       throw new Error(
-        cursor === path ? protectedMessage(path) : `Protected state contains this path: ${cursor}`,
+        cursor === path
+          ? protectedMessage(path, liveRoots)
+          : `Protected state contains this path: ${cursor}`,
       );
     const info = lstatSync(cursor);
     if (info.isSymbolicLink()) throw new Error(`Path contains a symlink: ${cursor}`);

@@ -5,6 +5,7 @@ import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
 import { resolveCoordRoot } from "../core/agents/coord-client.ts";
 import { artifactsRoot, parseArtifactManifest } from "../core/artifacts/index.ts";
+import { resolveBinName } from "../core/config.ts";
 import {
   readCoordinationViewV3,
   requireAuthoritySafeCoordinationViewV3,
@@ -128,13 +129,27 @@ export function registerRmCommand(
           emit.text(lines.join("\n"));
         }
       } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
         emit.error({
           code: "removal_refused",
-          message: error instanceof Error ? error.message : String(error),
+          message: liveStateHint(message, context),
         });
         emit.setExitCode(1);
       }
     });
+}
+
+/**
+ * The live workspace's Harnery state is never removable here. Name the one
+ * command that can retire the record folder of a removed feature inside it.
+ */
+function liveStateHint(message: string, context?: HarneryProgramContext): string {
+  if (!/\.harnery\. It is the live workspace's own state/.test(message)) return message;
+  let bin = "harn";
+  try {
+    bin = resolveBinName(context?.resolveCoordRoot?.() ?? context?.repoRoot ?? resolveCoordRoot());
+  } catch {}
+  return `${message}. To remove the record folder of a retired feature, preview it with \`${bin} storage retire\``;
 }
 
 function gitTopLevel(dir: string): string | undefined {

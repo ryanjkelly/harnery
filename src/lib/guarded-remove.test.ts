@@ -828,3 +828,28 @@ test("entry limits recheck ownership and retain every other removal protection",
   expect(existsSync(file)).toBe(true);
   expect(existsSync(record)).toBe(true);
 });
+
+test("the refusal for a live workspace's own state names no impossible override", () => {
+  const { root } = fixture();
+  const live = join(root, "live");
+  const other = join(root, "other");
+  for (const name of [".git", ".harnery"]) {
+    const state = stateDir(root, "live", name);
+    let message = "";
+    try {
+      guardedRemove([state], { root, recursive: true, liveRoots: [live] });
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toContain("Protected state cannot be removed");
+    expect(message).toContain("live workspace");
+    expect(message).not.toContain("--allow-protected");
+    expect(existsSync(state)).toBe(true);
+    // The same name outside a live root still names the override it can accept.
+    const copy = stateDir(root, "other", name);
+    expect(() => guardedRemove([copy], { root, recursive: true, liveRoots: [live] })).toThrow(
+      `--allow-protected ${copy}`,
+    );
+  }
+  expect(existsSync(other)).toBe(true);
+});
