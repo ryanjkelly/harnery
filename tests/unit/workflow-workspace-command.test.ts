@@ -46,10 +46,7 @@ describe("workflow workspace commands", () => {
       },
     };
 
-    await runCommand(
-      ["run", script, "--isolation", "worktree", "--workspace-root", host],
-      emit,
-    );
+    await runCommand(["run", script, "--isolation", "worktree", "--workspace-root", host], emit);
     const inspection = listWorkflowWorkspaceInspections(repo).find(
       (item) => item.ok && item.value.selection === "isolated",
     );
@@ -69,6 +66,38 @@ describe("workflow workspace commands", () => {
 
     await runCommand(["run", "workspaces"], emit);
     expect(output.join("\n")).toContain(`${inspection.value.run_id}\tisolated`);
+  });
+
+  test("integration prepare refuses before any work when --reviewer is missing", async () => {
+    const errors: unknown[] = [];
+    const emit = {
+      text: () => {},
+      data: () => {},
+      config: () => {},
+      error: (error: { message: string }) => {
+        errors.push(error);
+      },
+    };
+    const exit = process.exit;
+    process.exit = ((code?: number) => {
+      throw new Error(`exit ${code}`);
+    }) as typeof process.exit;
+    try {
+      await expect(
+        runCommand(
+          ["run", "integration", "prepare", "missing-run", "--policy", "policy.json"],
+          emit,
+        ),
+      ).rejects.toThrow("exit 1");
+    } finally {
+      process.exit = exit;
+    }
+    expect(errors).toEqual([
+      {
+        code: "integration_reviewer_required",
+        message: "integration prepare requires --reviewer <name>",
+      },
+    ]);
   });
 
   test("prepares, applies, and cleans up through existing durable authority", async () => {
@@ -160,9 +189,7 @@ describe("workflow workspace commands", () => {
     expect(git(repo, "rev-parse", "HEAD")).toBe(targetAtParkBoundary);
     const approvalId = workflowApprovalId(report.runId, "p99999");
     expect(parkedText).toContain(`approval: ${approvalId}`);
-    expect(parkedText).toContain(
-      `approve: ${resolveBinName()} approval approve ${approvalId}`,
-    );
+    expect(parkedText).toContain(`approve: ${resolveBinName()} approval approve ${approvalId}`);
     expect(emitted).toHaveLength(0);
 
     output.length = 0;
@@ -202,18 +229,16 @@ describe("workflow workspace commands", () => {
       lifecycle: { integration_state: "planned" },
     });
 
-    await expect(
-      runCommand(["run", "integration", "apply", report.runId], emit),
-    ).rejects.toThrow(/pass --yes/);
+    await expect(runCommand(["run", "integration", "apply", report.runId], emit)).rejects.toThrow(
+      /pass --yes/,
+    );
     await runCommand(["run", "integration", "apply", report.runId, "--yes"], emit);
     expect(existsSync(join(repo, "result.txt"))).toBe(true);
     expect(readWorkflowWorkspaceStatus(repo, report.runId)).toMatchObject({
       lifecycle: { state: "integrated", integration_state: "applied" },
     });
 
-    await expect(runCommand(["run", "cleanup", report.runId], emit)).rejects.toThrow(
-      /pass --yes/,
-    );
+    await expect(runCommand(["run", "cleanup", report.runId], emit)).rejects.toThrow(/pass --yes/);
     await runCommand(["run", "cleanup", report.runId, "--yes"], emit);
     expect(readWorkflowWorkspaceStatus(repo, report.runId)).toMatchObject({
       lifecycle: { state: "released", resource_state: "released" },

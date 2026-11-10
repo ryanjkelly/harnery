@@ -430,7 +430,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
     .command("prepare <run-id>")
     .description("Preview integration and write exact review and policy authority.")
     .option("--policy <file>", "Current host policy JSON/JSONC for the Git mutation")
-    .option("--reviewer <name>", "Explicit reviewer for a standalone workflow")
+    .option("--reviewer <name>", "Who reviewed the proof and diff (required)")
     .option("--reason <text>", "Reason recorded with the standalone review")
     .option("--target-root <dir>", "Explicit target checkout (default: frozen source checkout)")
     .option(
@@ -457,10 +457,10 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
         });
         process.exit(1);
       }
-      if (opts.reason && !opts.reviewer) {
+      if (!opts.reviewer) {
         emit.error({
           code: "integration_reviewer_required",
-          message: "--reason requires --reviewer <name>",
+          message: "integration prepare requires --reviewer <name>",
         });
         process.exit(1);
       }
@@ -476,7 +476,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
             provider,
             policy: loadPolicyFile(opts.policy),
             targetRoot: opts.targetRoot,
-            review: opts.reviewer ? { actor: opts.reviewer, reason: opts.reason } : undefined,
+            review: { actor: opts.reviewer, reason: opts.reason },
             acceptedUnknowns: opts.acceptUnknown,
             approvalAddressee: opts.approvalTo,
           });
