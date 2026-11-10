@@ -15,6 +15,7 @@ import {
   resolveCursorApiKey,
   type ToolStatus,
 } from "../../src/lib/devtools.ts";
+import { removeDir } from "../helpers/remove-dir.ts";
 
 const NOW = Date.parse("2026-07-13T00:00:00.000Z");
 
@@ -47,7 +48,7 @@ beforeEach(() => {
   home = mkdtempSync(path.join(os.tmpdir(), "devtools-"));
 });
 afterEach(() => {
-  rmSync(home, { recursive: true, force: true });
+  removeDir(home);
 });
 
 describe("readDevtools — empty home", () => {

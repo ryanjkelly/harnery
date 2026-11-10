@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -9,6 +9,7 @@ import {
   whichBin,
 } from "../../src/lib/headless/index.ts";
 import { plantFakeCli } from "../helpers/fake-cli.ts";
+import { removeDir } from "../helpers/remove-dir.ts";
 
 /**
  * The suite fakes each harness CLI with a small JS program on a temp PATH (a
@@ -82,17 +83,7 @@ afterEach(() => {
   if (savedForced === undefined) delete process.env.HARNERY_HEADLESS_BACKEND;
   else process.env.HARNERY_HEADLESS_BACKEND = savedForced;
   // A fake CLI that just exited can keep its folder busy briefly on Windows.
-  const deadline = Date.now() + (process.platform === "win32" ? 10_000 : 0);
-  for (;;) {
-    try {
-      rmSync(binDir, { recursive: true, force: true });
-      break;
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if ((code !== "EBUSY" && code !== "EPERM") || Date.now() > deadline) throw error;
-      Bun.sleepSync(100);
-    }
-  }
+  removeDir(binDir, 10_000);
 });
 
 describe("whichBin / availability", () => {

@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { evaluatePolicy, normalizePolicy, policyDigest } from "../policy/index.ts";
 import {
   createWorkflowApproval,
@@ -19,7 +20,7 @@ beforeEach(() => {
   mkdirSync(join(root, ".harnery"), { recursive: true });
 });
 
-afterEach(() => rmSync(root, { recursive: true, force: true }));
+afterEach(() => removeDir(root));
 
 function request() {
   const policy = normalizePolicy({ network: "ask" });

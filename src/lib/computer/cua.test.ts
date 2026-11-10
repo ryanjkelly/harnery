@@ -1,16 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import {
-  cpSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { posix } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { buildTarGz } from "../../../tests/helpers/tar-fixture.ts";
 import { buildZip } from "../zip/index.ts";
 import {
@@ -44,7 +37,7 @@ beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "cua-test-")).replace(/\\/g, "/");
 });
 afterEach(() => {
-  rmSync(root, { recursive: true, force: true });
+  removeDir(root);
 });
 
 function wslHost(): HostInfo {

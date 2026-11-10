@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import { createHarneryProgram, type EmitContext, loadLazyCommand } from "../commander.ts";
 import { ensureEventLedgerV3 } from "../core/events/v3/bootstrap.ts";
 import { recordHookSignalV3 } from "../core/events/v3/producers/recorder.ts";
@@ -9,7 +10,7 @@ import { recordHookSignalV3 } from "../core/events/v3/producers/recorder.ts";
 const roots: string[] = [];
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 describe("ledger-v3 command", () => {

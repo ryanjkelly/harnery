@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import {
   buildAndStamp,
   checkWebBuildFreshness,
@@ -65,7 +66,7 @@ beforeEach(() => {
 afterEach(() => {
   if (savedDistDir === undefined) delete process.env.HARNERY_WEB_DIST_DIR;
   else process.env.HARNERY_WEB_DIST_DIR = savedDistDir;
-  rmSync(root, { recursive: true, force: true });
+  removeDir(root);
 });
 
 describe("git fingerprint", () => {

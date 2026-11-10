@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import type { CodeChangeWatch } from "../code-identity.ts";
 import { installedHarneryBuild } from "../events/v3/runtime-build.ts";
 import type { ResourceSnapshot } from "../resources/contract.ts";
@@ -41,7 +42,7 @@ import { buildSupervisorTimeline } from "./timeline.ts";
 const roots: string[] = [];
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 describe("supervisor process identity", () => {

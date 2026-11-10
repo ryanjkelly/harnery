@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 import { Command } from "commander";
 import { initializeV3Fixture, seedV3Session } from "../../tests/helpers/event-v3-runtime.ts";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import type { EmitContext } from "../commander.ts";
 import type { ComputerMode, ComputerPreferences, ComputerProjectConfig } from "../core/config.ts";
 import type { ConfirmRequest, ConfirmResult } from "../lib/computer/confirm.ts";
@@ -673,7 +674,7 @@ describe("resolveLeaseOwner across projects", () => {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
-    rmSync(base, { recursive: true, force: true });
+    removeDir(base);
   });
 
   test("an agent registered in the project it acts on is named from it", () => {

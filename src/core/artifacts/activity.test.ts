@@ -16,6 +16,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import {
   ARTIFACT_MANIFEST,
   cleanArtifacts,
@@ -43,7 +44,7 @@ afterEach(() => {
   restoreMigrationStats?.();
   restoreMigrationStats = undefined;
   migrationStats.clear();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 function contents(path: fs.PathLike, stat: fs.Stats | fs.BigIntStats): string {

@@ -8,11 +8,11 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
-  rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { removeDir } from "../../../../../tests/helpers/remove-dir.ts";
 import { readCodexArchiveObservationsV3 } from "../../../agents/codex-archive-v3.ts";
 import { evaluateStopHook } from "../../../agents/rules/stop-hook.ts";
 import {
@@ -86,7 +86,7 @@ function withRecorderWaits<T>(
 }
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 describe("event ledger V3 persistent hook recorder", () => {

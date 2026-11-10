@@ -7,9 +7,10 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
+import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
 import { acquireClaim, findGroupClaims, releaseClaim } from "./heartbeat-writer.ts";
 
 let root: string;
@@ -26,7 +27,7 @@ beforeEach(() => {
 
 afterEach(() => {
   try {
-    rmSync(root, { recursive: true, force: true });
+    removeDir(root);
   } catch {
     /* swallow */
   }

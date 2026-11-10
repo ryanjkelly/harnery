@@ -1,14 +1,15 @@
 import { afterEach, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import { allocateTileBudget } from "../lib/browser/page-review-budget.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
-  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  for (const dir of dirs.splice(0)) removeDir(dir);
 });
 test("real capture repeats gates on its fresh page and rejects mutation and insufficient reservations", () => {
   const dir = mkdtempSync(join(tmpdir(), "browse-transaction-"));

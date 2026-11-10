@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import { ARTIFACT_MANIFEST, createArtifact } from "./artifacts/index.ts";
 import {
   createManagedQaOutParent,
@@ -16,7 +17,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(root, { recursive: true, force: true });
+  removeDir(root);
 });
 
 function writeRun(parent: string, id: string, startedAt: string): string {

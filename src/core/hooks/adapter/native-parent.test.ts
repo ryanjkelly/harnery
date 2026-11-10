@@ -1,15 +1,16 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
 import { readNativeParentReference } from "./native-parent.ts";
 
 const CHILD = "00000000-0000-4000-8000-000000000001";
 const PARENT = "00000000-0000-4000-8000-000000000002";
 const roots: string[] = [];
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 function transcript(source: unknown, id = CHILD) {

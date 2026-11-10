@@ -5,13 +5,13 @@ import {
   mkdtempSync,
   readFileSync,
   renameSync,
-  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, relative } from "node:path";
 import { initializeV3Fixture, seedV3Session } from "../../../tests/helpers/event-v3-runtime.ts";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import {
   ARTIFACT_MANIFEST,
   createArtifact,
@@ -24,7 +24,7 @@ import {
 const roots: string[] = [];
 const actor = { instance_id: "artifact_remove_owner" };
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "harnery-remove-artifact-"));

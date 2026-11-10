@@ -7,19 +7,19 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
-  rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
 import { FINGERPRINT_KEY_STORE_RELATIVE_PATH } from "../../events/v3/fingerprint-keys.ts";
 import { resolveProvider, runPromptContext } from "./runner.ts";
 
 const roots: string[] = [];
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 describe("prompt-context provider runner", () => {
@@ -342,7 +342,7 @@ describe("resolveProvider", () => {
       writeFileSync(`${base}.exe`, "");
       expect(resolveProvider(base, "win32")).toEqual({ executable: `${base}.exe`, args: [] });
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   });
 });

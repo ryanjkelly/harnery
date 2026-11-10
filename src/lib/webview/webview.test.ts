@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { PaceGate } from "../pace/index.ts";
 import {
   type BunWebViewRuntime,
@@ -199,7 +200,7 @@ describe("Bun.WebView integration", () => {
       expect(waits).toEqual(["example.com"]);
       expect(calls).toEqual(["navigate:https://www.example.com/page"]);
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      removeDir(dir);
     }
   });
 

@@ -6,12 +6,12 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Command } from "commander";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { createOpClient } from "./client.ts";
 import { type OpCommandIO, parseSetManyPayload, registerOpCommand } from "./command.ts";
 import { createLocalCredentials } from "./local-credentials.ts";
@@ -128,7 +128,7 @@ afterEach(() => {
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;
   }
-  rmSync(work, { recursive: true, force: true });
+  removeDir(work);
 });
 
 describe("parseSetManyPayload", () => {

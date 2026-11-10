@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { removeDir } from "../../../../../tests/helpers/remove-dir.ts";
 import type { EventV3SupportInventoryEntry } from "./inventory.ts";
 import {
   activateEventV3SupportReplacement,
@@ -18,7 +19,7 @@ import { writeEventV3SupportPack } from "./pack-writer.ts";
 
 const roots: string[] = [];
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 describe("Event Ledger V3 support maintenance transaction", () => {

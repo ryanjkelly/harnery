@@ -5,7 +5,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -20,6 +20,7 @@ import {
   resolveForkAncestry,
   resolveName,
 } from "../../src/core/agents/state/names.ts";
+import { removeDir } from "../helpers/remove-dir.ts";
 
 describe("COORD_NAMES layout invariants", () => {
   test("exactly 260 entries", () => {
@@ -257,7 +258,7 @@ describe("assignName / resolveName", () => {
   });
 
   afterEach(() => {
-    rmSync(root, { recursive: true, force: true });
+    removeDir(root);
   });
 
   test("advances the alphabet across new sessions (counter slots 0,1,2)", () => {
@@ -370,7 +371,7 @@ describe("recorded fork lineage", () => {
     mkdirSync(path.join(root, ".harnery"), { recursive: true });
   });
   afterEach(() => {
-    rmSync(root, { recursive: true, force: true });
+    removeDir(root);
   });
 
   test("assignName stamps forked_from on the first row only", () => {
@@ -481,7 +482,7 @@ describe("live-name skip at pool assignment", () => {
   });
 
   afterEach(() => {
-    rmSync(root, { recursive: true, force: true });
+    removeDir(root);
   });
 
   /** Write one heartbeat row into the generation-bound cache. */
@@ -509,7 +510,7 @@ describe("live-name skip at pool assignment", () => {
   test("readLiveNames tolerates a missing cache and unparseable rows", () => {
     const bare = mkdtempSync(path.join(os.tmpdir(), "harn-live-bare-"));
     expect(readLiveNames(bare, { freshnessSecs: 600 }).size).toBe(0);
-    rmSync(bare, { recursive: true, force: true });
+    removeDir(bare);
 
     writeFileSync(path.join(root, ".harnery", "active", "torn.json"), "{not json");
     writeFileSync(path.join(root, ".harnery", "active", "nameless.json"), JSON.stringify({}));

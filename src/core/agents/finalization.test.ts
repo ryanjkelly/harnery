@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import {
   checkGitFinalization,
   classifyWriteClaimFinalization,
@@ -45,7 +46,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(temp, { recursive: true, force: true });
+  removeDir(temp);
 });
 
 describe("checkGitFinalization", () => {

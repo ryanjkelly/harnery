@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -12,6 +12,7 @@ import {
   renderResult,
   runGrep,
 } from "../../src/commands/grep.ts";
+import { removeDir } from "../helpers/remove-dir.ts";
 
 /**
  * Engine-parity suite: the same search run through GNU grep and ripgrep must
@@ -43,7 +44,7 @@ function supportsUnreadableFixture(): boolean {
     return (statSync(path).mode & 0o777) === 0;
   } finally {
     chmodSync(path, 0o644);
-    rmSync(dir, { recursive: true, force: true });
+    removeDir(dir);
   }
 }
 
@@ -152,7 +153,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
-  rmSync(fixtureRoot, { recursive: true, force: true });
+  removeDir(fixtureRoot);
 });
 
 describe("grep engine parity", () => {

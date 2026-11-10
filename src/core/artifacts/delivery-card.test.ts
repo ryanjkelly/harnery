@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { TUNNEL_DIR_ENV } from "../../lib/tunnel/state.ts";
 import {
   ARTIFACT_DELIVERY_AUTO_ITEM_LIMIT,
@@ -55,7 +56,7 @@ describe("artifact delivery cards", () => {
       expect(card.auto_items).toBe(2);
       expect(card.omitted_auto_items).toBe(0);
     } finally {
-      rmSync(repoRoot, { recursive: true, force: true });
+      removeDir(repoRoot);
     }
   });
 
@@ -106,7 +107,7 @@ describe("artifact delivery cards", () => {
       expect(plainText).toContain("\\\\wsl.localhost\\Test-Distro");
       expect(card.auto_items).toBe(0);
     } finally {
-      rmSync(repoRoot, { recursive: true, force: true });
+      removeDir(repoRoot);
     }
   });
 
@@ -138,7 +139,7 @@ describe("artifact delivery cards", () => {
         expect(destination[1]).not.toContain("(");
       }
     } finally {
-      rmSync(repoRoot, { recursive: true, force: true });
+      removeDir(repoRoot);
     }
   });
 
@@ -183,7 +184,7 @@ describe("artifact delivery cards", () => {
       expect(card.markdown).toContain("[Artifact folder](http://localhost:4276/browse?dir=");
       expect(card.markdown).toContain("[video.mp4](http://localhost:4276/files?path=");
     } finally {
-      rmSync(repoRoot, { recursive: true, force: true });
+      removeDir(repoRoot);
     }
   });
 
@@ -227,7 +228,7 @@ describe("artifact delivery cards", () => {
       expect(card.markdown).toContain("ARTIFACT FOLDER\n");
       expect(card.markdown).toContain("VIDEO.MP4\n");
     } finally {
-      rmSync(repoRoot, { recursive: true, force: true });
+      removeDir(repoRoot);
     }
   });
 
@@ -270,7 +271,7 @@ describe("artifact delivery cards", () => {
       expect(card.markdown).not.toContain("scoped.example");
       expect(card.markdown).toContain("[video.mp4](http://localhost:4276/files?path=");
     } finally {
-      rmSync(repoRoot, { recursive: true, force: true });
+      removeDir(repoRoot);
     }
   });
 
@@ -294,7 +295,7 @@ describe("artifact delivery cards", () => {
       expect(card.omitted_auto_items).toBe(2);
       expect(card.markdown).toContain("**More root items:** 2 additional entries");
     } finally {
-      rmSync(repoRoot, { recursive: true, force: true });
+      removeDir(repoRoot);
     }
   });
 
@@ -336,7 +337,7 @@ describe("artifact delivery cards", () => {
         }),
       ).toThrow("duplicate delivery label");
     } finally {
-      rmSync(repoRoot, { recursive: true, force: true });
+      removeDir(repoRoot);
     }
   });
 });

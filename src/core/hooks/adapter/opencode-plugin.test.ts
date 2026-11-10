@@ -9,6 +9,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
 import {
   checkOpenCodePlugin,
   installOpenCodePlugin,
@@ -29,7 +30,7 @@ function root(): string {
   return dir;
 }
 afterEach(() => {
-  for (const dir of roots.splice(0)) rmSync(dir, { recursive: true, force: true });
+  for (const dir of roots.splice(0)) removeDir(dir);
 });
 
 const EXPECTED = { binName: "harn", agentHook: "harnery/bin/agent-hook" };

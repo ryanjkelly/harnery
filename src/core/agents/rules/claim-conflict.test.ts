@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { initializeV3Fixture, seedV3Session } from "../../../../tests/helpers/event-v3-runtime.ts";
+import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
 import { readLiveCoordinationRow } from "../state/live-coordination-view.ts";
 import { evaluateClaim } from "./claim-conflict.ts";
 
@@ -13,7 +14,7 @@ beforeEach(() => {
   initializeV3Fixture(root);
 });
 
-afterEach(() => rmSync(root, { recursive: true, force: true }));
+afterEach(() => removeDir(root));
 
 describe("evaluateClaim on canonical V3 authority", () => {
   test("a write acquires one idempotent canonical claim", () => {

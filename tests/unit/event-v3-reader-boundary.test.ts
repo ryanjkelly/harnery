@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -7,13 +7,14 @@ import {
   LEDGER_SEGMENT_JOIN_TOKEN,
   scanEventV3ReaderBoundary,
 } from "../../scripts/check-event-v3-reader-boundary.ts";
+import { removeDir } from "../helpers/remove-dir.ts";
 
 const REPO_ROOT = resolve(import.meta.dir, "../..");
 
 const roots: string[] = [];
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 describe("event V3 canonical reader boundary", () => {

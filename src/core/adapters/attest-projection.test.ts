@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import type { SpawnRequest, SpawnResult } from "../workflow/types.ts";
 import { probeFilesystemProjection } from "./attest-projection.ts";
 import type { Adapter, AdapterSandboxProjection } from "./types.ts";
@@ -47,7 +48,7 @@ async function withWorkdir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   try {
     return await fn(dir);
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    removeDir(dir);
   }
 }
 

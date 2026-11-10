@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Command } from "commander";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import type { EmitContext } from "../commander.ts";
 import { autoUpdateLockPath } from "../core/autoupdate/state.ts";
 import type { AutoUpdateConfig } from "../core/autoupdate/types.ts";
@@ -34,7 +35,7 @@ beforeEach(() => {
   git(work, "push", "-q", "-u", "origin", "main");
 });
 afterEach(() => {
-  rmSync(base, { recursive: true, force: true });
+  removeDir(base);
 });
 
 function capture() {

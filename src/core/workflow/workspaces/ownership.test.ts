@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
 import {
   descriptorPathsAvailable,
   git,
@@ -15,7 +16,7 @@ import { readCleanupAttempts, readWorkspaceClaim, workspaceClaimPath } from "./s
 
 const roots: string[] = [];
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 async function allocated(coordRoot?: string) {

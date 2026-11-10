@@ -1,8 +1,9 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../helpers/remove-dir.ts";
 
 /**
  * Engine-parity for `callers`: the whole-word symbol search + kind
@@ -115,7 +116,7 @@ beforeAll(() => {
 
 afterAll(() => {
   process.chdir(origCwd);
-  rmSync(fixtureRoot, { recursive: true, force: true });
+  removeDir(fixtureRoot);
 });
 
 describe.skipIf(!hasGrep)("callers engine parity", () => {

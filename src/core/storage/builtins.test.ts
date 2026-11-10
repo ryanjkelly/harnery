@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { harneryStorageFamilies } from "./builtins.ts";
 import { createStorageCatalog } from "./catalog.ts";
 
@@ -135,7 +136,7 @@ describe("source-owned storage descriptors", () => {
       expect(existsSync(join(temporary, ".harnery"))).toBeFalse();
       expect(existsSync(join(temporary, ".cache"))).toBeFalse();
     } finally {
-      rmSync(temporary, { recursive: true, force: true });
+      removeDir(temporary);
     }
   });
 

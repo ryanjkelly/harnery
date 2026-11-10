@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import {
   hysteresisFixture,
   pressureAssessmentFixture,
@@ -50,7 +51,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(root, { recursive: true, force: true });
+  removeDir(root);
 });
 
 /** Write a workflow script to disk (dynamic import needs a real file). Unique

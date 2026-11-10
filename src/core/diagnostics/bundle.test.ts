@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { ARTIFACT_MANIFEST } from "../artifacts/index.ts";
 import { RESOURCE_SNAPSHOT_SCHEMA_VERSION, type ResourceSnapshot } from "../resources/contract.ts";
 import {
@@ -45,7 +46,7 @@ import { sanitizeDiagnosticValue } from "./sanitize.ts";
 const roots: string[] = [];
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 describe("diagnostic bundles", () => {

@@ -11,6 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { initializeV3Fixture, seedV3Session } from "../../../../tests/helpers/event-v3-runtime.ts";
+import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
 import { initializeEventLedgerV3 } from "../../events/v3/bootstrap.ts";
 import { sha256V3 } from "../../events/v3/canonical.ts";
 import {
@@ -25,7 +26,7 @@ import { staleSweep } from "./stale-sweep.ts";
 const roots: string[] = [];
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 describe("staleSweep V3 audit fallback", () => {

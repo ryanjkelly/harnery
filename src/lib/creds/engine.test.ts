@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import type { OpClient } from "../op/client.ts";
 import { CredsTargetError, createCredsEngine, OpMissingError } from "./engine.ts";
 import { loadHealBackoff, loadRevisions } from "./state.ts";
@@ -26,7 +27,7 @@ beforeEach(() => {
   mkdirSync(join(root, "scripts"), { recursive: true });
   mkdirSync(join(sub, "scripts"), { recursive: true });
 });
-afterEach(() => rmSync(root, { recursive: true, force: true }));
+afterEach(() => removeDir(root));
 
 /** Write a pull script that logs its run and writes `files` with `content`. */
 function script(

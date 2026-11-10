@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { plantFakeCli } from "../../../tests/helpers/fake-cli.ts";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { claudeCodeSpawner } from "./spawn-claude.ts";
 import type { SpawnRequest } from "./types.ts";
 
@@ -35,7 +36,7 @@ afterEach(() => {
   process.env.PATH = savedPath;
   if (savedSwitch === undefined) delete process.env.ENABLE_CLAUDEAI_MCP_SERVERS;
   else process.env.ENABLE_CLAUDEAI_MCP_SERVERS = savedSwitch;
-  rmSync(binDir, { recursive: true, force: true });
+  removeDir(binDir);
 });
 
 const request: SpawnRequest = {

@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import {
   AUTOMATION_DEFAULT_ARGS_TO_DROP,
   assertSandboxArgs,
@@ -60,7 +60,7 @@ describe("Chrome version without running the binary", () => {
       expect(chromeVersionFromExecutable(bare, "win32")).toBe("154.0.1.2");
       expect(chromeVersionFromExecutable(join(dir, "missing.exe"), "win32")).toBeUndefined();
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      removeDir(dir);
     }
   });
 });

@@ -16,6 +16,7 @@ import { sha256V3 } from "../../src/core/events/v3/canonical.ts";
 import { runWorkflow } from "../../src/core/workflow/engine.ts";
 import { createLocalGitWorktreeProvider } from "../../src/core/workflow/workspaces/local-git.ts";
 import { readWorkflowLiveness } from "../../src/core/workflow/workspaces/recovery.ts";
+import { removeDir } from "../helpers/remove-dir.ts";
 import {
   descriptorPathsAvailable,
   git,
@@ -33,7 +34,7 @@ const SESSION = "unknown-state-fixture";
 const roots: string[] = [];
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 describe.skipIf(!hasGit())("unknown state CLI conformance", () => {

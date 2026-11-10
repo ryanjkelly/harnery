@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import { DEFAULT_WEB_PORT, resolveWebPort } from "../core/config.ts";
 import {
   isWebPortAvailable,
@@ -26,7 +27,7 @@ describe("resolveWebPort", () => {
   afterEach(() => {
     if (savedEnv === undefined) delete process.env.HARNERY_WEB_PORT;
     else process.env.HARNERY_WEB_PORT = savedEnv;
-    rmSync(root, { recursive: true, force: true });
+    removeDir(root);
   });
 
   test("uses the mnemonic HARN port by default", () => {
@@ -200,7 +201,7 @@ describe("web performance log destination", () => {
         join(root, ".harnery", "logs", "web-performance.jsonl"),
       );
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   });
 });

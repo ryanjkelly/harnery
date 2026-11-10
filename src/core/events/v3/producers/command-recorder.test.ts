@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { removeDir } from "../../../../../tests/helpers/remove-dir.ts";
 import type { ParsedPayload } from "../../../hooks/adapter/parse.ts";
 import { buildEventV3 } from "../builder.ts";
 import { canonicalJsonV3, sha256V3 } from "../canonical.ts";
@@ -25,7 +26,7 @@ import { recordHookSignalV3 } from "./recorder.ts";
 const roots: string[] = [];
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 describe("event ledger V3 persistent session-tee recorder", () => {

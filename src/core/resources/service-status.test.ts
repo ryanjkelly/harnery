@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { processStartToken } from "../agents/state/proc-start.ts";
 import { RESOURCE_SERVICE_STATUS_SCHEMA_VERSION } from "./contract.ts";
 import { readResourceServiceStatus } from "./service-status.ts";
@@ -10,7 +11,7 @@ import { resourcePaths, writePrivateJsonAtomic } from "./storage.ts";
 const roots: string[] = [];
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 describe("resource observer service status", () => {

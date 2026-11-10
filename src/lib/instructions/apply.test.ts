@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import {
   applyInstructions,
   checkInstructions,
@@ -18,7 +18,7 @@ beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "harnery-instr-"));
 });
 afterEach(() => {
-  rmSync(root, { recursive: true, force: true });
+  removeDir(root);
 });
 
 const read = (rel: string) => readFileSync(join(root, rel), "utf8");

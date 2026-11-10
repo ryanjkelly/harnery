@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import {
   parsePerformanceWindow,
   readWebPerformanceReport,
@@ -17,7 +18,7 @@ describe("web performance reports", () => {
     mkdirSync(path.join(root, ".harnery", "logs"), { recursive: true });
   });
 
-  afterEach(() => rmSync(root, { recursive: true, force: true }));
+  afterEach(() => removeDir(root));
 
   test("parses minute, hour, and day windows", () => {
     expect(parsePerformanceWindow("30m")).toBe(1_800_000);

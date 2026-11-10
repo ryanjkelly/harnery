@@ -1,7 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
-import { appendFileSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
 import { initializeEventLedgerV3, rotateOversizedEventLedgerV3 } from "./bootstrap.ts";
 import { sha256V3 } from "./canonical.ts";
 import { liveGenesisIdV3, readEventV3ControlState } from "./control.ts";
@@ -17,7 +18,7 @@ import { eventV3Paths, withEventV3LedgerLease } from "./writer.ts";
 
 const roots: string[] = [];
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 test("bootstrap commits a recovered native-hook batch before archiving its epoch", () => {

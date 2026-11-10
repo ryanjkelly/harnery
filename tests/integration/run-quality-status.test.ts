@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { initializeEventLedgerV3 } from "../../src/core/events/v3/bootstrap.ts";
@@ -9,6 +9,7 @@ import {
   recordLiveHookSignalV3,
   resolveLiveEventLedgerRouteV3,
 } from "../../src/core/events/v3/live-routing.ts";
+import { removeDir } from "../helpers/remove-dir.ts";
 
 // Run the CLI entry directly: the bin/harn shell wrapper cannot be spawned on Windows.
 const HARN = join(resolve(import.meta.dir, "../.."), "src", "cli.ts");
@@ -16,7 +17,7 @@ const OWNER = "quality-fixture";
 const sandboxes: string[] = [];
 
 afterEach(() => {
-  for (const sandbox of sandboxes.splice(0)) rmSync(sandbox, { recursive: true, force: true });
+  for (const sandbox of sandboxes.splice(0)) removeDir(sandbox);
 });
 
 describe("harn agents status run quality", () => {

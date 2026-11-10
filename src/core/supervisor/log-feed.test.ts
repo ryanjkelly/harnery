@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { createStorageCatalog } from "../storage/catalog.ts";
 import type { HarneryLogRecordV1 } from "../storage/jsonl.ts";
 import { encodeLogRecord } from "../storage/jsonl.ts";
@@ -11,7 +12,7 @@ import { SupervisorLogCollector } from "./log-feed.ts";
 const roots: string[] = [];
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 describe("supervisor log collector", () => {

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -20,6 +20,7 @@ import {
   recordApprovedSessionEndV3,
 } from "../../src/core/events/v3/producers/recorder.ts";
 import { readLedgerV3 } from "../../src/core/events/v3/reader.ts";
+import { removeDir } from "../helpers/remove-dir.ts";
 
 const HARNERY_DIR = path.resolve(import.meta.dir, "../..");
 // Run the CLI entry directly: the bin/harn shell wrapper cannot be spawned on Windows.
@@ -166,7 +167,7 @@ function outputObject(result: RunResult): Record<string, unknown> {
 afterEach(() => {
   while (sandboxes.length > 0) {
     const root = sandboxes.pop();
-    if (root) rmSync(root, { recursive: true, force: true });
+    if (root) removeDir(root);
   }
 });
 

@@ -4,12 +4,13 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { initDocsContext, runLint } from "../../src/lib/docs-lint.ts";
+import { removeDir } from "../helpers/remove-dir.ts";
 
 const roots: string[] = [];
 const CREATED = "2026-08-29T08:00:00Z";
 
 afterAll(() => {
-  for (const root of roots) rmSync(root, { recursive: true, force: true });
+  for (const root of roots) removeDir(root);
 });
 
 function plan(title: string, body = "Original."): string {

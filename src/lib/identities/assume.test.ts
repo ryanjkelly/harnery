@@ -5,11 +5,11 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
-  rmSync,
   writeFileSync,
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { ensureLiveCoordinationHeartbeat } from "../../core/agents/state/live-coordination-writer.ts";
 import { resolveName } from "../../core/agents/state/names.ts";
 import { initializeEventLedgerV3 } from "../../core/events/v3/bootstrap.ts";
@@ -32,7 +32,7 @@ describe("assumeIdentity", () => {
   });
 
   afterEach(() => {
-    rmSync(root, { recursive: true, force: true });
+    removeDir(root);
   });
 
   test("binds the heartbeat, append-only name history, persona registry, and event ledger", () => {
@@ -202,7 +202,7 @@ describe("assumeIdentity fork-ancestor guard", () => {
   });
 
   afterEach(() => {
-    rmSync(root, { recursive: true, force: true });
+    removeDir(root);
   });
 
   test("refuses assuming a fork ancestor even when nobody holds the name", () => {

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -7,6 +7,7 @@ import {
   eventV3Fixture,
   fixtureObject,
 } from "../../../../tests/helpers/event-v3.ts";
+import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
 import type { EventV3 } from "./contract.ts";
 import { readLedgerFramesV3 } from "./reader.ts";
 import {
@@ -19,7 +20,7 @@ import {
 const roots: string[] = [];
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 describe("event ledger V3 causal append ordering", () => {

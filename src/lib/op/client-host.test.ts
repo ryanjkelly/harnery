@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { createOpClient, OpWriteRefusedError, PASSWORD_PLACEHOLDER } from "./client.ts";
 import { isWslRuntime } from "./detect.ts";
 import { which as whichSync } from "./process.ts";
@@ -85,7 +86,7 @@ afterEach(() => {
   if (originalOpBin === undefined) delete process.env.OP_BIN;
   else process.env.OP_BIN = originalOpBin;
   delete process.env.MOCK_OP_STDERR;
-  rmSync(work, { recursive: true, force: true });
+  removeDir(work);
 });
 
 describe.if(posix)("createOpClient against a fake op", () => {
@@ -302,7 +303,7 @@ describe.if(posix)("createOpClient against a fake op", () => {
       expect(mock.calls()).toEqual([]);
       expect(readFileSync(join(work, "README.md"), "utf8")).toBe("tracked");
     } finally {
-      rmSync(outside, { recursive: true, force: true });
+      removeDir(outside);
     }
   });
 
@@ -324,7 +325,7 @@ describe.if(posix)("createOpClient against a fake op", () => {
       expect(mock.calls()).toEqual([]);
       expect(existsSync(join(work, "new-secret.env"))).toBe(false);
     } finally {
-      rmSync(outside, { recursive: true, force: true });
+      removeDir(outside);
     }
   });
 
@@ -343,7 +344,7 @@ describe.if(posix)("createOpClient against a fake op", () => {
       expect(mock.calls()).toEqual([]);
       expect(existsSync(join(work, "new-secret.env"))).toBe(false);
     } finally {
-      rmSync(outside, { recursive: true, force: true });
+      removeDir(outside);
     }
   });
 

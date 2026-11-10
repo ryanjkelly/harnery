@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import {
   AUTOUPDATE_CHILD_ENV,
   AUTOUPDATE_OFF_ENV,
@@ -65,7 +66,7 @@ beforeEach(() => {
   git(base, "clone", "-q", "-b", "main", remote, other);
 });
 afterEach(() => {
-  rmSync(base, { recursive: true, force: true });
+  removeDir(base);
 });
 
 function cfg(overrides: Partial<AutoUpdateConfig> = {}): AutoUpdateConfig {

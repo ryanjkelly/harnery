@@ -10,11 +10,12 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, symlinkSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import {
   acquireInstanceLock,
   INSTANCE_LOCK_PORT_MAX,
@@ -29,7 +30,7 @@ const servers: Server[] = [];
 
 afterEach(async () => {
   for (const server of servers.splice(0)) await new Promise((done) => server.close(done));
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 function scope(): string {

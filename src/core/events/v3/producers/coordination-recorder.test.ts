@@ -5,11 +5,11 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
-  rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { removeDir } from "../../../../../tests/helpers/remove-dir.ts";
 import type { ParsedPayload } from "../../../hooks/adapter/parse.ts";
 import type { AuthorityReconcilerV3 } from "../authority-outbox.ts";
 import { buildEventV3 } from "../builder.ts";
@@ -36,7 +36,7 @@ import { readHookProducerStateV3, recordHookSignalV3 } from "./recorder.ts";
 const roots: string[] = [];
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 describe("event ledger V3 persistent coordination recorder", () => {

@@ -8,12 +8,12 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
-  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { processStartToken } from "../agents/state/proc-start.ts";
 import { withArtifactLock } from "./mutation-lock.ts";
 
@@ -24,7 +24,7 @@ function root() {
   return path;
 }
 afterEach(() => {
-  for (const path of roots.splice(0)) rmSync(path, { recursive: true, force: true });
+  for (const path of roots.splice(0)) removeDir(path);
 });
 
 describe("artifact mutation lock", () => {

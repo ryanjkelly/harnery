@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import type { CodeChangeWatch, CodeIdentityRecord } from "../code-identity.ts";
 import type { readLedgerV3Since } from "../events/v3/index.ts";
 import { closeProcessLoggers } from "../storage/logger.ts";
@@ -32,7 +33,7 @@ afterEach(async () => {
   await closeProcessLoggers();
   if (originalSharedLogs === undefined) delete process.env.HARNERY_SHARED_LOGS;
   else process.env.HARNERY_SHARED_LOGS = originalSharedLogs;
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 function fixture(): string {

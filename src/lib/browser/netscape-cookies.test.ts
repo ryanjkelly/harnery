@@ -1,14 +1,15 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Cookie } from "playwright";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { serializeNetscapeCookies, writeNetscapeCookieFile } from "./netscape-cookies.js";
 
 const tempDirs: string[] = [];
 
 afterEach(() => {
-  for (const path of tempDirs.splice(0)) rmSync(path, { recursive: true, force: true });
+  for (const path of tempDirs.splice(0)) removeDir(path);
 });
 
 const cookie: Cookie = {

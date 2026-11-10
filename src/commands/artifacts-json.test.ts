@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Command } from "commander";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import { createArtifact } from "../core/artifacts/index.ts";
 import { registerArtifactsCommand } from "./artifacts.ts";
 
@@ -58,6 +59,6 @@ for (const command of ["create", "show", "list"])
         ).toMatchObject({ artifact_id: expect.any(String) });
       }
     } finally {
-      rmSync(repoRoot, { recursive: true, force: true });
+      removeDir(repoRoot);
     }
   });

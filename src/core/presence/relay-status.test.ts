@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { createStorageCatalog } from "../storage/catalog.ts";
 import { closeProcessLoggers } from "../storage/logger.ts";
 import { familyLogDirectory } from "../storage/segments.ts";
@@ -53,7 +54,7 @@ afterEach(async () => {
     if (savedEnv[k] === undefined) delete process.env[k];
     else process.env[k] = savedEnv[k];
   }
-  rmSync(base, { recursive: true, force: true });
+  removeDir(base);
 });
 
 describe("relayStatus", () => {

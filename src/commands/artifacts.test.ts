@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import { createHarneryProgram, type EmitContext, loadLazyCommand } from "../commander.ts";
 import { type ArtifactManifestV2, showArtifact } from "../core/artifacts/index.ts";
 
@@ -72,7 +73,7 @@ describe("artifacts command", () => {
       ])
         expect((await invoke(args)).errors).toHaveLength(1);
     } finally {
-      rmSync(repoRoot, { recursive: true, force: true });
+      removeDir(repoRoot);
     }
   });
   test("registers the managed artifact lifecycle", async () => {
@@ -213,7 +214,7 @@ describe("artifacts command", () => {
       expect(reproduced.errors).toEqual([]);
       expect(reproduced.texts).toEqual(saved.texts);
     } finally {
-      rmSync(repoRoot, { recursive: true, force: true });
+      removeDir(repoRoot);
     }
   });
 
@@ -305,7 +306,7 @@ describe("artifacts command", () => {
       for (const bad of ["-1", "1.5", "1G", ""])
         expect((await invoke(["list", "--min-bytes", bad])).errors).toHaveLength(1);
     } finally {
-      rmSync(repoRoot, { recursive: true, force: true });
+      removeDir(repoRoot);
     }
   });
   test("create --big refuses below the free-disk floor unless --allow-low-disk; hold takes --days", async () => {
@@ -460,7 +461,7 @@ describe("artifacts command", () => {
     } finally {
       if (saved === undefined) delete process.env.HARNERY_ARTIFACT_MIN_FREE_BYTES;
       else process.env.HARNERY_ARTIFACT_MIN_FREE_BYTES = saved;
-      rmSync(repoRoot, { recursive: true, force: true });
+      removeDir(repoRoot);
     }
   });
 });

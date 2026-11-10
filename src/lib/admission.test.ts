@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import {
   type AdmissionConfig,
   AdmissionTimeoutError,
@@ -23,8 +24,8 @@ const roots: string[] = [];
 
 afterEach(() => {
   for (const root of roots.splice(0)) {
-    rmSync(root, { recursive: true, force: true });
-    rmSync(`${root}-history`, { recursive: true, force: true });
+    removeDir(root);
+    removeDir(`${root}-history`);
   }
 });
 

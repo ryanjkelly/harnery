@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import {
   admissionHookOutput,
   admissionRewriteForTool,
@@ -273,7 +274,7 @@ describe("hook output", () => {
 describe("rewritten command execution", () => {
   const roots: string[] = [];
   afterEach(() => {
-    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+    for (const root of roots.splice(0)) removeDir(root);
   });
 
   // The rewrite targets POSIX shell scripts and is never applied on win32 (admissionHookOutput).

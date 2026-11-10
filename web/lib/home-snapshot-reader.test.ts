@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initializeEventLedgerV3 } from "../../src/core/events/v3/bootstrap.ts";
@@ -8,6 +8,7 @@ import {
   recordLiveHookSignalV3,
   resolveLiveEventLedgerRouteV3,
 } from "../../src/core/events/v3/live-routing.ts";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import { __resetCoordRootCache } from "./coord-reader";
 import { readHomeSnapshot } from "./home-snapshot-reader";
 
@@ -18,7 +19,7 @@ afterEach(() => {
   if (previousRoot === undefined) delete process.env.HARNERY_COORD_ROOT;
   else process.env.HARNERY_COORD_ROOT = previousRoot;
   __resetCoordRootCache();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 test("a populated homepage snapshot survives worker structured cloning", () => {

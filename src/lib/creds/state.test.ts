@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import {
   DEFAULT_HEAL_BACKOFF_HOURS,
   groupByItem,
@@ -38,7 +39,7 @@ describe("revisions", () => {
       saveHealBackoff(join(dir, "b.json"), { k: { failed_at: "2026-01-01T00:00:00.000Z" } });
       expect(loadHealBackoff(join(dir, "b.json")).k?.failed_at).toBe("2026-01-01T00:00:00.000Z");
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      removeDir(dir);
     }
   });
 });

@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
+import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
 import {
   clearRuntimeTelemetryCachesForTest,
   discoverCodexSessionTranscript,
@@ -27,7 +27,7 @@ describe("runtime context telemetry", () => {
 
   afterEach(() => {
     clearRuntimeTelemetryCachesForTest();
-    rmSync(root, { recursive: true, force: true });
+    removeDir(root);
   });
 
   test("joins a bounded Codex token sample to its native completed turn", () => {
@@ -963,7 +963,7 @@ describe("runtime tuning telemetry", () => {
 
   afterEach(() => {
     clearRuntimeTelemetryCachesForTest();
-    rmSync(root, { recursive: true, force: true });
+    removeDir(root);
   });
 
   function writeCodexRollout(rows: object[], session = SESSION): string {

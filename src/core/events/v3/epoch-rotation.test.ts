@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { eventV3Fixture } from "../../../../tests/helpers/event-v3.ts";
+import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
 import { initializeEventLedgerV3, rotateOversizedEventLedgerV3 } from "./bootstrap.ts";
 import { sha256V3 } from "./canonical.ts";
 import type { EventV3 } from "./contract.ts";
@@ -22,7 +23,7 @@ const roots: string[] = [];
 const savedThresholdEnv = process.env.HARNERY_EVENT_V3_ROTATE_ACTIVE_BYTES;
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
   if (savedThresholdEnv === undefined) {
     delete process.env.HARNERY_EVENT_V3_ROTATE_ACTIVE_BYTES;
   } else {

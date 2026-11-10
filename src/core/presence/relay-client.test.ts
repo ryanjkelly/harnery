@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { startRelayServer } from "../../commands/relay.ts";
 import { acquireInstanceLock, instanceLockEndpoint } from "../single-instance.ts";
 import { closeProcessLoggers } from "../storage/logger.ts";
@@ -57,7 +58,7 @@ afterEach(async () => {
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;
   }
-  rmSync(base, { recursive: true, force: true });
+  removeDir(base);
 });
 
 describe("startRelayServer (Bun host)", () => {

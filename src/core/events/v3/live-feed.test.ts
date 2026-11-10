@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
 import {
   EVENT_V3_LIVE_RELATIVE_ROOT,
   janitorLiveDisplayV3,
@@ -11,7 +12,7 @@ import {
 
 const roots: string[] = [];
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 const GEN_A = "gen_01a04d03-6f65-776d-bb23-5452d16b8980";

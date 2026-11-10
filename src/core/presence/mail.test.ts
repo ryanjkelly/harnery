@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { initializeEventLedgerV3 } from "../events/v3/bootstrap.ts";
 import { sha256V3 } from "../events/v3/canonical.ts";
 import {
@@ -60,7 +61,7 @@ afterEach(() => {
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;
   }
-  rmSync(base, { recursive: true, force: true });
+  removeDir(base);
 });
 
 function on(machine: "machine-a" | "machine-b"): string {

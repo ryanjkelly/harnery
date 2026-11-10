@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { captureProviderConversation, readConversationArchive } from "../conversations/archive.ts";
 import { buildConversationContextPack } from "../conversations/context-pack.ts";
 import type {
@@ -42,7 +43,7 @@ import { FileSegmentSink, readSegmentManifest } from "./segments.ts";
 const roots: string[] = [];
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 describe("storage framework end-to-end canary", () => {

@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import type { QaRunResult } from "../../lib/browser/qa-run-contracts.ts";
 import {
   formatQaSignalAge,
@@ -32,7 +33,7 @@ function makeRoot(): string {
 afterEach(() => {
   while (roots.length > 0) {
     const root = roots.pop();
-    if (root) rmSync(root, { recursive: true, force: true });
+    if (root) removeDir(root);
   }
 });
 

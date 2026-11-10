@@ -1,14 +1,15 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initializeV3Fixture, seedV3Session } from "../../tests/helpers/event-v3-runtime.ts";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import { ARTIFACT_MANIFEST, createArtifact, holdArtifact } from "../core/artifacts/index.ts";
 
 const roots: string[] = [];
 const owner = "artifact_remove_cli_owner";
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "harnery-artifact-remove-cli-"));

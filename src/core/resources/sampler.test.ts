@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { parseLinuxProcessStat, redactCommand, sampleResources } from "./sampler.ts";
 
 const roots: string[] = [];
@@ -11,7 +12,7 @@ const roots: string[] = [];
 const procfsTest = test.skipIf(process.platform !== "linux");
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 describe("resource sampler", () => {

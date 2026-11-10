@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import {
   applyMirror,
   entryMatchesSelector,
@@ -42,7 +43,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(dataDir, { recursive: true, force: true });
+  removeDir(dataDir);
 });
 
 describe("findDesktopDataDirs", () => {

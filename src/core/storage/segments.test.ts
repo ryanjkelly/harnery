@@ -14,6 +14,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { createStorageCatalog } from "./catalog.ts";
 import { encodeLogRecord, type HarneryLogRecordV1 } from "./jsonl.ts";
 import { queryLogs, readLogFollow, readRecentActiveLogs, rotationFollowCursor } from "./query.ts";
@@ -28,7 +29,7 @@ import {
 
 const roots: string[] = [];
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 describe("shared log segments and query", () => {

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
 import {
   descriptorPathsAvailable,
   git,
@@ -34,7 +35,7 @@ const roots: string[] = [];
 const TARGET_LEASE_STALE_MS = 5 * 60 * 1_000;
 const DEAD_PID = 2_000_000_000;
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 // Every case here drives a real isolated allocation and fast-forward, so the whole

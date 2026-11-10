@@ -14,6 +14,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
 import { initializeEventLedgerV3, refreshIncompatibleEventLedgerV3 } from "./bootstrap.ts";
 import { canonicalJsonV3, sha256V3 } from "./canonical.ts";
 import { liveGenesisIdV3 } from "./control.ts";
@@ -25,7 +26,7 @@ import { eventV3Paths, withEventV3LedgerLease, withEventV3PublicationLease } fro
 
 const roots: string[] = [];
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 const oldDigest = `sha256:${"a".repeat(64)}`;
 const epoch = "epoch-20261104164357439";

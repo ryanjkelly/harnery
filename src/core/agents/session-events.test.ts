@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { initializeEventLedgerV3 } from "../events/v3/bootstrap.ts";
 import { sha256V3 } from "../events/v3/canonical.ts";
 import {
@@ -22,7 +23,7 @@ const priorCoordRoot = process.env.HARNERY_COORD_ROOT_OVERRIDE;
 afterEach(() => {
   if (priorCoordRoot === undefined) delete process.env.HARNERY_COORD_ROOT_OVERRIDE;
   else process.env.HARNERY_COORD_ROOT_OVERRIDE = priorCoordRoot;
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 describe("session event live ledger routing", () => {

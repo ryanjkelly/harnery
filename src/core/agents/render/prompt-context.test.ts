@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initializeV3Fixture, seedV3Session } from "../../../../tests/helpers/event-v3-runtime.ts";
+import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
 import {
   recordLiveHookSignalV3,
   resolveLiveEventLedgerRouteV3,
@@ -24,7 +25,7 @@ beforeEach(() => {
   seedV3Session(root, "self", { name: "Maya", task: "current focus" });
 });
 
-afterEach(() => rmSync(root, { recursive: true, force: true }));
+afterEach(() => removeDir(root));
 
 describe("renderPromptContext on the V3 coordination projection", () => {
   test("no peers and a current task produce no extra context", () => {

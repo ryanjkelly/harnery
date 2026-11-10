@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initializeEventLedgerV3 } from "../../src/core/events/v3/bootstrap.ts";
@@ -8,6 +8,7 @@ import {
   recordLiveHookSignalV3,
   resolveLiveEventLedgerRouteV3,
 } from "../../src/core/events/v3/live-routing.ts";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import { __resetCoordRootCache, __resetNameHistoryCache } from "./coord-reader";
 import { readEventsPageSnapshot } from "./page-snapshot-reader";
 
@@ -19,7 +20,7 @@ afterEach(() => {
   else process.env.HARNERY_COORD_ROOT = previousRoot;
   __resetCoordRootCache();
   __resetNameHistoryCache();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 function freshLedger() {

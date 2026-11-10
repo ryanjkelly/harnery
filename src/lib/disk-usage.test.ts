@@ -7,18 +7,18 @@ import {
   mkdirSync,
   mkdtempSync,
   openSync,
-  rmSync,
   symlinkSync,
   truncateSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import { diskUsage, parseDiskSize } from "./disk-usage.ts";
 
 const fixtures: string[] = [];
 afterEach(() => {
-  for (const dir of fixtures.splice(0)) rmSync(dir, { recursive: true, force: true });
+  for (const dir of fixtures.splice(0)) removeDir(dir);
 });
 function fixture(): string {
   const dir = mkdtempSync(join(tmpdir(), "harnery-disk-"));

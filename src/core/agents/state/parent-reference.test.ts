@@ -1,8 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eventV3Fixture, fixtureObject } from "../../../../tests/helpers/event-v3.ts";
+import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
 import {
   type CoordinationGenerationViewV3,
   type CoordinationViewV3,
@@ -17,7 +18,7 @@ const PARENT = "00000000-0000-4000-8000-000000000002";
 const OTHER = "00000000-0000-4000-8000-000000000003";
 const roots: string[] = [];
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 function generation(id: string, generationId: string): CoordinationGenerationViewV3 {

@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Command } from "commander";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import { createHarneryProgram, type EmitContext } from "../commander.ts";
 import { harneryStorageFamilies } from "../core/storage/builtins.ts";
 import type { HarneryStorageFamily } from "../core/storage/contract.ts";
@@ -76,7 +77,7 @@ describe("logs command", () => {
       expect(report.dormant_families).toEqual([]);
       expect(existsSync(join(root, ".harnery", "logs"))).toBeFalse();
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   });
 
@@ -124,7 +125,7 @@ describe("logs command", () => {
       });
       expect(errors).toEqual([]);
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   });
 
@@ -194,7 +195,7 @@ describe("logs command", () => {
       });
       expect(existsSync(join(root, ".host"))).toBeFalse();
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   });
 
@@ -252,7 +253,7 @@ describe("logs command", () => {
         savedEnvironment.HARNERY_COORD_ROOT_OVERRIDE,
       );
       restoreEnvironment("CLAUDE_PROJECT_DIR", savedEnvironment.CLAUDE_PROJECT_DIR);
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   });
 });

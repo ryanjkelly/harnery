@@ -5,13 +5,13 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { strToU8, zipSync } from "fflate";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import {
   buildZip,
   createZip,
@@ -24,7 +24,7 @@ import {
 
 const roots: string[] = [];
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "zip-test-"));

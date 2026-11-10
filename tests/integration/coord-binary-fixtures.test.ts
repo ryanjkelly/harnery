@@ -6,7 +6,6 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
-  rmSync,
   symlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,6 +15,7 @@ import { initializeEventLedgerV3 } from "../../src/core/events/v3/bootstrap.ts";
 import { sha256V3 } from "../../src/core/events/v3/canonical.ts";
 import { readLedgerV3 } from "../../src/core/events/v3/reader.ts";
 import { eventV3Paths } from "../../src/core/events/v3/writer.ts";
+import { removeDir } from "../helpers/remove-dir.ts";
 
 const HARNERY_DIR = resolve(import.meta.dir, "../..");
 const AGENT_HOOK = join(HARNERY_DIR, "bin", "agent-hook");
@@ -25,7 +25,7 @@ const roots: string[] = [];
 setDefaultTimeout(15_000);
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 describe("agent-hook universal V3 binary path", () => {

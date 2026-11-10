@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { createStorageCatalog } from "./catalog.ts";
 import type { HarneryRegisteredStorageFamily } from "./contract.ts";
 import { encodeLogRecord, type HarneryLogRecordV1 } from "./jsonl.ts";
@@ -23,7 +24,7 @@ import { FileSegmentSink, familyLogDirectory, readSegmentManifest } from "./segm
 
 const roots: string[] = [];
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 describe("structured log retention", () => {

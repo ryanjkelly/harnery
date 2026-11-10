@@ -6,13 +6,13 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
-  rmSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { initializeV3Fixture, seedV3Session } from "../../../../tests/helpers/event-v3-runtime.ts";
+import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
 import {
   recordLiveHookSignalV3,
   resolveLiveEventLedgerRouteV3,
@@ -24,7 +24,7 @@ import { staleSweep } from "./stale-sweep.ts";
 
 const roots: string[] = [];
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 function fixtureRoot(): string {

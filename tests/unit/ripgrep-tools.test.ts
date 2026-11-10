@@ -1,17 +1,10 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import {
-  chmodSync,
-  copyFileSync,
-  linkSync,
-  mkdirSync,
-  mkdtempSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { chmodSync, copyFileSync, linkSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ripgrepAutoInstall } from "../../src/core/config.ts";
 import { findRg, hintOncePerDay, managedRgPath, toolsDir } from "../../src/lib/tools/ripgrep.ts";
+import { removeDir } from "../helpers/remove-dir.ts";
 
 const win32 = process.platform === "win32";
 
@@ -47,7 +40,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(tmp, { recursive: true, force: true });
+  removeDir(tmp);
   for (const [k, v] of Object.entries(savedEnv)) {
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;

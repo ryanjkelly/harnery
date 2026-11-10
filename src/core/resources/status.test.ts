@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import {
   pressureAssessmentFixture,
   pressureRecordFixture,
@@ -24,7 +25,7 @@ beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "harn-resource-read-"));
   nowMs = Date.now();
 });
-afterEach(() => rmSync(root, { recursive: true, force: true }));
+afterEach(() => removeDir(root));
 
 describe("cached resource status", () => {
   test("an unknown writer identity hides pressure and reports its build state", () => {

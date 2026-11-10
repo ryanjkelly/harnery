@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { recordLiveLifecycleChangeV3 } from "../agents/live-authority-v3.ts";
 import { initializeEventLedgerV3 } from "../events/v3/bootstrap.ts";
 import { sha256V3 } from "../events/v3/canonical.ts";
@@ -19,7 +20,7 @@ const priorRoot = process.env.HARNERY_COORD_ROOT_OVERRIDE;
 afterEach(() => {
   if (priorRoot === undefined) delete process.env.HARNERY_COORD_ROOT_OVERRIDE;
   else process.env.HARNERY_COORD_ROOT_OVERRIDE = priorRoot;
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 function lifecycleFixture(instanceId: string) {

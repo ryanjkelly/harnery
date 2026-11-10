@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import type { ArtifactHold } from "./index.ts";
 import {
   ARTIFACT_MANIFEST,
@@ -47,7 +48,7 @@ function at(days: number, base = createdAt): Date {
   return new Date(base.getTime() + days * DAY_MS);
 }
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
   for (const [key, value] of Object.entries(savedEnv)) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;

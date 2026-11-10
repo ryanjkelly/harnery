@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { harneryStorageFamilies } from "./builtins.ts";
 import { createStorageCatalog } from "./catalog.ts";
 import {
@@ -16,7 +17,7 @@ import { familyLogDirectory } from "./segments.ts";
 const roots: string[] = [];
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 describe("storage inventory", () => {

@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { initializeV3Fixture, seedV3Session } from "../../../tests/helpers/event-v3-runtime.ts";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { readLedgerV3 } from "../events/v3/reader.ts";
 import { reconcileCoordinationV3 } from "./reconcile-coordination-v3.ts";
 import { listSessionFinalizationRequestsV3 } from "./session-finalizer-v3.ts";
@@ -10,7 +11,7 @@ import { listSessionFinalizationRequestsV3 } from "./session-finalizer-v3.ts";
 const roots: string[] = [];
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 describe("reconcileCoordinationV3", () => {

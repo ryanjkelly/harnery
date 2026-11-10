@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
 import {
   descriptorPathsAvailable,
   gitFixture,
@@ -39,7 +40,7 @@ async function withWorktree(
     run(source, ["worktree", "add", "-q", worktree, "-b", branch]);
     await fn({ worktree, source, branch });
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    removeDir(root);
   }
 }
 
@@ -171,7 +172,7 @@ async function withProviderWorkspace(
       dirtyPath,
     });
   } finally {
-    rmSync(host, { recursive: true, force: true });
+    removeDir(host);
   }
 }
 

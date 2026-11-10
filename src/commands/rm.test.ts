@@ -6,19 +6,19 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
-  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initializeV3Fixture, seedV3Session } from "../../tests/helpers/event-v3-runtime.ts";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import { createHarneryProgram, type EmitContext, loadLazyCommand } from "../commander.ts";
 import { createArtifact } from "../core/artifacts/index.ts";
 
 const roots: string[] = [];
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 function fixture() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "harnery-rm-cli-")));

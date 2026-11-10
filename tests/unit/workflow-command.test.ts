@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Command } from "commander";
@@ -7,6 +7,7 @@ import { registerWorkflowCommand } from "../../src/commands/workflow.ts";
 import { writeWorkflowProof } from "../../src/core/workflow/proof.ts";
 import { writeWorkflowRunManifest } from "../../src/core/workflow/run-state.ts";
 import type { WorkflowProof } from "../../src/core/workflow/types.ts";
+import { removeDir } from "../helpers/remove-dir.ts";
 
 // Windows has no /tmp; elsewhere keep the short /tmp root.
 const TEMP_ROOT = process.platform === "win32" ? tmpdir() : "/tmp";
@@ -57,7 +58,7 @@ beforeEach(() => {
 
 afterEach(() => {
   process.chdir(previousCwd);
-  rmSync(root, { recursive: true, force: true });
+  removeDir(root);
 });
 
 describe("workflow proof command", () => {

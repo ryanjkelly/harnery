@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import { requestSessionEndExplicitV3 } from "../core/agents/session-finalizer-v3.ts";
 import { canonicalJsonV3, sha256V3 } from "../core/events/v3/canonical.ts";
 import { adapterCapabilityProfileDigestV3 } from "../core/events/v3/capabilities.ts";
@@ -27,7 +28,7 @@ import { collectEventLedgerHealthV3 } from "./agents.ts";
 const roots: string[] = [];
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 describe("event-ledger health counters", () => {

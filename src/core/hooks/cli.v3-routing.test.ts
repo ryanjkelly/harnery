@@ -7,12 +7,12 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import {
   listSessionFinalizationRequestsV3,
   requestSessionEndExplicitV3,
@@ -55,21 +55,8 @@ setDefaultTimeout(windowsSlack(15_000));
 
 afterEach(() => {
   // On Windows a detached maintenance worker still running with the root as
-  // its cwd blocks deletion (EBUSY) until it exits, so retry for up to 30s.
-  // Bun's rmSync does not apply maxRetries, so retry explicitly.
-  for (const root of roots.splice(0)) {
-    const deadline = Date.now() + (process.platform === "win32" ? 30_000 : 0);
-    for (;;) {
-      try {
-        rmSync(root, { recursive: true, force: true });
-        break;
-      } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code;
-        if ((code !== "EBUSY" && code !== "EPERM") || Date.now() > deadline) throw error;
-        Bun.sleepSync(250);
-      }
-    }
-  }
+  // its cwd blocks deletion (EBUSY) until it exits, so allow up to 30s.
+  for (const root of roots.splice(0)) removeDir(root, 30_000);
 });
 
 describe("agent-hook V3 hard cut", () => {

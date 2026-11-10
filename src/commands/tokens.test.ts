@@ -1,8 +1,9 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Command } from "commander";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import type { EmitContext } from "../commander.ts";
 import { registerTokensCommand } from "./tokens.ts";
 
@@ -11,7 +12,7 @@ const small = join(dir, "small.md");
 const large = join(dir, "large.md");
 writeFileSync(small, "hello world");
 writeFileSync(large, "word ".repeat(200));
-afterAll(() => rmSync(dir, { recursive: true, force: true }));
+afterAll(() => removeDir(dir));
 
 async function run(...args: string[]) {
   const out = { text: [] as string[], data: [] as unknown[], exitCode: 0 };

@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { existsSync, linkSync, mkdtempSync, rmSync, truncateSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdtempSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initializeV3Fixture, seedV3Session } from "../../../tests/helpers/event-v3-runtime.ts";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import {
   allowBigArtifact,
   autoCleanArtifacts,
@@ -37,7 +38,7 @@ function later(hours: number): Date {
 }
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
   for (const [key, value] of Object.entries(savedEnv)) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;

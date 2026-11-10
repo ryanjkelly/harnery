@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
 import * as childProcess from "node:child_process";
 import * as fs from "node:fs";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { recordLiveClaimChangeV3, recordLiveTaskChangeV3 } from "../agents/live-authority-v3.ts";
 import { ensureLiveCoordinationHeartbeat } from "../agents/state/live-coordination-writer.ts";
 import { initializeEventLedgerV3 } from "../events/v3/bootstrap.ts";
@@ -78,7 +79,7 @@ function seedLiveWork(root: string): void {
 
 afterEach(() => {
   mock.restore();
-  while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
+  while (roots.length > 0) removeDir(roots.pop()!);
 });
 
 describe("context telemetry", () => {

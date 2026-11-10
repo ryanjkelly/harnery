@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { processStartToken } from "../agents/state/proc-start.ts";
 import { requestResourceServiceStop, runResourceService } from "./service.ts";
 import { readResourceServiceStatus } from "./service-status.ts";
@@ -9,7 +10,7 @@ import { resourcePaths, writePrivateJsonAtomic } from "./storage.ts";
 
 const roots: string[] = [];
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 function fixture(startToken: string | undefined = "recorded", state = "running"): string {

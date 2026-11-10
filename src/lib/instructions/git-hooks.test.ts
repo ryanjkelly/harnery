@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import {
   applyGitHooks,
   checkGitHooks,
@@ -41,7 +42,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(repo, { recursive: true, force: true });
+  removeDir(repo);
 });
 
 describe("resolveHooksDir", () => {
@@ -60,7 +61,7 @@ describe("resolveHooksDir", () => {
     try {
       expect(resolveHooksDir(dir)).toBeNull();
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      removeDir(dir);
     }
   });
 });
@@ -247,7 +248,7 @@ describe("submodules", () => {
   }
 
   afterEach(() => {
-    rmSync(`${repo}-source`, { recursive: true, force: true });
+    removeDir(`${repo}-source`);
   });
 
   test("init installs the regions in the submodule's own hooks dir; check and deinit cover it", () => {

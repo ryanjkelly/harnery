@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import {
   evaluatePolicy,
   loadPolicyFile,
@@ -147,7 +148,7 @@ describe("host policy", () => {
       const policy = loadPolicyFile(path);
       expect(policy.allowed_paths).toEqual([join(root, "repo")]);
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   });
 

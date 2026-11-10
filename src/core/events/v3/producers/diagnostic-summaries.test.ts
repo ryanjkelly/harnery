@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { removeDir } from "../../../../../tests/helpers/remove-dir.ts";
 import { countRecentCodexMidFlightOnboardings } from "../../../../commands/doctor.ts";
 import { acquireNoClobberLease } from "../../../workflow/workspaces/leases.ts";
 import {
@@ -40,7 +41,7 @@ afterEach(() => {
     } catch {
       // Directory may not exist for every test.
     }
-    rmSync(root, { recursive: true, force: true });
+    removeDir(root);
   }
 });
 

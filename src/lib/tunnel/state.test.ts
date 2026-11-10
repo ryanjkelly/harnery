@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import {
   CLOUDFLARED_ENV,
   ensureCloudflared,
@@ -62,7 +63,7 @@ describe("findLiveTunnelForOrigin", () => {
         findLiveTunnelForOrigin(3000, "localhost:4276", root, (pid) => live.has(pid))?.name,
       ).toBe("other");
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   });
 
@@ -109,7 +110,7 @@ describe("findLiveTunnelForOrigin", () => {
         findLiveTunnelForOrigin(4276, "nothing.serves.this", root, (pid) => live.has(pid)),
       ).toBeNull();
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   });
 
@@ -123,7 +124,7 @@ describe("findLiveTunnelForOrigin", () => {
       expect(findLiveTunnelForOrigin(4276, "localhost:4276", root, (pid) => pid === 10)).toBeNull();
       expect(findLiveTunnelForOrigin(4276, "localhost:4276", root, (pid) => pid === 20)).toBeNull();
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   });
 });
@@ -182,7 +183,7 @@ describe("tunnelDir", () => {
     } finally {
       if (before === undefined) delete process.env[TUNNEL_DIR_ENV];
       else process.env[TUNNEL_DIR_ENV] = before;
-      rmSync(dir, { recursive: true, force: true });
+      removeDir(dir);
     }
   });
 });
@@ -204,8 +205,8 @@ describe("ensureCloudflared with an explicit binary", () => {
         env.path,
       );
     } finally {
-      rmSync(env.dir, { recursive: true, force: true });
-      rmSync(cfg.dir, { recursive: true, force: true });
+      removeDir(env.dir);
+      removeDir(cfg.dir);
     }
   });
 
@@ -214,7 +215,7 @@ describe("ensureCloudflared with an explicit binary", () => {
     try {
       expect(ensureCloudflared({}, cfg.path)).toBe(cfg.path);
     } finally {
-      rmSync(cfg.dir, { recursive: true, force: true });
+      removeDir(cfg.dir);
     }
   });
 
@@ -228,7 +229,7 @@ describe("ensureCloudflared with an explicit binary", () => {
         /tunnel config.*missing or not runnable/,
       );
     } finally {
-      rmSync(onPath.dir, { recursive: true, force: true });
+      removeDir(onPath.dir);
     }
   });
 
@@ -237,7 +238,7 @@ describe("ensureCloudflared with an explicit binary", () => {
     try {
       expect(ensureCloudflared({ PATH: onPath.dir }, undefined)).toBe(onPath.path);
     } finally {
-      rmSync(onPath.dir, { recursive: true, force: true });
+      removeDir(onPath.dir);
     }
   });
 });

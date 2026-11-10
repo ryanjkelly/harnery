@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import {
   appendWorkflowTranscriptEvent,
   fitWorkflowTranscriptRecord,
@@ -70,7 +71,7 @@ describe("workflow transcript records", () => {
       expect(Buffer.byteLength(lines[0])).toBeLessThanOrEqual(WORKFLOW_TRANSCRIPT_EVENT_BYTES);
       expect(JSON.parse(lines[0]).event).toBe("run.start");
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   });
 });

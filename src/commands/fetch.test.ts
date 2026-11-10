@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import { createHarneryProgram, type EmitContext } from "../commander.ts";
 
 const realFetch = globalThis.fetch;
@@ -9,7 +10,7 @@ const roots: string[] = [];
 
 afterEach(() => {
   globalThis.fetch = realFetch;
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 function captureEmit(): {

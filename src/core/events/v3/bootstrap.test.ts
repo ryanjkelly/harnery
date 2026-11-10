@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
 import { acquireNoClobberLease } from "../../workflow/workspaces/leases.ts";
 import { initializeEventLedgerV3 } from "./bootstrap.ts";
 import { sha256V3 } from "./canonical.ts";
@@ -17,7 +18,7 @@ import { eventV3Paths } from "./writer.ts";
 const roots: string[] = [];
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 describe("universal V3 ledger initialization", () => {

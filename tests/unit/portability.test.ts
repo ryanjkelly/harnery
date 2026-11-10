@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scanPortability } from "../../scripts/check-portability.ts";
+import { removeDir } from "../helpers/remove-dir.ts";
 
 // harnery is published to npm and cloned by arbitrary hosts. Host-specific
 // tokens (a consumer's bin name, business, submodule paths, data-warehouse
@@ -30,7 +31,7 @@ describe("portability", () => {
         "web/.next-staging/generated.js",
       ]);
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   });
 
@@ -53,7 +54,7 @@ describe("portability", () => {
         expect.objectContaining({ file: "docs/draft.md", line: 1 }),
       ]);
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   });
 
@@ -96,7 +97,7 @@ describe("portability", () => {
       expect(scanPortability(root, "worktree")).toHaveLength(2);
       expect(scanPortability(root, "index")).toEqual([]);
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   });
 
@@ -116,7 +117,7 @@ describe("portability", () => {
         }),
       ]);
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   });
 
@@ -137,7 +138,7 @@ describe("portability", () => {
       writeFileSync(join(sourceRoot, "portable.ts"), "export const root = process.env.HOME;\n");
       expect(scanPortability(root)).toEqual([]);
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   });
 });

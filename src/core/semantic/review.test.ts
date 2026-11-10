@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import type {
   SemanticAcceptedReadModelV2,
   SemanticEvidenceV1,
@@ -120,7 +121,7 @@ describe("semantic inference review", () => {
       if (process.platform !== "win32") expect(statSync(target).mode & 0o777).toBe(0o600);
       expect(listSemanticReviewCandidates(root)).toHaveLength(1);
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   });
 
@@ -200,7 +201,7 @@ describe("semantic inference review", () => {
       expect(receiptBody).not.toContain("bounded semantic review candidate");
       expect(prepareSemanticReviewStudy(root, { backfill: false }).pending_candidate_count).toBe(0);
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   });
 
@@ -229,7 +230,7 @@ describe("semantic inference review", () => {
         }),
       ).toThrow("wrong phase verdict requires an expected phase");
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   });
 });

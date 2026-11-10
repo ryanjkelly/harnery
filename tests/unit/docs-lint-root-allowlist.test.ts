@@ -1,8 +1,9 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initDocsContext, runLint } from "../../src/lib/docs-lint.ts";
+import { removeDir } from "../helpers/remove-dir.ts";
 
 // Build a throwaway repo-root with a docs/ tree. Not a git repo, so the
 // markdown-discovery pass (git ls-files) returns nothing — isolating the
@@ -22,7 +23,7 @@ function makeFixture(): string {
 
 const roots: string[] = [];
 afterAll(() => {
-  for (const r of roots) rmSync(r, { recursive: true, force: true });
+  for (const r of roots) removeDir(r);
 });
 
 describe("docs-root-file rule", () => {

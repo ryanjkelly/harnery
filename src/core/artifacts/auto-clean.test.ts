@@ -15,6 +15,7 @@ import {
 } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { processStartToken } from "../agents/state/proc-start.ts";
 import { autoCleanArtifacts, cleanArtifacts, createArtifact } from "./index.ts";
 
@@ -36,7 +37,7 @@ function setEnv(key: string, value: string): void {
 }
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
   for (const [key, value] of Object.entries(savedEnv)) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;

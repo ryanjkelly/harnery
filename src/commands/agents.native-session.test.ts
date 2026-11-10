@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import { spawnCoordBinSync } from "../core/agents/coord-bin.ts";
 import { nativeSessionIdentity } from "./agents.ts";
 
@@ -25,7 +26,7 @@ test.skipIf(process.platform !== "win32")(
         input: "line one\nline two",
       });
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   },
 );

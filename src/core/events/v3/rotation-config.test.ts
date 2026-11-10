@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
 import {
   DEFAULT_EVENT_LEDGER_ROTATE_ACTIVE_BYTES,
   resolveEventLedgerRotateActiveBytesV3,
@@ -31,7 +32,7 @@ afterEach(() => {
   else process.env.HARNERY_EVENT_V3_ROTATE_ACTIVE_BYTES = savedThreshold;
   if (savedXdgConfigHome === undefined) delete process.env.XDG_CONFIG_HOME;
   else process.env.XDG_CONFIG_HOME = savedXdgConfigHome;
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 describe("resolveEventLedgerRotateActiveBytesV3", () => {

@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { allocateTileBudget } from "./page-review-budget.ts";
 import {
   PAGE_REVIEW_CAPTURE_PLAN_SCHEMA,
@@ -68,7 +69,7 @@ test("partial attempt files cannot enter the final context on retry", async () =
     ).toBe(2);
     expect(existsSync(join(packPaths(dir).contextDir("fixture"), "failed-sentinel"))).toBe(false);
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    removeDir(dir);
   }
 });
 

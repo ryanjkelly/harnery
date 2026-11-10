@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import {
   agentHookArgv,
   type Bridge,
@@ -107,7 +108,7 @@ describe("pure translation helpers", () => {
       expect(config.agentHook).toBe("harnery/bin/agent-hook");
       expect(loadHarneryOpenCodeConfig(join(root, "elsewhere")).agentHook).toBe("agent-hook");
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   });
 });
@@ -292,8 +293,8 @@ describe("Harnery OpenCode plugin", () => {
       prependShellPath(env, root, home);
       expect(env.PATH?.split(delimiter).filter((dir) => dir === join(root, "bin")).length).toBe(1);
     } finally {
-      rmSync(root, { recursive: true, force: true });
-      rmSync(home, { recursive: true, force: true });
+      removeDir(root);
+      removeDir(home);
     }
   });
 

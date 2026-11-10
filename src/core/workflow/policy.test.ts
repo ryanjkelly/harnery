@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { resolveWorkflowApproval } from "./approvals.ts";
 import { runWorkflow, WorkflowParkedError } from "./engine.ts";
 import type { Spawner, WorkflowProof } from "./types.ts";
@@ -14,7 +15,7 @@ beforeEach(() => {
   mkdirSync(join(root, ".harnery"), { recursive: true });
 });
 
-afterEach(() => rmSync(root, { recursive: true, force: true }));
+afterEach(() => removeDir(root));
 
 function script(body: string): string {
   const path = join(root, `workflow-${++sequence}.mjs`);

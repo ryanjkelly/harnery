@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import type { ParentAccessEvidence } from "./types.ts";
 import {
   decideWorkerAccess,
@@ -179,7 +180,7 @@ describe("detectParentAccess", () => {
   });
 
   afterEach(() => {
-    rmSync(root, { recursive: true, force: true });
+    removeDir(root);
   });
 
   // UUIDv7 for 2026-09-27T02:04:48.480Z, whose rollout sits in the 2026/09/26
@@ -332,7 +333,7 @@ describe("lastLineContaining", () => {
       expect(lastLineContaining(path, '"missing"')).toBeNull();
       expect(lastLineContaining(join(dir, "absent.jsonl"), '"k"')).toBeNull();
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      removeDir(dir);
     }
   });
 });

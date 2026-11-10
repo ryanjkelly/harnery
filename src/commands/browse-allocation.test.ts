@@ -1,16 +1,17 @@
 import { afterEach, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import { allocateTileBudget } from "../lib/browser/page-review-budget.ts";
 import type { PageReviewCapturePlan } from "../lib/browser/page-review-contracts.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
-  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  for (const d of dirs.splice(0)) removeDir(d);
 });
 
 test("failed gate still emits a plan; capture uses exact IDs and refuses source drift", () => {

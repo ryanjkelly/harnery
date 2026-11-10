@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { coordHelperOpts } from "../../src/commands/agents.ts";
@@ -11,6 +11,7 @@ import {
   recordLiveHookSignalV3,
   resolveLiveEventLedgerRouteV3,
 } from "../../src/core/events/v3/live-routing.ts";
+import { removeDir } from "../helpers/remove-dir.ts";
 
 /**
  * Regression: a shell cd'd into a nested directory that carries its own
@@ -27,7 +28,7 @@ const AGENT_COORD = resolve(import.meta.dir, "..", "..", "bin", "agent-coord.mjs
 
 const dirs: string[] = [];
 afterEach(() => {
-  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  for (const d of dirs.splice(0)) removeDir(d);
 });
 
 function makeNestedRoots(): { outer: string; nested: string; owner: string } {

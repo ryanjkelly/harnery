@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { runWorkflow } from "./engine.ts";
 import { evidencePreflightError, findInvalidEvidenceKinds } from "./evidence-preflight.ts";
 import type { Spawner } from "./types.ts";
@@ -123,7 +123,7 @@ describe("the engine refuses before it spends anything", () => {
     mkdirSync(join(root, ".harnery"), { recursive: true });
   });
 
-  afterEach(() => rmSync(root, { recursive: true, force: true }));
+  afterEach(() => removeDir(root));
 
   function script(body: string): string {
     const path = join(root, "workflow.mjs");

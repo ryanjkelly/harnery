@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import type { Adapter } from "../adapter.ts";
 import { initializeEventLedgerV3 } from "../events/v3/bootstrap.ts";
 import { buildEventV3 } from "../events/v3/builder.ts";
@@ -62,7 +63,7 @@ import {
 const roots: string[] = [];
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 describe("live V3 coordination", () => {

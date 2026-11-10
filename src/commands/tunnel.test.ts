@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import { createHarneryProgram, loadLazyCommand } from "../commander.ts";
 import {
   readConfig,
@@ -100,7 +101,7 @@ describe("tunnel command registration", () => {
         provider: join(root, ".cache", "tunnel", "cloudflared.log"),
       });
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   });
 });
@@ -156,7 +157,7 @@ describe("downOne", () => {
       provider.child.kill();
       if (before === undefined) delete process.env[TUNNEL_DIR_ENV];
       else process.env[TUNNEL_DIR_ENV] = before;
-      rmSync(dir, { recursive: true, force: true });
+      removeDir(dir);
     }
   }, 15_000);
 });
@@ -337,7 +338,7 @@ describe("allowlist commands", () => {
     } finally {
       if (before === undefined) delete process.env[TUNNEL_DIR_ENV];
       else process.env[TUNNEL_DIR_ENV] = before;
-      rmSync(dir, { recursive: true, force: true });
+      removeDir(dir);
     }
   }
 

@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { posix } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { buildTarGz } from "../../../tests/helpers/tar-fixture.ts";
 import {
   AGENT_DESKTOP_CALL_TIMEOUT_MS,
@@ -28,7 +29,7 @@ beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "agent-desktop-test-")).replace(/\\/g, "/");
 });
 afterEach(() => {
-  rmSync(root, { recursive: true, force: true });
+  removeDir(root);
 });
 
 const host = (kind: HostInfo["kind"]): HostInfo => ({ kind, desktopStateDir: join(root, "state") });

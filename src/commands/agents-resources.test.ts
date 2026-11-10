@@ -5,12 +5,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { initializeV3Fixture, seedV3Session } from "../../tests/helpers/event-v3-runtime.ts";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import { resourceStatusFixture } from "../../tests/helpers/resource-status.ts";
 import { resourcePaths } from "../core/resources/storage.ts";
 
 const roots: string[] = [];
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 test("agent status exposes cache totals in JSON and keeps coordination usable without measurements", () => {

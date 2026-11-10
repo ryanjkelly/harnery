@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import { lazyFetchWebRoot } from "./web-fetch.ts";
 
 type Call = { command: string; args: string[]; cwd?: string };
@@ -39,7 +40,7 @@ describe("lazyFetchWebRoot", () => {
     else process.env.XDG_CACHE_HOME = saved.xdg;
     if (saved.ref === undefined) delete process.env.HARNERY_WEB_REF;
     else process.env.HARNERY_WEB_REF = saved.ref;
-    rmSync(cache, { recursive: true, force: true });
+    removeDir(cache);
   });
 
   test("installs the harnery root and web/ so next.config can resolve playwright", () => {

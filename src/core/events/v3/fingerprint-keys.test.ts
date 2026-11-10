@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
 import {
   fingerprintKeyStorePathV3,
   loadOrCreateFingerprintKeyStoreV3,
@@ -35,7 +36,7 @@ function unsupportedStore(root: string, extra: Record<string, unknown> = {}): st
 }
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 describe("event ledger V3 fingerprint-key envelope", () => {

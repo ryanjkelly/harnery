@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { detectClaudeCodeFork } from "./fork-lineage.ts";
 
 const P = "11111111-1111-4111-8111-111111111111";
@@ -12,7 +13,7 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "harn-fork-lineage-"));
 });
 afterEach(() => {
-  rmSync(dir, { recursive: true, force: true });
+  removeDir(dir);
 });
 
 function writeSession(id: string, rows: object[]): string {

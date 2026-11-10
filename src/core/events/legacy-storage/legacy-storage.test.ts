@@ -7,13 +7,13 @@ import {
   mkdtempSync,
   readFileSync,
   renameSync,
-  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { gzipSync } from "node:zlib";
+import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
 import { canonicalJsonV3 } from "../v3/canonical.ts";
 import { activateLegacyV1CanaryReplacement, writeLegacyV1Canary } from "./canary.ts";
 import { compressSealedLegacyV1Segments } from "./compression.ts";
@@ -26,7 +26,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) {
     const fence = join(root, ".harnery", "events.ndjson");
     if (existsSync(fence)) chmodSync(fence, 0o700);
-    rmSync(root, { recursive: true, force: true });
+    removeDir(root);
   }
 });
 

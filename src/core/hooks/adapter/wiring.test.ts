@@ -6,9 +6,10 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
 import { ADAPTER_SPECS, type AdapterId, CLAUDE_CODE_EVENTS } from "./events.ts";
 import { installOpenCodePlugin, OPENCODE_PLUGIN_ENTRY } from "./opencode-plugin.ts";
 import {
@@ -395,7 +396,7 @@ describe("hooks.portableCommands", () => {
       );
       expect(loadAdapterWiring(dir)).toEqual([]);
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      removeDir(dir);
     }
   });
 });
@@ -408,7 +409,7 @@ describe("loadAdapterWiring (fs-backed)", () => {
     return dir;
   }
   function teardown(): void {
-    if (dir && existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+    if (dir && existsSync(dir)) removeDir(dir);
   }
   function writeClaudeSettings(root: string, settings: SettingsFile): void {
     mkdirSync(join(root, ".claude"), { recursive: true });
@@ -531,7 +532,7 @@ describe("summarizeAdapterWiring (fs-backed)", () => {
     return dir;
   }
   function teardown(): void {
-    if (dir && existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+    if (dir && existsSync(dir)) removeDir(dir);
   }
   function writeClaudeSettings(root: string, settings: SettingsFile): void {
     mkdirSync(join(root, ".claude"), { recursive: true });
@@ -609,7 +610,7 @@ describe("opencode plugin install mode (fs-backed)", () => {
     return dir;
   }
   function teardown(): void {
-    if (dir && existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+    if (dir && existsSync(dir)) removeDir(dir);
   }
   /** The launcher `loadAdapterWiring` expects for a standalone tmp project. */
   const STANDALONE = { binName: "harn", agentHook: "agent-hook" };

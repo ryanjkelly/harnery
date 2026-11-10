@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { brotliCompressSync, deflateSync, gzipSync } from "node:zlib";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { CookieJar } from "../cookies/index.ts";
 import { fetchWithJar } from "./client.ts";
 
@@ -17,7 +18,7 @@ function responseAt(url: string, body: BodyInit, init?: ResponseInit): Response 
 
 afterEach(() => {
   globalThis.fetch = realFetch;
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 describe("fetchWithJar response bodies", () => {

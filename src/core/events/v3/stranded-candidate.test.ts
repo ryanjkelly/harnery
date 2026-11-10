@@ -6,12 +6,12 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
-  rmSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
 import { acquireNoClobberLease } from "../../workflow/workspaces/leases.ts";
 import {
   EVENT_V3_STRANDED_CANDIDATE_APPROVAL_RECORD_ID,
@@ -39,7 +39,7 @@ import { eventV3Paths } from "./writer.ts";
 const roots: string[] = [];
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 describe("event ledger V3 stranded candidate epochs", () => {

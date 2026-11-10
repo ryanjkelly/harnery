@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import { backupConfig } from "../core/config.ts";
 import {
   backupCatalogCoverage,
@@ -17,7 +18,7 @@ const roots: string[] = [];
 const hasRestic = spawnSync("restic", ["version"], { stdio: "ignore" }).status === 0;
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 describe("backup selection", () => {

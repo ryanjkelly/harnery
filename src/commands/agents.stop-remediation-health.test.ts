@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import { readStopRemediationExhaustions } from "./agents.ts";
 
 describe("readStopRemediationExhaustions", () => {
@@ -13,7 +14,7 @@ describe("readStopRemediationExhaustions", () => {
   });
 
   afterEach(() => {
-    rmSync(root, { recursive: true, force: true });
+    removeDir(root);
   });
 
   function writeDebugLedger(lines: Array<Record<string, unknown>>): void {

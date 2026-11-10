@@ -1,12 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import { runSection } from "./toc.ts";
 
 let dir: string | undefined;
 afterEach(() => {
-  if (dir) rmSync(dir, { recursive: true, force: true });
+  if (dir) removeDir(dir);
   dir = undefined;
 });
 

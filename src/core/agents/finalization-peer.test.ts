@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { initializeEventLedgerV3 } from "../events/v3/bootstrap.ts";
 import { sha256V3 } from "../events/v3/canonical.ts";
 import {
@@ -15,7 +16,7 @@ import { ensureLiveCoordinationHeartbeat } from "./state/live-coordination-write
 
 const fixtures: string[] = [];
 afterEach(() => {
-  for (const path of fixtures.splice(0)) rmSync(path, { recursive: true, force: true });
+  for (const path of fixtures.splice(0)) removeDir(path);
 });
 function git(cwd: string, ...args: string[]): string {
   const result = spawnSync("git", args, { cwd, encoding: "utf8" });

@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { initializeEventLedgerV3 } from "../events/v3/bootstrap.ts";
 import { readEventV3ControlState } from "../events/v3/control.ts";
 import { SUPERVISOR_DIAGNOSTIC_LIMITS, type SupervisorCapability } from "./contract.ts";
@@ -15,7 +16,7 @@ const capability: SupervisorCapability = { source_kind: "coordination.v3", state
 const roots: string[] = [];
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 describe("event ledger control-state finding", () => {

@@ -1,13 +1,14 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readDocsMetadata, readDocsMetadataKey } from "../../src/lib/docs-meta.ts";
+import { removeDir } from "../helpers/remove-dir.ts";
 
 const roots: string[] = [];
 
 afterAll(() => {
-  for (const root of roots) rmSync(root, { recursive: true, force: true });
+  for (const root of roots) removeDir(root);
 });
 
 function fixture(name: string, content: string): { root: string; path: string } {

@@ -1,7 +1,8 @@
 import { afterAll, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { captureThumbnailFingerprint, registerCaptureThumbnail } from "./thumbnail-association.ts";
 
 const roots: string[] = [];
@@ -31,7 +32,7 @@ function fixture() {
   return { root, workspace, input };
 }
 afterAll(() => {
-  for (const root of roots) rmSync(root, { recursive: true, force: true });
+  for (const root of roots) removeDir(root);
 });
 
 // Registration anchors its write on a /proc/self/fd or /dev/fd directory

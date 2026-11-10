@@ -6,15 +6,16 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveCoordRoot } from "../../src/core/agents/coord-client.ts";
 import { initializeV3Fixture, seedV3Session } from "../helpers/event-v3-runtime.ts";
+import { removeDir } from "../helpers/remove-dir.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
-  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  for (const d of dirs.splice(0)) removeDir(d);
 });
 
 interface Fixture {

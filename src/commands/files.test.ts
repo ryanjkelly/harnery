@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Command } from "commander";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import { createHarneryProgram, type EmitContext } from "../commander.ts";
 import { coordRootId } from "../lib/coord-root-id.ts";
 import type { TunnelState } from "../lib/tunnel/state.ts";
@@ -19,7 +20,7 @@ const roots: string[] = [];
 const servers: Array<ReturnType<typeof Bun.serve>> = [];
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
   for (const server of servers.splice(0)) server.stop(true);
 });
 

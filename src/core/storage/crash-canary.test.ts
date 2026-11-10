@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface, type Interface } from "node:readline";
 import { fileURLToPath } from "node:url";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { HarneryInboxService } from "../inbox/service.ts";
 import { createStorageCatalog } from "./catalog.ts";
 import { appendDurableHistoryRecord, readDurableHistorySync } from "./durable-history.ts";
@@ -26,7 +27,7 @@ afterEach(async () => {
     await exited(child).catch(() => undefined);
   }
   children.clear();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 describe("storage framework real-process crash canary", () => {

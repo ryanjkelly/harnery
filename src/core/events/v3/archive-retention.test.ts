@@ -3,13 +3,13 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
-  rmSync,
   symlinkSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
 import type { EventLedgerArchivePolicy } from "../../config.ts";
 import {
   autoCleanEventV3Archives,
@@ -22,7 +22,7 @@ const roots: string[] = [];
 const now = new Date("2026-09-01T06:00:00.000Z");
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 function root(): string {

@@ -5,11 +5,11 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { recordLiveLifecycleChangeV3 } from "../agents/live-authority-v3.ts";
 import { readLiveCoordinationRows } from "../agents/state/live-coordination-view.ts";
 import { initializeEventLedgerV3 } from "../events/v3/bootstrap.ts";
@@ -29,7 +29,7 @@ const timestamp = "2026-08-28T22:00:00.000Z";
 const later = new Date("2026-08-28T22:30:00.000Z");
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 function fixture() {

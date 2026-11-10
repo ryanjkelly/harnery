@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import type { RepoSnapshot } from "../context/index.ts";
 import {
   buildWorkflowProof,
@@ -23,7 +24,7 @@ beforeEach(() => {
   mkdirSync(join(root, ".harnery", "workflows", "wf-test"), { recursive: true });
 });
 
-afterEach(() => rmSync(root, { recursive: true, force: true }));
+afterEach(() => removeDir(root));
 
 describe("workflow proof contract", () => {
   test("normalizes criteria and rejects duplicate or malformed ids", () => {

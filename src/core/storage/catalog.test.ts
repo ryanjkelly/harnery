@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { harneryStorageFamilies } from "./builtins.ts";
 import { createStorageCatalog, HarneryStorageCatalogError } from "./catalog.ts";
 import type { HarneryStorageFamily } from "./contract.ts";
@@ -89,8 +90,8 @@ describe("storage catalog", () => {
     } finally {
       if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME;
       else process.env.XDG_CONFIG_HOME = savedXdg;
-      rmSync(project, { recursive: true, force: true });
-      rmSync(xdg, { recursive: true, force: true });
+      removeDir(project);
+      removeDir(xdg);
     }
   });
 
@@ -110,7 +111,7 @@ describe("storage catalog", () => {
         expect.objectContaining({ code: "unknown_project_family", family_id: "missing" }),
       );
     } finally {
-      rmSync(project, { recursive: true, force: true });
+      removeDir(project);
     }
   });
 

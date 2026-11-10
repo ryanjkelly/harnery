@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
+import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
 import { assistantTextStartsWithSessionNameBlock } from "../../agents/session-name-display.ts";
 import {
   detectForkParent,
@@ -24,7 +24,7 @@ describe("scanAssistantTextIncludes", () => {
     dir = mkdtempSync(join(tmpdir(), "harn-transcript-"));
   });
   afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
+    removeDir(dir);
   });
 
   function writeTranscript(lines: (object | string)[]): string {
@@ -134,7 +134,7 @@ describe("current-turn status-box detection", () => {
     dir = mkdtempSync(join(tmpdir(), "harn-status-transcript-"));
   });
   afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
+    removeDir(dir);
   });
 
   function write(rows: (object | string)[]): string {
@@ -340,7 +340,7 @@ describe("ordered session-name transcript scans", () => {
     dir = mkdtempSync(join(tmpdir(), "harn-transcript-name-"));
   });
   afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
+    removeDir(dir);
   });
 
   const NAME = "Agent Maya - Auth refactor";
@@ -820,7 +820,7 @@ describe("scanTranscriptRuntime", () => {
     dir = mkdtempSync(join(tmpdir(), "harn-transcript-"));
   });
   afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
+    removeDir(dir);
   });
 
   function writeTranscript(lines: object[]): string {
@@ -939,7 +939,7 @@ describe("detectForkParent", () => {
     dir = mkdtempSync(join(tmpdir(), "harn-fork-"));
   });
   afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
+    removeDir(dir);
   });
 
   const P = "11111111-1111-4111-8111-111111111111";
@@ -1025,7 +1025,7 @@ describe("detectInheritedSessionParent", () => {
     dir = mkdtempSync(join(tmpdir(), "harn-inherit-"));
   });
   afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
+    removeDir(dir);
   });
 
   const G = "22222222-2222-4222-8222-222222222222";
@@ -1081,7 +1081,7 @@ describe("scanPendingBackgroundHandoffs", () => {
     dir = mkdtempSync(join(tmpdir(), "harn-transcript-"));
   });
   afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
+    removeDir(dir);
   });
 
   function write(rows: object[]): string {

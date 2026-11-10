@@ -13,6 +13,7 @@ import { afterAll } from "bun:test";
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../helpers/remove-dir.ts";
 
 const base = tmpdir();
 const PREFIX = "bun-test-";
@@ -35,4 +36,4 @@ for (const name of readdirSync(base)) {
 
 const dir = mkdtempSync(join(base, `${PREFIX}${process.pid}-`));
 process.env.TMPDIR = dir;
-afterAll(() => rmSync(dir, { recursive: true, force: true }));
+afterAll(() => removeDir(dir));

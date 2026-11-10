@@ -5,12 +5,12 @@ import {
   readdirSync,
   realpathSync,
   renameSync,
-  rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { descriptorBackedPathsSupported } from "../src/core/workflow/workspaces/paths.ts";
+import { removeDir } from "./helpers/remove-dir.ts";
 
 let sequence = 0;
 let replacementSequence = 0;
@@ -96,7 +96,7 @@ export function replaceSourceCheckout(root: string): () => void {
     for (const entry of readdirSync(root)) {
       renameSync(join(root, entry), join(priorRoot, entry));
     }
-    rmSync(root, { recursive: true, force: true });
+    removeDir(root);
     renameSync(priorRoot, root);
   };
 }

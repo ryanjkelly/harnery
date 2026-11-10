@@ -5,11 +5,11 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
-  rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import { captureSkeleton } from "../src/redact.ts";
 import { translateOpenClawHook } from "../src/translate.ts";
 import {
@@ -83,7 +83,7 @@ describe("OpenClaw hook translation", () => {
         ).toBe(expectedSignals[fixture.hook]);
       }
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   });
 

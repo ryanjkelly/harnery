@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "./remove-dir.ts";
 
 /**
  * Plant a fake CLI named `name` in `dir` whose behaviour is the ES module
@@ -88,7 +89,7 @@ function windowsLauncher(): string {
         if (!existsSync(target)) throw error;
       }
     } finally {
-      rmSync(work, { recursive: true, force: true });
+      removeDir(work);
     }
   }
   cachedLauncher = target;

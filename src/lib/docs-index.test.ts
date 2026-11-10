@@ -1,13 +1,14 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import { collectIndexTargets, initDocsContext, runIndex } from "./docs-index.ts";
 
 const roots: string[] = [];
 
 afterAll(() => {
-  for (const root of roots) rmSync(root, { recursive: true, force: true });
+  for (const root of roots) removeDir(root);
 });
 
 function markedReadme(kind: "issues" | "audits"): string {

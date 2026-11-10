@@ -6,9 +6,10 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
 import { STOP_REMEDIATION_MARKER } from "../../agents/rules/stop-hook.ts";
 import { emitContext, emitStopBlock } from "./output.ts";
 
@@ -181,7 +182,7 @@ describe("emitStopBlock", () => {
     } finally {
       process.stdout.write = realOut;
       process.stderr.write = realErr;
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   });
 

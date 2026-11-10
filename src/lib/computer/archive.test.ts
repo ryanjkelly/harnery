@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { posix } from "node:path";
 import { gzipSync } from "node:zlib";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { buildTarGz } from "../../../tests/helpers/tar-fixture.ts";
 import { INSTALL_MARKER, installPinnedArchive, listTarGz } from "./archive.ts";
 import type { PinnedArtifact } from "./types.ts";
@@ -29,7 +30,7 @@ beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "archive-test-")).replace(/\\/g, "/");
 });
 afterEach(() => {
-  rmSync(root, { recursive: true, force: true });
+  removeDir(root);
 });
 
 describe("listTarGz", () => {

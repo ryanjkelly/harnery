@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import { exec } from "./exec.ts";
 import { whichBin } from "./which.ts";
 
@@ -84,7 +85,7 @@ describe.skipIf(process.platform === "win32")("exec processGroup", () => {
   }
 
   test("a TERM-ignoring child and grandchild leave nothing behind after the timeout", async () => {
-    const { mkdtempSync, readFileSync, rmSync } = await import("node:fs");
+    const { mkdtempSync, readFileSync } = await import("node:fs");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
     const dir = mkdtempSync(join(tmpdir(), "exec-pgroup-"));
@@ -108,7 +109,7 @@ describe.skipIf(process.platform === "win32")("exec processGroup", () => {
       expect(await waitGone(grandchild)).toBe(true);
     } finally {
       if (grandchild && alive(grandchild)) process.kill(grandchild, "SIGKILL");
-      rmSync(dir, { recursive: true, force: true });
+      removeDir(dir);
     }
   }, 15_000);
 

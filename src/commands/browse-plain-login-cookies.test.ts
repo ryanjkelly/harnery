@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import { CookieJar } from "../lib/cookies/index.ts";
 import { type PlainLoginCookieDeps, syncPlainLoginCookies } from "./browse.ts";
 
@@ -37,7 +38,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(dir, { recursive: true, force: true });
+  removeDir(dir);
 });
 
 function reader(...results: (ProfileCookie[] | Error)[]) {

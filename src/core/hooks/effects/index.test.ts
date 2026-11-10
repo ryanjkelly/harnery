@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
 import { resetBashCache, resolveBash } from "../../../lib/tools/bash.ts";
 import { playSound, runSessionSyncExtension } from "./index.ts";
 
@@ -39,7 +40,7 @@ afterEach(() => {
   restore("HARNERY_BASH_PATH", saved.override);
   restore("HARNERY_TEST_MARKER", saved.marker);
   resetBashCache();
-  rmSync(root, { recursive: true, force: true });
+  removeDir(root);
 });
 
 describe("hook effects without a usable bash", () => {

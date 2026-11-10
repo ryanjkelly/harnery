@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import {
   collectCheckoutRemoved,
   collectCommitted,
@@ -33,7 +34,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(repo, { recursive: true, force: true });
+  removeDir(repo);
 });
 
 describe("parseNameStatus", () => {
@@ -66,7 +67,7 @@ describe("discoverCoordRoot / submodulePrefix", () => {
     try {
       expect(discoverCoordRoot(dir)).toBeNull();
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      removeDir(dir);
     }
   });
 });

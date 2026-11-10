@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import { intakeCaptureRows, writeCaptureFixtures } from "../src/fixture-intake.ts";
 import { captureSkeleton } from "../src/redact.ts";
 import { OPENCLAW_HOOKS, type OpenClawHookName } from "../src/types.ts";
@@ -83,7 +84,7 @@ function withFixtures(check: (input: string, output: string, paths: string[]) =>
     writeFileSync(input, captureJsonl());
     check(input, output, writeCaptureFixtures(input, output, "2026.7.1-2"));
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    removeDir(root);
   }
 }
 

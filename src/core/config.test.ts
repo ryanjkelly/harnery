@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import {
   agentsFinalizationRoots,
   agentsRequireGitFinalization,
@@ -51,7 +52,7 @@ describe("resolveBinName", () => {
     delete process.env.HARNERY_BIN;
   });
   afterEach(() => {
-    for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true });
+    for (const r of roots.splice(0)) removeDir(r);
     if (savedBin === undefined) {
       // env vars must be unset, not set to the string "undefined"
       delete process.env.HARNERY_BIN;
@@ -103,7 +104,7 @@ describe("logStorageConfigSource", () => {
   const savedXdg = process.env.XDG_CONFIG_HOME;
 
   afterEach(() => {
-    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+    for (const root of roots.splice(0)) removeDir(root);
     if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME;
     else process.env.XDG_CONFIG_HOME = savedXdg;
   });
@@ -153,7 +154,7 @@ describe("pinnedBinName", () => {
   const savedBin = process.env.HARNERY_BIN;
 
   afterEach(() => {
-    for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true });
+    for (const r of roots.splice(0)) removeDir(r);
     if (savedBin === undefined) {
       // env vars must be unset, not set to the string "undefined"
       delete process.env.HARNERY_BIN;
@@ -188,7 +189,7 @@ describe("agentsRequireGitFinalization", () => {
     delete process.env.HARNERY_AGENTS_REQUIRE_GIT_FINALIZATION;
   });
   afterEach(() => {
-    for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true });
+    for (const r of roots.splice(0)) removeDir(r);
     if (saved === undefined) delete process.env.HARNERY_AGENTS_REQUIRE_GIT_FINALIZATION;
     else process.env.HARNERY_AGENTS_REQUIRE_GIT_FINALIZATION = saved;
   });
@@ -225,7 +226,7 @@ describe("hostPromptReminder", () => {
   const savedXdg = process.env.XDG_CONFIG_HOME;
 
   afterEach(() => {
-    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+    for (const root of roots.splice(0)) removeDir(root);
     if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME;
     else process.env.XDG_CONFIG_HOME = savedXdg;
   });
@@ -264,7 +265,7 @@ describe("hostPromptContextConfig", () => {
   const savedXdg = process.env.XDG_CONFIG_HOME;
 
   afterEach(() => {
-    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+    for (const root of roots.splice(0)) removeDir(root);
     if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME;
     else process.env.XDG_CONFIG_HOME = savedXdg;
   });
@@ -313,7 +314,7 @@ describe("agentsFinalizationRoots", () => {
   const savedXdg = process.env.XDG_CONFIG_HOME;
 
   afterEach(() => {
-    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+    for (const root of roots.splice(0)) removeDir(root);
     if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME;
     else process.env.XDG_CONFIG_HOME = savedXdg;
   });
@@ -367,7 +368,7 @@ describe("coordFreshnessSeconds", () => {
     delete process.env.HARNERY_AGENT_COORD_FRESHNESS;
   });
   afterEach(() => {
-    for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true });
+    for (const r of roots.splice(0)) removeDir(r);
     for (const [k, v] of [["HARNERY_AGENT_COORD_FRESHNESS", saved.coord]] as const) {
       if (v === undefined) delete process.env[k];
       else process.env[k] = v;
@@ -430,8 +431,8 @@ describe("sessionFinalizationConfig", () => {
       cascadeGraceSeconds: 30,
       reconcileIntervalSeconds: 45,
     });
-    rmSync(empty, { recursive: true, force: true });
-    rmSync(configured, { recursive: true, force: true });
+    removeDir(empty);
+    removeDir(configured);
   });
 });
 
@@ -443,7 +444,7 @@ describe("artifactDefaultRetentionDays", () => {
     delete process.env.HARNERY_ARTIFACT_RETENTION_DAYS;
   });
   afterEach(() => {
-    for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true });
+    for (const r of roots.splice(0)) removeDir(r);
     if (saved === undefined) delete process.env.HARNERY_ARTIFACT_RETENTION_DAYS;
     else process.env.HARNERY_ARTIFACT_RETENTION_DAYS = saved;
   });
@@ -470,7 +471,7 @@ describe("bounded local storage settings", () => {
   const roots: string[] = [];
 
   afterEach(() => {
-    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+    for (const root of roots.splice(0)) removeDir(root);
   });
 
   test("uses conservative artifact and closed-epoch defaults", () => {
@@ -525,7 +526,7 @@ describe("backupConfig", () => {
     delete process.env.HARNERY_RESTIC_PASSWORD_FILE;
   });
   afterEach(() => {
-    for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true });
+    for (const r of roots.splice(0)) removeDir(r);
     for (const [k, v] of [
       ["HARNERY_RESTIC_REPO", saved.repo],
       ["HARNERY_RESTIC_PASSWORD_FILE", saved.pw],
@@ -584,7 +585,7 @@ describe("backupConfig", () => {
 describe("syncJsoncConfig", () => {
   const roots: string[] = [];
   afterEach(() => {
-    for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true });
+    for (const r of roots.splice(0)) removeDir(r);
   });
 
   test("null when no sync section", () => {
@@ -615,7 +616,7 @@ describe("user-global config layer", () => {
     delete process.env.HARNERY_BIN;
   });
   afterEach(() => {
-    for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true });
+    for (const r of roots.splice(0)) removeDir(r);
     if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME;
     else process.env.XDG_CONFIG_HOME = savedXdg;
     if (savedBin === undefined) delete process.env.HARNERY_BIN;
@@ -663,7 +664,7 @@ describe("user-global config layer", () => {
 describe("codexWindowsBridgeConfig", () => {
   const roots: string[] = [];
   afterEach(() => {
-    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+    for (const root of roots.splice(0)) removeDir(root);
   });
   const root = (body?: string) => {
     const r = makeRoot(body);
@@ -694,7 +695,7 @@ describe("codexWindowsBridgeConfig", () => {
 describe("portableHookCommands", () => {
   const roots: string[] = [];
   afterEach(() => {
-    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+    for (const root of roots.splice(0)) removeDir(root);
   });
   const root = (body?: string) => {
     const r = makeRoot(body);
@@ -724,7 +725,7 @@ describe("readAdmissionConfig", () => {
     try {
       expect(readAdmissionConfig(root)).toBeUndefined();
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   });
 
@@ -757,7 +758,7 @@ describe("readAdmissionConfig", () => {
         guard: { resource: "build" },
       });
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   });
 });
@@ -768,7 +769,7 @@ describe("readAutoUpdateConfig", () => {
     try {
       expect(readAutoUpdateConfig(root)).toBeNull();
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   });
 
@@ -777,7 +778,7 @@ describe("readAutoUpdateConfig", () => {
     try {
       expect(readAutoUpdateConfig(root)).toBeNull();
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   });
 
@@ -794,7 +795,7 @@ describe("readAutoUpdateConfig", () => {
         cleanup: true,
       });
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   });
 
@@ -803,7 +804,7 @@ describe("readAutoUpdateConfig", () => {
     try {
       expect(readAutoUpdateConfig(root)?.enabled).toBe(false);
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   });
 
@@ -831,7 +832,7 @@ describe("readAutoUpdateConfig", () => {
         cleanup: false,
       });
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   });
 
@@ -844,7 +845,7 @@ describe("readAutoUpdateConfig", () => {
       expect(cfg?.checkMinutes).toBe(1440);
       expect(cfg?.timeoutMinutes).toBe(20);
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   });
 
@@ -863,8 +864,8 @@ describe("readAutoUpdateConfig", () => {
     } finally {
       if (prev === undefined) delete process.env.XDG_CONFIG_HOME;
       else process.env.XDG_CONFIG_HOME = prev;
-      rmSync(root, { recursive: true, force: true });
-      rmSync(xdg, { recursive: true, force: true });
+      removeDir(root);
+      removeDir(xdg);
     }
   });
 });

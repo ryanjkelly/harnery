@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Command } from "commander";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import { createHarneryProgram, type EmitContext } from "../commander.ts";
 import { registerDiskCommand } from "./disk.ts";
 
@@ -48,7 +49,7 @@ test("disk is available lazily in standalone and composed command trees", async 
     });
     expect(output.errors).toEqual([]);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    removeDir(root);
   }
 });
 
@@ -67,7 +68,7 @@ test("text output labels measurement and filtered Git state", async () => {
     expect(output.text[0]).toContain(".txt");
     expect(output.text[0]).toContain("Directory metadata and symlinks are excluded");
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    removeDir(root);
   }
 });
 

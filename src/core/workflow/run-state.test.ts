@@ -4,12 +4,12 @@ import {
   mkdirSync,
   readFileSync,
   renameSync,
-  rmSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { processStartToken } from "../agents/state/proc-start.ts";
 import { acquireWorkflowResumeLease } from "./resume-lock.ts";
 import {
@@ -28,7 +28,7 @@ beforeEach(() => {
   mkdirSync(join(root, ".harnery"), { recursive: true });
 });
 
-afterEach(() => rmSync(root, { recursive: true, force: true }));
+afterEach(() => removeDir(root));
 
 function writeLock(runId: string, owner: Record<string, unknown> | string) {
   const path = join(root, ".harnery", "workflows", runId, "resume.lock");

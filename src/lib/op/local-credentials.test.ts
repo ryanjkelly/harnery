@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Readable } from "node:stream";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { createLocalCredentials } from "./local-credentials.ts";
 import type { LocalCredentialSource } from "./types.ts";
 
@@ -41,7 +42,7 @@ let root = "";
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "harn-op-local-"));
 });
-afterEach(() => rmSync(root, { recursive: true, force: true }));
+afterEach(() => removeDir(root));
 
 function local() {
   return createLocalCredentials({ binName: "harn", repoRoot: root, sources: [login, token, key] });

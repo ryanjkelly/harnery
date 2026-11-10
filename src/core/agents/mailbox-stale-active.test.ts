@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { initializeEventLedgerV3 } from "../events/v3/bootstrap.ts";
 import { sha256V3 } from "../events/v3/canonical.ts";
 import { resolveLiveEventLedgerRouteV3 } from "../events/v3/live-routing.ts";
@@ -23,7 +24,7 @@ const old = "2026-08-28T22:00:00.000Z";
 const later = new Date("2026-08-28T22:30:00.000Z");
 const DAY = 24 * 60 * 60_000;
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 function fixture() {

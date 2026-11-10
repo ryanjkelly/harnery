@@ -8,12 +8,12 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
-  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { harneryStorageFamilies } from "./builtins.ts";
 import { createStorageCatalog } from "./catalog.ts";
 import type { HarneryStorageFamily } from "./contract.ts";
@@ -38,7 +38,7 @@ import {
 
 const roots: string[] = [];
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 function workspace(): string {

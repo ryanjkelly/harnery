@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { Command } from "commander";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import type { EmitContext } from "../commander.ts";
 import { captureDiagnosticBundle } from "../core/diagnostics/index.ts";
 import { SUPERVISOR_FINDING_SCHEMA_VERSION } from "../core/supervisor/contract.ts";
@@ -48,7 +49,7 @@ describe("diagnostics command", () => {
         },
       });
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   });
   test("registers the stable bundle lifecycle", () => {
@@ -115,7 +116,7 @@ describe("diagnostics command", () => {
       expect(readable.texts.join("\n")).toContain("diagnostic comparison:");
       expect(readable.texts.join("\n")).toContain("observer only:");
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   });
 
@@ -170,7 +171,7 @@ describe("diagnostics command", () => {
         advice: { assessment: { state: "unknown" }, observer_only: true },
       });
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   });
 
@@ -213,7 +214,7 @@ describe("diagnostics command", () => {
         capability: { state: "expired", reason_code: "supervisor_status_missing" },
       });
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   });
 });

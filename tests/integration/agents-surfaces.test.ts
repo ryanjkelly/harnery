@@ -6,7 +6,6 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  rmSync,
   writeFileSync,
 } from "node:fs";
 import os from "node:os";
@@ -31,6 +30,7 @@ import {
 } from "../../src/core/events/v3/producers/recorder.ts";
 import { readLedgerV3 } from "../../src/core/events/v3/reader.ts";
 import { peerInbox } from "../../src/core/inbox/peer-messages.ts";
+import { removeDir } from "../helpers/remove-dir.ts";
 
 const HARNERY_DIR = path.resolve(import.meta.dir, "../..");
 // The `.mjs` launcher through the running runtime, not the bash wrapper, which
@@ -127,7 +127,7 @@ function json(result: ReturnType<typeof harn>): Record<string, unknown> {
 afterEach(() => {
   while (sandboxes.length > 0) {
     const root = sandboxes.pop();
-    if (root) rmSync(root, { recursive: true, force: true });
+    if (root) removeDir(root);
   }
 });
 

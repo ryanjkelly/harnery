@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { lstatSync, mkdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
 import {
   descriptorPathsAvailable,
   git,
@@ -31,7 +32,7 @@ function probeShape(input: WorkspaceProbeInput): Promise<WorkspaceProbeResult> {
 const roots: string[] = [];
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 function tracked(root: string): string {

@@ -3,11 +3,12 @@
 // drives the registered commander program; no browser and no vision call.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Command } from "commander";
 import { PNG } from "pngjs";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import type { EmitContext } from "../commander.ts";
 import type { CritiqueTile } from "../lib/browser/critique.ts";
 import {
@@ -90,7 +91,7 @@ beforeEach(() => {
 
 afterEach(() => {
   process.exitCode = savedExitCode ?? 0;
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 function png(width: number, height: number): Buffer {

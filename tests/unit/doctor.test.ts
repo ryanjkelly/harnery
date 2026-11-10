@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -14,6 +14,7 @@ import {
   runChecks,
 } from "../../src/commands/doctor.ts";
 import { doctorEnvironmentFindings } from "../../src/core/config.ts";
+import { removeDir } from "../helpers/remove-dir.ts";
 
 let checks: Awaited<ReturnType<typeof runChecks>>;
 const sandboxes: string[] = [];
@@ -23,7 +24,7 @@ beforeAll(async () => {
 });
 
 afterEach(() => {
-  for (const root of sandboxes.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of sandboxes.splice(0)) removeDir(root);
 });
 
 describe("harn doctor", () => {

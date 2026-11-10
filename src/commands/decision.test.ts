@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import { createHarneryProgram, type EmitContext } from "../commander.ts";
 import { ensureLiveCoordinationHeartbeat } from "../core/agents/state/live-coordination-writer.ts";
 import { canonicalJsonV3, sha256V3 } from "../core/events/v3/canonical.ts";
@@ -36,7 +37,7 @@ const originalCoordinationEnv = new Map(
 );
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
   for (const key of coordinationEnvKeys) {
     const value = originalCoordinationEnv.get(key);
     if (value === undefined) delete process.env[key];

@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { resolveName } from "../agents/state/names.ts";
 import { initializeEventLedgerV3 } from "../events/v3/bootstrap.ts";
 import { readCoordinationViewV3 } from "../events/v3/coordination-view.ts";
@@ -26,7 +27,7 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => rmSync(root, { recursive: true, force: true }));
+afterEach(() => removeDir(root));
 
 describe("workflow child V3 lifecycle", () => {
   test("records a workflow-scoped generation and materializes only a disposable V3 cache", () => {

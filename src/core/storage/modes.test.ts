@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { writePrivateJsonAtomic } from "./atomic-json.ts";
 import {
   resetStorageSharing,
@@ -30,7 +31,7 @@ afterEach(() => {
   process.umask(umask);
   process.env = { ...env };
   resetStorageSharing();
-  rmSync(dir, { recursive: true, force: true });
+  removeDir(dir);
 });
 
 const project = (sharing: string) =>
@@ -80,7 +81,7 @@ test("a user-global setting cannot loosen a project", () => {
     process.env.XDG_CONFIG_HOME = join(home, ".config");
     expect(stateSharing()).toBe("private");
   } finally {
-    rmSync(home, { recursive: true, force: true });
+    removeDir(home);
   }
 });
 

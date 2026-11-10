@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { scanWindowsHide, scanWindowsHideSource } from "../../scripts/check-windows-hide.ts";
+import { removeDir } from "../helpers/remove-dir.ts";
 
 // On Windows, a background process with no console that starts a console
 // program without `windowsHide: true` opens a new terminal window per child.
@@ -50,7 +51,7 @@ describe("windowsHide guard", () => {
         "web/lib/b.ts",
       ]);
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   });
 

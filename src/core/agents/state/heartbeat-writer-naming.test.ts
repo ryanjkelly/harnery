@@ -6,9 +6,10 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
 import {
   buildSuggestedName,
   readHeartbeat,
@@ -31,7 +32,7 @@ beforeEach(() => {
 
 afterEach(() => {
   try {
-    rmSync(root, { recursive: true, force: true });
+    removeDir(root);
   } catch {
     /* swallow */
   }

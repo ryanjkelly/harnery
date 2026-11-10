@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import type { SemanticAdapter } from "./adapters.ts";
 import type {
   SemanticConfiguredModel,
@@ -181,7 +182,7 @@ describe("semantic once", () => {
       expect(second.outcomes[0]?.action).toBe("unchanged");
       expect(calls.count).toBe(1);
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   });
 
@@ -208,7 +209,7 @@ describe("semantic once", () => {
       expect(replay.outcomes[0]?.action).toBe("cached");
       expect(calls.count).toBe(1);
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   });
 
@@ -248,7 +249,7 @@ describe("semantic once", () => {
       expect("meaning" in (inspectSemanticDocument(root, GENERATION) ?? {})).toBe(false);
       expect(calls.count).toBe(1);
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   });
 
@@ -289,7 +290,7 @@ describe("semantic once", () => {
         ],
       });
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   });
 
@@ -333,7 +334,7 @@ describe("semantic once", () => {
         ],
       });
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   });
 
@@ -361,7 +362,7 @@ describe("semantic once", () => {
         "private raw output",
       );
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   });
 
@@ -397,7 +398,7 @@ describe("semantic once", () => {
         expect.objectContaining({ generation_id: second.generation_id }),
       ]);
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   });
 });

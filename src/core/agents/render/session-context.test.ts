@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initializeV3Fixture, seedV3Session } from "../../../../tests/helpers/event-v3-runtime.ts";
+import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
 import { checkWiring, renderSessionContext } from "./session-context.ts";
 
 let root: string;
@@ -18,7 +19,7 @@ beforeEach(() => {
 
 afterEach(() => {
   try {
-    rmSync(root, { recursive: true, force: true });
+    removeDir(root);
   } catch {
     /* swallow */
   }

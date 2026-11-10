@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
 import { plantFakeCli } from "../../../../tests/helpers/fake-cli.ts";
+import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
 import {
   descriptorPathsAvailable,
   git,
@@ -62,8 +63,7 @@ type ContradictableExecution = Omit<WorkspaceBoundExecutionEvidence, "terminal_l
 };
 
 afterEach(() => {
-  for (const root of roots.splice(0))
-    rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 describe("shared and explicit-provider compatibility", () => {
@@ -2010,7 +2010,7 @@ ${execRealGit(
           /identity|registration|authority|cannot reattach/,
         );
       } finally {
-        rmSync(path, { recursive: true, force: true });
+        removeDir(path);
         renameSync(backup, path);
       }
       expect((await provider.reattach(binding)).status).toBe("ok");

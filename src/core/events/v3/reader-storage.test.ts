@@ -6,7 +6,6 @@ import {
   mkdtempSync,
   readFileSync,
   renameSync,
-  rmSync,
   statSync,
   utimesSync,
   writeFileSync,
@@ -18,6 +17,7 @@ import {
   eventV3Fixture,
   fixtureObject,
 } from "../../../../tests/helpers/event-v3.ts";
+import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
 import { canonicalJsonV3, sha256V3 } from "./canonical.ts";
 import type { EventV3Catalog, EventV3SegmentManifest } from "./catalog.ts";
 import { EVENT_V3_SCHEMA_DIGEST } from "./generated.ts";
@@ -27,7 +27,7 @@ const roots: string[] = [];
 const PERFORMANCE_LEDGER_BYTES = 12 * 1024 * 1024;
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 describe("event ledger V3 filesystem discovery", () => {

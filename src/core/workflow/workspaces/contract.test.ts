@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
 import { descriptorPathsAvailable, tempRoot } from "../../../../tests/workspace-test-helpers.ts";
 import {
   canonicalJson,
@@ -17,7 +18,7 @@ import {
 
 const roots: string[] = [];
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 describe("workspace record contracts", () => {

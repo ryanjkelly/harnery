@@ -31,6 +31,7 @@ import {
   resolveOwner as resolveHookOwner,
 } from "../../src/core/hooks/resolve/owner.ts";
 import { initializeV3Fixture, seedV3Session } from "../helpers/event-v3-runtime.ts";
+import { removeDir } from "../helpers/remove-dir.ts";
 
 // Mirror of the source's SESSION_ID_ENV_VARS (kept unexported there); used here
 // only to save/restore env across tests.
@@ -60,7 +61,7 @@ describe("findCoordRoot (path-only)", () => {
   });
 
   afterEach(() => {
-    rmSync(root, { recursive: true, force: true });
+    removeDir(root);
     if (savedProjectDir === undefined) delete process.env.CLAUDE_PROJECT_DIR;
     else process.env.CLAUDE_PROJECT_DIR = savedProjectDir;
     if (savedOverride === undefined) delete process.env.HARNERY_COORD_ROOT_OVERRIDE;
@@ -83,7 +84,7 @@ describe("findCoordRoot (path-only)", () => {
     try {
       expect(findCoordRoot(journal)).toBe(root);
     } finally {
-      rmSync(journal, { recursive: true, force: true });
+      removeDir(journal);
     }
   });
 
@@ -149,7 +150,7 @@ describe("pid-map row format + resolveOwner", () => {
   });
 
   afterEach(() => {
-    rmSync(root, { recursive: true, force: true });
+    removeDir(root);
     if (savedOwner === undefined) delete process.env.HARNERY_AGENT_COORD_OWNER;
     else process.env.HARNERY_AGENT_COORD_OWNER = savedOwner;
     if (savedBridge === undefined) delete process.env.HARNERY_AGENT_COORD_BRIDGE;
@@ -235,7 +236,7 @@ describe("resolveSingleActiveOwner (sole live V3 producer)", () => {
   });
 
   afterEach(() => {
-    rmSync(root, { recursive: true, force: true });
+    removeDir(root);
   });
 
   test("a missing disposable cache does not hide the sole live V3 producer", () => {
@@ -287,7 +288,7 @@ describe("resolveOwnerBySessionEnv (adapter session id → live V3 producer)", (
   });
 
   afterEach(() => {
-    rmSync(root, { recursive: true, force: true });
+    removeDir(root);
     for (const [k, v] of SAVED) {
       if (v === undefined) delete process.env[k];
       else process.env[k] = v;
@@ -538,7 +539,7 @@ describe("codex-wsl bridge owner parity", () => {
   });
 
   afterEach(() => {
-    rmSync(root, { recursive: true, force: true });
+    removeDir(root);
     for (const [key, value] of saved) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -9,6 +9,7 @@ import {
   scanPublicSurface,
   scanPublicText,
 } from "../../scripts/check-public-surface.ts";
+import { removeDir } from "../helpers/remove-dir.ts";
 
 describe("public-surface provenance guard", () => {
   test("ignores local bundles and caches but scans them if added to Git", () => {
@@ -40,7 +41,7 @@ describe("public-surface provenance guard", () => {
       git("commit", "-qm", "include generated bundles");
       expect(scanPublicHistory(repo, `${base}..HEAD`)).toHaveLength(3);
     } finally {
-      rmSync(repo, { recursive: true, force: true });
+      removeDir(repo);
     }
   });
 
@@ -115,7 +116,7 @@ describe("public-surface provenance guard", () => {
         },
       ]);
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   });
 
@@ -152,7 +153,7 @@ describe("public-surface provenance guard", () => {
       expect(scanPublicSurface(repo)).toHaveLength(2);
       expect(scanPublicIndex(repo)).toEqual([]);
     } finally {
-      rmSync(repo, { recursive: true, force: true });
+      removeDir(repo);
     }
   });
 
@@ -182,7 +183,7 @@ describe("public-surface provenance guard", () => {
         },
       ]);
     } finally {
-      rmSync(repo, { recursive: true, force: true });
+      removeDir(repo);
     }
   });
 
@@ -207,7 +208,7 @@ describe("public-surface provenance guard", () => {
 
       expect(scanPublicHistory(repo, `${base}..HEAD`)).toEqual([]);
     } finally {
-      rmSync(repo, { recursive: true, force: true });
+      removeDir(repo);
     }
   });
 });

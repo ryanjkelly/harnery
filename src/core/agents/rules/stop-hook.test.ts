@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eventV3Fixture, fixtureObject } from "../../../../tests/helpers/event-v3.ts";
+import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
 import { initializeEventLedgerV3 } from "../../events/v3/bootstrap.ts";
 import type { EventV3 } from "../../events/v3/contract.ts";
 import { startWorkflowChildSessionV3 } from "../../workflow/live-session-v3.ts";
@@ -14,7 +15,7 @@ const GENERATION = "gen_00000000-0000-7000-8000-000000000111";
 const START = Date.parse("2026-08-18T14:00:00.000Z");
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 function root(): string {

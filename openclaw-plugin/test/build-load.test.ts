@@ -6,13 +6,13 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
-  rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 
 const roots: string[] = [];
 const harneryRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -20,7 +20,7 @@ const nodeVersion = execFileSync("node", ["--version"], { encoding: "utf8" }).tr
 const node24Test = /^v24\./.test(nodeVersion) ? test : test.skip;
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 describe("OpenClaw plugin distribution", () => {

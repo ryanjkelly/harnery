@@ -5,7 +5,6 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
-  rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,11 +14,12 @@ import { HarneryConversationCatalog } from "../../src/core/conversations/catalog
 import type { HarneryConversationProvider } from "../../src/core/conversations/contract.ts";
 import type { HarneryInboxLimits } from "../../src/core/inbox/contract.ts";
 import { HarneryInboxService, inboxPath } from "../../src/core/inbox/service.ts";
+import { removeDir } from "../helpers/remove-dir.ts";
 
 const roots: string[] = [];
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 describe("logging framework command smoke", () => {

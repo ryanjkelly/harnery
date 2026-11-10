@@ -1,15 +1,16 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { extractStatus } from "../../src/lib/docs-index.ts";
 import { hasStatusHeader, initDocsContext, runLint } from "../../src/lib/docs-lint.ts";
+import { removeDir } from "../helpers/remove-dir.ts";
 
 const roots: string[] = [];
 
 afterAll(() => {
-  for (const root of roots) rmSync(root, { recursive: true, force: true });
+  for (const root of roots) removeDir(root);
 });
 
 function writeDoc(content: string): string {

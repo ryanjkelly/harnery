@@ -7,7 +7,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { initializeEventLedgerV3 } from "../../src/core/events/v3/bootstrap.ts";
@@ -16,6 +16,7 @@ import {
   recordLiveHookSignalV3,
   resolveLiveEventLedgerRouteV3,
 } from "../../src/core/events/v3/live-routing.ts";
+import { removeDir } from "../helpers/remove-dir.ts";
 
 const ROOT = mkdtempSync(path.join(os.tmpdir(), "harn-coord-test-"));
 process.env.HARNERY_COORD_ROOT = ROOT;
@@ -88,7 +89,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
-  rmSync(ROOT, { recursive: true, force: true });
+  removeDir(ROOT);
 });
 
 // Dynamic import after env + fixtures set up so the cached coordRoot picks

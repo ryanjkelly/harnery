@@ -4,12 +4,12 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
-  rmSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { codexHookRunsCheck, codexWindowsBridgeCheck } from "../../commands/doctor.ts";
 import {
   clearHookRunMarker,
@@ -20,7 +20,7 @@ import {
 
 const roots: string[] = [];
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 function makeRoot(config?: string): string {
   const root = mkdtempSync(join(tmpdir(), "harnery-hook-runs-"));

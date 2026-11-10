@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { createStorageCatalog } from "../storage/catalog.ts";
 import { encodeLogRecord, type HarneryLogRecordV1 } from "../storage/jsonl.ts";
 import { FileSegmentSink } from "../storage/segments.ts";
@@ -17,7 +17,7 @@ const originalSharedLogs = process.env.HARNERY_SHARED_LOGS;
 afterEach(() => {
   if (originalSharedLogs === undefined) delete process.env.HARNERY_SHARED_LOGS;
   else process.env.HARNERY_SHARED_LOGS = originalSharedLogs;
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 describe("semantic soak", () => {

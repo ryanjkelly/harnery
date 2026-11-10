@@ -6,11 +6,11 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import { createHarneryProgram, type EmitContext } from "../commander.ts";
 import { stripJsonComments } from "../core/config.ts";
 import { initializeEventLedgerV3, sha256V3 } from "../core/events/v3/index.ts";
@@ -66,7 +66,7 @@ test.skipIf(process.platform !== "win32")(
         "agent-hook session-start --adapter codex",
       );
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeDir(root);
     }
   },
 );
@@ -101,7 +101,7 @@ test("hooks.portableCommands makes init and --check agree on the shared form", (
       "agent-hook session-start --adapter claude-code",
     );
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    removeDir(root);
   }
 }, 60_000);
 
@@ -135,7 +135,7 @@ describe("init --instructions-only", () => {
   const roots: string[] = [];
 
   afterEach(() => {
-    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+    for (const root of roots.splice(0)) removeDir(root);
   });
 
   const fixture = () => {
@@ -212,7 +212,7 @@ describe("init --adapter opencode", () => {
   const roots: string[] = [];
 
   afterEach(() => {
-    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+    for (const root of roots.splice(0)) removeDir(root);
   });
 
   const fixture = () => {
@@ -769,7 +769,7 @@ describe("wireHooks: migration cleanup", () => {
 describe("event ledger V3 init compatibility", () => {
   const dirs: string[] = [];
   afterEach(() => {
-    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+    for (const dir of dirs.splice(0)) removeDir(dir);
   });
 
   test("keeps the active epoch when only the live producer build changes", () => {
@@ -804,7 +804,7 @@ describe("event ledger V3 init compatibility", () => {
 describe("stampBinName", () => {
   const dirs: string[] = [];
   afterEach(() => {
-    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+    for (const d of dirs.splice(0)) removeDir(d);
   });
   const cfgPath = () => {
     const d = mkdtempSync(join(tmpdir(), "harnery-stamp-"));
@@ -858,7 +858,7 @@ describe("stampBinName", () => {
 describe("stampWorkflowDefaults", () => {
   const dirs: string[] = [];
   afterEach(() => {
-    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+    for (const d of dirs.splice(0)) removeDir(d);
   });
   const cfgPath = () => {
     const d = mkdtempSync(join(tmpdir(), "harnery-wfstamp-"));
@@ -913,7 +913,7 @@ describe("init adapter set", () => {
   const roots: string[] = [];
 
   afterEach(() => {
-    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+    for (const root of roots.splice(0)) removeDir(root);
   });
 
   const fixture = () => {
@@ -1006,7 +1006,7 @@ describe("init adapter set", () => {
       expect(existsSync(join(root, ".cursor", "hooks.json"))).toBe(false);
       expect(existsSync(join(root, ".codex", "hooks.json"))).toBe(false);
     } finally {
-      rmSync(bin, { recursive: true, force: true });
+      removeDir(bin);
     }
   });
 

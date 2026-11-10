@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { CookieJar } from "../cookies/index.ts";
 import { PaceGate, pacePolicyFromEnv } from "../pace/index.ts";
 import { Browser } from "./client.ts";
@@ -61,6 +62,6 @@ test("a host-only jar cookie reaches its exact host in Chromium and no subdomain
   } finally {
     await browser.close();
     await new Promise((resolve) => server.close(resolve));
-    rmSync(dir, { recursive: true, force: true });
+    removeDir(dir);
   }
 }, 60_000);

@@ -5,7 +5,6 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
-  rmSync,
   statSync,
   unlinkSync,
   writeFileSync,
@@ -13,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eventV3Fixture } from "../../../../tests/helpers/event-v3.ts";
+import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
 import { initializeEventLedgerV3 } from "./bootstrap.ts";
 import { canonicalJsonV3, sha256V3 } from "./canonical.ts";
 import {
@@ -49,7 +49,7 @@ interface ProbeReceipt {
 const roots: string[] = [];
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 describe("event ledger V3 hook receipts are epoch-size independent", () => {

@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import {
   applyDetection,
   clearPresence,
@@ -133,7 +134,7 @@ describe("file I/O", () => {
     if (originalHome !== undefined) process.env.HOME = originalHome;
     // Assigning undefined stores the text "undefined"; remove the key instead.
     else delete process.env.HOME;
-    rmSync(tmpHome, { recursive: true, force: true });
+    removeDir(tmpHome);
   });
 
   test("readPresence returns office default when file missing", () => {

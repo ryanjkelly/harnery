@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { PaceGate, pacePolicyFromEnv } from "../pace/index.ts";
 import { Browser } from "./client.ts";
 
@@ -79,6 +80,6 @@ test("paces actual documents from clicks, forms, scripts, popups and session ver
   } finally {
     await browser.close();
     await new Promise<void>((resolve) => server.close(() => resolve()));
-    rmSync(dir, { recursive: true, force: true });
+    removeDir(dir);
   }
 }, 15_000);

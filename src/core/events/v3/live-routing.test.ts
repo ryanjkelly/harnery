@@ -5,11 +5,11 @@ import {
   mkdtempSync,
   readdirSync,
   renameSync,
-  rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
 import { canonicalJsonV3, sha256V3 } from "./canonical.ts";
 import { adapterCapabilityProfileDigestV3 } from "./capabilities.ts";
 import type { EventV3 } from "./contract.ts";
@@ -37,7 +37,7 @@ import { eventV3Paths } from "./writer.ts";
 const roots: string[] = [];
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 describe("live V3 ledger routing", () => {

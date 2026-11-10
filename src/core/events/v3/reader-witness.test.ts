@@ -4,13 +4,13 @@ import {
   existsSync,
   mkdtempSync,
   readFileSync,
-  rmSync,
   unlinkSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
 import { initializeEventLedgerV3 } from "./bootstrap.ts";
 import { sha256V3 } from "./canonical.ts";
 import { EVENT_V3_CONTROL_WITNESS_RELATIVE_PATH } from "./control-witness.ts";
@@ -20,7 +20,7 @@ const roots: string[] = [];
 const readerPath = join(import.meta.dir, "reader.ts");
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 describe("event ledger V3 witnessed cold read", () => {

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Command } from "commander";
 import { registerWorkflowCommand } from "../../src/commands/workflow.ts";
@@ -11,6 +11,7 @@ import {
   runWorkflow,
   workflowApprovalId,
 } from "../../src/core/workflow/index.ts";
+import { removeDir } from "../helpers/remove-dir.ts";
 import { git, gitFixture, hasGit, writeScript } from "../workspace-test-helpers.ts";
 
 let host: string;
@@ -26,7 +27,7 @@ beforeEach(() => {
 
 afterEach(() => {
   process.chdir(previousCwd);
-  rmSync(host, { recursive: true, force: true });
+  removeDir(host);
 });
 
 describe("workflow workspace commands", () => {

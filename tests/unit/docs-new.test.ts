@@ -1,15 +1,16 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createDocsFile } from "../../src/lib/docs-new.ts";
 import { parseFrontmatter } from "../../src/lib/docs-frontmatter.ts";
 import { validateDocsMetadataV2 } from "../../src/lib/docs-metadata-v2.ts";
+import { createDocsFile } from "../../src/lib/docs-new.ts";
+import { removeDir } from "../helpers/remove-dir.ts";
 
 const roots: string[] = [];
 
 afterAll(() => {
-  for (const root of roots) rmSync(root, { recursive: true, force: true });
+  for (const root of roots) removeDir(root);
 });
 
 function root(): string {

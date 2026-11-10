@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Command } from "commander";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import { resourceStatusFixture } from "../../tests/helpers/resource-status.ts";
 import type { EmitContext } from "../commander.ts";
 import { resourcePaths } from "../core/resources/storage.ts";
@@ -12,7 +13,7 @@ let root: string;
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "harn-resource-command-"));
 });
-afterEach(() => rmSync(root, { recursive: true, force: true }));
+afterEach(() => removeDir(root));
 
 async function run(args: string[]) {
   const data: unknown[] = [];

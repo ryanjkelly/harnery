@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseFrontmatter } from "../../src/lib/docs-frontmatter.ts";
@@ -8,13 +8,14 @@ import {
   initDocsMetadataSyncContext,
   runDocsMetadataSync,
 } from "../../src/lib/docs-metadata-sync.ts";
+import { removeDir } from "../helpers/remove-dir.ts";
 
 const roots: string[] = [];
 const OLD = "2026-08-18T12:00:00Z";
 const NOW = "2026-08-19T12:00:00Z";
 
 afterAll(() => {
-  for (const root of roots) rmSync(root, { recursive: true, force: true });
+  for (const root of roots) removeDir(root);
 });
 
 function repo(): { root: string; file: string } {

@@ -5,12 +5,12 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
-  rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { reopenLiveCoordinationGenerationV3 } from "../agents/live-authority-v3.ts";
 import { renderPromptContext } from "../agents/render/prompt-context.ts";
 import { renderSessionContext } from "../agents/render/session-context.ts";
@@ -39,7 +39,7 @@ const roots: string[] = [];
 const parentSpies: Array<{ mockRestore(): void }> = [];
 afterEach(() => {
   for (const spy of parentSpies.splice(0)) spy.mockRestore();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 function routingFixture() {

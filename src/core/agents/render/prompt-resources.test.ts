@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdtempSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
 import {
   pressureRecordFixture,
   resourceStatusFixture,
@@ -14,7 +15,7 @@ let root: string;
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "harn-prompt-resource-"));
 });
-afterEach(() => rmSync(root, { recursive: true, force: true }));
+afterEach(() => removeDir(root));
 
 const elevated: Partial<PressureAssessment> = {
   state: "elevated",

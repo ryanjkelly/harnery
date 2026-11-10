@@ -5,7 +5,6 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  rmSync,
   symlinkSync,
   utimesSync,
   writeFileSync,
@@ -13,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initializeV3Fixture, seedV3Session } from "../../../tests/helpers/event-v3-runtime.ts";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import {
   ARTIFACT_MANIFEST,
   adoptUnmanagedArtifactFiles,
@@ -33,7 +33,7 @@ function pastIdleGrace(): Date {
 }
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 function root(): string {

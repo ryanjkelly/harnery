@@ -6,12 +6,12 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
-  rmSync,
   writeFileSync,
 } from "node:fs";
 import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { renderReport } from "../../commands/servers.ts";
 import { processStartToken } from "../agents/state/proc-start.ts";
 import { serverGcConfig, serverPortRange } from "../config.ts";
@@ -62,7 +62,7 @@ afterEach(async () => {
   }
   // Windows refuses to delete a directory a live process still uses as its cwd.
   await Promise.all(exits);
-  rmSync(root, { recursive: true, force: true });
+  removeDir(root);
 });
 
 /**

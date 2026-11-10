@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eventV3Fixture, fixtureObject } from "../../../../tests/helpers/event-v3.ts";
+import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
 import type { EventV3 } from "../../events/v3/contract.ts";
 import type { GitFinalizationResult } from "../finalization.ts";
 import type { StopGitFinalization } from "../stop-finalization.ts";
@@ -26,7 +27,7 @@ const clean: GitFinalizationResult = {
   repos_checked: ["."],
 };
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 function event(type: string, second: number): EventV3 {

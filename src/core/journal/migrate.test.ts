@@ -4,13 +4,13 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  rmSync,
   statSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import {
   appendEntry,
   deleteEntry,
@@ -93,7 +93,7 @@ afterEach(() => {
   else process.env.HARNERY_COORD_ROOT_OVERRIDE = priorRoot;
   if (priorZone === undefined) delete process.env.HARNERY_TIME_ZONE;
   else process.env.HARNERY_TIME_ZONE = priorZone;
-  rmSync(root, { recursive: true, force: true });
+  removeDir(root);
 });
 
 describe("retired stamp conversion", () => {

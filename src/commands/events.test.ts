@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -7,6 +7,7 @@ import {
   eventV3Fixture,
   fixtureObject,
 } from "../../tests/helpers/event-v3.ts";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import type { EmitContext } from "../commander.ts";
 import { createHarneryProgram, loadLazyCommand } from "../commander.ts";
 import { canonicalJsonV3 } from "../core/events/v3/canonical.ts";
@@ -14,7 +15,7 @@ import { canonicalJsonV3 } from "../core/events/v3/canonical.ts";
 const roots: string[] = [];
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeDir(root);
 });
 
 describe("events latency command", () => {

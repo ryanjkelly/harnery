@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import { createHarneryProgram, type EmitContext } from "../commander.ts";
 import { createArtifact } from "../core/artifacts/index.ts";
 import { finalizePageReviewPack } from "../lib/browser/page-review-pack.ts";
@@ -73,7 +74,7 @@ for (const enabled of [false, true]) {
       for (const pack of packs.slice(1))
         expect(existsSync(join(pack.dir, "manifest.json"))).toBe(true);
     } finally {
-      rmSync(repoRoot, { recursive: true, force: true });
+      removeDir(repoRoot);
     }
   });
 }
