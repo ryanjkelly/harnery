@@ -55,8 +55,7 @@ One further subtree lives under `agents` for advanced use: `harn agents identity
 (the durable per-agent persona registry). Two more are recovery tools:
 `harn agents heal` forces a specific recovery action on one agent, and
 `harn agents adapter-probe` diagnoses adapter wiring. Run
-`harn agents <sub> --help` for any of them. Councils are their own top-level
-command; see [Councils](/concepts/councils/).
+`harn agents <sub> --help` for any of them.
 
 When an adapter session survives a WSL or coordination-state restart, let
 Harnery resolve the current session and rebuild its disposable cache from the
@@ -439,7 +438,7 @@ history is unchanged, so the end-turn Git check still covers released paths.
 
 The layer's own diagnostics.
 
-- **`health`** is a one-screen rollup: heal events, council activity, zombie
+- **`health`** is a one-screen rollup: heal events, zombie
   detection, and anomalies. Built for a daily
   glance or dashboard ingestion. `--since <window>` sets the window (default
   `24h`); `--json` for structured output.

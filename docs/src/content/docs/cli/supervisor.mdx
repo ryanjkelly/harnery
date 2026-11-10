@@ -18,7 +18,7 @@ harn supervisor stop
 The supervisor runs several inexpensive collectors behind one process:
 
 - machine and process CPU, memory, swap, age, and proven agent ownership;
-- semantic reader, presence relay, governor, dashboard, and supervisor health;
+- semantic reader, presence relay, dashboard, and supervisor health;
 - active hook processes whose agent ownership and exact entrypoint are both
   proven;
 - bounded terminal hook receipts with internal outcome, duration, retry-worker
@@ -136,5 +136,5 @@ adapter behavior.
 
 The supervisor may observe, correlate, cache, and report. It may signal only
 its own process during an explicit stop. It cannot kill or renice another
-process, restart a service, call a model, execute governor work, write Event
+process, restart a service, call a model, write Event
 Ledger V3, or mutate agent lifecycle state.

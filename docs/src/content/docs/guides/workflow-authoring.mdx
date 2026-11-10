@@ -5,24 +5,22 @@ sidebar:
   order: 4
 ---
 
-Harnery workflows are ordinary JavaScript, but a durable run has stricter
-boundaries than an interactive shell. Four mistakes tend to surface after the
-expensive work has already happened. Design around them before dispatching a
-team.
+Harnery workflows are ordinary JavaScript, but a run has stricter boundaries
+than an interactive shell. Four mistakes tend to surface after the expensive
+work has already happened. Design around them before you start a real run.
 
-## Test the script before creating durable work
+## Finish the script before a run can park
 
-`harn work create` freezes the workflow's absolute path and SHA-256. A later
-edit changes the execution contract, so `harn work run` and `harn work retry`
-refuse the changed script and tell you to create a new work item.
+`harn run` records the script's absolute path and SHA-256 in the run manifest.
+When a run parks for approval, `harn run resume` checks that hash and refuses a
+script that changed in the meantime, so the approval cannot be reused for
+different code. You have to start a new run.
 
-Iterate with a throwaway `harn run` until routing, schemas, and evidence calls
-behave as intended. Create durable work only after the script is ready to pin.
-If the script must change afterward, create a new item instead of trying to
-rewrite the old item's history.
+Iterate with throwaway runs on small inputs until routing, schemas, and
+evidence calls behave as intended. Only then start the run that may park on a
+policy decision.
 
-See [`harn work`](/cli/work/) for the durable objective model and [`harn
-run`](/cli/run/) for the workflow API.
+See [`harn run`](/cli/run/) for the workflow API and approval parking.
 
 ## Set realistic agent timeouts
 
@@ -77,7 +75,7 @@ model.
 
 ## Preflight checklist
 
-- Run the script once before `harn work create` freezes it.
+- Run the script on a small input before a run that may park for approval.
 - Set a timeout that matches the slowest legitimate child assignment.
 - Keep schema bounds tied to real consumers rather than writing-style goals.
 - Treat child failures and uncommitted output as evidence to inspect, not a

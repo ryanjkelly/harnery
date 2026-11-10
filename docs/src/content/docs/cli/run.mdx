@@ -35,7 +35,7 @@ canonical events, and stay visible to peers, so a workflow child editing a file
 is subject to the same claim/guard protections as any other agent. Design
 record: decision 0015.
 
-Before making a workflow durable, read [Author reliable
+Before you rely on a workflow, read [Author reliable
 workflows](/guides/workflow-authoring/). It covers frozen script hashes, the
 five-minute agent timeout, response-schema failure costs, and child sandbox
 verification.
@@ -181,102 +181,10 @@ export default async function run({ agent, parallel, stage, log, evidence }) {
 }
 ```
 
-### Work-linked context
-
-When the workflow runs through [`harn work`](/cli/work/) or
-[`harn governor`](/cli/governor/), `ctx.work` contains the frozen assignment:
-
-```js
-export default async function run({ work, agent, evidence }) {
-  if (!work) throw new Error("this workflow requires durable work context");
-
-  const result = await agent(
-    [
-      "Complete the durable assignment below.",
-      `Title: ${work.title}`,
-      `Objective: ${work.objective}`,
-      "Acceptance:",
-      ...work.acceptance.map((criterion) => `- ${criterion}`),
-    ].join("\n"),
-    { specialist: "implementer" },
-  );
-
-  evidence({
-    kind: "observation",
-    status: "observed",
-    label: `Specialist completed ${work.id}`,
-  });
-  return result;
-}
-```
-
-The shape is `{ schema_version, id, title, objective, acceptance }`. It is
-deeply frozen before the script starts, copied into the private run manifest
-and terminal proof, and restored from that manifest after an approval park.
-Standalone workflows and historical parked runs created before this capability
-have `ctx.work === undefined`.
-
-Harnery does not automatically prepend this data to child prompts. The script
-controls how much assignment context each specialist needs and must preserve the
-host's instruction and policy hierarchy when work text came from an external
-source.
-
-### Attempt and retry context
-
-New work-linked runs also receive frozen `ctx.attempt` data:
-
-```js
-export default async function run({ work, attempt, agent }) {
-  if (!work || !attempt) throw new Error("durable work context required");
-
-  const correction =
-    attempt.trigger === "retry"
-      ? [
-          `This is attempt ${attempt.number}.`,
-          `Prior causes: ${attempt.prior.causes.join(", ")}`,
-          attempt.prior.error ? `Prior error: ${attempt.prior.error}` : "",
-          ...attempt.prior.unresolved.map(
-            (criterion) => `${criterion.status}: ${criterion.statement}`,
-          ),
-        ].filter(Boolean)
-      : [];
-
-  return agent(
-    [
-      `Objective: ${work.objective}`,
-      ...correction,
-      "Complete the assignment and verify its acceptance criteria.",
-    ].join("\n"),
-    { specialist: "implementer" },
-  );
-}
-```
-
-An initial attempt receives
-`{ schema_version: 1, number, trigger: "initial" }`. A retry additionally
-receives `prior` with the prior run ID, deterministic failure causes, the
-bounded workflow error when present, the acceptance summary, and only
-unsatisfied or unknown criteria. Causes can be `workflow_error`,
-`acceptance_unsatisfied`, `acceptance_unknown`, or `lost`. `lost` means only
-that terminal proof is absent; it does not diagnose why the run disappeared.
-
-The engine persists the same value as `attempt_context` in the private manifest,
-transcript, and terminal proof. Approval resume restores that original value and
-does not become a retry. Standalone and historical context-free runs have
-`ctx.attempt === undefined`.
-
-Attempt context does not grant retry authority or add attempts. Explicit
-`harn work retry`, frozen governor policy, and the existing work and
-goal-wide ceilings still decide whether another run may start. As with
-`ctx.work`, the workflow controls whether and how the data enters a child
-prompt.
-
 ## The ctx API
 
 | Property or function | Contract |
 | --- | --- |
-| `work` | Optional deeply frozen durable-work assignment: work ID, title, objective, and acceptance criteria. Present for new work-linked attempts; absent for standalone and legacy-resumed runs. |
-| `attempt` | Optional deeply frozen attempt identity. A retry includes a bounded synopsis of the preceding terminal evidence; approval resume preserves the original attempt. |
 | `agent(prompt, opts?)` | Spawn one subagent. With `opts.schema` the reply must parse as one JSON value and validate against the schema subset (`type`, `oneOf`, `properties`, `required`, `additionalProperties`, `items`, `minItems`, `maxItems`, `minLength`, `maxLength`, `pattern`, `enum`). Exact JSON and a whole fenced value are accepted. A adapter-added leading sentence is tolerated only when exactly one unambiguous object or array reaches the end of the reply; trailing prose, multiple candidates, malformed values, and schema mismatches still fail. Failures re-prompt with the validation errors appended, up to `opts.maxAttempts` (default 2), then throw. Without a schema, resolves to the raw reply text. Other opts: `specialist`, `model`, `effort`, `maxTurns` (default 25; use 1 for pure classification), `timeoutMs` (default 300000), `label`, `mcp`. A Claude Code child loads no MCP servers and no claude.ai connectors unless `mcp` is `"inherit"` (whatever Claude Code would load, connectors included) or `{ mcpServers: {...} }` (exactly those servers); other adapters ignore it. |
 | `parallel(thunks)` | Run thunks against the run-wide concurrency pool. A rejected thunk resolves to `null` (transcripted), so one bad item can't kill the batch; filter and route. |
 | `stage(title)` | Declare the current stage: transcript marker + progress grouping. |
@@ -322,48 +230,34 @@ This is not an error path, and using it as one defeats it. A plain `throw` means
 *the work failed and a retry might do better*. `blocked()` means the opposite:
 the script was right, and the blocker is a person.
 
-The distinction is load-bearing because it changes what happens next:
-
-- The attempt is **uncharged**, so once the decision lands the item retries with
-  its full budget. The same three classes share this treatment; see
-  [failure classes](#failure-classes).
-- The work item goes to `blocked` with `next_action: "none"`, so a
-  [`harn governor`](/cli/governor/) running with `retry_blocked` **cannot re-issue
-  it**. That automation exists to clear failures without a human; a correct
-  refusal is not a failure.
-- The goal's own reason names the decision rather than reporting a count of
-  items "needing intervention", and `decision_blocked_work` on the projection
-  carries the work/decision pairs for anything rendering a queue.
-
-Without a class of its own, a correct refusal and a botched attempt look
-identical to the engine. It re-issues the item, the next agent reaches the same
-correct conclusion, and the loop repeats until the budget is gone, with nobody
-told, because the thing it is waiting for is a person who was never asked.
+The run fails with the `decision` [failure class](#failure-classes) and
+records the docket ID in its proof. A caller deciding whether to start the
+script again can then tell a correct refusal from a botched attempt. Without the
+class, a caller that reruns the script gets the same correct conclusion each
+time, and nobody is told, because the blocker is a person who was never asked.
 
 Pass the `decision` id whenever you have one; it is what turns "something needs
 a human" into a question someone can actually answer. File it first with
-[`harn decision`](/cli/decision/). Blocking without an id still stops the item, but
+[`harn decision`](/cli/decision/). Blocking without an ID still stops the run, but
 the operator gets prose and has to go find the question themselves.
 
 ### Failure classes
 
-A failed run carries an optional class saying the failure was *uninformative
-about the work*. All three mean the attempt is not charged against
-`max_attempts`, because nothing was learned about whether the work is doable:
+A failed run carries an optional class saying the failure taught nothing about
+whether the task can be done. The class is recorded in the run's proof:
 
-| Class | Meaning | Retry |
+| Class | Meaning | Running it again |
 | --- | --- | --- |
-| `environment` | A precondition was missing; the run never started (the adapter CLI was absent). | Stops. Retrying an unchanged environment cannot help. |
-| `upstream` | The vendor was reached and refused (5xx, 429, circuit open). | Stays available, bounded by `max_uncharged_attempts`. |
-| `decision` | The script called `blocked()`: a human must rule. | Stops. Only a ruling clears it. |
+| `environment` | A precondition was missing; the run never started (the adapter CLI was absent). | Will fail the same way until the environment changes. |
+| `upstream` | The vendor was reached and refused (5xx, 429, circuit open). | May succeed later. |
+| `decision` | The script called `blocked()`: a human must rule. | Pointless until the decision is resolved. |
 
-Absent class ⇒ an ordinary work failure, charged and retryable as before.
+No class means an ordinary failure, one that says something about the task
+itself.
 
 ### Specialist profiles
 
-An embedding host may provide `EngineOpts.specialists`, and a
-[`harn governor`](/cli/governor/) freezes those profiles into its durable goal
-intent. A workflow selects one with `agent(prompt, { specialist: "reviewer" })`.
+An embedding host may provide `EngineOpts.specialists`. A workflow selects one with `agent(prompt, { specialist: "reviewer" })`.
 The profile contributes bounded instructions plus optional adapter, model,
 effort, turn, timeout, and schema-retry defaults; options on the individual
 agent call override those defaults.
@@ -499,7 +393,7 @@ harn run ./review.mjs \
 
 Harnery probes Git and filesystem capabilities before allocation. A supported
 run receives a dedicated branch and worktree. The immutable run manifest binds
-that workspace to the exact run or durable-work attempt. Children start in the
+that workspace to the exact run. Children start in the
 isolated active root, and approval resume reconstructs the same built-in
 provider from the frozen binding.
 
@@ -536,9 +430,8 @@ harn run cleanup <run-id> --yes
 ```
 
 Preparation previews the fast-forward and writes review, plan, and policy
-authority. It does not update the target branch. A work-linked run gets its
-review from exact durable work acceptance, so `--reviewer` is needed only for a
-standalone run. Repeat `--accept-unknown` for each verification fact the
+authority. It does not update the target branch. `--reviewer` is required: it
+names who reviewed the proof and diff. Repeat `--accept-unknown` for each verification fact the
 reviewer accepts.
 
 If the policy returns `ASK`, preparation creates a durable approval and parks
