@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { spawn, spawnSync } from "node:child_process";
-import { once } from "node:events";
+import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
@@ -10,9 +9,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { hostname } from "node:os";
 import { delimiter, join, resolve } from "node:path";
-import { processStartToken } from "../../src/core/agents/state/proc-start.ts";
 import { checkpointContext } from "../../src/core/context/index.ts";
 import { initializeEventLedgerV3 } from "../../src/core/events/v3/bootstrap.ts";
 import { sha256V3 } from "../../src/core/events/v3/canonical.ts";
@@ -103,69 +100,6 @@ describe.skipIf(!hasGit())("unknown state CLI conformance", () => {
         expect(output).not.toMatch(/matches|paths no longer dirty|dirty_paths_cleared/i);
       }, 30_000);
     }
-  }
-
-  for (const generation of ["different", "unknown"] as const) {
-    test(`governor stop leaves a real process with ${generation} generation running`, async () => {
-      const { repo } = fixture("service-generation");
-      const child = spawn(
-        process.execPath,
-        ["-e", "process.stdin.on('data', () => process.stdout.write('alive\\n'))"],
-        { stdio: ["pipe", "pipe", "ignore"] },
-      );
-      await once(child, "spawn");
-      const exited = once(child, "exit").then(() => false);
-      try {
-        const pid = child.pid!;
-        const token = processStartToken(pid);
-        expect(token).not.toBeNull();
-        const directory = join(repo, ".harnery", "governor-service");
-        mkdirSync(directory, { recursive: true });
-        const now = new Date().toISOString();
-        writeFileSync(
-          join(directory, "status.json"),
-          JSON.stringify({
-            schema_version: 1,
-            pid,
-            host: hostname(),
-            nonce: "fixture-generation",
-            ...(generation === "different" ? { start_token: `${token}-different` } : {}),
-            running_build: "fixture",
-            state: "running",
-            started_at: now,
-            heartbeat_at: now,
-            config_created_at: now,
-            sweep_count: 0,
-          }),
-        );
-        const result = harn(repo, ["governor", "service", "stop", "--json"]);
-        const answered = once(child.stdout, "data").then(([data]) => String(data) === "alive\n");
-        child.stdin.write("probe\n", () => {});
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        const timedOut = new Promise<boolean>((resolve) => {
-          timer = setTimeout(() => resolve(false), 5_000);
-        });
-        const stillRunning = await Promise.race([answered, exited, timedOut]);
-        clearTimeout(timer);
-        expect(result.status).toBe(0);
-        expect(stillRunning).toBe(true);
-        expect(child.exitCode).toBeNull();
-        expect(child.signalCode).toBeNull();
-        expect(() => process.kill(pid, 0)).not.toThrow();
-        expect(processStartToken(pid)).toBe(token);
-        expect(JSON.parse(result.stdout)).toMatchObject({
-          generation,
-          signal_sent: false,
-          signal_verdict: generation,
-        });
-        expect(existsSync(join(directory, "stop.json"))).toBe(true);
-      } finally {
-        if (child.exitCode === null && child.signalCode === null) {
-          child.stdin.end();
-          await exited;
-        }
-      }
-    }, 15_000);
   }
 });
 

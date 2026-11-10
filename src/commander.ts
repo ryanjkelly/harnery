@@ -847,11 +847,6 @@ function harneryCommandBundles({
         ),
     ),
     lazy(
-      "council",
-      "Multi-agent deliberation: convene a temporary group around an objective, run N rounds of contribution, emit a transcript.",
-      async (program) => (await import("./commands/agents.ts")).registerCouncilCommands(program),
-    ),
-    lazy(
       "doctor",
       "Verify the runtime + optional deps harnery commands expect. Exits 0 unless a required dep (Node, git) is missing.",
       async (program) =>
@@ -911,15 +906,6 @@ function harneryCommandBundles({
       load: async (program) =>
         (await import("./commands/workflow.ts")).registerWorkflowCommand(program, emit),
     },
-    lazy("work", "Track durable objectives across bounded workflow attempts.", async (program) =>
-      (await import("./commands/work.ts")).registerWorkCommand(program, emit),
-    ),
-    lazy(
-      "governor",
-      "Run a bounded specialist team over a durable-work dependency graph.",
-      async (program) =>
-        (await import("./commands/governor.ts")).registerGovernorCommand(program, emit),
-    ),
     lazy("web", "Standalone read-only dashboard for harnery's coord state", async (program) =>
       (await import("./commands/web.ts")).registerWebCommand(program, emit),
     ),
