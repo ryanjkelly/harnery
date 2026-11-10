@@ -251,6 +251,23 @@ describe("skills Harnery no longer ships", () => {
     expect(checkInstructions(root, { binName: BIN, adapter: "claude-code" }).status).toBe("fresh");
   });
 
+  test("removes a retired generated skill from another adapter's skill dir too", () => {
+    applyInstructions(root, { binName: BIN, adapter: "claude-code", dryRun: false });
+    writeSkill(".agents/skills", "harn-retired", "harn-retired");
+    writeSkill(".agents/skills", "house-skill", null);
+    expect(checkInstructions(root, { binName: BIN, adapter: "claude-code" }).issues).toContain(
+      "skill harn-retired in .agents/skills: no longer shipped (re-run init)",
+    );
+
+    const r = applyInstructions(root, { binName: BIN, adapter: "claude-code", dryRun: false });
+    expect(r.actions).toContain(
+      "+ removed skill harn-retired in .agents/skills (no longer shipped)",
+    );
+    expect(has(".agents/skills/harn-retired")).toBe(false);
+    expect(has(".agents/skills/house-skill/SKILL.md")).toBe(true);
+    expect(checkInstructions(root, { binName: BIN, adapter: "claude-code" }).status).toBe("fresh");
+  });
+
   test("keeps a folder whose marker names another skill, and other files beside SKILL.md", () => {
     applyInstructions(root, { binName: BIN, adapter: "codex", dryRun: false });
     writeSkill(".agents/skills", "copied", "harn-decide");

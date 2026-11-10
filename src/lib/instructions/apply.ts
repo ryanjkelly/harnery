@@ -72,6 +72,23 @@ function adapterSkillsDir(adapter: string): string | null {
   return ADAPTER_SKILLS_DIR[adapter] ?? null;
 }
 
+/**
+ * Every adapter's skill dir, the active adapter's first. Retired skills are
+ * pruned from all of them: a project initialised under one adapter and later
+ * re-initialised under another (or one whose host mirrors skills across
+ * adapter dirs) otherwise keeps the old generated folder forever.
+ */
+function pruneSkillsDirs(active: string): string[] {
+  return [active, ...new Set(Object.values(ADAPTER_SKILLS_DIR))].filter(
+    (dir, i, all) => all.indexOf(dir) === i,
+  );
+}
+
+/** " in <dir>" for a skill dir other than the active adapter's, else "". */
+function otherDirSuffix(dir: string, active: string): string {
+  return dir === active ? "" : ` in ${dir.split("\\").join("/")}`;
+}
+
 /** CLAUDE.md import-shim body: points Claude Code (which reads CLAUDE.md, not AGENTS.md) at AGENTS.md. */
 function importBody(): string {
   return "This project's agent instructions live in AGENTS.md.\n@AGENTS.md";
@@ -364,9 +381,13 @@ export function applyInstructions(projectRoot: string, opts: ApplyOpts): ApplyRe
 
     // A skill Harnery stopped shipping leaves its generated folder behind in
     // projects initialised earlier; take it back out.
-    for (const name of retiredOwnedSkills(projectRoot, skillsDir)) {
-      if (!opts.dryRun) removeOwnedSkillFile(join(projectRoot, skillsDir, name, "SKILL.md"));
-      actions.push(`+ ${verbed("remove", "removed")} skill ${name} (no longer shipped)`);
+    for (const dir of pruneSkillsDirs(skillsDir)) {
+      for (const name of retiredOwnedSkills(projectRoot, dir)) {
+        if (!opts.dryRun) removeOwnedSkillFile(join(projectRoot, dir, name, "SKILL.md"));
+        actions.push(
+          `+ ${verbed("remove", "removed")} skill ${name}${otherDirSuffix(dir, skillsDir)} (no longer shipped)`,
+        );
+      }
     }
   }
 
@@ -583,8 +604,12 @@ export function checkInstructions(
         }
         note(`skill ${skill.id}`, checkOwnedSkill(c, skillBody(skill.render, opts.binName)));
       }
-      for (const name of retiredOwnedSkills(projectRoot, skillsDir)) {
-        issues.push(`skill ${name}: no longer shipped (re-run init)`);
+      for (const dir of pruneSkillsDirs(skillsDir)) {
+        for (const name of retiredOwnedSkills(projectRoot, dir)) {
+          issues.push(
+            `skill ${name}${otherDirSuffix(dir, skillsDir)}: no longer shipped (re-run init)`,
+          );
+        }
       }
     }
 
