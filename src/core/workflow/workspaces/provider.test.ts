@@ -62,7 +62,8 @@ type ContradictableExecution = Omit<WorkspaceBoundExecutionEvidence, "terminal_l
 };
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0))
+    rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 describe("shared and explicit-provider compatibility", () => {
