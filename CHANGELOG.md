@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.51.1
+
+### Patch Changes
+
+- 376bafa: The page review snapshot store now waits for a lock folder that is being removed on Windows instead of failing. Windows reports `EPERM` when a process creates the lock folder while another process is deleting it; the writer now treats that like an existing lock and retries until the usual five-second deadline, after which it still fails closed. Other platforms still treat `EPERM` as a real permission error.
+- 2903b5c: On Windows, the journal lock, the desktop grant and lease locks, the backup snapshot lock and the auto-update run lock now treat a lock folder that is being removed as held. Windows reports `EPERM` when a process creates a lock folder while another process is deleting it; these locks used to fail on that error and now wait (journal, grant and lease) or report busy (backup and auto-update), exactly as they do for an existing lock. Deadlines, stale-lock handling and error messages are unchanged, and other platforms still treat `EPERM` as a real permission error. The grant lock's wait now also stops at its usual deadline when its lock folder keeps disappearing. The rule lives in one shared helper that the page review snapshot store uses too.
+
 ## 0.51.0
 
 ### Minor Changes
