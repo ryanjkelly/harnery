@@ -545,81 +545,6 @@ async function handleJournalAction(root: string, action: string, rest: string[])
   return 2;
 }
 
-async function handleCouncilAction(root: string, action: string, rest: string[]): Promise<number> {
-  const council = await import("./state/council.ts");
-
-  const [councilId, ...args] = rest;
-  if (!councilId) {
-    process.stderr.write(`agent-coord ${action}: missing <council_id>\n`);
-    return 2;
-  }
-
-  switch (action) {
-    case "council-advance": {
-      const force = args.includes("--force");
-      const result = council.advanceCouncil(root, councilId, { force });
-      if (!result.ok) {
-        process.stderr.write(`agent-coord council-advance: ${result.reason}\n`);
-        return 1;
-      }
-      process.stdout.write(`${JSON.stringify({ council_id: councilId, ok: true })}\n`);
-      return 0;
-    }
-    case "council-close": {
-      const result = council.closeCouncil(root, councilId);
-      if (!result.ok) {
-        process.stderr.write(`agent-coord council-close: ${result.reason}\n`);
-        return 1;
-      }
-      process.stdout.write(`${JSON.stringify({ council_id: councilId, ok: true })}\n`);
-      return 0;
-    }
-    case "council-archive": {
-      const result = council.archiveCouncil(root, councilId);
-      if (!result.ok) {
-        process.stderr.write(`agent-coord council-archive: ${result.reason}\n`);
-        return 1;
-      }
-      process.stdout.write(`${JSON.stringify({ council_id: councilId, ok: true })}\n`);
-      return 0;
-    }
-    case "council-unarchive": {
-      const result = council.unarchiveCouncil(root, councilId);
-      if (!result.ok) {
-        process.stderr.write(`agent-coord council-unarchive: ${result.reason}\n`);
-        return 1;
-      }
-      process.stdout.write(`${JSON.stringify({ council_id: councilId, ok: true })}\n`);
-      return 0;
-    }
-    case "council-delete": {
-      const result = council.deleteCouncil(root, councilId);
-      if (!result.ok) {
-        process.stderr.write(`agent-coord council-delete: ${result.reason}\n`);
-        return 1;
-      }
-      process.stdout.write(`${JSON.stringify({ council_id: councilId, ok: true })}\n`);
-      return 0;
-    }
-    case "council-set-steward": {
-      const steward = args[0] ?? "";
-      const stewardId = args[1] ?? "";
-      const result = council.setCouncilSteward(root, councilId, steward, stewardId);
-      if (!result.ok) {
-        process.stderr.write(`agent-coord council-set-steward: ${result.reason}\n`);
-        return 1;
-      }
-      process.stdout.write(
-        `${JSON.stringify({ council_id: councilId, steward: steward || null, ok: true })}\n`,
-      );
-      return 0;
-    }
-  }
-
-  process.stderr.write(`agent-coord: unknown council action ${action}\n`);
-  return 2;
-}
-
 async function handleAssignName(root: string, rest: string[]): Promise<number> {
   const { assignName } = await import("./state/names.ts");
   // Optional recorded-fork-lineage flag: --forked-from <parent_instance_id>.
@@ -770,7 +695,6 @@ async function handlePromptContext(root: string, rest: string[]): Promise<number
   }
   const instanceId = args.instance;
   const sessionId = args.session ?? instanceId;
-  const agentName = args.name;
   const sessionNameNudge = args["session-name-nudge"] === "true";
   const taskNudge = args["task-nudge"] === "true";
   const hostPromptReminder = args["host-prompt-reminder"] === "true";
@@ -781,7 +705,7 @@ async function handlePromptContext(root: string, rest: string[]): Promise<number
     args["turn-ritual-nudge"] === "true" ? "generic" : args["turn-ritual-nudge"];
   if (!instanceId) {
     process.stderr.write(
-      "agent-coord prompt-context --instance <id> [--session <id>] [--name <agent-name>] [--session-name-nudge] [--task-nudge] [--host-prompt-reminder] [--status-footer-nudge] [--turn-ritual-nudge <adapter>]\n",
+      "agent-coord prompt-context --instance <id> [--session <id>] [--session-name-nudge] [--task-nudge] [--host-prompt-reminder] [--status-footer-nudge] [--turn-ritual-nudge <adapter>]\n",
     );
     return 2;
   }
@@ -790,7 +714,6 @@ async function handlePromptContext(root: string, rest: string[]): Promise<number
     coordRoot: root,
     instanceId,
     sessionId: sessionId!,
-    agentName,
     sessionNameNudge,
     taskNudge,
     hostPromptReminder,
@@ -948,7 +871,6 @@ async function handleEmitEvent(root: string, rest: string[]): Promise<number> {
     eventType === "coord.status_observed" ||
     eventType === "coord.presence_changed" ||
     eventType === "coord.message_observed" ||
-    eventType === "council.state_changed" ||
     eventType === "decision.state_changed"
   ) {
     const { recordLiveCoordinationObservationV3 } = await import("./live-observation-v3.ts");
@@ -1113,17 +1035,6 @@ async function main(): Promise<number> {
 
   if (subcommand === "append-journal" || subcommand === "edit-journal") {
     return handleJournalAction(root, subcommand, rest);
-  }
-
-  if (
-    subcommand === "council-advance" ||
-    subcommand === "council-close" ||
-    subcommand === "council-archive" ||
-    subcommand === "council-unarchive" ||
-    subcommand === "council-delete" ||
-    subcommand === "council-set-steward"
-  ) {
-    return handleCouncilAction(root, subcommand, rest);
   }
 
   if (subcommand === "assign-name") {

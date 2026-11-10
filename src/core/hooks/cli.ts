@@ -1022,7 +1022,7 @@ async function main(): Promise<number> {
 
   // Phase 8: SessionStart post-emit: project the event so the heartbeat
   // lands synchronously, run stale-sweep, and emit the adapter-shaped
-  // systemMessage JSON (peer table + wiring check + council invites).
+  // systemMessage JSON (peer table + peer inbox + wiring check).
   // Adapter-agnostic since v0.5.0; replaces the previous bash UX layer
   // and the equivalent per-adapter bash session_start handlers.
   if (norm.event_type === "session.started") await handleSessionStarted(run);
@@ -1039,7 +1039,7 @@ async function main(): Promise<number> {
   // Phase 8: SubagentStop: delete subagent heartbeat + log.
   if (norm.event_type === "agent.completed") await handleAgentCompleted(run);
 
-  // Phase 8: UserPromptSubmit: render dedup'd peer table + council pending
+  // Phase 8: UserPromptSubmit: render the dedup'd peer table and peer inbox
   // and emit the adapter-shaped systemMessage JSON. Adapter-agnostic since v0.5.0.
   if (norm.event_type === "turn.started") await handleTurnStarted(run);
 
@@ -2564,7 +2564,6 @@ async function emitSubagentStartContext(
     coordRoot,
     instanceId,
     sessionId,
-    agentName: subagentName,
     onInboxPrepared: (ids) => {
       peerMessageIds = ids;
     },
@@ -2604,7 +2603,7 @@ async function emitSessionStartSystemMessage(
   reconcileCoordinationV3(coordRoot);
 
   // Workflow children retain lifecycle/event capture but do not receive
-  // operator-facing peer, council, or init-remediation context. Injecting
+  // operator-facing peer or init-remediation context. Injecting
   // that context can make a bounded child follow housekeeping instructions
   // instead of its assigned prompt.
   if (!workflowChild) {

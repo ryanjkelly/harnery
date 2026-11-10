@@ -3,7 +3,7 @@
  * route to a human, plus the lifecycle that carries each one from filing to a
  * reviewed, graduated resolution.
  *
- * State layout (mirrors councils):
+ * State layout:
  *   - `.harnery/decisions/<id>.json`      — one manifest per decision
  *   - `.harnery/decisions/<id>/`          — long-form bodies (brief, options,
  *                                            evidence write-up) as markdown
@@ -14,7 +14,7 @@
  * tier — is host policy, applied by the filing agent, never encoded here. That
  * keeps the docket generic across host projects.
  *
- * Every function takes `coordRoot` explicitly (the council pattern) so the
+ * Every function takes `coordRoot` explicitly so the
  * state machine is trivially testable against a tmpdir. The command layer
  * resolves the root once via `monorepoRoot()` and threads it down.
  *
@@ -125,8 +125,6 @@ export interface DecisionManifest {
   filed_at: string;
   /** Deliberator (agent instance_id or a sweeper session), or null. */
   claimed_by?: string | null;
-  /** Set when escalated to a council. */
-  council_id?: string | null;
   resolution?: DecisionResolution | null;
   review?: DecisionReview | null;
   /** Where the resolved output graduated (e.g. "docs/decisions.md#…"), or null. */
@@ -208,8 +206,7 @@ function atomicWriteText(path: string, content: string): void {
 
 /**
  * Kebab-case slug from question text: first 5 words, lowercased,
- * non-alphanumerics stripped. Local (not imported from council) so the module
- * stays standalone.
+ * non-alphanumerics stripped.
  */
 export function deriveSlug(question: string): string {
   const cleaned = question
@@ -239,7 +236,7 @@ export function buildDecisionId(question: string, now: Date = new Date()): strin
 /**
  * Read a manifest by id, checking the active dir then the archive. Returns null
  * if absent or unparseable. Throws on an unsupported schema_version (fail loud
- * on a real-but-incompatible manifest, the way councils do).
+ * on a real-but-incompatible manifest).
  */
 export function readManifest(coordRoot: string, id: string): DecisionManifest | null {
   for (const p of [manifestPath(coordRoot, id), archivedManifestPath(coordRoot, id)]) {
@@ -311,7 +308,6 @@ export function fileDecision(coordRoot: string, input: FileDecisionInput): Decis
     filed_by_id: input.filedById,
     filed_at: ts,
     claimed_by: null,
-    council_id: null,
     resolution: null,
     review: null,
     graduated_to: null,
@@ -382,15 +378,6 @@ export function triageDecision(
 export function claimDecision(coordRoot: string, id: string, owner: string): DecisionOpResult {
   if (!owner?.trim()) return { ok: false, reason: "claim owner is empty" };
   return transition(coordRoot, id, "deliberating", { claimed_by: owner.trim() });
-}
-
-export function escalateToCouncil(
-  coordRoot: string,
-  id: string,
-  councilId: string,
-): DecisionOpResult {
-  if (!councilId?.trim()) return { ok: false, reason: "council id is empty" };
-  return transition(coordRoot, id, "deliberating", { council_id: councilId.trim() });
 }
 
 /**

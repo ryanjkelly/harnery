@@ -1,14 +1,14 @@
 /**
- * SessionStart UX renderer: combines the peer table, the wiring check, and
- * the pending-council formatter so agent-hook session.started can emit the
- * combined `systemMessage` JSON directly.
+ * SessionStart UX renderer: combines the peer table, the peer inbox, and the
+ * wiring check so agent-hook session.started can emit the combined
+ * `systemMessage` JSON directly.
  *
  * Outputs a Claude Code SessionStart hookSpecificOutput.additionalContext
  * string.
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { resolveBinName, resolveHooksSetupHint } from "../../config.ts";
 import { harneryVersion, loadAdapterWiring } from "../../hooks/adapter/wiring.ts";
@@ -101,13 +101,7 @@ export function renderSessionContext(opts: RenderOpts): string {
     messages.push(formatPeerInbox(coordRoot, delivered));
   }
 
-  // 4. Council invites
-  if (agentName) {
-    const councilMsg = formatPendingCouncils(coordRoot, agentName);
-    if (councilMsg) messages.push(councilMsg);
-  }
-
-  // 5. Commit-guard wiring check
+  // 4. Commit-guard wiring check
   const wiringIssues = checkWiring(coordRoot);
   if (wiringIssues.length > 0) {
     const hint = resolveHooksSetupHint(coordRoot);
@@ -118,7 +112,7 @@ export function renderSessionContext(opts: RenderOpts): string {
     messages.push(wiringSummary);
   }
 
-  // 6. Adapter-hook drift: a harnery upgrade changed the hook set, but this
+  // 5. Adapter-hook drift: a harnery upgrade changed the hook set, but this
   // project's settings file hasn't been re-wired. Only fires for a adapter the
   // project already opted into (≥1 hook wired), so it never nags a project that
   // simply has a settings file. Remedy is always `<bin> init` (idempotent).
@@ -430,59 +424,4 @@ function isLinkedWorktree(coordRoot: string): boolean {
   const d = dir.stdout.trim();
   const c = common.stdout.trim();
   return d !== "" && c !== "" && d !== c;
-}
-
-/**
- * Returns the formatted council invite reminder
- * (or "" when no councils await input).
- */
-export function formatPendingCouncils(coordRoot: string, agentName: string): string {
-  const councilsDir = join(coordRoot, ".harnery", "councils");
-  if (!existsSync(councilsDir)) return "";
-  const canonicalName = agentName.startsWith("agent-") ? agentName : `agent-${agentName}`;
-  const pending: string[] = [];
-  try {
-    for (const f of readdirSync(councilsDir)) {
-      if (!f.endsWith(".json")) continue;
-      const manifestPath = join(councilsDir, f);
-      try {
-        const m = JSON.parse(readFileSync(manifestPath, "utf8")) as {
-          council_id?: string;
-          status?: string;
-          round_status?: string;
-          current_round?: number;
-          members?: string[];
-        };
-        if (m.status !== "active" || m.round_status !== "open") continue;
-        if (!m.members?.includes(canonicalName)) continue;
-        const round = m.current_round ?? 1;
-        const contributionPath = join(
-          councilsDir,
-          m.council_id ?? "",
-          `round-${round}`,
-          `${canonicalName}.md`,
-        );
-        if (existsSync(contributionPath)) continue; // already contributed
-        if (m.council_id) pending.push(m.council_id);
-      } catch {
-        /* skip */
-      }
-    }
-  } catch {
-    /* skip */
-  }
-
-  if (pending.length === 0) return "";
-  const bin = resolveBinName(coordRoot);
-  const firstThree = pending.slice(0, 3);
-  const tail = pending.length > 3 ? `, +${pending.length - 3} more` : "";
-  const list = firstThree.join(", ") + tail;
-  if (pending.length === 1) {
-    return (
-      `Council waiting on your input: \`${pending[0]}\`. ` +
-      `Run \`${bin} council show ${pending[0]}\` for the brief and ` +
-      `\`${bin} council contribute ${pending[0]} --message "<your take>"\` to weigh in.`
-    );
-  }
-  return `Councils waiting on your input (${pending.length} open): ${list}. Run \`${bin} council list --mine\` to see all of them, then \`${bin} council show <id>\` for any brief.`;
 }

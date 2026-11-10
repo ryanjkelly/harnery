@@ -13,7 +13,6 @@ import {
   decisionBodyDir,
   deriveSlug,
   enactDecision,
-  escalateToCouncil,
   fileDecision,
   isStakes,
   isStatus,
@@ -224,11 +223,15 @@ describe("lifecycle transitions", () => {
     expect(readManifest(root, id)?.status).toBe("triaged");
   });
 
-  test("escalateToCouncil links a council and moves to deliberating", () => {
+  test("a stored manifest that still carries council_id loads, lists and transitions", () => {
     const id = file();
-    const r = escalateToCouncil(root, id, "review-the-thing-2026-07-06-abcd");
-    expect(r.ok).toBe(true);
-    expect(readManifest(root, id)?.council_id).toBe("review-the-thing-2026-07-06-abcd");
+    const path = manifestPath(root, id);
+    const stored = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+    stored.council_id = "old-council-2026-07-06-abcd";
+    writeFileSync(path, `${JSON.stringify(stored, null, 2)}\n`);
+    expect(readManifest(root, id)?.decision_id).toBe(id);
+    expect(listDecisions(root).map((m) => m.decision_id)).toContain(id);
+    expect(claimDecision(root, id, "agent-Sweeper").ok).toBe(true);
     expect(readManifest(root, id)?.status).toBe("deliberating");
   });
 

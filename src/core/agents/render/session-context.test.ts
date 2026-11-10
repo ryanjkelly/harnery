@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initializeV3Fixture, seedV3Session } from "../../../../tests/helpers/event-v3-runtime.ts";
-import { checkWiring, formatPendingCouncils, renderSessionContext } from "./session-context.ts";
+import { checkWiring, renderSessionContext } from "./session-context.ts";
 
 let root: string;
 
@@ -262,67 +262,5 @@ describe("checkWiring (portable commit-guard detection)", () => {
     mkdirSync(hooks, { recursive: true });
     writeFileSync(join(hooks, "pre-commit"), "#!/bin/sh\nagent-coord verdict\n");
     expect(checkWiring(root)).toEqual([]);
-  });
-});
-
-describe("formatPendingCouncils", () => {
-  test("no councils dir → empty string", () => {
-    expect(formatPendingCouncils(root, "Maya")).toBe("");
-  });
-
-  test("active open council with member listed → returns reminder string", () => {
-    mkdirSync(join(root, ".harnery", "councils"), { recursive: true });
-    writeFileSync(
-      join(root, ".harnery", "councils", "test-council-2026-05-27-aaaa.json"),
-      JSON.stringify({
-        council_id: "test-council-2026-05-27-aaaa",
-        status: "active",
-        round_status: "open",
-        current_round: 1,
-        members: ["agent-Maya"],
-      }),
-      "utf8",
-    );
-    const out = formatPendingCouncils(root, "Maya");
-    expect(out).toContain("Council waiting on your input");
-    expect(out).toContain("test-council-2026-05-27-aaaa");
-  });
-
-  test("closed council → no reminder", () => {
-    mkdirSync(join(root, ".harnery", "councils"), { recursive: true });
-    writeFileSync(
-      join(root, ".harnery", "councils", "closed-2026-05-27-bbbb.json"),
-      JSON.stringify({
-        council_id: "closed-2026-05-27-bbbb",
-        status: "closed",
-        round_status: "open",
-        current_round: 1,
-        members: ["agent-Maya"],
-      }),
-      "utf8",
-    );
-    expect(formatPendingCouncils(root, "Maya")).toBe("");
-  });
-
-  test("member already contributed in current round → no reminder", () => {
-    const cid = "contributed-2026-05-27-cccc";
-    mkdirSync(join(root, ".harnery", "councils", cid, "round-1"), { recursive: true });
-    writeFileSync(
-      join(root, ".harnery", "councils", `${cid}.json`),
-      JSON.stringify({
-        council_id: cid,
-        status: "active",
-        round_status: "open",
-        current_round: 1,
-        members: ["agent-Maya"],
-      }),
-      "utf8",
-    );
-    writeFileSync(
-      join(root, ".harnery", "councils", cid, "round-1", "agent-Maya.md"),
-      "my contribution",
-      "utf8",
-    );
-    expect(formatPendingCouncils(root, "Maya")).toBe("");
   });
 });

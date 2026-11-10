@@ -3,7 +3,7 @@
  * via rclone (typically a Google Drive remote, but any rclone remote works).
  *
  * Scope: a deliberately small set of file types: durable identities,
- * archived journals, council manifests. The high-churn machine-local
+ * archived journals. The high-churn machine-local
  * state (ledgers/, .pid-map/, active/, .last-intent.*) stays put.
  *
  * Subcommands:
@@ -29,7 +29,7 @@ import { syncJsoncConfig } from "../core/config.ts";
 
 // What we sync. Anything matching one of these (relative to .harnery/) is
 // considered part of the sync set. Everything else stays local-only.
-const SYNC_PATHS = ["identities/", "journal/archived/", "councils/"];
+const SYNC_PATHS = ["identities/", "journal/archived/"];
 
 interface SyncConfig {
   remote: string;
@@ -144,8 +144,8 @@ export function registerSyncCommand(program: Command, emit: EmitContext): void {
   const sync = program
     .command("sync")
     .description(
-      "Cross-machine sync of curated .harnery/ subset (identities, archived " +
-        "journals, council manifests) via rclone. Google Drive is the " +
+      "Cross-machine sync of curated .harnery/ subset (identities and archived " +
+        "journals) via rclone. Google Drive is the " +
         "expected remote; any rclone backend works.",
     );
 

@@ -1,6 +1,6 @@
 /**
  * UserPromptSubmit UX renderer. Combines the peer-refresh dedup, the
- * council-pending hash-dedup, the cross-adapter first-session naming nudge,
+ * cross-adapter first-session naming nudge,
  * the Cursor/Codex set-task staleness nudge, a host-configured prompt reminder,
  * and the Codex status-footer reminder.
  * agent-hook's turn.started post-emit handler calls this
@@ -11,27 +11,24 @@
  *      lifecycle, or changes its claimed files. Activity and task text never
  *      trigger a reprint. Peers past the heartbeat-freshness window are left
  *      out and counted in "+N more".
- *   2. Council pending: pending open-council IDs hashed; re-emits when the
- *      ID set changes.
- *   3. Focus nudge. Until the session has displayed its current suggested
+ *   2. Focus nudge. Until the session has displayed its current suggested
  *      name, tells every adapter on every prompt to send the exact fenced block
  *      before prose or another tool call.
  *      Cursor/Codex additionally get the existing unset/stale-task reminder
  *      because their Stop hooks do not enforce task declarations as reliably
  *      as Claude Code's.
- *   4. Host prompt reminder: a project-owned, non-deduplicated line for
+ *   3. Host prompt reminder: a project-owned, non-deduplicated line for
  *      adapters whose prompt hook can inject context and which lack a native
  *      reminder mechanism. Hook routing decides which adapters enable it.
- *   5. Codex status footer: a non-deduplicated reminder to put the live status
+ *   4. Codex status footer: a non-deduplicated reminder to put the live status
  *      box after the substantive answer. Stop stays observe-only, so missing the
  *      footer can never trigger a replacement response.
- *   6. Turn ritual: for adapters whose Stop hook enforces the ritual, shown on
+ *   5. Turn ritual: for adapters whose Stop hook enforces the ritual, shown on
  *      the first prompt, after a compaction, and after a bounced turn.
  *
  * Hash files live at:
  *   .harnery/.last-turn-ritual.<instance_id>
  *   .harnery/.last-peer-hash.<instance_id>
- *   .harnery/.last-council-hash.<instance_id>
  *   .harnery/.last-task-nudge-hash.<instance_id>
  *
  * First call always emits (hash files don't exist).
@@ -41,7 +38,6 @@ import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
-  readdirSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -69,7 +65,6 @@ import {
 } from "../state/live-coordination-view.ts";
 import { forkRelationLabels } from "../state/names.ts";
 import type { AgentActivity, TaskState } from "../state/session-state.ts";
-import { formatPendingCouncils } from "./session-context.ts";
 
 interface HeartbeatRow {
   instance_id?: string;
@@ -94,7 +89,6 @@ export interface PromptContextOpts {
   coordRoot: string;
   instanceId: string;
   sessionId: string;
-  agentName?: string;
   /** When true, remind a human-facing session to print the session name before
    * its first set-task. UserPromptSubmit enables this for every adapter. */
   sessionNameNudge?: boolean;
@@ -120,16 +114,14 @@ export interface PromptContextOpts {
  * Build the combined UserPromptSubmit additionalContext string. Returns "" when
  * nothing has changed since the last call (so the caller can skip the JSON emit).
  *
- * Side effects: updates `.harnery/.last-peer-hash.<id>` and `.harnery/.last-council-hash.<id>`
- * when their respective sections re-emit (or removes the council hash when no
- * councils are pending, matching the bash behavior).
+ * Side effects: updates `.harnery/.last-peer-hash.<id>` when the peer table
+ * re-emits.
  */
 export function renderPromptContext(opts: PromptContextOpts): string {
   const {
     coordRoot,
     instanceId,
     sessionId,
-    agentName,
     sessionNameNudge,
     taskNudge,
     hostPromptReminder: promptReminderEnabled,
@@ -137,11 +129,6 @@ export function renderPromptContext(opts: PromptContextOpts): string {
     turnRitualNudge,
   } = opts;
   const sections: string[] = [];
-
-  // The hook route does not pass --name, so resolve it from the heartbeat.
-  // Every name-addressed section below (messages, councils) is silently
-  // skipped without it.
-  const resolvedName = agentName ?? readLiveCoordinationRow(coordRoot, instanceId)?.name;
 
   // 1. Instance-bound messages. Rendering is read-only; failed output leaves
   // this same batch pending rather than losing it before a prompt sees it.
@@ -157,12 +144,6 @@ export function renderPromptContext(opts: PromptContextOpts): string {
 
   const resources = resourceWarningIfChanged(coordRoot, instanceId);
   if (resources) sections.push(resources);
-
-  // 3. Council pending with hash dedup.
-  if (resolvedName) {
-    const councilMsg = computeCouncilPendingIfChanged(coordRoot, instanceId, resolvedName);
-    if (councilMsg) sections.push(councilMsg);
-  }
 
   // 4. First-session naming for every adapter, plus unset/stale-task reminders
   // for Cursor/Codex. One state machine avoids a second generic "task unset"
@@ -554,69 +535,6 @@ function formatRemoteTable(remote: RemoteMachine[], nowSec: number): string {
   }
   if (lines.length === 0) return "";
   return `Sessions on other machines (advisory, via presence refs):\n${lines.join("\n")}`;
-}
-
-function computeCouncilPendingIfChanged(
-  coordRoot: string,
-  selfInstanceId: string,
-  agentName: string,
-): string {
-  const councilsDir = join(coordRoot, ".harnery", "councils");
-  if (!existsSync(councilsDir)) return "";
-  const canonicalName = agentName.startsWith("agent-") ? agentName : `agent-${agentName}`;
-
-  // Collect pending council IDs (open councils where I'm a member and haven't contributed).
-  const pendingIds: string[] = [];
-  try {
-    for (const f of readdirSync(councilsDir)) {
-      if (!f.endsWith(".json")) continue;
-      try {
-        const m = JSON.parse(readFileSync(join(councilsDir, f), "utf8")) as {
-          council_id?: string;
-          status?: string;
-          round_status?: string;
-          current_round?: number;
-          members?: string[];
-        };
-        if (m.status !== "active" || m.round_status !== "open") continue;
-        if (!m.council_id || !m.members?.includes(canonicalName)) continue;
-        const round = m.current_round ?? 1;
-        const contributionPath = join(
-          councilsDir,
-          m.council_id,
-          `round-${round}`,
-          `${canonicalName}.md`,
-        );
-        if (existsSync(contributionPath)) continue;
-        pendingIds.push(m.council_id);
-      } catch {
-        /* skip */
-      }
-    }
-  } catch {
-    return "";
-  }
-  pendingIds.sort();
-
-  const hashFile = join(coordRoot, ".harnery", `.last-council-hash.${selfInstanceId}`);
-  const newHash = sha256Hex16(pendingIds.join("\n"));
-  const oldHash = safeRead(hashFile);
-
-  // Clear hash file when no councils pending, matching bash behavior.
-  if (pendingIds.length === 0) {
-    try {
-      if (existsSync(hashFile)) rmSync(hashFile, { force: true });
-    } catch {
-      /* swallow */
-    }
-    return "";
-  }
-
-  // Always update hash file when pending councils exist (eager-rewrite, matches bash).
-  writeHashFile(hashFile, newHash);
-  if (oldHash && oldHash === newHash) return "";
-
-  return formatPendingCouncils(coordRoot, agentName);
 }
 
 /* ---------- helpers ---------- */

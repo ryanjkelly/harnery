@@ -27,7 +27,7 @@ beforeEach(() => {
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
 describe("renderPromptContext on the V3 coordination projection", () => {
-  test("no peers, no councils, and a current task produce no extra context", () => {
+  test("no peers and a current task produce no extra context", () => {
     expect(render()).toBe("");
   });
 
@@ -152,7 +152,6 @@ describe("renderPromptContext on the V3 coordination projection", () => {
       coordRoot: root,
       instanceId: "unset",
       sessionId: "unset",
-      agentName: "Nora",
       taskNudge: true,
     };
     expect(renderPromptContext(opts)).toContain("set-task");
@@ -210,7 +209,6 @@ function render(extra: Record<string, unknown> = {}): string {
     coordRoot: root,
     instanceId: "self",
     sessionId: "self",
-    agentName: "Maya",
     ...extra,
   });
 }

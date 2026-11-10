@@ -1,6 +1,6 @@
 /**
  * Fixture-based tests for the web UI's coord-reader. Drops disposable caches,
- * a council manifest, and canonical V3 events into a temporary coordination root,
+ * and canonical V3 events into a temporary coordination root,
  * then asserts the reader returns the expected shape.
  *
  * Lives in tests/unit/ alongside commander.test.ts so `bun test` picks it up.
@@ -23,7 +23,6 @@ process.env.HARNERY_COORD_ROOT = ROOT;
 beforeAll(() => {
   const h = path.join(ROOT, ".harnery");
   mkdirSync(path.join(h, "active"), { recursive: true });
-  mkdirSync(path.join(h, "councils"), { recursive: true });
   mkdirSync(path.join(h, "journal"), { recursive: true });
 
   const now = new Date();
@@ -58,21 +57,6 @@ beforeAll(() => {
   );
 
   writeFileSync(path.join(h, "active", "broken.json"), "{ this is not valid json");
-
-  writeFileSync(
-    path.join(h, "councils", "council-foo.json"),
-    JSON.stringify({
-      schema_version: 2,
-      council_id: "council-foo",
-      objective: "test objective",
-      status: "active",
-      created_at: now.toISOString(),
-      created_by: "Alpha",
-      members: ["Alpha", "Beta"],
-      current_round: 1,
-      target_doc: "docs/test.md",
-    }),
-  );
 
   initializeEventLedgerV3({
     coordRoot: ROOT,
@@ -137,13 +121,6 @@ describe("coord-reader", () => {
   test("readAgent returns the V3 projection or null", () => {
     expect(reader.readAgent("abc-fresh")?.name).toBe("abc-fresh");
     expect(reader.readAgent("not-real")).toBeNull();
-  });
-
-  test("readCouncils returns active councils with summary fields", () => {
-    const snap = reader.readCouncils();
-    expect(snap.active.length).toBe(1);
-    expect(snap.active[0].objective).toBe("test objective");
-    expect(snap.active[0].members).toEqual(["Alpha", "Beta"]);
   });
 
   test("readEvents projects the V3 ledger newest-first with filter support", () => {

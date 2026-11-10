@@ -340,7 +340,6 @@ describe("prompt delivery", () => {
       coordRoot: root,
       instanceId: "instance-maya",
       sessionId: "instance-maya",
-      agentName: "Maya",
       onInboxPrepared: (ids) => {
         prepared = ids;
       },
@@ -361,7 +360,6 @@ describe("prompt delivery", () => {
       coordRoot: root,
       instanceId: "instance-maya",
       sessionId: "instance-maya",
-      agentName: "Maya",
       onInboxPrepared: (ids) => {
         prepared = ids;
       },

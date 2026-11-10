@@ -93,7 +93,6 @@ describe("stale active message acceptance", () => {
         coordRoot: root,
         instanceId: "stale-active",
         sessionId: "stale-active",
-        agentName: "Maya",
         onInboxPrepared: (ids) => {
           prepared = ids;
         },
@@ -143,7 +142,6 @@ describe("stale active message acceptance", () => {
         coordRoot: root,
         instanceId: "new-namesake",
         sessionId: "new-namesake",
-        agentName: "Maya",
       }),
     ).not.toContain("ORIGINAL_INSTANCE_ONLY");
     expect(peerInbox(root).pending("new-namesake")).toEqual([]);
@@ -159,7 +157,6 @@ describe("stale active message acceptance", () => {
         coordRoot: root,
         instanceId: "original-instance",
         sessionId: "original-instance",
-        agentName: "Maya",
       }),
     ).toContain("ORIGINAL_INSTANCE_ONLY");
     expect(peerInbox(root).pending("original-instance")[0]?.message_id).toBe(receipt.message_id);

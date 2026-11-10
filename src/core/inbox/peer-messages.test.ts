@@ -438,7 +438,6 @@ test("render preparation leaves the original instance pending and never delivers
     coordRoot: root,
     instanceId: "original-instance",
     sessionId: "original-instance",
-    agentName: "Maya",
     onInboxPrepared: (ids) => {
       prepared = ids;
     },
