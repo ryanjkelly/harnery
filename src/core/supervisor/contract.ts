@@ -104,7 +104,7 @@ export interface SupervisorConsumerRecord {
 export type ObservedServiceState = "running" | "stopped" | "stale" | "unknown";
 
 export interface ObservedServiceHealth {
-  id: "supervisor" | "semantic-reader" | "presence-relay" | "governor" | "dashboard";
+  id: "supervisor" | "semantic-reader" | "presence-relay" | "dashboard";
   state: ObservedServiceState;
   pid?: number;
   started_at?: string;

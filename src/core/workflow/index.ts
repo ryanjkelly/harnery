@@ -22,11 +22,6 @@ export {
   WORKFLOW_APPROVAL_SCHEMA_VERSION,
   workflowApprovalId,
 } from "./approvals.ts";
-export {
-  freezeWorkflowAttemptContext,
-  isCanonicalWorkflowAttemptContext,
-  normalizeWorkflowAttemptContext,
-} from "./attempt-context.ts";
 export { runWorkflow, WorkflowParkedError, WorkflowRunError } from "./engine.ts";
 export {
   buildWorkflowProof,
@@ -73,10 +68,6 @@ export type {
   StageSchema,
   WorkflowAgentProof,
   WorkflowApprovalMode,
-  WorkflowAttemptContext,
-  WorkflowAttemptFailureCause,
-  WorkflowAttemptPriorContext,
-  WorkflowAttemptUnresolvedCriterion,
   WorkflowContext,
   WorkflowDiagnosticAdmissionConfig,
   WorkflowDiagnosticAdmissionObservation,
@@ -92,20 +83,16 @@ export type {
   WorkflowRepoSnapshot,
   WorkflowRunStatus,
   WorkflowSpecialistProfile,
-  WorkflowWorkContext,
 } from "./types.ts";
 export {
-  WORKFLOW_ATTEMPT_CONTEXT_SCHEMA_VERSION,
   WORKFLOW_DIAGNOSTIC_ADMISSION_SCHEMA_VERSION,
   WORKFLOW_PROOF_SCHEMA_VERSION,
-  WORKFLOW_WORK_CONTEXT_SCHEMA_VERSION,
 } from "./types.ts";
 export { validateAgainstSchema } from "./validate.ts";
 export type {
   ApplyIntegrationInput,
   AuthorizedIntegrationPlan,
   AuthorizedProviderIntegrationInput,
-  CancelWorkspaceInput,
   CleanupWorkspaceInput,
   FilesystemIdentity,
   IntegrationApplyAttempt,
@@ -158,7 +145,6 @@ export type {
 export {
   applyIntegration,
   assertWorkspaceLifecycleTransition,
-  cancelWorkspace,
   cleanupWorkspace,
   createLocalGitWorktreeProvider,
   deriveWorkspaceLifecycle,

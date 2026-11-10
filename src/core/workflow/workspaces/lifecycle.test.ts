@@ -324,32 +324,7 @@ describe("workspace lifecycle projection", () => {
     expect(
       deriveWorkspaceLifecycle({
         provider_events: [allocated, cancellation],
-        work_events: [{ event: "work.cancelled", seq: 4 } as never],
-        workflow_transcript: [
-          {
-            event: "workspace.cancel",
-            status: "cancelled",
-            work_event_seq: 4,
-            work_event_sha256: stableDigest({ event: "work.cancelled", seq: 4 }),
-          },
-        ],
-      }).cancellation,
-    ).toBe("confirmed");
-    expect(
-      deriveWorkspaceLifecycle({
-        provider_events: [allocated, cancellation],
-        work_events: [
-          { event: "work.cancelled", seq: 4 } as never,
-          { event: "work.reopened", seq: 5 } as never,
-        ],
-        workflow_transcript: [
-          {
-            event: "workspace.cancel",
-            status: "cancelled",
-            work_event_seq: 4,
-            work_event_sha256: stableDigest({ event: "work.cancelled", seq: 4 }),
-          },
-        ],
+        workflow_transcript: [{ event: "workspace.cancel", status: "cancelled" }],
       }).cancellation,
     ).toBe("none");
   });

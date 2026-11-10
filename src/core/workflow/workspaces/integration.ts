@@ -9,7 +9,6 @@ import {
   policyDigest,
   summarizePolicyRequest,
 } from "../../policy/index.ts";
-import { readWorkItem } from "../../work/state.ts";
 import { createWorkflowApproval, readWorkflowApproval } from "../approvals.ts";
 import { readWorkflowProof } from "../proof.ts";
 import { readWorkflowRunManifest } from "../run-state.ts";
@@ -526,17 +525,7 @@ function resolveReview(
   terminalAttestationSha256: string,
   acceptedUnknowns: string[],
 ): IntegrationReviewRecord {
-  if (binding.owner.kind === "work_attempt") {
-    const record = readWorkAcceptance(
-      input.coordRoot,
-      binding,
-      proofSha256,
-      terminalAttestationSha256,
-      acceptedUnknowns,
-    );
-    if (!record) throw new Error("work-linked integration requires exact durable work acceptance");
-    return record;
-  }
+  assertStandaloneOwner(binding);
   if (!input.review?.actor) throw new Error("standalone integration requires explicit review");
   const review: IntegrationReviewRecord = {
     schema_version: 1,
@@ -574,17 +563,7 @@ function resolveReview(
 }
 
 function readReviewForPlan(coordRoot: string, plan: IntegrationPlan): IntegrationReviewRecord {
-  if (plan.binding.owner.kind === "work_attempt") {
-    const review = readWorkAcceptance(
-      coordRoot,
-      plan.binding,
-      plan.proof_sha256,
-      plan.terminal_attestation_sha256,
-      plan.accepted_unknowns,
-    );
-    if (!review) throw new Error("durable work acceptance disappeared");
-    return review;
-  }
+  assertStandaloneOwner(plan.binding);
   const review = readWorkflowSupplement<IntegrationReviewRecord>(
     coordRoot,
     plan.run_id,
@@ -594,45 +573,12 @@ function readReviewForPlan(coordRoot: string, plan: IntegrationPlan): Integratio
   return review;
 }
 
-function readWorkAcceptance(
-  coordRoot: string,
-  binding: WorkspaceBinding,
-  proofSha256: string,
-  terminalAttestationSha256: string,
-  acceptedUnknowns: readonly string[],
-): IntegrationReviewRecord | undefined {
-  if (binding.owner.kind !== "work_attempt") return undefined;
-  const work = readWorkItem(coordRoot, binding.owner.work_item_id);
-  const accepted = [...work.events]
-    .reverse()
-    .find((event) => ["work.accepted", "work.cancelled", "work.reopened"].includes(event.event));
-  if (
-    work.projection.state !== "succeeded" ||
-    !accepted ||
-    accepted.event !== "work.accepted" ||
-    accepted.run_id !== binding.run_id ||
-    accepted.attempt !== binding.owner.attempt ||
-    accepted.proof_sha256 !== proofSha256 ||
-    accepted.workspace_binding_id !== binding.binding_id ||
-    accepted.terminal_attestation_sha256 !== terminalAttestationSha256 ||
-    stableDigest(accepted.accepted_unknowns ?? []) !== stableDigest(acceptedUnknowns) ||
-    typeof accepted.actor !== "string" ||
-    typeof accepted.ts !== "string"
-  ) {
-    return undefined;
+function assertStandaloneOwner(binding: WorkspaceBinding): void {
+  if (binding.owner.kind !== "standalone") {
+    throw new Error(
+      `workspace ${binding.binding_id} belongs to a retired work item and cannot be integrated`,
+    );
   }
-  return {
-    schema_version: 1,
-    run_id: binding.run_id,
-    owner: binding.owner,
-    proof_sha256: proofSha256,
-    binding_id: binding.binding_id,
-    terminal_attestation_sha256: terminalAttestationSha256,
-    accepted_unknowns: [...acceptedUnknowns],
-    actor: accepted.actor,
-    reason: typeof accepted.reason === "string" ? accepted.reason : undefined,
-    reviewed_at: accepted.ts,
-  };
 }
 
 function assertVerifiedSourceCommit(

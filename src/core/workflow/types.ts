@@ -28,8 +28,6 @@ import type {
 
 export const WORKFLOW_PROOF_SCHEMA_VERSION = 2 as const;
 export const WORKFLOW_DIAGNOSTIC_ADMISSION_SCHEMA_VERSION = 1 as const;
-export const WORKFLOW_WORK_CONTEXT_SCHEMA_VERSION = 1 as const;
-export const WORKFLOW_ATTEMPT_CONTEXT_SCHEMA_VERSION = 1 as const;
 
 /** The evidence vocabulary, as a value so the runtime validator and the
  * pre-flight source scan cannot drift from the type or from each other. */
@@ -225,15 +223,11 @@ export interface WorkflowProof {
   schema_version: typeof WORKFLOW_PROOF_SCHEMA_VERSION;
   run: {
     id: string;
-    /** Durable objective this execution attempt belongs to, when linked. */
-    work_item_id?: string;
     name: string;
     status: WorkflowRunStatus;
     started_at: string;
     ended_at: string;
     duration_ms: number;
-    work_context?: WorkflowWorkContext;
-    attempt_context?: WorkflowAttemptContext;
     objective?: string;
     error?: string;
     result?: ResultDigest;
@@ -524,12 +518,6 @@ export type Spawner = (req: SpawnRequest) => Promise<SpawnResult>;
 /** The API surface injected into a workflow script's default export. Explicit
  * injection (no ambient globals): keeps scripts portable and unit-testable. */
 export interface WorkflowContext {
-  /** Frozen durable-work assignment for work-linked runs. Standalone workflows
-   * have no work context. */
-  work?: Readonly<WorkflowWorkContext>;
-  /** Frozen attempt identity and, on retry, a bounded synopsis of prior
-   * terminal evidence. Absent for standalone workflows. */
-  attempt?: Readonly<WorkflowAttemptContext>;
   /** Spawn one subagent; resolves to validated JSON (schema) or reply text. */
   agent: (prompt: string, opts?: AgentOpts) => Promise<unknown>;
   /** Run thunks with bounded concurrency; a rejected thunk resolves to null. */
@@ -576,54 +564,6 @@ export interface WorkflowModule {
   default: (ctx: WorkflowContext) => Promise<unknown>;
 }
 
-/** Minimal immutable durable-work input exposed to reusable workflow code. */
-export interface WorkflowWorkContext {
-  readonly schema_version: typeof WORKFLOW_WORK_CONTEXT_SCHEMA_VERSION;
-  readonly id: string;
-  readonly title: string;
-  readonly objective: string;
-  readonly acceptance: readonly string[];
-}
-
-export type WorkflowAttemptFailureCause =
-  | "workflow_error"
-  | "acceptance_unsatisfied"
-  | "acceptance_unknown"
-  | "lost";
-
-export interface WorkflowAttemptUnresolvedCriterion {
-  readonly id: string;
-  readonly statement: string;
-  readonly status: "unsatisfied" | "unknown";
-}
-
-export interface WorkflowAttemptPriorContext {
-  readonly run_id: string;
-  readonly causes: readonly WorkflowAttemptFailureCause[];
-  readonly error?: string;
-  readonly acceptance?: Readonly<AcceptanceSummary>;
-  readonly unresolved: readonly WorkflowAttemptUnresolvedCriterion[];
-}
-
-export interface WorkflowAttemptContext {
-  readonly schema_version: typeof WORKFLOW_ATTEMPT_CONTEXT_SCHEMA_VERSION;
-  readonly number: number;
-  readonly trigger: "initial" | "retry";
-  readonly prior?: Readonly<WorkflowAttemptPriorContext>;
-  /** Open findings an operator raised against a prior attempt. Present on any
-   * trigger, because a reopen with findings starts a fresh initial attempt.
-   * Distinct from `prior`, which is evidence the run itself produced. */
-  readonly findings?: readonly Readonly<WorkflowOperatorFinding>[];
-}
-
-/** One correction an operator raised against work they judged wrong. Authored
- * by a human, not derived from proof, and carried until explicitly disposed. */
-export interface WorkflowOperatorFinding {
-  readonly id: string;
-  readonly actor: string;
-  readonly statement: string;
-}
-
 export interface EngineOpts {
   /** Repo root whose .harnery/ receives the run transcript. */
   coordRoot: string;
@@ -642,16 +582,8 @@ export interface EngineOpts {
    * approval has been resolved. The frozen run manifest supplies execution
    * options and the original repository-before snapshot. */
   resumeRunId?: string;
-  /** Stable id for a new run allocated by a durable-work host. */
+  /** Stable id for a new run, allocated by the caller. */
   runId?: string;
-  /** Durable objective this execution attempt belongs to. */
-  workItemId?: string;
-  /** Frozen assignment data supplied by a durable-work host. Requires the
-   * matching `workItemId`; parked resume always uses the manifest copy. */
-  workContext?: WorkflowWorkContext;
-  /** Frozen attempt data supplied by a durable-work host. Requires matching
-   * work item and work contexts; parked resume uses the manifest copy. */
-  attemptContext?: WorkflowAttemptContext;
   /** Total-agent ceiling for the run (default 50): the runaway backstop. */
   maxAgents?: number;
   /** Concurrent-subagent cap for parallel() (default 4). */
@@ -729,7 +661,6 @@ export interface EngineOpts {
 
 export interface RunReport {
   runId: string;
-  workItemId?: string;
   name: string;
   /** What the script's default export returned. */
   result: unknown;

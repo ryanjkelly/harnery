@@ -37,7 +37,6 @@ const LOG_PARTITIONS = [
   "semantic-service",
   "resource-observer",
   "supervisor",
-  "governor-service",
   "presence-relay",
   "tunnel-process",
   "workflow-operational",
@@ -317,19 +316,6 @@ function logFamilies(): HarneryStorageFamily[] {
     ),
     operationalFamily("supervisor-log", "local supervisor", "supervisor", 14, 64 * MIB),
     withCurrentRoots(
-      operationalFamily(
-        "governor-service-log",
-        "governor service",
-        "governor-service",
-        30,
-        128 * MIB,
-      ),
-      (context) => [
-        exact(context, ".harnery/governor-service/service.log", "file"),
-        exact(context, ".harnery/governor-service/events.jsonl", "file"),
-      ],
-    ),
-    withCurrentRoots(
       operationalFamily("presence-relay-log", "presence relay", "presence-relay", 14, 64 * MIB),
       (context) => [exact(context, ".harnery/presence/relay-daemon.log", "file")],
     ),
@@ -374,8 +360,6 @@ function logFamilies(): HarneryStorageFamily[] {
 function durableHistoryFamilies(): HarneryStorageFamily[] {
   const definitions = [
     ["workflow-run-history", "workflow engine", ".harnery/workflows"],
-    ["work-item-history", "durable work service", ".harnery/work"],
-    ["governor-history", "governor service", ".harnery/governors"],
     ["council-history", "council service", ".harnery/councils"],
     ["decision-history", "decision service", ".harnery/decisions"],
     ["journal-history", "journal service", ".harnery/journal"],
@@ -418,7 +402,7 @@ function durableHistoryFamilies(): HarneryStorageFamily[] {
       durability: "crash-safe",
       writer_model: "object-owned",
       policy: ownerHistoryPolicy("workflow-approval-history-v1"),
-      consumers: ["workflow approval service", "governor service", "storage inventory"],
+      consumers: ["workflow approval service", "storage inventory"],
       provider: filesystemProvider("workflow-approval-provider", "workflow approval lifecycle"),
     }),
     family({

@@ -129,7 +129,7 @@ describe("storage framework end-to-end canary", () => {
   });
 
   test("rotates crash-safe durable history and replays every record in order", async () => {
-    const objectDir = join(fixture("history"), ".harnery", "work", "canary");
+    const objectDir = join(fixture("history"), ".harnery", "decisions", "canary");
     const options = { max_record_bytes: 128, max_segment_bytes: 128 };
     appendDurableHistoryRecord(objectDir, { sequence: 1, payload: "x".repeat(60) }, options);
     expect(

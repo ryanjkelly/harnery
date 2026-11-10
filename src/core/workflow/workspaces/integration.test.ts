@@ -1,12 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import {
-  appendFileSync,
-  existsSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
   descriptorPathsAvailable,
@@ -17,7 +10,6 @@ import {
   replaceSourceCheckout,
   writeScript,
 } from "../../../../tests/workspace-test-helpers.ts";
-import { acceptWorkItem, createWorkItem, reopenWorkItem, runWorkItem } from "../../work/index.ts";
 import { resolveWorkflowApproval, workflowApprovalId } from "../approvals.ts";
 import { runWorkflow } from "../engine.ts";
 import { readWorkflowProof } from "../proof.ts";
@@ -565,157 +557,6 @@ describe.skipIf(!descriptorPathsAvailable)("verification-gated fast-forward inte
         acceptedUnknowns: ["network_not_attested"],
       }),
     ).rejects.toThrow(/terminal proof|unverified/);
-  });
-
-  test("fails closed when work-linked review history is malformed", async () => {
-    if (!hasGit()) return;
-    const { host, repo } = gitFixture("workspace-integration-work-history");
-    roots.push(host);
-    const script = writeScript(
-      repo,
-      `
-        export const meta = { acceptance: [{ id: "tests", statement: "tests pass" }] };
-        export default async ({ agent, evidence }) => {
-          await agent("produce");
-          evidence({ kind: "test", status: "passed", label: "unit", acceptanceIds: ["tests"] });
-          return "ready";
-        };
-      `,
-    );
-    git(repo, "add", ".");
-    git(repo, "commit", "-qm", "workflow");
-    const provider = createLocalGitWorktreeProvider({ coordRoot: repo });
-    createWorkItem({
-      coordRoot: repo,
-      id: "reviewed-work",
-      title: "Reviewed work",
-      objective: "Produce verified source",
-      workflowPath: script,
-    });
-    const report = await runWorkItem({
-      coordRoot: repo,
-      workId: "reviewed-work",
-      actor: "runner",
-      engine: {
-        cwd: repo,
-        isolation: "worktree",
-        workspace: { provider, writableRoots: [host] },
-        spawners: {
-          "claude-code": async (request) => {
-            writeFileSync(join(request.cwd, "result.txt"), "integrated\n");
-            git(request.cwd, "add", "result.txt");
-            git(request.cwd, "commit", "-qm", "workspace result");
-            return { ok: true, text: "done", durationMs: 1, costUsd: 0, sessionId: "fixture" };
-          },
-        },
-        adapterEvidence: {
-          "claude-code": { toolEvidence: { support: "supported" } },
-        },
-        ...quiet,
-      },
-    });
-    acceptWorkItem(repo, "reviewed-work", { actor: "reviewer" });
-    appendFileSync(join(repo, ".harnery", "work", "reviewed-work", "events.jsonl"), "{bad\n");
-    await expect(
-      prepareIntegration({
-        coordRoot: repo,
-        runId: report.runId,
-        provider,
-        policy: {
-          external_actions: "allow",
-          allowed_isolation: ["worktree"],
-          allowed_paths: [repo],
-        },
-        acceptedUnknowns: ["network_not_attested"],
-      }),
-    ).rejects.toThrow(/invalid durable history JSON/);
-  });
-
-  test("rejects a work acceptance superseded after integration planning", async () => {
-    if (!hasGit()) return;
-    const { host, repo } = gitFixture("workspace-integration-reopened");
-    roots.push(host);
-    const script = writeScript(
-      repo,
-      `
-        export const meta = { acceptance: [{ id: "tests", statement: "tests pass" }] };
-        export default async ({ agent, evidence }) => {
-          await agent("produce");
-          evidence({ kind: "test", status: "passed", label: "unit", acceptanceIds: ["tests"] });
-          return "ready";
-        };
-      `,
-    );
-    git(repo, "add", ".");
-    git(repo, "commit", "-qm", "workflow");
-    const provider = createLocalGitWorktreeProvider({ coordRoot: repo });
-    createWorkItem({
-      coordRoot: repo,
-      id: "reopened-work",
-      title: "Reopened work",
-      objective: "Produce verified source",
-      workflowPath: script,
-    });
-    const report = await runWorkItem({
-      coordRoot: repo,
-      workId: "reopened-work",
-      actor: "runner",
-      engine: {
-        cwd: repo,
-        isolation: "worktree",
-        workspace: { provider, writableRoots: [host] },
-        spawners: {
-          "claude-code": async (request) => {
-            writeFileSync(join(request.cwd, "result.txt"), "integrated\n");
-            git(request.cwd, "add", "result.txt");
-            git(request.cwd, "commit", "-qm", "workspace result");
-            return { ok: true, text: "done", durationMs: 1, costUsd: 0, sessionId: "fixture" };
-          },
-        },
-        adapterEvidence: {
-          "claude-code": { toolEvidence: { support: "supported" } },
-        },
-        ...quiet,
-      },
-    });
-    const accepted = acceptWorkItem(repo, "reopened-work", {
-      actor: "reviewer",
-      acceptedUnknowns: ["network_not_attested"],
-    });
-    const acceptance = [...accepted.events]
-      .reverse()
-      .find((event) => event.event === "work.accepted");
-    const terminalProof = JSON.parse(readFileSync(report.proofPath, "utf8"));
-    expect(accepted.projection.attempts_used).toBe(1);
-    expect(acceptance).toMatchObject({
-      run_id: report.runId,
-      attempt: 1,
-      workspace_binding_id: report.workspaceBinding?.binding_id,
-      proof_sha256: fileSha256(report.proofPath),
-      terminal_attestation_sha256: stableDigest(terminalProof.execution.terminal_attestation),
-      accepted_unknowns: ["network_not_attested"],
-    });
-    expect(existsSync(join(repo, ".harnery", "work", "reopened-work", "lease.json"))).toBe(false);
-    expect(existsSync(join(repo, ".harnery", "work", "reopened-work", "events.lease.json"))).toBe(
-      false,
-    );
-    const plan = await prepareIntegration({
-      coordRoot: repo,
-      runId: report.runId,
-      provider,
-      policy: {
-        external_actions: "allow",
-        allowed_isolation: ["worktree"],
-        allowed_paths: [repo],
-      },
-      acceptedUnknowns: ["network_not_attested"],
-    });
-
-    reopenWorkItem(repo, "reopened-work", { actor: "reviewer", reason: "review superseded" });
-    await expect(
-      applyIntegration({ coordRoot: repo, runId: report.runId, provider, plan }),
-    ).rejects.toThrow(/acceptance disappeared/);
-    expect(existsSync(join(repo, "result.txt"))).toBe(false);
   });
 
   test("rejects source-root authority loss before prepare, apply, and receipt replay", async () => {

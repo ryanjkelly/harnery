@@ -167,7 +167,7 @@ describe("log storage configuration", () => {
   test("fails closed for unknown project families, non-log families, and unknown fields", () => {
     for (const storage of [
       { families: { "missing-log": { max_age_days: 3 } } },
-      { families: { "work-item-history": { max_age_days: 3 } } },
+      { families: { "decision-history": { max_age_days: 3 } } },
       { classes: { "operational-log": { max_files: 3 } } },
       { defaults: { max_bytes: 20 * 1024 * 1024 } },
     ]) {

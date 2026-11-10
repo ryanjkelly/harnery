@@ -1,6 +1,5 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { readWorkItem } from "../../work/state.ts";
 import { readWorkflowProof } from "../proof.ts";
 import { readWorkflowRunManifest } from "../run-state.ts";
 import type { WorkflowProof } from "../types.ts";
@@ -203,10 +202,6 @@ export function readWorkflowWorkspaceStatus(
     runId,
     "cancellation/outcome.json",
   );
-  const workEvents =
-    binding.owner.kind === "work_attempt"
-      ? readWorkItem(root, binding.owner.work_item_id).events
-      : undefined;
 
   const lifecycle = deriveWorkspaceLifecycle({
     binding,
@@ -222,7 +217,6 @@ export function readWorkflowWorkspaceStatus(
     cleanup_intent: cleanupIntent,
     cleanup_attempts: cleanupAttempts,
     cleanup_receipt: cleanupReceipt,
-    work_events: workEvents,
     cancellation_receipt: cancellationReceipt,
   });
   const latestCleanup = cleanupAttempts.at(-1);

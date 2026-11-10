@@ -3,7 +3,6 @@ import { hostname } from "node:os";
 import { join } from "node:path";
 import { processAlive } from "../../lib/process-alive.ts";
 import { processStartToken, verifyProcessGeneration } from "../agents/state/proc-start.ts";
-import { readGovernorServiceStatus } from "../governor/service-read.ts";
 import { writePrivateJsonAtomic } from "../storage/atomic-json.ts";
 import {
   type ObservedServiceHealth,
@@ -43,7 +42,6 @@ export function collectServiceHealth(
     join(coordRoot, ".harnery", "semantic", "v2", "service.json"),
     "semantic-reader",
   );
-  const governor = readGovernorHealth(coordRoot);
   const relay = readPresenceRelay(join(coordRoot, ".harnery", "presence", "relay-daemon.json"));
   const dashboard = consumers.find((consumer) => consumer.id === "dashboard");
   const services: ObservedServiceHealth[] = [
@@ -61,7 +59,6 @@ export function collectServiceHealth(
       ...(supervisor.state === "error" ? { reason: "supervisor-reported-error" } : {}),
     },
     semantic,
-    governor,
     relay,
     dashboard
       ? {
@@ -146,29 +143,6 @@ function readDetachedService(path: string, id: "semantic-reader"): ObservedServi
   );
 }
 
-function readGovernorHealth(coordRoot: string): ObservedServiceHealth {
-  const status = readGovernorServiceStatus(coordRoot);
-  const state =
-    status.liveness === "unknown"
-      ? "unknown"
-      : status.running
-        ? "running"
-        : status.stale
-          ? "stale"
-          : "stopped";
-  const reason =
-    state === "unknown"
-      ? "governor-process-generation-unknown"
-      : status.generation === "different"
-        ? "recorded-process-generation-different"
-        : status.stale
-          ? "recorded-running-process-missing"
-          : undefined;
-  return status.record
-    ? projection("governor", state, status.record, reason)
-    : { id: "governor", state, ...(reason ? { reason } : {}) };
-}
-
 function readPresenceRelay(path: string): ObservedServiceHealth {
   const record = readBoundedJson<{ pid: number; started_at?: string }>(path);
   if (!record || !Number.isSafeInteger(record.pid) || record.pid < 1) {
@@ -185,7 +159,7 @@ function readPresenceRelay(path: string): ObservedServiceHealth {
 }
 
 function projection(
-  id: "semantic-reader" | "governor",
+  id: "semantic-reader",
   state: ObservedServiceHealth["state"],
   record: DetachedServiceRecord,
   reason?: string,

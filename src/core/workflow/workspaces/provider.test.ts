@@ -23,21 +23,12 @@ import {
   writeScript,
 } from "../../../../tests/workspace-test-helpers.ts";
 import { whichBin } from "../../../lib/which.ts";
-import {
-  cancelWorkItem,
-  createWorkItem,
-  readWorkItem,
-  reopenWorkItem,
-  runWorkItem,
-} from "../../work/index.ts";
 import { resolveWorkflowApproval } from "../approvals.ts";
 import { runWorkflow, WorkflowParkedError, WorkflowRunError } from "../engine.ts";
 import { readWorkflowProof } from "../proof.ts";
 import type { WorkflowProof } from "../types.ts";
-import { cancelWorkspace } from "./cancellation.ts";
 import { cleanupWorkspace } from "./cleanup.ts";
 import { acquireNoClobberLease } from "./leases.ts";
-import { deriveWorkspaceLifecycle } from "./lifecycle.ts";
 import { createLocalGitWorktreeProvider } from "./local-git.ts";
 import { filesystemIdentity, validateConfiguredRoot } from "./paths.ts";
 import {
@@ -720,31 +711,20 @@ export default async ({ authorize, agent }) => {
     git(repo, "add", ".");
     git(repo, "commit", "-qm", "workflow");
     const provider = createLocalGitWorktreeProvider({ coordRoot: repo });
-    createWorkItem({
-      coordRoot: repo,
-      id: "reattach-work",
-      title: "Reattach work",
-      objective: "Resume in the frozen workspace",
-      workflowPath: script,
-      maxAttempts: 2,
-    });
     let parked: WorkflowParkedError | undefined;
     try {
-      await runWorkItem({
+      await runWorkflow(script, {
         coordRoot: repo,
-        workId: "reattach-work",
-        engine: {
-          cwd: repo,
-          isolation: "worktree",
-          workspace: { provider, writableRoots: [host] },
-          policy: { network: "ask", allowed_paths: [host] },
-          networkAccess: "enabled",
-          approvalMode: "park",
-          spawners: {
-            "claude-code": async () => ({ ok: true, text: "done", durationMs: 1 }),
-          },
-          ...quiet,
+        cwd: repo,
+        isolation: "worktree",
+        workspace: { provider, writableRoots: [host] },
+        policy: { network: "ask", allowed_paths: [host] },
+        networkAccess: "enabled",
+        approvalMode: "park",
+        spawners: {
+          "claude-code": async () => ({ ok: true, text: "done", durationMs: 1 }),
         },
+        ...quiet,
       });
     } catch (error) {
       parked = error as WorkflowParkedError;
@@ -758,18 +738,16 @@ export default async ({ authorize, agent }) => {
     });
 
     await expect(
-      runWorkItem({
+      runWorkflow(script, {
         coordRoot: repo,
-        workId: "reattach-work",
-        engine: {
-          cwd: repo,
-          isolation: "worktree",
-          workspace: { provider, writableRoots: [] },
-          spawners: {
-            "claude-code": async () => ({ ok: true, text: "done", durationMs: 1 }),
-          },
-          ...quiet,
+        resumeRunId: parked!.runId,
+        cwd: repo,
+        isolation: "worktree",
+        workspace: { provider, writableRoots: [] },
+        spawners: {
+          "claude-code": async () => ({ ok: true, text: "done", durationMs: 1 }),
         },
+        ...quiet,
       }),
     ).rejects.toBeInstanceOf(WorkflowRunError);
     const transcript = readFileSync(
@@ -799,13 +777,9 @@ export default async ({ authorize, agent }) => {
       "isolated workflow resume requires explicit writable roots",
     );
     expect(proof.execution?.terminal_lifecycle_state).toBe("blocked");
-    expect(readWorkItem(repo, "reattach-work").projection).toMatchObject({
-      state: "blocked",
-      next_action: "retry",
-    });
   });
 
-  test("blocks parked resume after source-root replacement without spawning or a new attempt", async () => {
+  test("blocks parked resume after source-root replacement without spawning", async () => {
     if (!descriptorPathsAvailable) return;
     if (!hasGit()) return;
     const { host, repo } = gitFixture("workspace-resume-source-replacement");
@@ -814,31 +788,20 @@ export default async ({ authorize, agent }) => {
     git(repo, "add", ".");
     git(repo, "commit", "-qm", "workflow");
     const provider = createLocalGitWorktreeProvider({ coordRoot: repo });
-    createWorkItem({
-      coordRoot: repo,
-      id: "source-replacement-work",
-      title: "Source replacement work",
-      objective: "Resume only with frozen repository authority",
-      workflowPath: script,
-      maxAttempts: 2,
-    });
     let parked: WorkflowParkedError | undefined;
     try {
-      await runWorkItem({
+      await runWorkflow(script, {
         coordRoot: repo,
-        workId: "source-replacement-work",
-        engine: {
-          cwd: repo,
-          isolation: "worktree",
-          workspace: { provider, writableRoots: [host] },
-          policy: { network: "ask", allowed_paths: [host] },
-          networkAccess: "enabled",
-          approvalMode: "park",
-          spawners: {
-            "claude-code": async () => ({ ok: true, text: "done", durationMs: 1 }),
-          },
-          ...quiet,
+        cwd: repo,
+        isolation: "worktree",
+        workspace: { provider, writableRoots: [host] },
+        policy: { network: "ask", allowed_paths: [host] },
+        networkAccess: "enabled",
+        approvalMode: "park",
+        spawners: {
+          "claude-code": async () => ({ ok: true, text: "done", durationMs: 1 }),
         },
+        ...quiet,
       });
     } catch (error) {
       parked = error as WorkflowParkedError;
@@ -850,36 +813,26 @@ export default async ({ authorize, agent }) => {
       verdict: "allow",
       actor: "operator",
     });
-    const attemptsBefore = readWorkItem(repo, "source-replacement-work").events.filter(
-      (event) => event.event === "attempt.started",
-    ).length;
     let spawns = 0;
     const restore = replaceSourceCheckout(repo);
     try {
       await expect(
-        runWorkItem({
+        runWorkflow(script, {
           coordRoot: repo,
-          workId: "source-replacement-work",
-          engine: {
-            cwd: repo,
-            isolation: "worktree",
-            workspace: { provider, writableRoots: [host] },
-            spawners: {
-              "claude-code": async () => {
-                spawns++;
-                return { ok: true, text: "done", durationMs: 1 };
-              },
+          resumeRunId: parked!.runId,
+          cwd: repo,
+          isolation: "worktree",
+          workspace: { provider, writableRoots: [host] },
+          spawners: {
+            "claude-code": async () => {
+              spawns++;
+              return { ok: true, text: "done", durationMs: 1 };
             },
-            ...quiet,
           },
+          ...quiet,
         }),
       ).rejects.toBeInstanceOf(WorkflowRunError);
       expect(spawns).toBe(0);
-      expect(
-        readWorkItem(repo, "source-replacement-work").events.filter(
-          (event) => event.event === "attempt.started",
-        ).length,
-      ).toBe(attemptsBefore);
       const proof = readWorkflowProof(repo, parked!.runId);
       const attestation = boundExecution(proof).terminal_attestation;
       expect(attestation.status).toBe("blocked");
@@ -897,143 +850,6 @@ export default async ({ authorize, agent }) => {
     } finally {
       restore();
     }
-  });
-
-  test("durably binds provider cancellation to current host cancellation", async () => {
-    if (!descriptorPathsAvailable) return;
-    if (!hasGit()) return;
-    const { host, repo } = gitFixture("workspace-cancellation");
-    tracked(host);
-    const script = writeScript(repo, "export default async () => 'done';\n");
-    git(repo, "add", ".");
-    git(repo, "commit", "-qm", "workflow");
-    const provider = createLocalGitWorktreeProvider({ coordRoot: repo });
-    createWorkItem({
-      coordRoot: repo,
-      id: "cancelled-work",
-      title: "Cancelled work",
-      objective: "Exercise durable cancellation",
-      workflowPath: script,
-    });
-    const report = await runWorkItem({
-      coordRoot: repo,
-      workId: "cancelled-work",
-      engine: {
-        cwd: repo,
-        isolation: "worktree",
-        workspace: { provider, writableRoots: [host] },
-        spawners: {},
-        ...quiet,
-      },
-    });
-    cancelWorkItem(repo, "cancelled-work", { actor: "operator" });
-    const receipt = await cancelWorkspace({
-      coordRoot: repo,
-      runId: report.runId,
-      provider,
-    });
-    expect(receipt.status).toBe("cancelled");
-    expect(
-      existsSync(join(repo, ".harnery", "workflows", report.runId, "cancellation", "outcome.json")),
-    ).toBe(true);
-    expect(await cancelWorkspace({ coordRoot: repo, runId: report.runId, provider })).toEqual(
-      receipt,
-    );
-
-    const binding = report.workspaceBinding!;
-    const providerEvents = readWorkspaceEvents(repo, binding.provider.id, binding.binding_id);
-    expect(
-      deriveWorkspaceLifecycle({
-        binding,
-        provider_events: providerEvents,
-        work_events: readWorkItem(repo, "cancelled-work").events,
-        cancellation_receipt: receipt,
-      }).cancellation,
-    ).toBe("confirmed");
-
-    reopenWorkItem(repo, "cancelled-work", { actor: "operator" });
-    expect(
-      deriveWorkspaceLifecycle({
-        binding,
-        provider_events: providerEvents,
-        work_events: readWorkItem(repo, "cancelled-work").events,
-        cancellation_receipt: receipt,
-      }).cancellation,
-    ).toBe("none");
-    await expect(
-      cancelWorkspace({ coordRoot: repo, runId: report.runId, provider }),
-    ).rejects.toThrow(/current host work cancellation/);
-  });
-
-  test("records an explicit unsupported result for a running isolated attempt", async () => {
-    if (!descriptorPathsAvailable) return;
-    if (!hasGit()) return;
-    const { host, repo } = gitFixture("workspace-running-cancellation");
-    tracked(host);
-    const script = writeScript(
-      repo,
-      "export default async ({ agent }) => agent('hold execution');\n",
-    );
-    git(repo, "add", ".");
-    git(repo, "commit", "-qm", "workflow");
-    const provider = createLocalGitWorktreeProvider({ coordRoot: repo });
-    createWorkItem({
-      coordRoot: repo,
-      id: "running-cancellation",
-      title: "Running cancellation",
-      objective: "Record unsupported cooperative cancellation",
-      workflowPath: script,
-    });
-    let entered!: () => void;
-    const spawnerEntered = new Promise<void>((resolve) => {
-      entered = resolve;
-    });
-    let continueRun!: () => void;
-    const providerMayFinish = new Promise<void>((resolve) => {
-      continueRun = resolve;
-    });
-    const running = runWorkItem({
-      coordRoot: repo,
-      workId: "running-cancellation",
-      engine: {
-        cwd: repo,
-        isolation: "worktree",
-        workspace: { provider, writableRoots: [host] },
-        spawners: {
-          "claude-code": async () => {
-            entered();
-            await providerMayFinish;
-            return { ok: true, text: "done", durationMs: 1 };
-          },
-        },
-        ...quiet,
-      },
-    });
-
-    try {
-      await spawnerEntered;
-      expect(readWorkItem(repo, "running-cancellation").projection.state).toBe("running");
-      const cancelled = cancelWorkItem(repo, "running-cancellation", {
-        actor: "operator",
-        reason: "stop requested",
-      });
-      expect(cancelled.projection.state).toBe("cancelled");
-      const receipt = await cancelWorkspace({
-        coordRoot: repo,
-        runId: cancelled.projection.latest_run_id!,
-        provider,
-      });
-      expect(receipt.status).toBe("unsupported");
-      expect(receipt.reason).toMatch(/no proven cooperative cancellation/);
-    } finally {
-      continueRun();
-    }
-
-    await running;
-    const final = readWorkItem(repo, "running-cancellation");
-    expect(final.projection.state).toBe("cancelled");
-    expect(final.projection.attempts_used).toBe(1);
-    expect(final.events.filter((event) => event.event === "work.cancelled")).toHaveLength(1);
   });
 
   test("does not cancel or clean up a resumed run without terminal proof", async () => {
@@ -1098,60 +914,6 @@ export default async ({ authorize, agent }) => {
     expect(cleanup.status).toBe("blocked");
     expect(cleanup.reason).toMatch(/live execution/);
     expect(existsSync(binding.workspace_root)).toBe(true);
-  });
-
-  test("cooperatively cancels a parked isolated attempt", async () => {
-    if (!descriptorPathsAvailable) return;
-    if (!hasGit()) return;
-    const { host, repo } = gitFixture("workspace-parked-cancellation");
-    tracked(host);
-    const script = writeScript(repo, "export default async ({ agent }) => agent('park');\n");
-    git(repo, "add", ".");
-    git(repo, "commit", "-qm", "workflow");
-    const provider = createLocalGitWorktreeProvider({ coordRoot: repo });
-    createWorkItem({
-      coordRoot: repo,
-      id: "parked-cancellation",
-      title: "Parked cancellation",
-      objective: "Cancel the isolated attempt while it is parked",
-      workflowPath: script,
-    });
-    let parked: WorkflowParkedError | undefined;
-    try {
-      await runWorkItem({
-        coordRoot: repo,
-        workId: "parked-cancellation",
-        engine: {
-          cwd: repo,
-          isolation: "worktree",
-          workspace: { provider, writableRoots: [host] },
-          policy: { network: "ask", allowed_paths: [host] },
-          networkAccess: "enabled",
-          approvalMode: "park",
-          spawners: {
-            "claude-code": async () => ({ ok: true, text: "unused", durationMs: 1 }),
-          },
-          ...quiet,
-        },
-      });
-    } catch (error) {
-      parked = error as WorkflowParkedError;
-    }
-    expect(parked).toBeInstanceOf(WorkflowParkedError);
-    expect(readWorkItem(repo, "parked-cancellation").projection.state).toBe("awaiting_approval");
-
-    const cancelled = cancelWorkItem(repo, "parked-cancellation", { actor: "operator" });
-    const receipt = await cancelWorkspace({
-      coordRoot: repo,
-      runId: parked!.runId,
-      provider,
-    });
-    expect(cancelled.projection.state).toBe("cancelled");
-    expect(cancelled.projection.attempts_used).toBe(1);
-    expect(receipt.status).toBe("cancelled");
-    expect(await cancelWorkspace({ coordRoot: repo, runId: parked!.runId, provider })).toEqual(
-      receipt,
-    );
   });
 });
 

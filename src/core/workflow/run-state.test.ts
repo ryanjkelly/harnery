@@ -231,25 +231,14 @@ describe("workflow run state", () => {
     expect(() => readWorkflowRunManifest(root, "wf-fixture")).toThrow(/mismatched schema/);
   });
 
-  test("requires canonical work context paired with its work item id", () => {
+  test("reads the historical work item fields and rejects an orphaned attempt", () => {
     const path = writeWorkflowRunManifest({
       coordRoot: root,
       manifest: {
         schema_version: 2,
         run_id: "wf-work-context",
         work_item_id: "work-a",
-        work_context: {
-          schema_version: 1,
-          id: "work-a",
-          title: "Work A",
-          objective: "Complete A",
-          acceptance: ["Tests pass"],
-        },
-        attempt_context: {
-          schema_version: 1,
-          number: 1,
-          trigger: "initial",
-        },
+        attempt_context: { number: 1 },
         name: "fixture",
         started_at: "2026-07-23T05:00:00.000Z",
         script: { path: join(root, "workflow.mjs"), sha256: "a".repeat(64) },
@@ -268,15 +257,9 @@ describe("workflow run state", () => {
         },
       },
     });
-    expect(readWorkflowRunManifest(root, "wf-work-context").work_context?.objective).toBe(
-      "Complete A",
-    );
+    expect(readWorkflowRunManifest(root, "wf-work-context").attempt_context?.number).toBe(1);
     const persisted = JSON.parse(readFileSync(path, "utf8"));
-    persisted.attempt_context = { schema_version: 1, number: 2, trigger: "retry" };
-    writeFileSync(path, `${JSON.stringify(persisted)}\n`, "utf8");
-    expect(() => readWorkflowRunManifest(root, "wf-work-context")).toThrow(/mismatched schema/);
-    persisted.attempt_context = { schema_version: 1, number: 1, trigger: "initial" };
-    persisted.work_context.id = "work-b";
+    delete persisted.work_item_id;
     writeFileSync(path, `${JSON.stringify(persisted)}\n`, "utf8");
     expect(() => readWorkflowRunManifest(root, "wf-work-context")).toThrow(/mismatched schema/);
   });

@@ -82,7 +82,6 @@ const partitionTimings = [];
 // own process so a timed-out operation cannot leak into the other suite's
 // cleanup. Retain every test and its assertions.
 const workflowProcessFiles = new Set([
-  "src/core/governor/index.test.ts",
   "src/core/workflow/engine.test.ts",
 ]);
 
@@ -113,11 +112,8 @@ const namedCorePartitions = [
     extraArgs: [],
   },
   {
-    label: "workflow and governor test partition",
-    matches: (file) =>
-      file.startsWith("src/core/workflow/") ||
-      file.startsWith("src/core/work/") ||
-      file.startsWith("src/core/governor/"),
+    label: "workflow test partition",
+    matches: (file) => file.startsWith("src/core/workflow/"),
     extraArgs: workflowTestArgs,
   },
   {

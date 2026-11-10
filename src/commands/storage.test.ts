@@ -196,7 +196,7 @@ function fixture(): string {
 }
 
 function hostFamily(): HarneryStorageFamily {
-  const source = harneryStorageFamilies().find(({ id }) => id === "work-item-history")!;
+  const source = harneryStorageFamilies().find(({ id }) => id === "decision-history")!;
   return {
     ...source,
     id: "host-history",

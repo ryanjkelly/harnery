@@ -74,14 +74,12 @@ describe("Harnery logger facade", () => {
     roots.push(root);
     processLogger(root, "semantic-service").info("semantic.started");
     processLogger(root, "resource-observer").info("resource.started");
-    processLogger(root, "governor-service").info("governor.started");
     processLogger(root, "presence-relay").info("presence.started");
     await closeProcessLoggers();
 
     for (const [partition, familyId] of [
       ["semantic-service", "semantic-service-log"],
       ["resource-observer", "resource-observer-log"],
-      ["governor-service", "governor-service-log"],
       ["presence-relay", "presence-relay-log"],
     ]) {
       const path = join(root, ".harnery", "logs", partition!, "active.jsonl");

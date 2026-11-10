@@ -1,4 +1,3 @@
-import type { WorkEvent } from "../../work/state.ts";
 import { stableDigest } from "../durable-record.ts";
 import type { WorkflowRunManifest } from "../run-state.ts";
 import type { WorkflowProof } from "../types.ts";
@@ -151,7 +150,6 @@ export interface WorkspaceLifecycleProjectionInput {
   cleanup_intent?: WorkspaceCleanupIntent;
   cleanup_attempts?: readonly WorkspaceCleanupAttempt[];
   cleanup_receipt?: WorkspaceCleanupReceipt;
-  work_events?: readonly WorkEvent[];
   cancellation_outcome?: WorkspaceCancellationResult;
   cancellation_receipt?: WorkspaceCancellationReceipt;
 }
@@ -259,30 +257,13 @@ export function deriveWorkspaceLifecycle(
   }
   if (input.cleanup_receipt) transition("released");
 
-  const latestGovernance = [...(input.work_events ?? [])]
-    .reverse()
-    .find((event) => ["work.accepted", "work.cancelled", "work.reopened"].includes(event.event));
-  const hostCancelled = latestGovernance?.event === "work.cancelled";
-  const workEventSha256 = latestGovernance ? stableDigest(latestGovernance) : undefined;
-  const providerCancelled =
-    hostCancelled &&
-    ((input.cancellation_receipt?.status === "cancelled" &&
-      input.cancellation_receipt.work_event_seq === latestGovernance.seq &&
-      input.cancellation_receipt.work_event_sha256 === workEventSha256) ||
-      transcript.some(
-        (event) =>
-          event.event === "workspace.cancel" &&
-          event.status === "cancelled" &&
-          event.work_event_seq === latestGovernance.seq &&
-          event.work_event_sha256 === workEventSha256,
-      ));
   return {
     state,
     workflow_outcome: workflowOutcome,
     resource_state: projectedResourceState,
     integration_state: projectedIntegrationState,
     provider_event_chain_sha256: events.at(-1)?.record_sha256 ?? null,
-    cancellation: hostCancelled ? (providerCancelled ? "confirmed" : "host_requested") : "none",
+    cancellation: "none",
   };
 
   function transition(next: WorkspaceLifecycleState): void {

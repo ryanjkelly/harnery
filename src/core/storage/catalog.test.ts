@@ -9,7 +9,7 @@ import type { HarneryStorageFamily } from "./contract.ts";
 const ROOT = "/tmp/harnery-storage-catalog-test";
 
 function hostFamily(id: string, relativeRoot: string): HarneryStorageFamily {
-  const source = harneryStorageFamilies().find((family) => family.id === "work-item-history")!;
+  const source = harneryStorageFamilies().find((family) => family.id === "decision-history")!;
   return {
     ...source,
     id,
@@ -216,7 +216,7 @@ describe("storage catalog", () => {
     expect(() =>
       createStorageCatalog(
         { coord_root: ROOT },
-        { logger_bindings: [{ component_id: "worker", family_id: "work-item-history" }] },
+        { logger_bindings: [{ component_id: "worker", family_id: "decision-history" }] },
       ),
     ).toThrow("non-log family");
   });
@@ -225,7 +225,7 @@ describe("storage catalog", () => {
     const exclusion = {
       owner: "fixture",
       root: {
-        path: join(ROOT, ".harnery/work"),
+        path: join(ROOT, ".harnery/decisions"),
         kind: "directory" as const,
         match: "subtree" as const,
         ownership: "host" as const,

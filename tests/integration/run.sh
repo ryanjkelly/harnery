@@ -59,8 +59,8 @@ check "harn --help mentions sync" "$HARN --help" "sync"
 check "harn --help mentions web" "$HARN --help" "web"
 check "harn --help mentions agents" "$HARN --help" "agents"
 check "harn --help mentions adapter" "$HARN --help" "adapter"
-check "harn --help mentions durable work" "$HARN --help" "work"
-check "harn --help mentions governor" "$HARN --help" "governor"
+check "harn --help mentions run" "$HARN --help" "run"
+check "harn --help mentions approval" "$HARN --help" "approval"
 check "harn --help mentions artifacts" "$HARN --help" "artifacts"
 
 # 2. harn doctor
@@ -117,73 +117,20 @@ check "harn approval --help exposes resolution" \
 check "harn approval list starts with an empty inbox" \
   "$HARN approval list" "no workflow approvals"
 
-# 7. harn work exposes the complete daemonless lifecycle
-check "harn work --help mentions reconcile" "$HARN work --help" "reconcile"
-check "harn work --help mentions explicit retry" "$HARN work --help" "retry"
-check "harn work list starts empty" "$HARN work list" "no durable work"
-WORK_CONTEXT_FIXTURE="$TMPDIR_TEST/work-context.mjs"
-printf '%s\n' 'export default async ({ work }) => work;' > "$WORK_CONTEXT_FIXTURE"
-check "harn work creates a reusable context-backed assignment" \
-  "$HARN work create 'Integration context' '$WORK_CONTEXT_FIXTURE' --id integration-context --objective 'Execute reusable context' --accept 'The exact assignment reaches the script'" \
-  "integration-context"
-check "harn work injects the exact assignment into generic workflow code" \
-  "$HARN work run integration-context --json" "Execute reusable context"
-WORK_CONTEXT_RUN_ID=$(
-  "$HARN" work show integration-context --json |
-    node -e 'let s=""; process.stdin.on("data", d => s += d).on("end", () => console.log(JSON.parse(s).projection.latest_run_id))'
-)
-check "harn run proof preserves the work context" \
-  "$HARN run proof '$WORK_CONTEXT_RUN_ID' --json" \
-  '"work_context"'
-check "harn run proof preserves the attempt context" \
-  "$HARN run proof '$WORK_CONTEXT_RUN_ID' --json" \
-  '"attempt_context"'
-
-# 8. harn governor exposes bounded goal execution
-check "harn governor --help mentions tick" "$HARN governor --help" "tick"
-check "harn governor --help mentions run" "$HARN governor --help" "run"
-check "harn governor exposes replanning review" "$HARN governor plan --help" "approve"
-check "harn governor exposes attention recovery" "$HARN governor plan --help" "retry"
-check "harn governor list starts empty" "$HARN governor list" "no durable governors"
-check "harn governor service exposes lifecycle commands" \
-  "$HARN governor service --help" "status"
-check "harn governor service starts unconfigured" \
-  "$HARN governor service status" "unconfigured"
-
-MISSION_FIXTURE="$TMPDIR_TEST/mission-fixture"
-mkdir -p "$MISSION_FIXTURE"
-printf '%s\n' '{"planner":{"instructions":"Plan bounded milestones","adapter":"codex"},"reviewer":{"instructions":"Review milestone plans independently","adapter":"codex"}}' \
-  > "$MISSION_FIXTURE/team.json"
-printf '%s\n' '{"objective":"Deliver a verified mission","acceptance":["The mission proof passes"],"max_milestones":2}' \
-  > "$MISSION_FIXTURE/mission.json"
-printf '%s\n' 'export default async () => "done";' \
-  > "$MISSION_FIXTURE/workflow.mjs"
-printf '%s\n' '{"planner_specialist":"planner","max_replans":3,"review":{"reviewer_specialists":["reviewer"],"max_revision_rounds":1},"templates":{"delivery":{"workflow":"./workflow.mjs","root":true}}}' \
-  > "$MISSION_FIXTURE/replanning.json"
-check "harn governor creates an objective-first mission" \
-  "$HARN governor create --id goal-integration-mission --team '$MISSION_FIXTURE/team.json' --mission '$MISSION_FIXTURE/mission.json' --replanning '$MISSION_FIXTURE/replanning.json'" \
-  "next: plan_initial"
-check "harn governor renders frozen plan review policy" \
-  "$HARN governor show goal-integration-mission" "plan review: reviewers=reviewer, max_revision_rounds=1"
-check "harn governor shows frozen mission progress" \
-  "$HARN governor show goal-integration-mission" "milestones: 0/2"
-check "harn governor json freezes reviewed planning policy" \
-  "$HARN governor show goal-integration-mission --json" '"max_revision_rounds":1'
-
-# 9. harn web --help mentions all subcommands
+# 7. harn web --help mentions all subcommands
 check "harn web --help mentions up" "$HARN web --help" "up"
 check "harn web --help mentions build" "$HARN web --help" "build"
 check "harn web --help mentions start" "$HARN web --help" "start"
 
-# 10. harn backup --help mentions subcommands
+# 8. harn backup --help mentions subcommands
 check "harn backup --help mentions snapshot" "$HARN backup --help" "snapshot"
 check "harn backup --help mentions restore" "$HARN backup --help" "restore"
 
-# 11. harn sync --help mentions subcommands
+# 9. harn sync --help mentions subcommands
 check "harn sync --help mentions push" "$HARN sync --help" "push"
 check "harn sync --help mentions pull" "$HARN sync --help" "pull"
 
-# 12. Error path: harn backup init without restic surfaces a structured error
+# 10. Error path: harn backup init without restic surfaces a structured error
 if ! command -v restic >/dev/null 2>&1; then
   check "harn backup init without restic emits restic_missing" \
     "$HARN backup init 2>&1" "restic_missing" 1

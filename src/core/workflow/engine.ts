@@ -41,7 +41,6 @@ import {
   observeWorkflowDiagnosticAdmission,
 } from "./admission.ts";
 import { assertWorkflowRunId, createWorkflowApproval } from "./approvals.ts";
-import { freezeWorkflowAttemptContext } from "./attempt-context.ts";
 import { type BillingProbe, probeBilling } from "./billing.ts";
 import { stableDigest } from "./durable-record.ts";
 import { evidencePreflightError } from "./evidence-preflight.ts";
@@ -76,7 +75,6 @@ import type {
   SpawnResult,
   StageSchema,
   WorkflowAgentProof,
-  WorkflowAttemptContext,
   WorkflowContext,
   WorkflowDiagnosticAdmissionConfig,
   WorkflowDiagnosticAdmissionObservation,
@@ -85,11 +83,9 @@ import type {
   WorkflowModule,
   WorkflowProof,
   WorkflowSandboxProjectionEvidence,
-  WorkflowWorkContext,
 } from "./types.ts";
 import { WORKFLOW_DIAGNOSTIC_ADMISSION_SCHEMA_VERSION } from "./types.ts";
 import { parseStageOutput, validateAgainstSchema } from "./validate.ts";
-import { freezeWorkflowWorkContext } from "./work-context.ts";
 import {
   decideWorkerAccess,
   detectParentAccess,
@@ -193,51 +189,12 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
     throw new Error("runId and resumeRunId are mutually exclusive");
   }
   if (opts.runId) assertWorkflowRunId(opts.runId);
-  if (opts.workItemId && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(opts.workItemId)) {
-    throw new Error(`invalid work item id ${JSON.stringify(opts.workItemId)}`);
-  }
-  if (opts.resumeRunId && opts.workContext !== undefined) {
-    throw new Error("parked workflow resume uses the frozen manifest work context");
-  }
-  if (opts.resumeRunId && opts.attemptContext !== undefined) {
-    throw new Error("parked workflow resume uses the frozen manifest attempt context");
-  }
-  const requestedWorkContext =
-    opts.workContext === undefined ? undefined : freezeWorkflowWorkContext(opts.workContext);
-  const requestedAttemptContext =
-    opts.attemptContext === undefined
-      ? undefined
-      : freezeWorkflowAttemptContext(opts.attemptContext);
-  if (requestedWorkContext && !opts.workItemId) {
-    throw new Error("workflow work context requires a work item id");
-  }
-  if (requestedWorkContext && requestedWorkContext.id !== opts.workItemId) {
-    throw new Error(
-      `workflow work context ${requestedWorkContext.id} does not match work item ${opts.workItemId}`,
-    );
-  }
-  if (requestedAttemptContext && !requestedWorkContext) {
-    throw new Error("workflow attempt context requires work context");
-  }
   if (opts.resumeRunId && opts.resumeFrom) {
     throw new Error("resumeRunId and resumeFrom are mutually exclusive");
   }
   const resumeState = opts.resumeRunId
     ? assertWorkflowRunResumable(opts.coordRoot, opts.resumeRunId)
     : undefined;
-  if (
-    resumeState !== undefined &&
-    opts.workItemId !== undefined &&
-    resumeState.manifest.work_item_id !== opts.workItemId
-  ) {
-    throw new Error(`workflow run ${opts.resumeRunId} belongs to a different work item`);
-  }
-  const workContext = resumeState?.manifest.work_context
-    ? freezeWorkflowWorkContext(resumeState.manifest.work_context)
-    : requestedWorkContext;
-  const attemptContext = resumeState?.manifest.attempt_context
-    ? freezeWorkflowAttemptContext(resumeState.manifest.attempt_context)
-    : requestedAttemptContext;
   const absScript = isAbsolute(scriptPath) ? scriptPath : resolve(process.cwd(), scriptPath);
   if (resumeState) {
     if (resolve(resumeState.manifest.script.path) !== resolve(absScript)) {
@@ -254,14 +211,7 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
       // the run between the optimistic read and lease acquisition.
       assertWorkflowRunResumable(opts.coordRoot, resumeState.manifest.run_id);
     }
-    return await executeWorkflow(
-      scriptPath,
-      absScript,
-      opts,
-      resumeState,
-      workContext,
-      attemptContext,
-    );
+    return await executeWorkflow(scriptPath, absScript, opts, resumeState);
   } finally {
     releaseResumeLease?.();
   }
@@ -286,8 +236,6 @@ async function executeWorkflow(
   absScript: string,
   opts: EngineOpts,
   resumeState: ReturnType<typeof assertWorkflowRunResumable> | undefined,
-  workContext: Readonly<WorkflowWorkContext> | undefined,
-  attemptContext: Readonly<WorkflowAttemptContext> | undefined,
 ): Promise<RunReport> {
   const frozen = resumeState?.manifest.execution;
   const isolation = frozen?.isolation ?? opts.isolation ?? "shared";
@@ -357,8 +305,6 @@ async function executeWorkflow(
       absScript,
       scriptSha256,
       provider: workspaceProvider,
-      workContext,
-      attemptContext,
       policy,
       onUnsupportedFallback: (evidence) => {
         workspaceFallback = evidence;
@@ -394,9 +340,6 @@ async function executeWorkflow(
     try {
       const proof = buildWorkflowProof({
         runId,
-        workItemId: opts.workItemId ?? resumeState.manifest.work_item_id,
-        workContext,
-        attemptContext,
         meta: fallbackMeta,
         status: "failed",
         startedAt,
@@ -491,9 +434,6 @@ async function executeWorkflow(
       manifest: {
         schema_version: WORKFLOW_RUN_MANIFEST_SCHEMA_VERSION,
         run_id: runId,
-        work_item_id: opts.workItemId,
-        work_context: workContext,
-        attempt_context: attemptContext,
         name: sharedMeta?.name ?? fallbackMeta.name,
         started_at: startedAt,
         script: { path: absScript, sha256: scriptSha256 },
@@ -1276,8 +1216,6 @@ async function executeWorkflow(
   };
 
   const ctx: WorkflowContext = {
-    work: workContext,
-    attempt: attemptContext,
     agent,
     parallel,
     stage,
@@ -1296,9 +1234,6 @@ async function executeWorkflow(
     } else {
       transcript("run.start", {
         name,
-        work_item_id: opts.workItemId ?? null,
-        work_context: workContext ?? null,
-        attempt_context: attemptContext ?? null,
         script: absScript,
         objective: meta.objective ?? null,
         acceptance: meta.acceptance,
@@ -1341,9 +1276,6 @@ async function executeWorkflow(
     try {
       proof = buildWorkflowProof({
         runId,
-        workItemId: opts.workItemId ?? resumeState?.manifest.work_item_id,
-        workContext,
-        attemptContext,
         meta,
         status: "succeeded",
         startedAt,
@@ -1382,7 +1314,6 @@ async function executeWorkflow(
     }
     const report: RunReport = {
       runId,
-      workItemId: opts.workItemId ?? resumeState?.manifest.work_item_id,
       name,
       result,
       agentsSpawned,
@@ -1424,9 +1355,6 @@ async function executeWorkflow(
         : undefined;
       const proof = buildWorkflowProof({
         runId,
-        workItemId: opts.workItemId ?? resumeState?.manifest.work_item_id,
-        workContext,
-        attemptContext,
         meta,
         status: "failed",
         startedAt,

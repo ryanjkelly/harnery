@@ -79,119 +79,6 @@ const quiet = {
 };
 
 describe("runWorkflow", () => {
-  test("injects a cloned, deeply frozen typed work context and binds it to proof", async () => {
-    const script = writeScript(`
-      export default async ({ work }) => {
-        let objectiveFrozen = false;
-        let acceptanceFrozen = false;
-        try { work.objective = "mutated"; } catch { objectiveFrozen = true; }
-        try { work.acceptance.push("mutated"); } catch { acceptanceFrozen = true; }
-        return { work, objectiveFrozen, acceptanceFrozen };
-      };
-    `);
-    const context = {
-      schema_version: 1 as const,
-      id: "planned-work",
-      title: "Implement the reviewed milestone",
-      objective: "Ship the bounded assignment",
-      acceptance: ["The focused tests pass"],
-    };
-    const pending = runWorkflow(script, {
-      coordRoot: root,
-      spawners: {},
-      workItemId: "planned-work",
-      workContext: context,
-      ...quiet,
-    });
-    context.objective = "caller mutation";
-    context.acceptance.push("caller mutation");
-    const report = await pending;
-    expect(report.result).toEqual({
-      work: {
-        schema_version: 1,
-        id: "planned-work",
-        title: "Implement the reviewed milestone",
-        objective: "Ship the bounded assignment",
-        acceptance: ["The focused tests pass"],
-      },
-      objectiveFrozen: true,
-      acceptanceFrozen: true,
-    });
-    const manifest = JSON.parse(
-      readFileSync(join(root, ".harnery", "workflows", report.runId, "run.json"), "utf8"),
-    );
-    const proof = JSON.parse(readFileSync(report.proofPath, "utf8")) as WorkflowProof;
-    expect(manifest.work_context).toEqual((report.result as { work: unknown }).work);
-    expect(proof.run.work_context).toEqual(manifest.work_context);
-    expect(readTranscript().find((event) => event.event === "run.start")?.work_context).toEqual(
-      manifest.work_context,
-    );
-  });
-
-  test("injects a frozen attempt context and binds it to manifest, transcript, and proof", async () => {
-    const script = writeScript(`
-      export default async ({ attempt }) => {
-        let priorFrozen = false;
-        let criteriaFrozen = false;
-        try { attempt.prior.error = "mutated"; } catch { priorFrozen = true; }
-        try { attempt.prior.unresolved.push({}); } catch { criteriaFrozen = true; }
-        return { attempt, priorFrozen, criteriaFrozen };
-      };
-    `);
-    const workContext = {
-      schema_version: 1 as const,
-      id: "retry-work",
-      title: "Retry work",
-      objective: "Finish after evidence changes",
-      acceptance: ["Release exists"],
-    };
-    const attemptContext = {
-      schema_version: 1 as const,
-      number: 2,
-      trigger: "retry" as const,
-      prior: {
-        run_id: "wf-prior",
-        causes: ["acceptance_unknown" as const],
-        acceptance: { satisfied: 0, unsatisfied: 0, unknown: 1, total: 1 },
-        unresolved: [{ id: "release", statement: "Release exists", status: "unknown" as const }],
-      },
-    };
-    const pending = runWorkflow(script, {
-      coordRoot: root,
-      spawners: {},
-      workItemId: "retry-work",
-      workContext,
-      attemptContext,
-      ...quiet,
-    });
-    attemptContext.prior.unresolved[0]!.statement = "caller mutation";
-    const report = await pending;
-    expect(report.result).toEqual({
-      attempt: {
-        schema_version: 1,
-        number: 2,
-        trigger: "retry",
-        prior: {
-          run_id: "wf-prior",
-          causes: ["acceptance_unknown"],
-          acceptance: { satisfied: 0, unsatisfied: 0, unknown: 1, total: 1 },
-          unresolved: [{ id: "release", statement: "Release exists", status: "unknown" }],
-        },
-      },
-      priorFrozen: true,
-      criteriaFrozen: true,
-    });
-    const manifest = JSON.parse(
-      readFileSync(join(root, ".harnery", "workflows", report.runId, "run.json"), "utf8"),
-    );
-    const proof = JSON.parse(readFileSync(report.proofPath, "utf8")) as WorkflowProof;
-    expect(manifest.attempt_context).toEqual((report.result as { attempt: unknown }).attempt);
-    expect(proof.run.attempt_context).toEqual(manifest.attempt_context);
-    expect(readTranscript().find((event) => event.event === "run.start")?.attempt_context).toEqual(
-      manifest.attempt_context,
-    );
-  });
-
   test("a Git write grant on a run with no isolated workspace fails the run (ADR 0040)", async () => {
     // Proves the engine actually consults the grant resolver, which the
     // resolver's own unit tests cannot show. The grant reaches outside the
@@ -208,7 +95,7 @@ describe("runWorkflow", () => {
     ).rejects.toThrow(/no isolated workspace/);
   });
 
-  test("keeps standalone context absent and rejects invalid work bindings", async () => {
+  test("gives a standalone script no work context", async () => {
     const script = writeScript(`export default async ({ work }) => work ?? null;`);
     const standalone = await runWorkflow(script, {
       coordRoot: root,
@@ -216,60 +103,6 @@ describe("runWorkflow", () => {
       ...quiet,
     });
     expect(standalone.result).toBeNull();
-
-    await expect(
-      runWorkflow(script, {
-        coordRoot: root,
-        spawners: {},
-        workContext: {
-          schema_version: 1,
-          id: "work-a",
-          title: "A",
-          objective: "A",
-          acceptance: [],
-        },
-        ...quiet,
-      }),
-    ).rejects.toThrow(/requires a work item id/);
-    await expect(
-      runWorkflow(script, {
-        coordRoot: root,
-        spawners: {},
-        workItemId: "work-b",
-        workContext: {
-          schema_version: 1,
-          id: "work-a",
-          title: "A",
-          objective: "A",
-          acceptance: [],
-        },
-        ...quiet,
-      }),
-    ).rejects.toThrow(/does not match work item work-b/);
-    await expect(
-      runWorkflow(script, {
-        coordRoot: root,
-        spawners: {},
-        resumeRunId: "wf-does-not-exist",
-        workContext: {
-          schema_version: 1,
-          id: "work-a",
-          title: "A",
-          objective: "A",
-          acceptance: [],
-        },
-        ...quiet,
-      }),
-    ).rejects.toThrow(/resume uses the frozen manifest work context/);
-
-    await expect(
-      runWorkflow(script, {
-        coordRoot: root,
-        spawners: {},
-        attemptContext: { schema_version: 1, number: 1, trigger: "initial" },
-        ...quiet,
-      }),
-    ).rejects.toThrow(/attempt context requires work context/);
   });
 
   test("schema-gated agent returns validated JSON; report totals populated", async () => {

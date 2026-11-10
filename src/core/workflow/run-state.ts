@@ -10,17 +10,10 @@ import {
   policyDigest,
 } from "../policy/index.ts";
 import { assertWorkflowRunId, readWorkflowApproval } from "./approvals.ts";
-import { isCanonicalWorkflowAttemptContext } from "./attempt-context.ts";
 import { readJsonRecord, writeImmutableJson } from "./durable-record.ts";
 import { normalizeWorkflowSpecialists } from "./specialists.ts";
-import type {
-  WorkflowAttemptContext,
-  WorkflowDiagnosticAdmissionConfig,
-  WorkflowSpecialistProfile,
-  WorkflowWorkContext,
-} from "./types.ts";
+import type { WorkflowDiagnosticAdmissionConfig, WorkflowSpecialistProfile } from "./types.ts";
 import { WORKFLOW_DIAGNOSTIC_ADMISSION_SCHEMA_VERSION } from "./types.ts";
-import { isCanonicalWorkflowWorkContext } from "./work-context.ts";
 import type {
   WorkspaceAllocationRequest,
   WorkspaceBinding,
@@ -39,9 +32,12 @@ const MANIFEST_LIMIT_BYTES = 256 * 1024;
 export interface WorkflowRunManifest {
   schema_version: typeof WORKFLOW_RUN_MANIFEST_SCHEMA_VERSION;
   run_id: string;
+  /** Historical: set only by runs that durable work items started. New runs
+   * never write it; it stays readable so those runs' workspace bindings, whose
+   * owner names the item and attempt, still validate. */
   work_item_id?: string;
-  work_context?: WorkflowWorkContext;
-  attempt_context?: WorkflowAttemptContext;
+  /** Historical companion to `work_item_id`; only `number` is read. */
+  attempt_context?: { number: number };
   name: string;
   started_at: string;
   script: { path: string; sha256: string };
@@ -111,14 +107,10 @@ export function readWorkflowRunManifest(coordRoot: string, runId: string): Workf
     manifest.run_id !== runId ||
     (manifest.work_item_id !== undefined &&
       !/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(manifest.work_item_id)) ||
-    (manifest.work_context !== undefined &&
-      (!manifest.work_item_id ||
-        manifest.work_context.id !== manifest.work_item_id ||
-        !isCanonicalWorkflowWorkContext(manifest.work_context))) ||
     (manifest.attempt_context !== undefined &&
       (!manifest.work_item_id ||
-        !manifest.work_context ||
-        !isCanonicalWorkflowAttemptContext(manifest.attempt_context))) ||
+        !Number.isSafeInteger(manifest.attempt_context.number) ||
+        manifest.attempt_context.number < 1)) ||
     typeof manifest.name !== "string" ||
     manifest.name.length === 0 ||
     manifest.name.length > 200 ||

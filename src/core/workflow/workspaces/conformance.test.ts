@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import * as childProcess from "node:child_process";
 import {
-  appendFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -19,15 +18,7 @@ import {
   tempRoot,
   writeScript,
 } from "../../../../tests/workspace-test-helpers.ts";
-import {
-  createWorkItem,
-  readWorkItem,
-  reconcileWorkItem,
-  reopenWorkItem,
-  runWorkItem,
-} from "../../work/index.ts";
 import { runWorkflow } from "../engine.ts";
-import type { SpawnResult } from "../types.ts";
 import { cleanupWorkspace } from "./cleanup.ts";
 import { acquireNoClobberLease } from "./leases.ts";
 import { createLocalGitWorktreeProvider } from "./local-git.ts";
@@ -47,14 +38,6 @@ const DEAD_PID = 2_000_000_000;
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
-
-function handshake<T>() {
-  let release!: (value: T) => void;
-  const promise = new Promise<T>((resolve) => {
-    release = resolve;
-  });
-  return { promise, release };
-}
 
 async function workspace() {
   const { host, repo } = gitFixture("workspace-conformance");
@@ -295,62 +278,6 @@ describe("workspace generation and probe conformance", () => {
 });
 
 describe("workspace retry and release conformance", () => {
-  test("a delayed old terminal failure cannot cancel an explicitly reopened retry", async () => {
-    const root = tempRoot("workspace-retry-fence");
-    roots.push(root);
-    const workflowPath = writeScript(
-      root,
-      "export default async ({ agent, attempt }) => { if (attempt.number === 1) throw new Error('old failure'); return agent('new intent'); };\n",
-    );
-    createWorkItem({
-      coordRoot: root,
-      id: "retry",
-      title: "Retry",
-      objective: "Keep current intent",
-      workflowPath,
-      maxAttempts: 3,
-    });
-    await expect(
-      runWorkItem({ coordRoot: root, workId: "retry", engine: { spawners: {}, ...quiet } }),
-    ).rejects.toThrow(/old failure/);
-    const oldRunId = readWorkItem(root, "retry").projection.latest_run_id!;
-    reopenWorkItem(root, "retry", { actor: "operator", reason: "new intent" });
-    const completeOld = () => {
-      appendFileSync(
-        join(root, ".harnery", "workflows", oldRunId, "transcript.jsonl"),
-        `${JSON.stringify({ event: "run.end", run_id: oldRunId, ok: false, error: "late old failure" })}\n`,
-      );
-      return reconcileWorkItem(root, "retry");
-    };
-    expect(completeOld().projection.state).toBe("ready");
-    const entered = handshake<void>();
-    const terminal = handshake<SpawnResult>();
-    const running = runWorkItem({
-      coordRoot: root,
-      workId: "retry",
-      engine: {
-        ...quiet,
-        spawners: {
-          "claude-code": async () => {
-            entered.release();
-            return terminal.promise;
-          },
-        },
-      },
-    });
-    try {
-      await entered.promise;
-      const current = completeOld();
-      expect(current.projection.state).toBe("running");
-      expect(current.projection.latest_run_id).not.toBe(oldRunId);
-      expect(current.events.filter((event) => event.event === "work.cancelled")).toHaveLength(0);
-    } finally {
-      terminal.release({ ok: true, text: "new result", durationMs: 1 });
-    }
-    await running;
-    expect(readWorkItem(root, "retry").projection.state).toBe("in_review");
-  }, 30_000);
-
   test.skipIf(!descriptorPathsAvailable)(
     "a cleanup success acknowledgment cannot receipt a still-present resource",
     async () => {

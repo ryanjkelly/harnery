@@ -5,28 +5,21 @@ import { join } from "node:path";
 const root = process.cwd();
 
 describe("workspace provider authority boundaries", () => {
-  test("provider modules cannot write host work, proof, governor, retry, or budget state", () => {
+  test("provider modules cannot write host proof, retry, or budget state", () => {
     for (const file of ["local-git.ts", "git.ts", "paths.ts", "leases.ts"]) {
       const provider = readFileSync(join(root, "src/core/workflow/workspaces", file), "utf8");
-      expect(provider).not.toContain("../../work/");
-      expect(provider).not.toContain("../../governor/");
       expect(provider).not.toContain("writeWorkflowProof");
       expect(provider).not.toContain("writeWorkflowSupplement");
       expect(provider).not.toContain("attempt.started");
       expect(provider).not.toContain("max_attempts");
       expect(provider).not.toContain("cumulative_cost");
-      expect(provider).not.toContain(".harnery/work/");
       expect(provider).not.toContain("integration/receipt.json");
       expect(provider).not.toContain("cleanup/receipt.json");
     }
   });
 
   test("generic durable records are neutral and remain outside the product export", () => {
-    for (const file of [
-      "src/core/work/state.ts",
-      "src/core/workflow/proof.ts",
-      "src/core/workflow/run-state.ts",
-    ]) {
+    for (const file of ["src/core/workflow/proof.ts", "src/core/workflow/run-state.ts"]) {
       expect(readFileSync(join(root, file), "utf8")).not.toContain("workspaces/state.ts");
     }
     const workflowIndex = readFileSync(join(root, "src/core/workflow/index.ts"), "utf8");

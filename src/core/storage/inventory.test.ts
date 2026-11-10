@@ -23,12 +23,12 @@ describe("storage inventory", () => {
   test("streams the complete coordination root without following symlinks or reading bodies", async () => {
     const root = fixture();
     const storage = join(root, ".harnery");
-    mkdirSync(join(storage, "work"), { recursive: true });
-    writeFileSync(join(storage, "work", "known.json"), "known-body");
+    mkdirSync(join(storage, "decisions"), { recursive: true });
+    writeFileSync(join(storage, "decisions", "known.json"), "known-body");
     writeFileSync(join(storage, "unknown.bin"), "unknown-body");
     const outside = fixture();
     writeFileSync(join(outside, "private.txt"), "must-not-count");
-    symlinkSync(outside, join(storage, "work", "escape"), "dir");
+    symlinkSync(outside, join(storage, "decisions", "escape"), "dir");
     const report = await inventoryStorage(createStorageCatalog({ coord_root: root }), {
       now: () => new Date("2026-08-29T12:00:00.000Z"),
       allocatedBytes: () => undefined,
@@ -57,7 +57,7 @@ describe("storage inventory", () => {
       count: 1,
       maintenance_eligible: false,
     });
-    expect(family(report, "work-item-history").totals.regular_files).toEqual({
+    expect(family(report, "decision-history").totals.regular_files).toEqual({
       state: "observed",
       unit: "files",
       value: 1,
@@ -295,7 +295,7 @@ describe("storage inventory", () => {
 
   test("flags undeclared hard links but accounts their allocation once", async () => {
     const root = fixture();
-    const work = join(root, ".harnery", "work");
+    const work = join(root, ".harnery", "decisions");
     mkdirSync(work, { recursive: true });
     const first = join(work, "first.json");
     writeFileSync(first, "shared");
@@ -313,7 +313,7 @@ describe("storage inventory", () => {
       count: 2,
       maintenance_eligible: false,
     });
-    expect(family(report, "work-item-history")).toMatchObject({
+    expect(family(report, "decision-history")).toMatchObject({
       reason_codes: ["hard_link_ambiguous"],
       totals: { allocated_bytes: { state: "observed", value: 4096 } },
       maintenance: { state: "ineligible" },
@@ -338,9 +338,7 @@ function subtreeRoot(path: string): HarneryStorageRoot {
 }
 
 function hostFamily(id: string, roots: readonly HarneryStorageRoot[]): HarneryStorageFamily {
-  const source = harneryStorageFamilies().find(
-    (candidate) => candidate.id === "work-item-history",
-  )!;
+  const source = harneryStorageFamilies().find((candidate) => candidate.id === "decision-history")!;
   return {
     ...source,
     id,

@@ -115,8 +115,6 @@ describe("source-owned storage descriptors", () => {
       [".harnery/semantic/v2/service.log", "semantic-service-log"],
       [".harnery/logs/resource-observer/active.jsonl", "resource-observer-log"],
       [".harnery/resources/snapshot.json", "resource-observer-cache"],
-      [".harnery/governor-service/service.log", "governor-service-log"],
-      [".harnery/governor-service/events.jsonl", "governor-service-log"],
       [".harnery/presence/relay-daemon.log", "presence-relay-log"],
       [".cache/tunnel/gate.log", "tunnel-process-log"],
       [".cache/tunnel/cloudflared-demo.log", "tunnel-process-log"],
@@ -163,7 +161,6 @@ describe("source-owned storage descriptors", () => {
     for (const familyId of [
       "semantic-service-log",
       "resource-observer-log",
-      "governor-service-log",
       "presence-relay-log",
     ]) {
       const family = catalog.require(familyId);

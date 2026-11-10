@@ -1,5 +1,3 @@
-export type { CancelWorkspaceInput } from "./cancellation.ts";
-export { cancelWorkspace } from "./cancellation.ts";
 export type { CleanupWorkspaceInput } from "./cleanup.ts";
 export { cleanupWorkspace } from "./cleanup.ts";
 export type {

@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { type NormalizedPolicy, policyDigest } from "../../policy/index.ts";
 import type { WorkflowRunManifest } from "../run-state.ts";
-import type { EngineOpts, WorkflowAttemptContext, WorkflowWorkContext } from "../types.ts";
+import type { EngineOpts } from "../types.ts";
 import { WorkspaceAttestationError, workspaceAttestationFromError } from "./attestation-error.ts";
 import {
   assertContainedExisting,
@@ -33,8 +33,6 @@ export async function resolveWorkspaceBinding(input: {
   absScript: string;
   scriptSha256: string;
   provider: WorkspaceProvider | undefined;
-  workContext: Readonly<WorkflowWorkContext> | undefined;
-  attemptContext: Readonly<WorkflowAttemptContext> | undefined;
   policy: NormalizedPolicy | undefined;
   onUnsupportedFallback?: (evidence: WorkspaceCompatibilityExecutionEvidence) => void;
 }): Promise<WorkspaceBinding | undefined> {
@@ -203,20 +201,10 @@ export async function resolveWorkspaceBinding(input: {
       }`,
     );
   }
-  if (input.opts.workItemId && !input.attemptContext) {
-    throw new Error("isolated work-linked execution requires a frozen attempt identity");
-  }
   const requestWithoutKey = {
     schema_version: 1 as const,
     run_id: input.runId,
-    owner:
-      input.opts.workItemId && input.attemptContext
-        ? {
-            kind: "work_attempt" as const,
-            work_item_id: input.opts.workItemId,
-            attempt: input.attemptContext.number,
-          }
-        : { kind: "standalone" as const, work_item_id: null, attempt: null },
+    owner: { kind: "standalone" as const, work_item_id: null, attempt: null },
     requested_cwd: input.cwd,
     requested_isolation: capability,
     network_access: input.opts.networkAccess ?? "unknown",

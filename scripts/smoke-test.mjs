@@ -127,119 +127,6 @@ try {
   }
   log("phased workflow mutation CLI OK");
 
-  // Durable work must boot through the packed Node CLI and preserve a record.
-  log("checking durable work CLI boots ...");
-  const workWorkflow = join(workdir, "work-smoke.mjs");
-  writeFileSync(workWorkflow, "export default async () => 'ok';\n");
-  const workCreateOut = run([
-    "work",
-    "create",
-    "Package smoke",
-    workWorkflow,
-    "--objective",
-    "Verify the packed durable-work surface",
-    "--id",
-    "work-smoke",
-  ]);
-  if (!/work-smoke/.test(workCreateOut) || !/ready/.test(workCreateOut)) {
-    fail("work create did not produce a ready durable record");
-  }
-  const workListOut = run(["work", "list"]);
-  if (!/work-smoke/.test(workListOut) || !/Package smoke/.test(workListOut)) {
-    fail("work list did not read the packed durable record");
-  }
-  log("durable work CLI OK");
-
-  // A durable governor must freeze a team around packed durable work.
-  log("checking durable governor CLI boots ...");
-  const teamFile = join(workdir, "team.json");
-  writeFileSync(
-    teamFile,
-    JSON.stringify({
-      reviewer: { instructions: "Review the assignment carefully." },
-      planner: { instructions: "Plan a bounded recovery graph." },
-    }),
-  );
-  const replanningFile = join(workdir, "replanning.json");
-  writeFileSync(
-    replanningFile,
-    JSON.stringify({
-      planner_specialist: "planner",
-      templates: {
-        recovery: { workflow: "./work-smoke.mjs", max_attempts: 1, root: true },
-      },
-    }),
-  );
-  const governorCreateOut = run([
-    "governor",
-    "create",
-    "work-smoke",
-    "--team",
-    teamFile,
-    "--id",
-    "goal-smoke",
-    "--replanning",
-    replanningFile,
-  ]);
-  if (!/goal-smoke/.test(governorCreateOut) || !/ready/.test(governorCreateOut)) {
-    fail("governor create did not produce a ready durable goal");
-  }
-  const governorListOut = run(["governor", "list"]);
-  if (!/goal-smoke/.test(governorListOut) || !/Package smoke/.test(governorListOut)) {
-    fail("governor list did not read the packed durable goal");
-  }
-  const governorPlansOut = run(["governor", "plan", "list", "goal-smoke"]);
-  if (!/no replanning attempts/.test(governorPlansOut)) {
-    fail("governor plan list did not render the packed empty history");
-  }
-  const governorPlanHelp = run(["governor", "plan", "--help"]);
-  if (!/retry/.test(governorPlanHelp)) {
-    fail("governor plan help did not expose attention recovery");
-  }
-  const governorServiceOut = run(["governor", "service", "status"]);
-  if (!/unconfigured/.test(governorServiceOut)) {
-    fail("governor service status did not render its empty packed state");
-  }
-  const missionFile = join(workdir, "mission.json");
-  writeFileSync(
-    missionFile,
-    JSON.stringify({
-      objective: "Verify objective-first mission creation from the packed package",
-      acceptance: ["The mission starts in initial planning"],
-      max_milestones: 2,
-    }),
-  );
-  const missionReplanningFile = join(workdir, "mission-replanning.json");
-  writeFileSync(
-    missionReplanningFile,
-    JSON.stringify({
-      planner_specialist: "planner",
-      max_replans: 3,
-      templates: {
-        delivery: { workflow: "./work-smoke.mjs", max_attempts: 1, root: true },
-      },
-    }),
-  );
-  const missionCreateOut = run([
-    "governor",
-    "create",
-    "--team",
-    teamFile,
-    "--id",
-    "goal-smoke-mission",
-    "--mission",
-    missionFile,
-    "--replanning",
-    missionReplanningFile,
-  ]);
-  if (
-    !/goal-smoke-mission/.test(missionCreateOut) ||
-    !/next: plan_initial/.test(missionCreateOut)
-  ) {
-    fail("governor mission create did not produce an objective-first planning state");
-  }
-  log("durable governor CLI OK");
-
   // outline on PHP: works without the `typescript` dep.
   log("checking `outline` on a PHP file ...");
   const phpFile = join(workdir, "sample.php");
@@ -344,22 +231,20 @@ try {
   writeFileSync(
     workflowProbe,
     [
-      'import { WORKFLOW_ATTEMPT_CONTEXT_SCHEMA_VERSION, WORKFLOW_PROOF_SCHEMA_VERSION, WORKFLOW_WORK_CONTEXT_SCHEMA_VERSION, WORKSPACE_BINDING_SCHEMA_VERSION, WORKSPACE_RECEIPT_SCHEMA_VERSION, createLocalGitWorktreeProvider, deriveWorkspaceLifecycle, inspectWorkflowWorkspace, isWorkspaceLifecycleState, listWorkflowWorkspaceInspections, prepareIntegration, readWorkflowProof, readWorkflowWorkspaceStatus, renderWorkflowWorkspaceStatus, runWorkflow, WorkflowRunError } from "harnery/core/workflow";',
-      'if (WORKFLOW_ATTEMPT_CONTEXT_SCHEMA_VERSION !== 1) throw new Error("unexpected workflow attempt-context schema version");',
+      'import { WORKFLOW_PROOF_SCHEMA_VERSION, WORKSPACE_BINDING_SCHEMA_VERSION, WORKSPACE_RECEIPT_SCHEMA_VERSION, createLocalGitWorktreeProvider, deriveWorkspaceLifecycle, inspectWorkflowWorkspace, isWorkspaceLifecycleState, listWorkflowWorkspaceInspections, prepareIntegration, readWorkflowProof, readWorkflowWorkspaceStatus, renderWorkflowWorkspaceStatus, runWorkflow, WorkflowRunError } from "harnery/core/workflow";',
       'if (WORKFLOW_PROOF_SCHEMA_VERSION !== 2) throw new Error("unexpected workflow proof schema version");',
-      'if (WORKFLOW_WORK_CONTEXT_SCHEMA_VERSION !== 1) throw new Error("unexpected workflow work-context schema version");',
       'if (WORKSPACE_BINDING_SCHEMA_VERSION !== 1 || WORKSPACE_RECEIPT_SCHEMA_VERSION !== 1) throw new Error("unexpected workspace schema version");',
       'if (typeof readWorkflowProof !== "function" || typeof runWorkflow !== "function") throw new Error("workflow functions missing");',
       'if (typeof WorkflowRunError !== "function") throw new Error("WorkflowRunError missing");',
       'if (typeof createLocalGitWorktreeProvider !== "function" || typeof prepareIntegration !== "function") throw new Error("workspace provider functions missing");',
       'if (typeof deriveWorkspaceLifecycle !== "function" || !isWorkspaceLifecycleState("bound") || isWorkspaceLifecycleState("cancelled")) throw new Error("workspace lifecycle contract missing");',
-      `const workflowPath = ${JSON.stringify(join(workdir, "work-context-probe.mjs"))};`,
+      `const workflowPath = ${JSON.stringify(join(workdir, "run-probe.mjs"))};`,
       'const fs = await import("node:fs");',
-      'fs.writeFileSync(workflowPath, "export default async ({ work }) => ({ work, frozen: Object.isFrozen(work), acceptanceFrozen: Object.isFrozen(work.acceptance) });\\n");',
-      'const report = await runWorkflow(workflowPath, { coordRoot: process.cwd(), spawners: {}, workItemId: "smoke", workContext: { schema_version: 1, id: "smoke", title: "Package smoke", objective: "Verify packaged work context", acceptance: ["The public contract is available"] }, onLog: () => {} });',
-      'if (report.result.work.id !== "smoke" || !report.result.frozen || !report.result.acceptanceFrozen) throw new Error("workflow work context invalid");',
+      'fs.writeFileSync(workflowPath, "export default async () => \\"packaged\\";\\n");',
+      'const report = await runWorkflow(workflowPath, { coordRoot: process.cwd(), spawners: {}, onLog: () => {} });',
+      'if (report.result !== "packaged") throw new Error("workflow result invalid");',
       "const proof = readWorkflowProof(process.cwd(), report.runId);",
-      'if (proof.run.work_context?.objective !== "Verify packaged work context") throw new Error("workflow proof lost work context");',
+      'if (proof.run.status !== "succeeded") throw new Error("workflow proof did not record success");',
       "const workspaceStatus = readWorkflowWorkspaceStatus(process.cwd(), report.runId);",
       'if (workspaceStatus.selection !== "shared" || workspaceStatus.integrity.status !== "verified") throw new Error("workspace inspection invalid");',
       'if (!inspectWorkflowWorkspace(process.cwd(), report.runId).ok || listWorkflowWorkspaceInspections(process.cwd()).length < 1 || !/shared/.test(renderWorkflowWorkspaceStatus(workspaceStatus))) throw new Error("workspace inspection surface missing");',
@@ -383,66 +268,6 @@ try {
     env: { ...process.env, PATH: "/usr/bin:/bin" },
   });
   log("harnery/core/workflow import OK");
-
-  log("checking public `harnery/core/work` import ...");
-  const workProbe = join(workdir, "work-import.mjs");
-  writeFileSync(
-    workProbe,
-    [
-      'import { WORK_INTENT_SCHEMA_VERSION, createWorkItem, readWorkItem, reconcileWorkItem, runWorkItem } from "harnery/core/work";',
-      'if (WORK_INTENT_SCHEMA_VERSION !== 2) throw new Error("unexpected work schema version");',
-      "for (const fn of [createWorkItem, readWorkItem, reconcileWorkItem, runWorkItem]) {",
-      '  if (typeof fn !== "function") throw new Error("work function missing");',
-      "}",
-      'const fs = await import("node:fs");',
-      `const retryWorkflow = ${JSON.stringify(join(workdir, "retry-probe.mjs"))};`,
-      'fs.writeFileSync(retryWorkflow, `export const meta = { name: "retry-probe", acceptance: [{ id: "done", statement: "Correction is verified" }] }; export default async (ctx) => { if (ctx.attempt.trigger === "retry") ctx.evidence({ kind: "review", status: "passed", label: "corrected", acceptanceIds: ["done"] }); return { work: ctx.work, attempt: ctx.attempt, frozen: Object.isFrozen(ctx.attempt), priorFrozen: !ctx.attempt.prior || Object.isFrozen(ctx.attempt.prior) }; };\\n`);',
-      'createWorkItem({ coordRoot: process.cwd(), id: "retry-smoke", title: "Retry smoke", objective: "Verify packaged retry context", acceptance: ["Correction is verified"], workflowPath: retryWorkflow, maxAttempts: 2 });',
-      'const first = await runWorkItem({ coordRoot: process.cwd(), workId: "retry-smoke", engine: { spawners: {}, onLog: () => {} } });',
-      'if (first.result.attempt.trigger !== "initial" || readWorkItem(process.cwd(), "retry-smoke").projection.state !== "blocked") throw new Error("initial attempt context invalid");',
-      'const second = await runWorkItem({ coordRoot: process.cwd(), workId: "retry-smoke", retry: true, engine: { spawners: {}, onLog: () => {} } });',
-      'if (second.result.work.id !== "retry-smoke" || second.result.attempt.trigger !== "retry" || second.result.attempt.prior.run_id !== first.runId || second.result.attempt.prior.causes.join(",") !== "acceptance_unknown" || !second.result.frozen || !second.result.priorFrozen) throw new Error("retry attempt context invalid");',
-      'const retryProof = JSON.parse(fs.readFileSync(second.proofPath, "utf8"));',
-      'if (retryProof.run.attempt_context.prior.run_id !== first.runId) throw new Error("retry proof lost attempt context");',
-      'const readonly = await import("harnery/core/work/state");',
-      'if (typeof readonly.readWorkItem !== "function" || "runWorkItem" in readonly) throw new Error("read-only work state export invalid");',
-    ].join("\n"),
-  );
-  execFileSync(nodePath, [workProbe], {
-    cwd: workdir,
-    encoding: "utf8",
-    env: { ...process.env, PATH: "/usr/bin:/bin" },
-  });
-  log("harnery/core/work import OK");
-
-  log("checking public `harnery/core/governor` import ...");
-  const governorProbe = join(workdir, "governor-import.mjs");
-  writeFileSync(
-    governorProbe,
-    [
-      'import { GOVERNOR_INTENT_SCHEMA_VERSION, GOVERNOR_PLAN_SCHEMA_VERSION, GOVERNOR_SERVICE_CONFIG_SCHEMA_VERSION, approveGovernorPlan, configureGovernorService, createGovernor, readGovernor, readGovernorPlans, rejectGovernorPlan, retryGovernorPlan, runGovernor, runGovernorServiceSweep } from "harnery/core/governor";',
-      'if (GOVERNOR_INTENT_SCHEMA_VERSION !== 1) throw new Error("unexpected governor schema version");',
-      'if (GOVERNOR_PLAN_SCHEMA_VERSION !== 1) throw new Error("unexpected governor plan schema version");',
-      'if (GOVERNOR_SERVICE_CONFIG_SCHEMA_VERSION !== 1) throw new Error("unexpected governor service schema version");',
-      "for (const fn of [approveGovernorPlan, configureGovernorService, createGovernor, readGovernor, readGovernorPlans, rejectGovernorPlan, retryGovernorPlan, runGovernor, runGovernorServiceSweep]) {",
-      '  if (typeof fn !== "function") throw new Error("governor function missing");',
-      "}",
-      'const readonly = await import("harnery/core/governor/state");',
-      'if (typeof readonly.readGovernor !== "function" || typeof readonly.readGovernorServiceStatus !== "function") throw new Error("read-only governor state export missing");',
-      'if (typeof readonly.readGovernorPlanReviewReceipt !== "function" || readonly.MAX_GOVERNOR_PLAN_REVIEWERS !== 5) throw new Error("read-only governor review export missing");',
-      'for (const forbidden of ["approveGovernorPlan", "rejectGovernorPlan", "retryGovernorPlan", "runGovernor", "runGovernorServiceDaemon", "spawnGovernorService"]) {',
-      '  if (forbidden in readonly) throw new Error("read-only governor state export gained execution: " + forbidden);',
-      "}",
-      'const plans = await import("harnery/core/governor/plans");',
-      'if (typeof plans.readGovernorPlanReviewReceipt !== "function") throw new Error("governor plans export missing");',
-    ].join("\n"),
-  );
-  execFileSync(nodePath, [governorProbe], {
-    cwd: workdir,
-    encoding: "utf8",
-    env: { ...process.env, PATH: "/usr/bin:/bin" },
-  });
-  log("harnery/core/governor import OK");
 
   log("checking public `harnery/core/policy` import ...");
   const policyProbe = join(workdir, "policy-import.mjs");

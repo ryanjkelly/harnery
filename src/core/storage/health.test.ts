@@ -143,9 +143,7 @@ function health(report: ReturnType<typeof storageHealth>, familyId: string) {
 }
 
 function hostFamily(id: string, roots: readonly string[]): HarneryStorageFamily {
-  const source = harneryStorageFamilies().find(
-    (candidate) => candidate.id === "work-item-history",
-  )!;
+  const source = harneryStorageFamilies().find((candidate) => candidate.id === "decision-history")!;
   return {
     ...source,
     id,

@@ -57,7 +57,7 @@ describe("storage framework real-process crash canary", () => {
   });
 
   test("durable-history kill before append preserves accepted history and later rotation", async () => {
-    const objectDir = join(fixture("history"), ".harnery", "work", "object");
+    const objectDir = join(fixture("history"), ".harnery", "decisions", "object");
     const options = { max_record_bytes: 128, max_segment_bytes: 128 };
     appendDurableHistoryRecord(objectDir, { sequence: 1, payload: "x".repeat(60) }, options);
     const worker = launch("history-before", objectDir);

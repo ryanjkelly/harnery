@@ -10,7 +10,6 @@ import type {
   PolicyNetworkAccess,
 } from "../policy/index.ts";
 import { policyDigest } from "../policy/index.ts";
-import { isCanonicalWorkflowAttemptContext } from "./attempt-context.ts";
 import { stableDigest, writeImmutableJson } from "./durable-record.ts";
 import { readWorkflowRunManifest } from "./run-state.ts";
 import type {
@@ -24,7 +23,6 @@ import type {
   RunFailureClass,
   SpawnFailureClass,
   WorkflowAgentProof,
-  WorkflowAttemptContext,
   WorkflowDiagnosticAdmissionProof,
   WorkflowEvidenceInput,
   WorkflowEvidenceRecord,
@@ -35,14 +33,12 @@ import type {
   WorkflowRepoEvidence,
   WorkflowRepoSnapshot,
   WorkflowSandboxProjectionEvidence,
-  WorkflowWorkContext,
 } from "./types.ts";
 import {
   EVIDENCE_KINDS,
   WORKFLOW_DIAGNOSTIC_ADMISSION_SCHEMA_VERSION,
   WORKFLOW_PROOF_SCHEMA_VERSION,
 } from "./types.ts";
-import { isCanonicalWorkflowWorkContext } from "./work-context.ts";
 import type {
   WorkspaceAttestation,
   WorkspaceBinding,
@@ -77,9 +73,6 @@ export interface NormalizedWorkflowMeta {
 
 export interface BuildWorkflowProofInput {
   runId: string;
-  workItemId?: string;
-  workContext?: Readonly<WorkflowWorkContext>;
-  attemptContext?: Readonly<WorkflowAttemptContext>;
   meta: NormalizedWorkflowMeta;
   status: "succeeded" | "failed";
   startedAt: string;
@@ -286,14 +279,11 @@ export function buildWorkflowProof(input: BuildWorkflowProofInput): WorkflowProo
     schema_version: WORKFLOW_PROOF_SCHEMA_VERSION,
     run: {
       id: input.runId,
-      work_item_id: input.workItemId,
       name: input.meta.name,
       status: input.status,
       started_at: input.startedAt,
       ended_at: input.endedAt,
       duration_ms: input.durationMs,
-      work_context: input.workContext,
-      attempt_context: input.attemptContext,
       objective: input.meta.objective,
       error: clippedOptional(input.error, MAX_SUMMARY_CHARS),
       result: input.result === undefined ? undefined : digestResult(input.result),
@@ -385,14 +375,6 @@ export function readWorkflowProof(coordRoot: string, runId: string): WorkflowPro
       proof.run.class !== "environment" &&
       proof.run.class !== "upstream" &&
       proof.run.class !== "decision") ||
-    (proof.run.work_context !== undefined &&
-      (!proof.run.work_item_id ||
-        proof.run.work_context.id !== proof.run.work_item_id ||
-        !isCanonicalWorkflowWorkContext(proof.run.work_context))) ||
-    (proof.run.attempt_context !== undefined &&
-      (!proof.run.work_item_id ||
-        !proof.run.work_context ||
-        !isCanonicalWorkflowAttemptContext(proof.run.attempt_context))) ||
     !validDiagnosticAdmissionProof(proof.diagnostic_admission) ||
     (proof.execution !== undefined &&
       !isWorkspaceExecutionEvidence(proof.execution, runId, proof.run.status))
