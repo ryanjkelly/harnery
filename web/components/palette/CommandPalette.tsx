@@ -23,14 +23,11 @@
 import {
   ArrowLeft,
   ArrowRight,
-  Briefcase,
   Clock,
   FileText,
   Scale,
   Search,
-  Target,
   User,
-  Users,
   Workflow,
 } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
@@ -88,16 +85,10 @@ function recentIcon(entry: RecentEntry): ReactNode {
   switch (entry.kind) {
     case "agent":
       return <User size={14} aria-hidden />;
-    case "council":
-      return <Users size={14} aria-hidden />;
     case "decision":
       return <Scale size={14} aria-hidden />;
-    case "work":
-      return <Briefcase size={14} aria-hidden />;
     case "workflow":
       return <Workflow size={14} aria-hidden />;
-    case "goal":
-      return <Target size={14} aria-hidden />;
     case "file":
       return <FileText size={14} aria-hidden />;
     default:

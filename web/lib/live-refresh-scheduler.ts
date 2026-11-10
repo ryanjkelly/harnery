@@ -20,15 +20,7 @@ export const HEAVY_REFRESH_INTERVAL_MS = 15_000;
 export const LIGHT_REFRESH_INTERVAL_MS = 10_000;
 
 const SELF_LIVE_ROUTES = ["/browse", "/codec", "/diagnostics", "/images", "/live", "/resources"];
-const HEAVY_ROUTES = [
-  "/agents",
-  "/councils",
-  "/decisions",
-  "/events",
-  "/governors",
-  "/work",
-  "/workflows",
-];
+const HEAVY_ROUTES = ["/agents", "/decisions", "/events", "/workflows"];
 
 function matchesRoute(pathname: string, route: string): boolean {
   return pathname === route || pathname.startsWith(`${route}/`);

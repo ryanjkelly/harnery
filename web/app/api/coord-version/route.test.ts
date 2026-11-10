@@ -13,7 +13,7 @@ let priorRoot: string | undefined;
 
 beforeEach(() => {
   root = mkdtempSync(path.join(os.tmpdir(), "harn-coord-version-"));
-  for (const dir of ["active", "councils", "journal"]) {
+  for (const dir of ["active", "journal"]) {
     mkdirSync(path.join(root, ".harnery", dir), { recursive: true });
   }
   priorRoot = process.env.HARNERY_COORD_ROOT;

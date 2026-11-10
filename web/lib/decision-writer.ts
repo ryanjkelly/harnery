@@ -1,6 +1,6 @@
 /**
  * Decision docket write-side. Shells `harnery/bin/harn decision review` so the
- * lifecycle + validation stay in the engine, mirroring council-writer's runHarn.
+ * lifecycle + validation stay in the engine, through runHarn.
  * Review is the only write the web UI performs; everything else is agent-side.
  */
 

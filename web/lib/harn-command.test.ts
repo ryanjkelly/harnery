@@ -39,13 +39,13 @@ describe("harnCommand", () => {
 
   test("locates agent-coord the same way", () => {
     const helper = path.join(root, "harnery", "bin", "agent-coord");
-    const command = harnCommand(root, ["council-advance", "id"], {
+    const command = harnCommand(root, ["status", "--json"], {
       executable: "agent-coord",
       platform: "win32",
       execPath: "node",
       exists: (candidate) => candidate === helper,
     });
-    expect(command).toEqual({ command: "node", args: [`${helper}.mjs`, "council-advance", "id"] });
+    expect(command).toEqual({ command: "node", args: [`${helper}.mjs`, "status", "--json"] });
   });
 
   test("with no candidate on disk it names the embedded path so the spawn reports ENOENT", () => {

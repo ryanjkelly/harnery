@@ -6,7 +6,7 @@
  *
  *   - `"date"`:      date-only labels (e.g., column headers).
  *   - `"datetime"`:  full date + time (the most common surface: agent
- *                    cards, council manifests, journal entries).
+ *                    cards, decisions, journal entries).
  *   - `"timestamp"`: dense time-of-day for log rows / streaming feeds.
  *
  * Each kind has its own preset catalog and its own localStorage key so the
@@ -268,7 +268,7 @@ export const KIND_LABELS: Record<FormatKind, string> = {
 export const KIND_DESCRIPTIONS: Record<FormatKind, string> = {
   date: "Date-only labels (when no time is needed).",
   datetime:
-    "Full date + time. Used in agent cards, council manifests, and most timestamps across the dashboard.",
+    "Full date + time. Used in agent cards, decisions, and most timestamps across the dashboard.",
   timestamp:
     "Dense time-of-day for log rows and streaming feeds. The full date + time form shows on hover.",
 };

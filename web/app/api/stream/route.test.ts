@@ -14,7 +14,6 @@ const spies: Array<{ mockRestore: () => void }> = [];
 beforeEach(() => {
   previousRoot = process.env.HARNERY_COORD_ROOT;
   root = mkdtempSync(path.join(tmpdir(), "stream-route-"));
-  mkdirSync(path.join(root, ".harnery", "councils"), { recursive: true });
   mkdirSync(path.join(root, ".harnery", "journal"), { recursive: true });
   process.env.HARNERY_COORD_ROOT = root;
   __resetCoordRootCache();

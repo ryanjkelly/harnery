@@ -75,7 +75,7 @@ describe("middleware write guard", () => {
 
   test("lets same-origin writes and cross-site reads through", () => {
     const write = middleware(
-      request("POST", "/api/councils", {
+      request("POST", "/api/actions/ping", {
         origin: "http://localhost:4392",
         "sec-fetch-site": "same-origin",
       }),

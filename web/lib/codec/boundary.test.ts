@@ -3,7 +3,7 @@
  *
  * Walks the import graph of every codec module (lib + routes + UI) and fails
  * if any path reaches a Harnery write/control surface: coordination writers,
- * council/decision writers, process launchers, or the CLI. The root resolver's
+ * decision writers, process launchers, or the CLI. The root resolver's
  * fixed read-only Git query is the sole checked process exception. This is the
  * plan's "module layering must prevent imports from coord-writer, process
  * launchers, agent messaging, lifecycle commands, and workflow controls"
@@ -43,7 +43,6 @@ const ENTRYPOINTS = [
  * transitively. Substring match against each import specifier. */
 const FORBIDDEN_SPECIFIERS = [
   "coord-writer",
-  "council-writer",
   "control-writer",
   "heartbeat-writer",
   "live-coordination-writer",

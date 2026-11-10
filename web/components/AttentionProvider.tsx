@@ -70,8 +70,8 @@ const StateCtx = createContext<AttentionState>({
 });
 const SlotCtx = createContext<(r: AttentionRequest | null) => void>(noop);
 
-/** Read-only alert state. For example, the council prompt panel pulses its
- * active chip + Copy button while `isAlerting`. Inert defaults outside the provider. */
+/** Read-only alert state. For example, a page can pulse its actionable
+ * control while `isAlerting`. Inert defaults outside the provider. */
 export function useAttentionState(): AttentionState {
   return useContext(StateCtx);
 }

@@ -30,7 +30,7 @@ describe("parseIdInput", () => {
   });
 
   test("plain words and URLs parse to nothing", () => {
-    expect(parseIdInput("governors")).toEqual([]);
+    expect(parseIdInput("decisions")).toEqual([]);
     expect(parseIdInput("http://localhost:4276/live")).toEqual([]);
     expect(parseIdInput("")).toEqual([]);
   });

@@ -1,7 +1,7 @@
 /**
  * Detect the entity type of a free-text input in the ⌘K palette and suggest
  * navigation targets. Regex-only and offline on purpose: names and slugs
- * (agent names, council/decision slugs) already match their catalog sections
+ * (agent names, decision slugs) already match their catalog sections
  * via normal search, so this parser only handles the opaque identifier forms
  * a person pastes rather than types — workflow run ids, instance UUIDs, and
  * repo file paths.

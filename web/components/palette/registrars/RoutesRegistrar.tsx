@@ -2,8 +2,8 @@
 
 /**
  * Registers the "Routes" section — every NavBar destination, searchable by
- * label plus the synonyms in the shared route registry (so "governors",
- * "durable goals", and "goals" all find the same page). Mounted once by the
+ * label plus the synonyms in the shared route registry (so "docket",
+ * "precedent", and "decisions" all find the same page). Mounted once by the
  * root layout. Renders nothing.
  */
 

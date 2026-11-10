@@ -9,7 +9,7 @@ import { PageHeader } from "@/components/layout/PageHeader";
 import { PageShell } from "@/components/layout/PageShell";
 import { Section as LayoutSection } from "@/components/layout/Section";
 import { buildAgentSummaryMap } from "@/lib/agent-summary";
-import { formatDuration } from "@/lib/changelog-parser";
+import { formatDuration } from "@/lib/format/duration";
 import { hostInfo } from "@/lib/config";
 import { readAgents, readInstanceIdentities } from "@/lib/coord-reader";
 import { actorName, chipName } from "@/lib/decision-actors";

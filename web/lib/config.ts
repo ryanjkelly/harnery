@@ -15,8 +15,8 @@ import { DEFAULT_BIN_NAME, type HostInfo } from "./host-info";
  * module's `fs` code into the bundle. Re-exported here for server-side callers.
  *
  * `binName` mirrors the CLI-side resolver in `src/core/config.ts`: a dashboard
- * boot for a project whose host CLI is `harn` must tell agents to run `harn agents
- * council …`, not `harn …`. Precedence: `HARNERY_BIN` env → config.jsonc
+ * boot must tell agents to run the host CLI's own command name, never a
+ * hardcoded one. Precedence: `HARNERY_BIN` env → config.jsonc
  * `binName` → `"harn"`.
  */
 export { DEFAULT_BIN_NAME };

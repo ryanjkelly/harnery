@@ -9,7 +9,7 @@ import {
   resolveLiveEventLedgerRouteV3,
 } from "../../src/core/events/v3/live-routing.ts";
 import { __resetCoordRootCache, __resetNameHistoryCache } from "./coord-reader";
-import { readCouncilsPageSnapshot, readEventsPageSnapshot } from "./page-snapshot-reader";
+import { readEventsPageSnapshot } from "./page-snapshot-reader";
 
 const roots: string[] = [];
 const previousRoot = process.env.HARNERY_COORD_ROOT;
@@ -110,61 +110,4 @@ test("event filtering applies before the limit and derives names and kinds from 
   expect(absent.data.rows).toEqual([]);
   expect(absent.agentNames).toEqual([]);
   expect(absent.allKinds).toEqual([]);
-});
-
-test("council snapshots cover every displayed role across active, closed, and archived councils", () => {
-  const root = freshLedger();
-  const expectedNames = new Set<string>();
-  for (const status of ["active", "closed", "archived"] as const) {
-    const dir = join(root, ".harnery", "councils", ...(status === "archived" ? ["archive"] : []));
-    const councilId = `council-${status}`;
-    const names = ["Creator", "Steward", "Member", "Pending"].map((role) => `${status}${role}`);
-    for (const name of names) {
-      identity(root, name);
-      expectedNames.add(name);
-    }
-    mkdirSync(join(dir, councilId, "round-1"), { recursive: true });
-    writeFileSync(
-      join(dir, `${councilId}.json`),
-      JSON.stringify({
-        council_id: councilId,
-        objective: "Review snapshot coverage",
-        status,
-        created_at: new Date().toISOString(),
-        created_by: `agent-${names[0]}`,
-        steward: `agent-${names[1]}`,
-        members: names.slice(2).map((name) => `agent-${name}`),
-        member_ids: [`${status}-member-id`, `${status}-pending-id`],
-        current_round: 1,
-        round_status: "open",
-      }),
-    );
-    writeFileSync(join(dir, councilId, "round-1", `${status}-member-id.md`), "Contribution");
-    if (status === "active") {
-      identity(root, "orphan01");
-      expectedNames.add("orphan01");
-      writeFileSync(
-        join(dir, councilId, "round-1", "orphan01-unmapped.md"),
-        "Unmapped contributor",
-      );
-    }
-  }
-  const snapshot = readCouncilsPageSnapshot();
-  expect(structuredClone(snapshot)).toEqual(snapshot);
-  expect(snapshot.snap.meta.count).toBe(3);
-  for (const status of ["active", "closed", "archived"] as const) {
-    expect(snapshot.snap[status]).toHaveLength(1);
-    expect(snapshot.snap[status][0]?.pending_in_current_round).toEqual([`agent-${status}Pending`]);
-    expect(snapshot.snap[status][0]?.contributors_in_current_round).toContain(
-      `agent-${status}Member`,
-    );
-  }
-  expect(snapshot.snap.active[0]?.contributors_in_current_round).toContain("agent-orphan01");
-  expect(Object.keys(snapshot.summaries)).toHaveLength(expectedNames.size);
-  for (const name of expectedNames) {
-    expect(snapshot.summaries[name.toLowerCase()]).toMatchObject({
-      name,
-      agent_id: `identity-${name}`,
-    });
-  }
 });

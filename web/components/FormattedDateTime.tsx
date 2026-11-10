@@ -24,7 +24,7 @@ import { formatTemplate } from "@/lib/format/template";
  *
  * For a date-only label:
  *
- *   <FormattedDateTime iso={council.created_at} kind="date" />
+ *   <FormattedDateTime iso={decision.filed_at} kind="date" />
  *     → e.g. "Thu, May 28, 2026"
  *
  * Explicit overrides: pass `template` and/or `timeZone` to bypass the user

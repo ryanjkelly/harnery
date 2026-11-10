@@ -9,11 +9,8 @@
 export type RecentKind =
   | "route"
   | "agent"
-  | "council"
   | "decision"
-  | "work"
   | "workflow"
-  | "goal"
   | "file";
 
 export interface RecentEntry {
@@ -29,6 +26,12 @@ export interface RecentEntry {
 
 const KEY = "harnery.palette.recents.v1";
 const CAP = 7;
+/** Pages the dashboard no longer serves; stored recents that point at them are dropped. */
+const REMOVED_ROUTES = ["/councils", "/governors", "/work"];
+
+function isRemovedRoute(href: string): boolean {
+  return REMOVED_ROUTES.some((route) => href === route || href.startsWith(`${route}/`));
+}
 
 function read(): RecentEntry[] {
   if (typeof window === "undefined") return [];
@@ -41,7 +44,8 @@ function read(): RecentEntry[] {
       (e): e is RecentEntry =>
         !!e &&
         typeof (e as RecentEntry).href === "string" &&
-        typeof (e as RecentEntry).title === "string",
+        typeof (e as RecentEntry).title === "string" &&
+        !isRemovedRoute((e as RecentEntry).href),
     );
   } catch {
     return [];

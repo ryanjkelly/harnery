@@ -9,7 +9,7 @@ import { cn } from "@/lib/cn";
  * counters.
  *
  *   <PageHeader
- *     back={{ href: "/work", label: "All work" }}
+ *     back={{ href: "/workflows", label: "All runs" }}
  *     title="Work"
  *     description="Durable objectives that survive across workflow attempts."
  *     actions={<Button>New</Button>}

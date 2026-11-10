@@ -11,7 +11,7 @@
 
 import { existsSync, type FSWatcher, statSync, watch } from "node:fs";
 import path from "node:path";
-import { coordRoot, councilsDir, eventsPath, journalDir } from "@/lib/coord-reader";
+import { coordRoot, eventsPath, journalDir } from "@/lib/coord-reader";
 
 export const dynamic = "force-dynamic";
 
@@ -52,7 +52,6 @@ export function GET(request: Request): Response {
       };
 
       for (const [label, dir] of [
-        ["councils", councilsDir()],
         ["journal", journalDir()],
       ] as const) {
         if (!existsSync(dir)) continue;

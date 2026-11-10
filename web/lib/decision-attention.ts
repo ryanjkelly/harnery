@@ -4,7 +4,7 @@
  * attention first and lets the tail be skimmed or skipped.
  *
  * Pure function so it's unit-tested (see decision-attention.test.ts) and reused
- * verbatim by the RSC page. Mirrors council-attention.ts's shape.
+ * verbatim by the RSC page.
  */
 
 import type { DecisionManifest } from "./decision-reader";

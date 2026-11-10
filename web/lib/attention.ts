@@ -1,7 +1,7 @@
 /**
  * Operator-attention engine: the page-agnostic half of the "your move" alert
- * system. When a page reaches a state that waits on the HUMAN (copy the next
- * council prompt, advance a round, …), it mounts `<Attention request>` and the
+ * system. When a page reaches a state that waits on the HUMAN (review a
+ * decision, answer a waiting run, …), it mounts `<Attention request>` and the
  * root `AttentionProvider` drives these channels until the operator interacts:
  *
  *   - title flash:   tab title alternates `● <label>` / original (works when
@@ -38,7 +38,7 @@ export type AttentionChannels = {
 export type AttentionRequest = {
   /**
    * Stable identity of the actionable moment (e.g.
-   * `att:<councilId>:r3:copy:agent-Astrid`). Same key = same moment: acked
+   * `att:<decisionId>:review`). Same key = same moment: acked
    * once, never re-alerts. A new key starts a fresh alert cycle.
    */
   key: string;

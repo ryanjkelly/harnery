@@ -3,7 +3,7 @@ import {
   buildEndedAgentSummaries,
   buildSubagentSummaries,
 } from "./agent-summary";
-import { readAgents, readCouncils, readEvents, readInstanceIdentities } from "./coord-reader";
+import { readAgents, readEvents, readInstanceIdentities } from "./coord-reader";
 
 export interface EventsPageOptions {
   limit: number;
@@ -40,19 +40,4 @@ export function readEventsPageSnapshot(options: EventsPageOptions) {
   return { data, agentNames, instanceToName, summaries, allKinds };
 }
 
-export function readCouncilsPageSnapshot() {
-  const snap = readCouncils();
-  const everyName = new Set<string>();
-  for (const council of [...snap.active, ...snap.closed, ...snap.archived]) {
-    if (council.created_by) everyName.add(council.created_by);
-    if (council.steward) everyName.add(council.steward);
-    for (const name of council.members) everyName.add(name);
-    for (const name of council.contributors_in_current_round) everyName.add(name);
-    for (const name of council.pending_in_current_round) everyName.add(name);
-  }
-  const summaries = buildAgentSummaryMap(everyName);
-  return { snap, summaries };
-}
-
 export type EventsPageSnapshot = ReturnType<typeof readEventsPageSnapshot>;
-export type CouncilsPageSnapshot = ReturnType<typeof readCouncilsPageSnapshot>;

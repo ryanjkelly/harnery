@@ -3,7 +3,7 @@ import { readAgents } from "./coord-reader";
 import type { DashboardRequest, DashboardResponse } from "./dashboard-reader-protocol";
 import { readEventQuery } from "./event-query-reader";
 import { readHomeSnapshot } from "./home-snapshot-reader";
-import { readCouncilsPageSnapshot, readEventsPageSnapshot } from "./page-snapshot-reader";
+import { readEventsPageSnapshot } from "./page-snapshot-reader";
 import { buildPaletteCatalog } from "./palette/catalog-reader";
 
 if (!parentPort) throw new Error("dashboard_reader_requires_worker");
@@ -33,9 +33,6 @@ port.on("message", (request: DashboardRequest) => {
           ok: true,
           value: readEventsPageSnapshot(request.input ?? { limit: 500 }),
         };
-        break;
-      case "councilsPage":
-        response = { id: request.id, ok: true, value: readCouncilsPageSnapshot() };
         break;
       default:
         throw new Error("dashboard_reader_unknown_request");

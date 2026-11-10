@@ -8,9 +8,9 @@ import { Tooltip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/cn";
 
 /**
- * Generic side-by-side line+word diff. Extracted from RoundDiff so any
- * surface that needs "before vs after" rendering (council plan evolution,
- * journal wholesale-replace preview, anything else) shares the same
+ * Generic side-by-side line+word diff, so any surface that needs
+ * "before vs after" rendering (journal wholesale-replace preview, anything
+ * else) shares the same
  * look + behavior:
  *
  *   • Two-column table with line numbers + word-level inline highlights

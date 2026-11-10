@@ -1,6 +1,6 @@
 /**
  * Read-side for the decision docket. RSC pages read `.harnery/decisions/`
- * directly via fs (per request), mirroring how coord-reader reads councils.
+ * directly via fs (per request), mirroring how coord-reader reads coordination state.
  * The manifest shape is defined locally (not imported from the engine's src)
  * to match coord-reader's self-contained convention.
  */

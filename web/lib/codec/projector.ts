@@ -1063,7 +1063,7 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
     freshness: present("live", "projection", "high", now),
     panels,
     remote_machines: [],
-    relationships: [], // still requires proved work/governor adapters
+    relationships: [], // derived later in scene assembly from proved parentage
     transients,
     team_ambience: present(ambience, "projection", panels.length ? "high" : "low", now),
     generated_at: now,
