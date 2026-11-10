@@ -1,0 +1,77 @@
+---
+title: "ADR 0240: Doctor runtime and environment scope"
+description: Give every doctor check a runtime or environment scope, and let a project report failing environment checks without failing doctor, while a failing runtime check always exits 1.
+sidebar:
+  order: 240
+---
+
+**Date:** 2026-11-10
+**Status:** Accepted
+
+## Context
+
+`harn doctor` fails, and exits 1, when the `node` on PATH is older than
+22.23.4, 24.22.1 or 26.12.1. The check reads PATH on purpose: under Bun,
+`process.versions.node` is only the version Bun emulates, while editors,
+agent CLIs and build tools on the same machine run the PATH Node.js. An old
+one is a real security finding about the machine.
+
+The same check also fails a host that runs Harnery only on a patched Bun and
+never starts that Node.js. Such a host may gate its own health check, or a
+scheduled step, on `harn doctor` exiting 0. A failure it cannot fix from inside
+the host then repeats on every run. To keep going, the host has to parse
+`--json`, match the `node` check by name, and decide for itself that the
+failure is not about Harnery. That couples the host to Harnery's check names.
+
+Doctor had no way to say which of two things a failure means: "Harnery cannot
+run safely here" or "this machine has an unsafe tool that Harnery does not
+use".
+
+## Decision
+
+- **Every check has a scope.** `Check.scope` is `"runtime"` (Harnery runs on or
+  uses this) or `"environment"` (a finding about the machine that Harnery does
+  not depend on). When unsure, a check is `runtime`, the strict side.
+- **The `node` check's scope follows the real runtime.** It is `runtime` when
+  Harnery runs on Node.js and `environment` when it runs on Bun and only
+  inspects PATH. `nodeCheck` takes `process.versions`, so tests drive both
+  cases. `python3` is the only other environment check. Every other check is
+  `runtime`.
+- **One project opt-in.** `doctor.environmentFindings` in
+  `.harnery/config.jsonc` is `"fail"` (the default) or `"report"`. It is read
+  from project config only. With `"report"`, a failing environment check still
+  prints as a failure with its hint and stays in `--json` with its failing
+  severity and scope, and the summary says how many were reported. Doctor exits
+  0 only when every failing check is an environment check. Any other value is
+  ignored with a warning, and environment findings keep failing.
+- **A failing runtime check always exits 1.** No setting changes that.
+- **`--json` says what happened.** Each check carries `scope`. The summary adds
+  `runtimeFail` and `environmentFail`, and the top level adds
+  `environmentFindings` (the setting in effect) and `outcome`: `pass`,
+  `reported` or `fail`. A consumer reads `outcome` and never matches names.
+  `summary.fail` still counts every failing check.
+
+## Alternatives considered
+
+- **Downgrade the PATH Node.js check to a warning everywhere.** Rejected: it
+  weakens a real security control for every project whose agents run Node
+  tools.
+- **Let a project list named checks as advisory** (for example
+  `doctor.advisory: ["node"]`). Rejected: it would also silence the `node`
+  check when Harnery itself runs on that Node.js, which must always fail, and
+  it keeps consumers tied to check names.
+- **A command-line flag instead of a project setting.** Rejected: the choice
+  is a property of how the project runs Harnery, not of one invocation, and a
+  flag would be a second way to say the same thing.
+
+## Consequences
+
+- An old PATH Node.js still fails `harn doctor` with exit 1 in every project
+  that has not opted in. Default behaviour is unchanged.
+- A host that runs Harnery on Bun beside an unrelated Node.js can set
+  `doctor.environmentFindings: "report"`, keep the finding visible, and read
+  `outcome` instead of check names.
+- A consumer that checks "exit 1 if and only if some check failed" must read
+  `outcome` once a project opts in, because a reported environment failure
+  exits 0.
+- A new check must pick a scope. The type requires it.
