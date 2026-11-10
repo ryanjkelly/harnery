@@ -14,7 +14,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
-import { acquireNoClobberLease } from "../workflow/workspaces/leases.ts";
+import { acquireNoClobberLease } from "../run/workspaces/leases.ts";
 import type { HarneryStorageCatalog } from "./catalog.ts";
 import {
   HARNERY_STRUCTURED_LOG_PROVIDER_ID,

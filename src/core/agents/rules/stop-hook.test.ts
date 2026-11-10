@@ -6,7 +6,7 @@ import { eventV3Fixture, fixtureObject } from "../../../../tests/helpers/event-v
 import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
 import { initializeEventLedgerV3 } from "../../events/v3/bootstrap.ts";
 import type { EventV3 } from "../../events/v3/contract.ts";
-import { startWorkflowChildSessionV3 } from "../../workflow/live-session-v3.ts";
+import { startWorkflowChildSessionV3 } from "../../run/live-session-v3.ts";
 import { evaluateStopHook, evaluateStopHookV3Events } from "./stop-hook.ts";
 
 const roots: string[] = [];

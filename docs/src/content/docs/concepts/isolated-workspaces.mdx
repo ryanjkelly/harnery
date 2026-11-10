@@ -105,7 +105,7 @@ Workflow success does not merge changes. Integration has two explicit calls:
 import {
   applyIntegration,
   prepareIntegration,
-} from "harnery/core/workflow";
+} from "harnery/core/run";
 
 const plan = await prepareIntegration({
   coordRoot,
@@ -138,7 +138,7 @@ twice.
 Cleanup runs separately:
 
 ```ts
-import { cleanupWorkspace } from "harnery/core/workflow";
+import { cleanupWorkspace } from "harnery/core/run";
 
 await cleanupWorkspace({ coordRoot, runId, provider });
 ```
@@ -166,7 +166,7 @@ Or use the product-tier reader:
 import {
   inspectWorkflowWorkspace,
   readWorkflowWorkspaceStatus,
-} from "harnery/core/workflow";
+} from "harnery/core/run";
 
 const status = readWorkflowWorkspaceStatus(coordRoot, runId);
 const safeResult = inspectWorkflowWorkspace(coordRoot, runId);

@@ -58,7 +58,7 @@ export {
   signalIfSameGeneration,
   verifyProcessGeneration,
 } from "../agents/state/proc-start.ts";
-export { acquireNoClobberLease } from "../workflow/workspaces/leases.ts";
+export { acquireNoClobberLease } from "../run/workspaces/leases.ts";
 export {
   ancestry,
   establishedConnectionCounts,

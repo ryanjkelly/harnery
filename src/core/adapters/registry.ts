@@ -2,22 +2,18 @@ import {
   buildClaudeInvocation,
   claudeCodeSpawner,
   normalizeClaudeResult,
-} from "../workflow/spawn-claude.ts";
-import {
-  buildCodexInvocation,
-  codexSpawner,
-  normalizeCodexResult,
-} from "../workflow/spawn-codex.ts";
+} from "../run/spawn-claude.ts";
+import { buildCodexInvocation, codexSpawner, normalizeCodexResult } from "../run/spawn-codex.ts";
 import {
   buildCursorInvocation,
   cursorSpawner,
   normalizeCursorResult,
-} from "../workflow/spawn-cursor.ts";
+} from "../run/spawn-cursor.ts";
 import {
   buildOpenCodeInvocation,
   normalizeOpenCodeResult,
   openCodeSpawner,
-} from "../workflow/spawn-opencode.ts";
+} from "../run/spawn-opencode.ts";
 import {
   BUILTIN_ADAPTER_IDS,
   BUILTIN_ADAPTER_PROFILES,

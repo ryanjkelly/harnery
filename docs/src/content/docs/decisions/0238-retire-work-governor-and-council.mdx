@@ -130,7 +130,7 @@ long objectives become a real need again, that need gets its own design.
 
 - **The run engine:** `harn run`, with policy parking and `harn approval`. The
   engine itself creates and reads approval records, so approvals stay with it.
-- **The isolated-workspace provider** under `src/core/workflow/workspaces/`,
+- **The isolated-workspace provider** under `src/core/run/workspaces/`,
   which the event ledger and storage code import.
 - **Messaging:** `harn agents ping`, `harn inbox` and `harn messages`. Host
   commands that ask a peer model for an opinion stay with the host and keep

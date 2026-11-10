@@ -1,0 +1,65 @@
+---
+title: "ADR 0241: Rename the workflow module to run"
+description: Move the run engine's source folder and public export from workflow to run, so the module matches the harn run command, with no alias.
+sidebar:
+  order: 241
+---
+
+**Date:** 2026-11-10
+**Status:** Accepted
+
+## Context
+
+The command that runs a script of agent stages is `harn run`. Its engine lived
+in `src/core/workflow/`, the command module in `src/commands/workflow.ts`, and
+the public export was `harnery/core/workflow`. After
+[ADR 0238](/decisions/0238-retire-work-governor-and-council/) removed work,
+the governor and councils, `run` is the one name the product uses for this
+feature. The old module name sent readers looking for a "workflow" feature
+that the CLI does not have, and it invites confusion with tools that use the
+word workflow for something else.
+
+## Decision
+
+- **Rename the source.** `src/core/workflow/` is now `src/core/run/`, and
+  `src/commands/workflow.ts` is now `src/commands/run.ts`. The command tests
+  follow the same names.
+- **Rename the export.** `harnery/core/workflow` is now `harnery/core/run`,
+  with the matching `dist` paths. The old subpath is removed.
+- **No alias.** Harnery is pre-1.0, so the change rides a release marked
+  breaking. Consumers change one import path; every exported name stays the
+  same.
+
+## Alternatives considered
+
+- **Rename only the folder and keep the export name.** Rejected: the public
+  name is the part consumers read, and it would keep the mismatch with
+  `harn run`.
+- **Add `harnery/core/run` and keep `harnery/core/workflow` as an alias for one
+  release.** Rejected: pre-1.0 changes cut over directly, and a second subpath
+  for the same module is exactly the dual surface that policy avoids.
+
+## Result
+
+The rename covers paths only. These keep the name "workflow" because they are
+stored on disk, part of a contract, or not paths at all:
+
+- **Stored state:** the `.harnery/workflows/` run folder and the
+  `workflow-operational` storage catalog entry.
+- **Event fields:** names in the Event V3 base contract such as
+  `workflow_id`, which did not change; the generated contract check passes
+  with no file changed.
+- **Config keys:** the `workflow` section of `.harnery/config.jsonc`, such as
+  `workflow.subscriptionOnly`.
+- **Environment variables:** for example `HARNERY_WORKFLOW_CHILD` and
+  `HARNERY_WORKFLOW_SUBSCRIPTION_ONLY`.
+- **Schemas and manifests:** proof and manifest field names, and schema
+  version constants such as `WORKFLOW_PROOF_SCHEMA_VERSION`.
+- **Exported identifiers:** names such as `runWorkflow`,
+  `registerWorkflowCommand` and `WorkflowRunError`.
+- **CLI names and prose:** command and flag names, and the word workflow where
+  it means a script a person runs.
+
+Older ADRs keep their original scope lines, which name `core/workflow` as the
+module was called at the time; source-file links in them point at the new
+paths.

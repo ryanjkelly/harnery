@@ -16,8 +16,8 @@ import { coordEnv } from "../../lib/env.ts";
 import { processMayBeAlive } from "../../lib/process-alive.ts";
 import { normalizeAdapter, adapterFromPlatform as sharedAdapterFromPlatform } from "../adapter.ts";
 import { resolveBinName } from "../config.ts";
+import { acquireNoClobberLease } from "../run/workspaces/leases.ts";
 import { closeProcessLoggers, legacyLogFields, processLogger } from "../storage/logger.ts";
-import { acquireNoClobberLease } from "../workflow/workspaces/leases.ts";
 
 function sharedDiagnostic(
   root: string,

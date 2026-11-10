@@ -1,4 +1,4 @@
-import type { WorkflowWorkspaceInspection } from "harnery/core/workflow";
+import type { WorkflowWorkspaceInspection } from "harnery/core/run";
 import { Badge } from "@/components/ui/badge";
 import { stateLabel, type Tone, toneFor } from "@/lib/tone";
 

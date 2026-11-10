@@ -1,13 +1,13 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { WorkflowProof } from "harnery/core/workflow";
+import type { WorkflowProof } from "harnery/core/run";
 import {
   inspectWorkflowWorkspace,
   type WorkflowWorkspaceInspection,
-} from "harnery/core/workflow/workspaces/inspect";
+} from "harnery/core/run/workspaces/inspect";
 import { readLiveCoordinationRows } from "../../src/core/agents/state/live-coordination-view";
-import { readWorkflowProof } from "../../src/core/workflow/proof";
-import { stableScopeId } from "../../src/core/workflow/scope-id";
+import { readWorkflowProof } from "../../src/core/run/proof";
+import { stableScopeId } from "../../src/core/run/scope-id";
 
 /**
  * Transcript-driven reader for workflow runs (`.harnery/workflows/<run-id>/

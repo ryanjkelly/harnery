@@ -206,7 +206,7 @@ rewriting it.
   append `attempt.started` or reset cumulative budgets.
 - The governor remains a projection over work and proof; it gains no
   workspace queue, scheduler, lease, or cleanup loop.
-- Named provider APIs extend only the existing `harnery/core/workflow`
+- Named provider APIs extend only the existing `harnery/core/run`
   subpath.
 
 ## Alternatives
@@ -232,7 +232,7 @@ detectable without rewriting terminal proof.
 
 ## Result
 
-The product-tier `harnery/core/workflow` surface now includes the local Git
+The product-tier `harnery/core/run` surface now includes the local Git
 provider, integration and cleanup operations, and a validated read model for
 workspace state. The standalone CLI creates the local provider only when
 `--isolation worktree` is paired with an explicit `--workspace-root`.

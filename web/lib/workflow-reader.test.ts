@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import type { WorkflowProof } from "harnery/core/workflow";
-import { writeWorkflowRunManifest } from "harnery/core/workflow";
+import type { WorkflowProof } from "harnery/core/run";
+import { writeWorkflowRunManifest } from "harnery/core/run";
 import {
   endWorkflowChildSessionV3,
   startWorkflowChildSessionV3,
-} from "../../src/core/workflow/live-session-v3";
+} from "../../src/core/run/live-session-v3";
 import { pressureAssessmentFixture } from "../../tests/helpers/resource-status";
 import {
   readWorkflowChildSessions,

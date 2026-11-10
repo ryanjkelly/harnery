@@ -3,10 +3,10 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Command } from "commander";
-import { registerWorkflowCommand } from "../../src/commands/workflow.ts";
-import { writeWorkflowProof } from "../../src/core/workflow/proof.ts";
-import { writeWorkflowRunManifest } from "../../src/core/workflow/run-state.ts";
-import type { WorkflowProof } from "../../src/core/workflow/types.ts";
+import { registerWorkflowCommand } from "../../src/commands/run.ts";
+import { writeWorkflowProof } from "../../src/core/run/proof.ts";
+import { writeWorkflowRunManifest } from "../../src/core/run/run-state.ts";
+import type { WorkflowProof } from "../../src/core/run/types.ts";
 import { removeDir } from "../helpers/remove-dir.ts";
 
 // Windows has no /tmp; elsewhere keep the short /tmp root.

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { SpawnResult } from "../workflow/types.ts";
+import type { SpawnResult } from "../run/types.ts";
 import { runAdapterAttestation } from "./attest.ts";
 import type { AdapterAttestation } from "./attestation.ts";
 import { createBuiltinAdapterRegistry } from "./registry.ts";

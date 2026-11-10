@@ -1,5 +1,5 @@
 import { readCoordinationViewV3 } from "../../src/core/events/v3/coordination-view";
-import { stableScopeId } from "../../src/core/workflow/scope-id";
+import { stableScopeId } from "../../src/core/run/scope-id";
 import { coordRoot, type EventsResponse, readEvents } from "./coord-reader";
 import { readWorkflowChildSessions, resolveRunCoordRoot } from "./workflow-reader";
 

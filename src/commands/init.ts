@@ -67,7 +67,7 @@ import {
   summarizeAdapterWiring,
   type WiringOptions,
 } from "../core/hooks/adapter/wiring.ts";
-import { detectInstalledAdapters } from "../core/workflow/adapters.ts";
+import { detectInstalledAdapters } from "../core/run/adapters.ts";
 import { applyIndexerExclusions } from "../lib/indexer-exclusions.ts";
 import {
   type ApplyResult,

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { WorkflowWorkspaceInspection, WorkflowWorkspaceStatus } from "harnery/core/workflow";
+import type { WorkflowWorkspaceInspection, WorkflowWorkspaceStatus } from "harnery/core/run";
 import { renderToStaticMarkup } from "react-dom/server";
 import { WorkspaceStateBadge } from "./WorkspaceStateBadge";
 

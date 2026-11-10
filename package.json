@@ -67,10 +67,15 @@
       "types": "./dist/core/context/index.d.ts",
       "import": "./dist/core/context/index.js"
     },
+    "./core/run": {
+      "bun": "./src/core/run/index.ts",
+      "types": "./dist/core/run/index.d.ts",
+      "import": "./dist/core/run/index.js"
+    },
     "./core/workflow": {
-      "bun": "./src/core/workflow/index.ts",
-      "types": "./dist/core/workflow/index.d.ts",
-      "import": "./dist/core/workflow/index.js"
+      "bun": "./src/core/run/index.ts",
+      "types": "./dist/core/run/index.d.ts",
+      "import": "./dist/core/run/index.js"
     },
     "./core/guard": {
       "bun": "./src/core/guard/index.ts",

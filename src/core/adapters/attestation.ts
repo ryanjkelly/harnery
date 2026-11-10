@@ -22,8 +22,8 @@ import {
 } from "node:fs";
 import { resolve } from "node:path";
 import { monorepoRoot } from "../agents/coord-client.ts";
+import { stableDigest } from "../run/durable-record.ts";
 import { stateDirMode, stateFileMode } from "../storage/modes.ts";
-import { stableDigest } from "../workflow/durable-record.ts";
 import type { AdapterId, AdapterProfile, CapabilitySupport } from "./types.ts";
 
 export const ATTESTATION_SCHEMA_VERSION = 2;

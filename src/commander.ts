@@ -904,7 +904,7 @@ function harneryCommandBundles({
         { command: "approval", description: "Inspect and resolve durable run-policy approvals." },
       ],
       load: async (program) =>
-        (await import("./commands/workflow.ts")).registerWorkflowCommand(program, emit),
+        (await import("./commands/run.ts")).registerWorkflowCommand(program, emit),
     },
     lazy("web", "Standalone read-only dashboard for harnery's coord state", async (program) =>
       (await import("./commands/web.ts")).registerWebCommand(program, emit),

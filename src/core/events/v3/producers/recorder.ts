@@ -25,9 +25,9 @@ import {
   readRuntimeContextTelemetry,
   readRuntimeTuning,
 } from "../../../hooks/adapter/runtime-telemetry.ts";
+import { fsyncParentDirectory } from "../../../run/durable-record.ts";
+import { acquireNoClobberLease } from "../../../run/workspaces/leases.ts";
 import { stateDirMode, stateFileMode, stateModeTooOpen } from "../../../storage/modes.ts";
-import { fsyncParentDirectory } from "../../../workflow/durable-record.ts";
-import { acquireNoClobberLease } from "../../../workflow/workspaces/leases.ts";
 import { EVENT_ADAPTER_IDS_V3, type EventAdapterIdV3 } from "../adapter-id.ts";
 import type { RuntimeAttestationV3Base } from "../base-contract.ts";
 import { buildEventV3 } from "../builder.ts";

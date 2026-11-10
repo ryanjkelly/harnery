@@ -1,4 +1,4 @@
-export type { Spawner, SpawnRequest, SpawnResult } from "../workflow/types.ts";
+export type { Spawner, SpawnRequest, SpawnResult } from "../run/types.ts";
 export type {
   AdapterAttestationReport,
   AdapterAttestationResult,

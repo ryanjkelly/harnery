@@ -11,7 +11,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { initializeEventLedgerV3 } from "../events/v3/bootstrap.ts";
-import { startWorkflowChildSessionV3 } from "../workflow/live-session-v3.ts";
+import { startWorkflowChildSessionV3 } from "../run/live-session-v3.ts";
 import { sessionNamePresence } from "./session-name-presence.ts";
 
 const NAME = "Agent Maya - Auth refactor";

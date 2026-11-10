@@ -1,4 +1,4 @@
-import type { Spawner, SpawnRequest, SpawnResult } from "../workflow/types.ts";
+import type { Spawner, SpawnRequest, SpawnResult } from "../run/types.ts";
 
 /** Open adapter identifier. Built-ins are registered at runtime rather than
  * repeated through closed unions in every consumer. */

@@ -13,8 +13,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { fsyncParentDirectory } from "../../run/durable-record.ts";
 import { stateDirMode, stateFileMode } from "../../storage/modes.ts";
-import { fsyncParentDirectory } from "../../workflow/durable-record.ts";
 import {
   type AuthorityTransactionV3,
   authorityRecoveryIntentPathV3,
