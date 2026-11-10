@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.51.0
+
+### Minor Changes
+
+- 331f8ee: `harn doctor` now gives every check a `scope`: `runtime` when Harnery runs on or uses it, `environment` when it describes the machine only. The `node` check is `runtime` on Node.js and `environment` on Bun, where it inspects the `node` on PATH; `python3` is also `environment`. A project can set `doctor.environmentFindings` to `"report"` in `.harnery/config.jsonc` (project config only) so that failing environment checks still print and stay in `--json` but exit 0 when no runtime check fails. A failing runtime check always exits 1, and the default (`"fail"`) is unchanged. `--json` adds `scope` to each check, `summary.runtimeFail` and `summary.environmentFail`, and top-level `environmentFindings` and `outcome` (`pass`, `reported` or `fail`).
+
+### Patch Changes
+
+- 44769f0: Clear the last Event V3 reader-boundary exceptions. The canonical reader now exports `readEventV3ActiveTailV3`, a bounded raw tail read of the active file that the coordination health snapshot uses instead of opening the file itself. The writer exports `eventV3DiagnosticsRootV3` for the loose diagnostics directory, which doctor now uses, and epoch recovery takes the closed-epoch root from `eventV3ArchivesRoot`. Behaviour and output are unchanged.
+- 9d96c53: Event V3 recovery and history now take ledger locations and catalog checks from their owning modules, so the one-reader gate passes and runs in `check:local core`. Importing archived ready events validates sealed segments through the new `verifyRetainedSealedSegmentsV3` in `core/events/v3/catalog`, and the epoch cutover drains ready records through the writer's new `drainReadyEventsHeldLeaseV3`. Behaviour and error messages are unchanged. The gate now also catches the path-segment spelling of the ledger location.
+
 ## 0.50.0
 
 ### Minor Changes
