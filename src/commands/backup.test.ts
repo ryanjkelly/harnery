@@ -43,7 +43,8 @@ describe("backup selection", () => {
     writeFileSync(join(harnery, ".name-history"), "{}\n");
     const selection = resolveBackupSelection(root, backupConfig(root));
     expect(backupCatalogCoverage(root).uncovered).toEqual([]);
-    expect(selection.targets).toContain(join(harnery, "mailbox"));
+    expect(selection.targets).not.toContain(join(harnery, "mailbox"));
+    expect(selection.targets).not.toContain(join(harnery, "councils"));
     expect(selection.targets).toContain(join(harnery, "approvals"));
     expect(selection.targets).toContain(join(harnery, ".name-history"));
     expect(selection.targets).not.toContain(join(harnery, "ledgers"));

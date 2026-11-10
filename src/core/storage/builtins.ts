@@ -360,7 +360,6 @@ function logFamilies(): HarneryStorageFamily[] {
 function durableHistoryFamilies(): HarneryStorageFamily[] {
   const definitions = [
     ["workflow-run-history", "workflow engine", ".harnery/workflows"],
-    ["council-history", "council service", ".harnery/councils"],
     ["decision-history", "decision service", ".harnery/decisions"],
     ["journal-history", "journal service", ".harnery/journal"],
     ["identity-history", "identity service", ".harnery/identities"],
@@ -381,18 +380,6 @@ function durableHistoryFamilies(): HarneryStorageFamily[] {
   );
   return [
     ...histories,
-    family({
-      id: "agent-mailbox-history",
-      owner: "agent mailbox service",
-      storage_class: "durable-object-history",
-      roots: (context) => [subtree(context, ".harnery/mailbox")],
-      format: "jsonl",
-      durability: "crash-safe",
-      writer_model: "multi-process",
-      policy: ownerHistoryPolicy("agent-mailbox-history-v1"),
-      consumers: ["agent mailbox service", "prompt delivery", "storage inventory"],
-      provider: filesystemProvider("agent-mailbox-provider", "agent mailbox lifecycle"),
-    }),
     family({
       id: "workflow-approval-history",
       owner: "workflow approval service",
