@@ -72,26 +72,6 @@
       "types": "./dist/core/workflow/index.d.ts",
       "import": "./dist/core/workflow/index.js"
     },
-    "./core/work": {
-      "bun": "./src/core/work/index.ts",
-      "types": "./dist/core/work/index.d.ts",
-      "import": "./dist/core/work/index.js"
-    },
-    "./core/work/state": {
-      "bun": "./src/core/work/read.ts",
-      "types": "./dist/core/work/read.d.ts",
-      "import": "./dist/core/work/read.js"
-    },
-    "./core/governor": {
-      "bun": "./src/core/governor/index.ts",
-      "types": "./dist/core/governor/index.d.ts",
-      "import": "./dist/core/governor/index.js"
-    },
-    "./core/governor/state": {
-      "bun": "./src/core/governor/read.ts",
-      "types": "./dist/core/governor/read.d.ts",
-      "import": "./dist/core/governor/read.js"
-    },
     "./core/guard": {
       "bun": "./src/core/guard/index.ts",
       "types": "./dist/core/guard/index.d.ts",
@@ -147,11 +127,6 @@
       "types": "./dist/core/diagnostics/index.d.ts",
       "import": "./dist/core/diagnostics/index.js"
     },
-    "./core/governor/plans": {
-      "bun": "./src/core/governor/plan-read.ts",
-      "types": "./dist/core/governor/plan-read.d.ts",
-      "import": "./dist/core/governor/plan-read.js"
-    },
     "./core/policy": {
       "bun": "./src/core/policy/index.ts",
       "types": "./dist/core/policy/index.d.ts",
@@ -176,6 +151,11 @@
       "bun": "./src/lib/cookies/index.ts",
       "types": "./dist/lib/cookies/index.d.ts",
       "import": "./dist/lib/cookies/index.js"
+    },
+    "./lib/exec": {
+      "bun": "./src/lib/exec.ts",
+      "types": "./dist/lib/exec.d.ts",
+      "import": "./dist/lib/exec.js"
     },
     "./lib/format": {
       "bun": "./src/lib/format.ts",

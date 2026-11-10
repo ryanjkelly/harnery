@@ -237,10 +237,14 @@ export function exec(cmd: string[], opts: ExecOpts = {}): Promise<ExecResult> {
       settled = true;
       for (const t of timers) clearTimeout(t);
       if (watchdog?.pid && watchdog.exitCode === null && watchdog.signalCode === null) {
-        try {
-          process.kill(watchdog.pid, "SIGKILL");
-        } catch {
-          // Watchdog already exited.
+        // The watchdog is detached, so it leads its own group. Killing only the
+        // `sh` would leave its running `sleep` orphaned until the deadline.
+        if (!killGroup(watchdog.pid, "SIGKILL")) {
+          try {
+            process.kill(watchdog.pid, "SIGKILL");
+          } catch {
+            // Watchdog already exited.
+          }
         }
       }
       if (groupOpts && proc.pid) untrackGroup(proc.pid);

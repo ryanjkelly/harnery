@@ -113,6 +113,22 @@ describe.skipIf(process.platform === "win32")("exec processGroup", () => {
     expect(result).toEqual({ stdout: "a\n", stderr: "", exitCode: 0 });
   });
 
+  test("a call that settles before its timeout leaves no watchdog sleep behind", async () => {
+    // A distinctive timeout makes the watchdog's `sleep <seconds>` findable.
+    const seconds = 7_000 + (process.pid % 1_000);
+    const result = await exec(["sh", "-c", "echo done"], { timeout: seconds * 1000, processGroup: true });
+    expect(result.stdout).toBe("done");
+    const until = Date.now() + 3_000;
+    let survivors: string[] = [];
+    while (Date.now() < until) {
+      const ps = await exec(["ps", "-eo", "args"]);
+      survivors = ps.stdout.split("\n").filter((line) => line.trim() === `sleep ${seconds}`);
+      if (survivors.length === 0) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(survivors).toEqual([]);
+  });
+
   test("output past maxOutputBytes kills the group and says so", async () => {
     const result = await exec(["sh", "-c", "yes x"], {
       processGroup: true,
