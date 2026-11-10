@@ -20,6 +20,7 @@ import { processMayBeAlive } from "../../../lib/process-alive.ts";
 import { stateDirMode, stateFileMode } from "../../storage/modes.ts";
 import { fsyncParentDirectory } from "../../workflow/durable-record.ts";
 import { acquireNoClobberLease } from "../../workflow/workspaces/leases.ts";
+import { eventV3ArchivesRoot } from "./archive-retention.ts";
 import { canonicalJsonV3, sha256V3 } from "./canonical.ts";
 import { ADAPTER_CAPABILITY_PROFILES_V3 } from "./capabilities.ts";
 import {
@@ -36,12 +37,12 @@ import { repairEventV3ControlPair } from "./control-writer.ts";
 import { loadOrCreateFingerprintKeyStoreV3 } from "./fingerprint-keys.ts";
 import { EVENT_V3_SCHEMA_DIGEST } from "./generated.ts";
 import { reanchorArchivedHookProducersV3 } from "./producers/recorder.ts";
+import { EVENT_V3_LEDGER_RELATIVE_ROOT } from "./reader.ts";
 import { carryReadyEventHistoryV3 } from "./ready-history.ts";
 import { resolveEventLedgerRotateActiveBytesV3 } from "./rotation-config.ts";
 import { currentHarneryRuntimeBuild, liveEventV3BuildId, livePlatformV3 } from "./runtime-build.ts";
 import {
-  drainReadyEventsUnderLeaseV3,
-  eventV3Paths,
+  drainReadyEventsHeldLeaseV3,
   withEventV3LedgerLease,
   withEventV3PublicationLease,
 } from "./writer.ts";
@@ -272,7 +273,7 @@ export function rotateOversizedEventLedgerV3(
 ): RotateOversizedEventLedgerV3Result {
   const root = resolve(coordRoot);
   const threshold = options.thresholdBytes ?? resolveEventLedgerRotateActiveBytesV3(root);
-  const activePath = join(root, ".harnery", "ledgers", "v3", "active.ndjson");
+  const activePath = join(root, EVENT_V3_LEDGER_RELATIVE_ROOT, "active.ndjson");
   const measure = () => {
     try {
       return statSync(activePath).size;
@@ -511,19 +512,19 @@ function completeCandidateActivation(
 }
 
 function archiveCurrentEpoch(root: string, createdAt: string): string | undefined {
-  const current = join(root, ".harnery", "ledgers", "v3");
+  const current = join(root, EVENT_V3_LEDGER_RELATIVE_ROOT);
   if (!existsSync(current)) return undefined;
   return withEventV3PublicationLease(root, () =>
     withEventV3LedgerLease(root, {}, () => {
       const control = readEventV3ControlState(root);
       if (control.state === "active" || control.state === "candidate") {
-        drainReadyEventsUnderLeaseV3(eventV3Paths(root));
+        drainReadyEventsHeldLeaseV3(root);
       }
       // An incompatible runtime cannot promote through the current authority.
       // Validate the original schema explicitly and carry its ready bytes into
       // its own historical file. A failed validation leaves this epoch in place.
       carryReadyEventHistoryV3(current);
-      const archives = join(root, ".harnery", "ledgers", "v3-archives");
+      const archives = eventV3ArchivesRoot(root);
       mkdirSync(archives, { recursive: true, mode: stateDirMode() });
       const stamp = createdAt.replace(/[^0-9]/g, "");
       let target = join(archives, `epoch-${stamp}`);

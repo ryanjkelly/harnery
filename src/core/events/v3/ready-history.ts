@@ -16,8 +16,9 @@ import { processMayBeAlive } from "../../../lib/process-alive.ts";
 import { stateFileMode } from "../../storage/modes.ts";
 import { fsyncParentDirectory } from "../../workflow/durable-record.ts";
 import { acquireNoClobberLease } from "../../workflow/workspaces/leases.ts";
+import { eventV3ArchivesRoot } from "./archive-retention.ts";
 import { canonicalJsonV3, sha256V3 } from "./canonical.ts";
-import { readEventV3Catalog, readEventV3SegmentManifest } from "./catalog.ts";
+import { verifyRetainedSealedSegmentsV3 } from "./catalog.ts";
 import type { EventV3 } from "./contract.ts";
 import { type LedgerFrameV3, readLedgerFramesV3 } from "./reader.ts";
 import { assertEventV3 } from "./validate.ts";
@@ -46,8 +47,9 @@ export function importArchivedReadyEventsV3(
     throw new Error("ready history import requires one exact archived epoch name");
   }
   const root = resolve(coordRoot);
-  const dir = join(root, ".harnery", "ledgers", "v3-archives", epoch);
-  regularDirectory(join(root, ".harnery", "ledgers", "v3-archives"));
+  const archives = eventV3ArchivesRoot(root);
+  const dir = join(archives, epoch);
+  regularDirectory(archives);
   regularDirectory(dir);
   const run = (): ReadyHistoryImportV3 => {
     const plan = prepareReadyHistoryV3(dir, options.maxEvents ?? 1000);
@@ -131,33 +133,12 @@ function prepareReadyHistoryV3(dir: string, maxEvents: number): Plan {
         .sort()
         .map((name) => join(segments, name))
     : [];
-  const catalogPath = join(dir, "catalog.json");
-  if (existsSync(catalogPath)) {
-    regularFile(catalogPath);
-    const catalog = readEventV3Catalog(catalogPath);
-    if (
-      catalog.segments.map(({ segment_file }) => join(segments, segment_file)).join("\0") !==
-      files.join("\0")
-    ) {
-      throw new Error("ready history segment catalog does not match retained files");
-    }
-    for (const entry of catalog.segments) {
-      const path = join(segments, entry.segment_file);
-      const manifestPath = join(segments, entry.manifest_file);
-      regularFile(path);
-      regularFile(manifestPath);
-      const manifest = readEventV3SegmentManifest(manifestPath);
-      if (
-        sha256V3(readFileSync(path)) !== entry.segment_digest ||
-        sha256V3(readFileSync(manifestPath)) !== entry.manifest_digest ||
-        manifest.segment_digest !== entry.segment_digest
-      ) {
-        throw new Error("ready history sealed segment integrity failure");
-      }
-    }
-  } else if (files.length) {
-    throw new Error("ready history sealed segments require their catalog");
-  }
+  verifyRetainedSealedSegmentsV3({
+    catalogPath: join(dir, "catalog.json"),
+    segmentsDir: segments,
+    segmentFiles: files,
+    requireRegularFile: regularFile,
+  });
   const active = join(dir, "active.ndjson");
   files.push(active);
   let activeBytes = 0;

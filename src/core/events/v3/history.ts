@@ -1,7 +1,8 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { parseDurationMs } from "../../../lib/duration.ts";
 import { eventV3ArchivesRoot } from "./archive-retention.ts";
+import { EVENT_V3_LEDGER_RELATIVE_ROOT } from "./reader.ts";
 
 /**
  * Read-only search across the whole retained V3 history: the active epoch plus
@@ -10,6 +11,9 @@ import { eventV3ArchivesRoot } from "./archive-retention.ts";
  * agents conclude the ledger held a few hundred events when the archives held
  * weeks. This reader is for inspection and counting. It does not validate
  * authority; consumers that need the canonical boundary keep `readLedgerV3`.
+ * ADR 0080 records it as the one sanctioned raw inspection reader. It takes
+ * epoch locations from their owners (the canonical reader for the active
+ * epoch, archive retention for closed epochs) and never parses the catalog.
  */
 
 export interface EventHistoryEpochV3 {
@@ -78,17 +82,17 @@ export function listEventHistoryEpochsV3(coordRoot: string): Array<{
       rows.push({
         name,
         dir,
-        relative_path: `.harnery/ledgers/v3-archives/${name}`,
+        relative_path: repoRelative(coordRoot, dir),
         closed_at: new Date(`${y}-${mo}-${d}T${h}:${mi}:${s}.${ms}Z`),
       });
     }
   }
-  const active = join(coordRoot, ".harnery", "ledgers", "v3");
+  const active = join(coordRoot, EVENT_V3_LEDGER_RELATIVE_ROOT);
   if (isDirectory(active)) {
     rows.push({
       name: "active",
       dir: active,
-      relative_path: ".harnery/ledgers/v3",
+      relative_path: EVENT_V3_LEDGER_RELATIVE_ROOT,
       closed_at: null,
     });
   }
@@ -267,6 +271,10 @@ export function localStamp(iso: string, timeZone?: string): string {
   }).formatToParts(new Date(iso));
   const get = (type: string) => parts.find((part) => part.type === type)?.value ?? "00";
   return `${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")}:${get("second")}`;
+}
+
+function repoRelative(coordRoot: string, path: string): string {
+  return relative(resolve(coordRoot), path).split("\\").join("/");
 }
 
 function epochFiles(dir: string): string[] {

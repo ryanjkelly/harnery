@@ -162,6 +162,14 @@ export function drainReadyEventsV3(coordRoot: string, options: WriteEventV3Optio
   );
 }
 
+/**
+ * Drain the current epoch's ready records when the caller already holds the
+ * append lease, as an epoch cutover does before it archives the directory.
+ */
+export function drainReadyEventsHeldLeaseV3(coordRoot: string): number {
+  return drainReadyEventsUnderLeaseV3(eventV3Paths(coordRoot));
+}
+
 export function withEventV3LedgerLease<T>(
   coordRoot: string,
   options: WriteEventV3Options,

@@ -1,5 +1,6 @@
-import { readFileSync } from "node:fs";
-import { canonicalJsonV3 } from "./canonical.ts";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { canonicalJsonV3, sha256V3 } from "./canonical.ts";
 
 export interface EventV3SegmentManifest {
   format: "harnery-event-v3-segment";
@@ -43,6 +44,49 @@ export function readEventV3Catalog(path: string): EventV3Catalog {
 
 export function readEventV3SegmentManifest(path: string): EventV3SegmentManifest {
   return validateCanonicalMetadata(path, validateManifest, "V3 segment manifest");
+}
+
+/**
+ * Check a retained epoch's sealed segments against its catalog. The catalog
+ * must list exactly `segmentFiles` (absolute paths under `segmentsDir`, in
+ * order), and every segment and manifest must match its recorded digest.
+ * Sealed segments without a catalog are rejected. `requireRegularFile` lets
+ * the caller apply its own symlink and file-type policy before each read.
+ * Recovery uses this so catalog parsing stays in this module (ADR 0080).
+ */
+export function verifyRetainedSealedSegmentsV3(input: {
+  catalogPath: string;
+  segmentsDir: string;
+  segmentFiles: readonly string[];
+  requireRegularFile: (path: string) => void;
+}): void {
+  const { catalogPath, segmentsDir, segmentFiles, requireRegularFile } = input;
+  if (!existsSync(catalogPath)) {
+    if (segmentFiles.length) throw new Error("ready history sealed segments require their catalog");
+    return;
+  }
+  requireRegularFile(catalogPath);
+  const catalog = readEventV3Catalog(catalogPath);
+  if (
+    catalog.segments.map(({ segment_file }) => join(segmentsDir, segment_file)).join("\0") !==
+    segmentFiles.join("\0")
+  ) {
+    throw new Error("ready history segment catalog does not match retained files");
+  }
+  for (const entry of catalog.segments) {
+    const path = join(segmentsDir, entry.segment_file);
+    const manifestPath = join(segmentsDir, entry.manifest_file);
+    requireRegularFile(path);
+    requireRegularFile(manifestPath);
+    const manifest = readEventV3SegmentManifest(manifestPath);
+    if (
+      sha256V3(readFileSync(path)) !== entry.segment_digest ||
+      sha256V3(readFileSync(manifestPath)) !== entry.manifest_digest ||
+      manifest.segment_digest !== entry.segment_digest
+    ) {
+      throw new Error("ready history sealed segment integrity failure");
+    }
+  }
 }
 
 function validateCanonicalMetadata<T>(
