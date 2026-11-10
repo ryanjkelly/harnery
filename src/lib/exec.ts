@@ -222,7 +222,7 @@ export function exec(cmd: string[], opts: ExecOpts = {}): Promise<ExecResult> {
           "-c",
           `sleep ${termSec}; kill -TERM -${pid} 2>/dev/null; sleep ${graceSec}; kill -KILL -${pid} 2>/dev/null`,
         ],
-        { detached: true, stdio: "ignore" },
+        { detached: true, stdio: "ignore", windowsHide: true },
       );
       watchdog.unref();
       // The watchdog cannot flip `timedOut`; its exit means the deadline passed.
