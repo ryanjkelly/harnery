@@ -11,6 +11,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
+import { isHeldLockFailure, type LockDirSeam, realLockDirSeam } from "../../lib/held-lock.ts";
 import {
   AUTOUPDATE_FILES,
   type AutoUpdateConfig,
@@ -236,14 +237,15 @@ export function acquireRunLock(
   coordRoot: string,
   cfg: Pick<AutoUpdateConfig, "timeoutMinutes" | "steps" | "dailySteps">,
   now: number = Date.now(),
+  seam: LockDirSeam = realLockDirSeam,
 ): LockAttempt {
   mkdirSync(autoUpdateDir(coordRoot), { recursive: true });
   const lockDir = autoUpdateLockPath(coordRoot);
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      mkdirSync(lockDir);
+      seam.mkdir(lockDir);
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      if (!isHeldLockFailure(err, seam)) throw err;
       const inspection = inspectLock(coordRoot, cfg, now);
       if (!inspection.stale || attempt > 0) return { acquired: false, owner: inspection.owner };
       rmSync(lockDir, { recursive: true, force: true });

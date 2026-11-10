@@ -16,6 +16,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
+import { isHeldLockFailure, type LockDirSeam, realLockDirSeam } from "../../lib/held-lock.ts";
 
 export const JOURNAL_LOCK_DIR = ".lock";
 const OWNER_FILE = "owner.json";
@@ -123,7 +124,11 @@ export function holdsJournalLock(journalDir: string): boolean {
 export function withJournalLock<T>(
   journalDir: string,
   fn: () => T,
-  opts: { timeoutMs?: number } = {},
+  opts: {
+    timeoutMs?: number;
+    /** The lock's mkdir and platform; tests substitute them. */
+    lockSeam?: LockDirSeam;
+  } = {},
 ): T {
   const lockDir = join(journalDir, JOURNAL_LOCK_DIR);
   const depth = held.get(lockDir) ?? 0;
@@ -138,13 +143,14 @@ export function withJournalLock<T>(
 
   mkdirSync(journalDir, { recursive: true });
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const seam = opts.lockSeam ?? realLockDirSeam;
   const started = Date.now();
   for (;;) {
     try {
-      mkdirSync(lockDir);
+      seam.mkdir(lockDir);
       break;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if (!isHeldLockFailure(error, seam)) throw error;
     }
     if (abandoned(lockDir)) {
       breakLock(lockDir);

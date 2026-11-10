@@ -2,7 +2,15 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { addGrant, endGrants, liveGrant, logGrantEvent, readGrants } from "./grants.ts";
+import { failingLockDirSeam } from "../../../tests/helpers/lock-dir-seam.ts";
+import {
+  addGrant,
+  endGrants,
+  liveGrant,
+  logGrantEvent,
+  readGrants,
+  withGrantsLock,
+} from "./grants.ts";
 
 const NOW = Date.parse("2026-11-01T12:00:00Z");
 const dir = () => mkdtempSync(join(tmpdir(), "desktop-grants-"));
@@ -57,5 +65,36 @@ describe("desktop approvals", () => {
     const lines = readFileSync(join(d, "grants-log.ndjson"), "utf8").trim().split("\n");
     expect(lines.map((l) => JSON.parse(l).event)).toEqual(["requested", "denied"]);
     expect(JSON.parse(lines[0]!).at).toBe("2026-11-01T12:00:00.000Z");
+  });
+});
+
+describe("grants lock on Windows", () => {
+  test("EPERM from a lock folder being removed waits on win32, as EEXIST does", () => {
+    const seam = failingLockDirSeam("EPERM", "win32", 2);
+    expect(withGrantsLock(dir(), () => "ran", seam)).toBe("ran");
+    // The lock folder never existed, so the stale check's stat failed and the loop retried.
+    expect(seam.calls).toBe(3);
+  });
+
+  test("EEXIST waits the same way", () => {
+    const seam = failingLockDirSeam("EEXIST", "linux", 2);
+    expect(withGrantsLock(dir(), () => "ran", seam)).toBe("ran");
+    expect(seam.calls).toBe(3);
+  });
+
+  test("EPERM on other platforms is still a real error", () => {
+    const seam = failingLockDirSeam("EPERM", "linux");
+    let ran = false;
+    expect(() =>
+      withGrantsLock(
+        dir(),
+        () => {
+          ran = true;
+        },
+        seam,
+      ),
+    ).toThrow("EPERM");
+    expect(ran).toBe(false);
+    expect(seam.calls).toBe(1);
   });
 });

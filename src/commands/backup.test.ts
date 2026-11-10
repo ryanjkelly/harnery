@@ -3,9 +3,11 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { failingLockDirSeam } from "../../tests/helpers/lock-dir-seam.ts";
 import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import { backupConfig } from "../core/config.ts";
 import {
+  acquireSnapshotLock,
   backupCatalogCoverage,
   newestSnapshotTime,
   parseBackupDuration,
@@ -173,3 +175,34 @@ function findNamedFile(root: string, name: string): boolean {
   }
   return false;
 }
+
+describe("backup snapshot lock", () => {
+  const harneryDir = (): string => {
+    const root = mkdtempSync(join(tmpdir(), "harnery-backup-lock-"));
+    roots.push(root);
+    return join(root, ".harnery");
+  };
+
+  test("a held lock reports busy and releases", () => {
+    const dir = harneryDir();
+    const first = acquireSnapshotLock(dir);
+    expect(first.acquired).toBe(true);
+    expect(acquireSnapshotLock(dir).acquired).toBe(false);
+    first.release();
+    const again = acquireSnapshotLock(dir);
+    expect(again.acquired).toBe(true);
+    again.release();
+  });
+
+  test("EPERM from a lock folder being removed reports busy on win32, never throws", () => {
+    const seam = failingLockDirSeam("EPERM", "win32");
+    expect(acquireSnapshotLock(harneryDir(), seam).acquired).toBe(false);
+    expect(seam.calls).toBe(2);
+  });
+
+  test("EPERM on other platforms is still a real error", () => {
+    const seam = failingLockDirSeam("EPERM", "linux");
+    expect(() => acquireSnapshotLock(harneryDir(), seam)).toThrow("EPERM");
+    expect(seam.calls).toBe(1);
+  });
+});

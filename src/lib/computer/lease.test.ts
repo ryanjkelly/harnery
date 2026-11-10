@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { failingLockDirSeam } from "../../../tests/helpers/lock-dir-seam.ts";
 import { createDesktopLease, DEFAULT_LEASE_IDLE_MS, desktopLease, leaseDir } from "./lease.ts";
 import type { LeaseOwner } from "./types.ts";
 
@@ -234,5 +235,27 @@ process.stdout.write(JSON.stringify({ ok: r.ok }));
     const second = await desktopLease.acquire(B, { dir });
     expect(second.ok && second.lease.generation).toBe(2);
     expect(desktopLease.release(A, { dir })).toBe(false);
+  });
+});
+
+describe("desktop lease lock on Windows", () => {
+  test("EPERM from a lock folder being removed waits on win32, as EEXIST does", async () => {
+    for (const [code, platform] of [
+      ["EPERM", "win32"],
+      ["EEXIST", "linux"],
+    ] as const) {
+      const lockSeam = failingLockDirSeam(code, platform, 2);
+      const r = await createDesktopLease({ lockSeam }).acquire(A, { dir: freshDir() });
+      expect(r.ok).toBe(true);
+      expect(lockSeam.calls).toBe(3);
+    }
+  });
+
+  test("EPERM on other platforms is still a real error", async () => {
+    const lockSeam = failingLockDirSeam("EPERM", "linux");
+    await expect(createDesktopLease({ lockSeam }).acquire(A, { dir: freshDir() })).rejects.toThrow(
+      "EPERM",
+    );
+    expect(lockSeam.calls).toBe(1);
   });
 });

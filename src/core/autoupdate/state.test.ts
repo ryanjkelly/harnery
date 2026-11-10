@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { failingLockDirSeam } from "../../../tests/helpers/lock-dir-seam.ts";
 import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import {
   acquireRunLock,
@@ -102,5 +103,28 @@ describe("run lock", () => {
     const attempt = acquireRunLock(root, CFG, NOW);
     expect(attempt.acquired).toBe(true);
     if (attempt.acquired) attempt.release();
+  });
+});
+
+describe("run lock on Windows", () => {
+  test("EPERM from a lock folder being removed reports not acquired on win32", () => {
+    const seam = failingLockDirSeam("EPERM", "win32");
+    const attempt = acquireRunLock(root, CFG, NOW, seam);
+    expect(attempt.acquired).toBe(false);
+    if (!attempt.acquired) expect(attempt.owner).toBeNull();
+    expect(seam.calls).toBe(1);
+  });
+
+  test("a lock that clears after EPERM is taken on the next run", () => {
+    const seam = failingLockDirSeam("EPERM", "win32", 1);
+    expect(acquireRunLock(root, CFG, NOW, seam).acquired).toBe(false);
+    const attempt = acquireRunLock(root, CFG, NOW, seam);
+    expect(attempt.acquired).toBe(true);
+    if (attempt.acquired) attempt.release();
+  });
+
+  test("EPERM on other platforms is still a real error", () => {
+    const seam = failingLockDirSeam("EPERM", "linux");
+    expect(() => acquireRunLock(root, CFG, NOW, seam)).toThrow("EPERM");
   });
 });

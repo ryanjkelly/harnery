@@ -41,6 +41,7 @@ import {
 import { type BackupConfig, backupConfig } from "../core/config.ts";
 import { createStorageCatalog } from "../core/storage/catalog.ts";
 import type { HarneryStorageClass } from "../core/storage/contract.ts";
+import { isHeldLockFailure, type LockDirSeam, realLockDirSeam } from "../lib/held-lock.ts";
 
 export {
   hostSnapshotCachePath,
@@ -234,13 +235,18 @@ function lockOwnerIsAlive(lockDir: string): boolean {
   }
 }
 
-function acquireSnapshotLock(harneryDir: string): { acquired: boolean; release(): void } {
+/** Take the snapshot lock without waiting. Exported for tests; `seam`
+ * defaults to the real mkdir and platform. */
+export function acquireSnapshotLock(
+  harneryDir: string,
+  seam: LockDirSeam = realLockDirSeam,
+): { acquired: boolean; release(): void } {
   const locksDir = path.join(harneryDir, "locks");
   const lockDir = path.join(locksDir, "backup-snapshot.lock");
   mkdirSync(locksDir, { recursive: true });
   const create = (): boolean => {
     try {
-      mkdirSync(lockDir);
+      seam.mkdir(lockDir);
       writeFileSync(
         path.join(lockDir, "owner.json"),
         `${JSON.stringify({ pid: process.pid, created_at: new Date().toISOString() })}\n`,
@@ -248,7 +254,7 @@ function acquireSnapshotLock(harneryDir: string): { acquired: boolean; release()
       );
       return true;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if (!isHeldLockFailure(error, seam)) throw error;
       return false;
     }
   };

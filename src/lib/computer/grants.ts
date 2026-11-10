@@ -33,6 +33,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { isHeldLockFailure, type LockDirSeam, realLockDirSeam } from "../held-lock.ts";
 
 /** The longest a session approval lasts before the person is asked again. */
 export const SESSION_GRANT_MAX_MS = 12 * 60 * 60 * 1000;
@@ -89,23 +90,31 @@ function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-/** Run `fn` holding the grants lock (an atomic mkdir; a stale lock is broken). */
-function withLock<T>(dir: string, fn: () => T): T {
+/** Run `fn` holding the grants lock (an atomic mkdir; a stale lock is broken).
+ * Exported for tests; `seam` defaults to the real mkdir and platform. */
+export function withGrantsLock<T>(
+  dir: string,
+  fn: () => T,
+  seam: LockDirSeam = realLockDirSeam,
+): T {
   mkdirSync(dir, { recursive: true });
   const lock = join(dir, LOCK_DIR);
   const start = Date.now();
   for (;;) {
     try {
-      mkdirSync(lock);
+      seam.mkdir(lock);
       break;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if (!isHeldLockFailure(error, seam)) throw error;
       try {
         if (Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS) {
           rmSync(lock, { recursive: true, force: true });
           continue;
         }
       } catch {
+        // The lock vanished (released, or on Windows still being deleted): retry
+        // at once, but within the same deadline so a lasting EPERM cannot spin forever.
+        if (Date.now() - start > LOCK_TIMEOUT_MS) throw new Error(`timed out waiting for ${lock}`);
         continue;
       }
       if (Date.now() - start > LOCK_TIMEOUT_MS) throw new Error(`timed out waiting for ${lock}`);
@@ -178,7 +187,7 @@ export function addGrant(
     granted_at: new Date(options.nowMs).toISOString(),
     expires_at: new Date(options.nowMs + options.durationMs).toISOString(),
   };
-  withLock(dir, () => {
+  withGrantsLock(dir, () => {
     const kept = readGrants(dir).filter(
       (g) =>
         Date.parse(g.expires_at) > options.nowMs &&
@@ -198,7 +207,7 @@ export function endGrants(
   dir: string,
   options: { nowMs: number; ownerId?: string; project?: string; kind?: GrantKind },
 ): DesktopGrant[] {
-  return withLock(dir, () => {
+  return withGrantsLock(dir, () => {
     const all = readGrants(dir);
     const ended: DesktopGrant[] = [];
     const kept: DesktopGrant[] = [];

@@ -32,6 +32,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { isHeldLockFailure, type LockDirSeam, realLockDirSeam } from "../held-lock.ts";
 import type {
   DesktopLease,
   LeaseAcquireResult,
@@ -157,16 +158,16 @@ function breakLock(lockDir: string): void {
  * exist). Synchronous: the section is a few file operations, and release()
  * is synchronous in the contract.
  */
-function withLock<T>(dir: string, fn: () => T): T {
+function withLock<T>(dir: string, seam: LockDirSeam, fn: () => T): T {
   const lockDir = join(dir, LOCK_DIR);
   const token = randomUUID();
   const started = Date.now();
   for (;;) {
     try {
-      mkdirSync(lockDir);
+      seam.mkdir(lockDir);
       break;
     } catch (error) {
-      if (errCode(error) !== "EEXIST") throw error;
+      if (!isHeldLockFailure(error, seam)) throw error;
     }
     const age = lockAgeMs(lockDir);
     if (age !== undefined && age > LOCK_STALE_MS) {
@@ -211,8 +212,14 @@ type TryResult =
   | { ok: true; lease: DesktopLease; fresh: boolean }
   | { ok: false; holder: DesktopLease };
 
-function tryAcquire(owner: LeaseOwner, dir: string, nowMs: number, idleMs: number): TryResult {
-  return withLock(dir, () => {
+function tryAcquire(
+  owner: LeaseOwner,
+  dir: string,
+  nowMs: number,
+  idleMs: number,
+  seam: LockDirSeam,
+): TryResult {
+  return withLock(dir, seam, () => {
     const current = readRaw(dir);
     const nowIso = new Date(nowMs).toISOString();
     const expiresIso = new Date(nowMs + idleMs).toISOString();
@@ -240,12 +247,15 @@ function tryAcquire(owner: LeaseOwner, dir: string, nowMs: number, idleMs: numbe
 export interface DesktopLeaseDeps {
   /** Async sleep used while waiting for another owner's lease. */
   sleep?: (ms: number) => Promise<void>;
+  /** The critical-section lock's mkdir and platform; tests substitute them. */
+  lockSeam?: LockDirSeam;
 }
 
 /** Build a lease API; tests inject `sleep` (and `LeaseOptions.now`). */
 export function createDesktopLease(deps: DesktopLeaseDeps = {}): LeaseApi {
   const sleep =
     deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const lockSeam = deps.lockSeam ?? realLockDirSeam;
 
   return {
     async acquire(owner: LeaseOwner, opts: LeaseOptions): Promise<LeaseAcquireResult> {
@@ -258,7 +268,7 @@ export function createDesktopLease(deps: DesktopLeaseDeps = {}): LeaseApi {
       // Track slept time too, so a frozen injected clock cannot wait forever.
       let slept = 0;
       for (;;) {
-        const result = tryAcquire(owner, opts.dir, now(), idleMs);
+        const result = tryAcquire(owner, opts.dir, now(), idleMs, lockSeam);
         const waited = Math.max(now() - started, slept);
         if (result.ok) return result;
         const remaining = waitMs - waited;
@@ -275,7 +285,7 @@ export function createDesktopLease(deps: DesktopLeaseDeps = {}): LeaseApi {
       } catch {
         return false;
       }
-      return withLock(opts.dir, () => {
+      return withLock(opts.dir, lockSeam, () => {
         const current = readRaw(opts.dir);
         if (!current || current.owner_id !== owner.id) return false;
         const nowMs = (opts.now ?? Date.now)();

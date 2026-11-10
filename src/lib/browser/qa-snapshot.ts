@@ -25,6 +25,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
+import { isHeldLockError } from "../held-lock.js";
 import {
   PAGE_REVIEW_DECISIONS_SCHEMA,
   type PageReviewDecisionSlot,
@@ -81,17 +82,6 @@ function contextDirName(context: QaContext): string {
 
 function snapshotDir(target: string, context: QaContext, opts: QaSnapshotStoreOptions): string {
   return resolve(opts.root ?? SNAPSHOT_DIR, qaSnapshotKey(target), contextDirName(context));
-}
-
-/** True when a lock `mkdir` error means another writer holds (or is
- * releasing) the lock, so the caller should wait rather than fail. */
-export function isHeldLockError(
-  code: string | undefined,
-  platform: NodeJS.Platform = process.platform,
-): boolean {
-  if (code === "EEXIST") return true;
-  // Windows returns EPERM for mkdir while another process is deleting the lock folder.
-  return code === "EPERM" && platform === "win32";
 }
 
 /** Serialize both owned slots across processes. A stuck writer fails closed. */
