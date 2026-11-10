@@ -14,13 +14,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import {
-  existsSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-} from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import type { Command } from "commander";
@@ -1112,7 +1106,6 @@ function runIdentityAssume(
     process.exit(1);
   }
 }
-
 
 function runWhoami(opts: { json?: boolean }): void {
   if (opts.json) emit.config({ format: "json" });

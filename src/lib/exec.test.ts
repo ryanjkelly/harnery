@@ -93,7 +93,11 @@ describe.skipIf(process.platform === "win32")("exec processGroup", () => {
     try {
       const started = Date.now();
       const result = await exec(
-        ["sh", "-c", `trap '' TERM; sh -c "trap '' TERM; echo \\$\\$ > ${pidFile}; exec sleep 60" & wait`],
+        [
+          "sh",
+          "-c",
+          `trap '' TERM; sh -c "trap '' TERM; echo \\$\\$ > ${pidFile}; exec sleep 60" & wait`,
+        ],
         { timeout: 500, processGroup: { graceMs: 500, drainMs: 200 } },
       );
       grandchild = Number(readFileSync(pidFile, "utf8").trim());
@@ -116,7 +120,10 @@ describe.skipIf(process.platform === "win32")("exec processGroup", () => {
   test("a call that settles before its timeout leaves no watchdog sleep behind", async () => {
     // A distinctive timeout makes the watchdog's `sleep <seconds>` findable.
     const seconds = 7_000 + (process.pid % 1_000);
-    const result = await exec(["sh", "-c", "echo done"], { timeout: seconds * 1000, processGroup: true });
+    const result = await exec(["sh", "-c", "echo done"], {
+      timeout: seconds * 1000,
+      processGroup: true,
+    });
     expect(result.stdout).toBe("done");
     const until = Date.now() + 3_000;
     let survivors: string[] = [];

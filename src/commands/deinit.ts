@@ -160,7 +160,9 @@ export function registerDeinitCommand(program: Command, emit: EmitContext, binNa
         if (!coordExists) {
           actions.push("· .harnery/ doesn't exist; nothing to purge");
         } else if (dryRun) {
-          actions.push("+ would delete .harnery/ and all coord state (events, identities, journal)");
+          actions.push(
+            "+ would delete .harnery/ and all coord state (events, identities, journal)",
+          );
         } else {
           rmSync(coordDir, { recursive: true, force: true });
           actions.push("+ deleted .harnery/ and all coord state");

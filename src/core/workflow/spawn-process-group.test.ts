@@ -7,7 +7,7 @@ import { claudeCodeSpawner } from "./spawn-claude.ts";
 import { codexSpawner } from "./spawn-codex.ts";
 import { cursorSpawner } from "./spawn-cursor.ts";
 import { openCodeSpawner } from "./spawn-opencode.ts";
-import type { SpawnRequest, Spawner } from "./types.ts";
+import type { Spawner, SpawnRequest } from "./types.ts";
 
 // Each fake harness ignores SIGTERM and starts a grandchild that also ignores
 // it and keeps the output pipes open. A timed-out spawn must stop both.
@@ -41,7 +41,8 @@ const ADAPTERS: [string, Spawner][] = [
 
 beforeEach(() => {
   binDir = mkdtempSync(join(tmpdir(), "spawn-pgroup-test-"));
-  for (const [name] of ADAPTERS) plantFakeCli(binDir, name, fakeHarness(name).replace("__DIR__", binDir));
+  for (const [name] of ADAPTERS)
+    plantFakeCli(binDir, name, fakeHarness(name).replace("__DIR__", binDir));
   savedPath = process.env.PATH;
   process.env.PATH = `${binDir}${delimiter}${savedPath ?? ""}`;
 });

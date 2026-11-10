@@ -182,7 +182,11 @@ export function exec(cmd: string[], opts: ExecOpts = {}): Promise<ExecResult> {
     const collect = (sink: Buffer[], d: Buffer): void => {
       sink.push(d);
       outBytes += d.length;
-      if (opts.maxOutputBytes !== undefined && outBytes > opts.maxOutputBytes && !outputLimitExceeded) {
+      if (
+        opts.maxOutputBytes !== undefined &&
+        outBytes > opts.maxOutputBytes &&
+        !outputLimitExceeded
+      ) {
         outputLimitExceeded = true;
         signalChild("SIGKILL");
       }
@@ -214,7 +218,10 @@ export function exec(cmd: string[], opts: ExecOpts = {}): Promise<ExecResult> {
       const graceSec = Math.max(1, Math.ceil(graceMs / 1000));
       watchdog = spawn(
         "sh",
-        ["-c", `sleep ${termSec}; kill -TERM -${pid} 2>/dev/null; sleep ${graceSec}; kill -KILL -${pid} 2>/dev/null`],
+        [
+          "-c",
+          `sleep ${termSec}; kill -TERM -${pid} 2>/dev/null; sleep ${graceSec}; kill -KILL -${pid} 2>/dev/null`,
+        ],
         { detached: true, stdio: "ignore" },
       );
       watchdog.unref();
