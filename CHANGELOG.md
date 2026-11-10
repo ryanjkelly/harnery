@@ -1,5 +1,62 @@
 # Changelog
 
+## 0.50.0
+
+### Minor Changes
+
+- ba2b136: Agent sign-in is now a per-person setting, off by default. A project that sets `computer.sign_in: true` lets each person run `harn computer sign-in on` (or use the new Off/On choice on the dashboard's Permissions page), which asks them in a Yes/No pop-up first. With it on, the `harn-computer` skill tells agents to sign in to websites in the person's own browser by choosing the matching login in their password manager's extension, never typing credentials; locked vaults, passkeys, hardware keys, system prompts and codes sent to the person still go to the person. `harn computer status` shows a `sign-in:` line and reports `sign_in`, `project_sign_in` and `sign_in_source` in JSON. The choice lives in `computer.json` beside the person's mode and never turns on where the project or the person's own desktop mode is off.
+- e413bd5: Human-facing times follow a configurable time zone instead of a fixed one. `resolveTimeZone()` reads `HARNERY_TIME_ZONE`, then the project's `.harnery/config.jsonc` `timeZone`, then the user-global `timeZone`, then the system zone, then UTC. An invalid value is skipped with a warning, and `harn doctor` reports it as a failure.
+
+  Journal timestamps now carry a numeric UTC offset (`## 2026-11-07 10:38 PM -06:00 · note`, and the same form for `started:` and `last_updated:`). The CLI and the dashboard share one journal codec, and every journal write holds one lock. `harn journal migrate` rewrites timestamps from the retired zone-abbreviation format (dry run unless `--yes`; covers archives; saves originals; idempotent), and the session-start janitor runs it automatically. Writers refuse a journal that still has retired timestamps and name the command.
+
+  Breaking: `harn context --json` reports `time.local` and `time.zone` in place of the zone-named time field, and the journal module's `formatChicago` export is replaced by `formatJournalTimestamp(date, zone)` and `formatJournalNow()`.
+
+- a43c75a: Breaking: remove durable work, the governor and councils (ADR 0238).
+
+  - The `harn work`, `harn governor` and `harn council` commands are gone. Scripts that call them now fail with an unknown-command error.
+  - Five package exports are removed: `./core/work`, `./core/work/state`, `./core/governor`, `./core/governor/state` and `./core/governor/plans`. Importers must drop them.
+  - `harn init` no longer installs the `harn-team` and `harn-council` skills, and the generated agent instructions no longer describe teams or councils.
+  - The dashboard drops the `/work`, `/governors` and `/councils` pages and the `/api/councils` routes.
+  - Workflow scripts no longer receive `ctx.work` or `ctx.attempt`. The `WorkflowWorkContext` and `WorkflowAttemptContext` types, their helpers, and the `WORKFLOW_WORK_CONTEXT_SCHEMA_VERSION` and `WORKFLOW_ATTEMPT_CONTEXT_SCHEMA_VERSION` constants are removed.
+  - The workspace provider's `cancelWorkspace` export and its `CancelWorkspaceInput` type are removed; only work items used them.
+  - Stored run manifests keep their work-item fields as read-only history, so older runs still load. `harn run integration prepare` refuses a run whose workspace a work item owned.
+  - `harn run integration prepare` now requires `--reviewer <name>` and says so before doing any work.
+  - `harn init` removes Harnery-generated skill folders whose skill it no longer ships, so existing projects lose their `harn-team` and `harn-council` folders. Folders without Harnery's generated marker are left alone.
+  - The supervisor no longer discovers a governor service, and the storage catalog drops the `governor-service`, `governor-service-log`, `governor-history`, `work-item-history`, `council-history` and `agent-mailbox-history` entries.
+
+  Durable execution is retired without a replacement: nothing in Harnery restarts, retries or accepts a long objective on its own any more. `harn run` still runs a scripted fan-out, and a run that parks for approval is still resolved with `harn approval`. Records already stored under `.harnery/work`, `.harnery/governors`, `.harnery/governor-service`, `.harnery/councils` and `.harnery/mailbox` are no longer read; archive them before deleting them if you want to keep them. `harn storage retire <name>` removes each of those folders after a preview.
+
+- d9737f0: Add `harn storage retire [name]`, which removes the record folders that removed features left in `.harnery` (ADR 0239). Without a name it lists the retired folders, whether each exists, and its file and byte counts. With a name it previews the counts and an inventory digest and changes nothing; `--yes --inventory-sha256 <digest>` deletes the folder after checking that nothing changed. Only the listed folders (`work`, `governors`, `governor-service`, `councils` and `mailbox`) are eligible, and retirement never runs automatically. `harn rm` no longer suggests `--allow-protected` for the live workspace's own `.git` or `.harnery`, which it can never accept.
+
+### Patch Changes
+
+- 443d5d6: The browse layout lint's clip check measures text at its line box. When a fixed line-height is shorter than the font's content area (common with Segoe UI, the Windows `system-ui` font), the text box overhangs the line by a fraction of a pixel on each side, and every tight line inside an `overflow: hidden` box was reported as clipped. Text that really runs past a clipping container is still reported.
+- 8134e71: `harn docs` works on native Windows. Its metadata sync, lint, link check, index and sweep ran Git through `sh -c`, which a Windows host without a POSIX shell on its PATH cannot start; they now run Git directly. Lint, metadata audit and sweep report repository paths with forward slashes on every OS, so their results match Git's paths (the sweep previously missed file ages on Windows). `harn env` lists Docker containers without a shell too.
+- dfc183c: `harn run` now stops a timed-out agent CLI together with every process it started. The four spawn adapters (Claude Code, Codex, Cursor, OpenCode) start their child in its own process group and, on timeout, send the group SIGTERM, wait a grace period, then send SIGKILL; a detached watchdog enforces the same deadline even when the parent's event loop is busy, and the call returns when the child exits instead of waiting for pipes a leftover descendant holds. Live groups are also stopped when the parent exits or receives SIGINT, SIGTERM or SIGHUP. The toolkit's `exec()` gains the `processGroup`, `maxOutputBytes` and `raw` options and reports `signal` and `outputLimitExceeded`; callers that pass none of them behave as before. On Windows the option keeps the single-child kill.
+- e665d19: The toolkit now exports `exec()` as `harnery/lib/exec`, so an embedding host can run an agent CLI under the same process-group supervision that `harn run` uses. In `processGroup` mode, a call that finishes before its deadline now stops the whole watchdog group, so no watchdog `sleep` is left running until the timeout.
+- c6526e3: `init` now removes a generated skill folder that Harnery no longer ships from every adapter's skill directory, not only the active adapter's. A project initialised for Claude Code that also carried `.agents/skills/` copies kept the retired `harn-team` and `harn-council` folders there.
+- c7dbd04: On Windows, the prompt-context provider's allowlisted environment matches variable names without regard to case, so a host environment that spells PATH as `Path` still passes it to the provider.
+- 6c48168: `harn computer status --json` and `harn computer sign-in --json` report `person_sign_in`, the person's saved agent sign-in choice before the project and desktop gates. When their own desktop mode is off, the `sign-in:` status line says a saved `on` is inactive, returns with desktop control, and can be removed with `sign-in off`. The dashboard's Permissions page no longer treats a person's own computer-use Off as the project's, so the mode buttons stay available; it shows invalid computer settings as an error, keeps sign-in Off selectable while computer use is off, and allows one settings change at a time across its routes.
+- 3db4d55: Reading the Chrome version on Windows no longer opens a browser window. `chrome.exe` has no console `--version`: running it starts the browser, and with Chrome already open it opened a blank New Tab window in the operator's Chrome on every headless browse launch. On Windows the version now comes from the executable's version resource, and nothing runs.
+- 2983065: Claim paths and search work on Windows:
+
+  - A failed Edit or Write now releases its claim on Windows. The hook compared the `C:\...` target with the stored repository-relative claim and never matched.
+  - Without required Git finalization, the claim guard keys a Windows absolute path inside the repository as a forward-slash relative path and skips one outside it. It used to treat any `C:\...` path as repository-relative.
+  - `agents release-claim`, the shell-mutation hint and the committed-clean check strip the repository root from Windows paths.
+  - Server attribution and sandbox writable-root containment accept `\` as a Windows path separator.
+  - `harn grep` and `harn callers` say to install ripgrep on Windows when neither ripgrep nor GNU grep is available, and `harn grep --files` no longer runs Windows `FIND.exe`.
+
+- 4dda8b8: More of Harnery runs on native Windows:
+
+  - Headless runs and workflow spawns start CLIs that npm installed as `.cmd` launchers (`codex`, `cursor-agent`, often `claude`). Node and Bun refuse to spawn a batch file without a shell, so Harnery reads the script an npm launcher runs and starts it with Node directly, with no `cmd.exe` quoting of prompt text. Other batch launchers get a clear error instead of `spawn EINVAL`.
+  - Host prompt-context providers can run on Windows. Windows cannot start the extensionless `scripts/hooks/harness/extensions/prompt-context`, so there Harnery looks for `prompt-context.exe`, then `prompt-context.mjs` or `.js`, which it runs with the hook's own runtime.
+  - The workspace provider's isolated Git keeps the system `core.autocrlf` on Windows, so a normal Git for Windows checkout no longer looks modified.
+  - Server port allocation sees listening ports on Windows (from `netstat`) instead of none, so it no longer hands out a port that is in use.
+  - Imported Claude desktop sessions remap Windows home paths that continue with `\`.
+
+- d2f312b: Two path checks work on Windows. Recording a page-QA signal no longer refuses every write as escaping `.harnery/qa/`: the containment check used a `/` separator that Windows paths never contain. `harn rm`'s clean-clone mode no longer refuses every clone as a linked worktree: it compared Git's forward-slash worktree path with the Windows path as text, and now compares real paths.
+- 0ed7b5d: On Windows, overwriting a ZIP retries briefly when a scanner or indexer still holds the previous archive open. The workspace provider's isolated Git now carries the system `core.autocrlf` as a minimal system config file, so a user's global or repository setting still takes precedence.
+
 ## 0.49.1
 
 ### Patch Changes
