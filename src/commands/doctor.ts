@@ -8,7 +8,12 @@
  *   ⚠ warn: optional dep missing (feature degrades)
  *   ✗ fail: required dep missing (commands will throw)
  *
- * Exits 0 unless a required dep is missing.
+ * Every check also has a scope. A `runtime` check describes something
+ * Harnery itself runs on or uses; a failing one always exits 1. An
+ * `environment` check describes the surrounding machine, such as the
+ * `node` on PATH while Harnery runs on Bun. A failing environment check
+ * exits 1 too, unless the project sets `doctor.environmentFindings` to
+ * `"report"` (see `doctorOutcome`).
  */
 
 import { spawnSync } from "node:child_process";
@@ -20,6 +25,8 @@ import type { EmitContext } from "../commander.ts";
 import { BUILTIN_ADAPTER_IDS } from "../core/adapters/index.ts";
 import {
   codexWindowsBridgeConfig,
+  type DoctorEnvironmentFindings,
+  doctorEnvironmentFindings,
   inspectTimeZone,
   resolveBinName,
   ripgrepAutoInstall,
@@ -53,8 +60,16 @@ import { findRg, installRg, managedRgPath, rgInstallSupported } from "../lib/too
 
 type Severity = "ok" | "warn" | "fail";
 
+/**
+ * `runtime`: Harnery cannot run safely or correctly while this fails.
+ * `environment`: a finding about the machine that Harnery itself does not
+ * depend on. When unsure, a check is `runtime`, the strict side.
+ */
+export type CheckScope = "runtime" | "environment";
+
 export interface Check {
   name: string;
+  scope: CheckScope;
   severity: Severity;
   detail: string;
   hint?: string;
@@ -69,8 +84,9 @@ export function registerDoctorCommand(program: Command, emit: EmitContext): void
   program
     .command("doctor")
     .description(
-      "Verify the runtime + optional deps harnery commands expect. Exits 0 " +
-        "unless a required dep (Node, git) is missing.",
+      "Verify the runtime + optional deps harnery commands expect. Exits 1 " +
+        "when a check fails; a project can report failing environment checks " +
+        "without failing (doctor.environmentFindings).",
     )
     .option("--json", "Machine-readable JSON output")
     .option(
@@ -86,36 +102,96 @@ export function registerDoctorCommand(program: Command, emit: EmitContext): void
         }
       }
       const checks = await runChecks();
-      const requiredFailed = checks.some((c) => c.severity === "fail");
-
-      if (opts.json) {
-        emit.data({
-          checks,
-          summary: {
-            total: checks.length,
-            ok: checks.filter((c) => c.severity === "ok").length,
-            warn: checks.filter((c) => c.severity === "warn").length,
-            fail: checks.filter((c) => c.severity === "fail").length,
-          },
-        });
-        emit.setExitCode(requiredFailed ? 1 : 0);
-        return;
-      }
-
-      const symbols: Record<Severity, string> = { ok: "✓", warn: "⚠", fail: "✗" };
-      const widest = Math.max(...checks.map((c) => c.name.length));
-      const lines: string[] = [];
-      for (const c of checks) {
-        lines.push(`${symbols[c.severity]} ${c.name.padEnd(widest)}  ${c.detail}`);
-        if (c.hint) lines.push(`    ↳ ${c.hint}`);
-      }
-
-      const summary = `\n${checks.filter((c) => c.severity === "ok").length} ok, ${
-        checks.filter((c) => c.severity === "warn").length
-      } warn, ${checks.filter((c) => c.severity === "fail").length} fail`;
-      emit.text(`${lines.join("\n")}${summary}`);
-      emit.setExitCode(requiredFailed ? 1 : 0);
+      const report = doctorReport(checks, doctorEnvironmentFindings(findCoordProjectRoot()));
+      if (opts.json) emit.data(report.json);
+      else emit.text(report.text);
+      emit.setExitCode(report.exitCode);
     });
+}
+
+/** The `--json` payload, the text report and the exit code for one run. */
+export function doctorReport(
+  checks: Check[],
+  setting: { mode: DoctorEnvironmentFindings; error: string | null },
+): { json: Record<string, unknown>; text: string; exitCode: 0 | 1 } {
+  const outcome = doctorOutcome(checks, setting.mode);
+  const all = setting.error ? [...checks, doctorSettingCheck(setting.error)] : checks;
+  const count = (severity: Severity) => all.filter((c) => c.severity === severity).length;
+  const json = {
+    checks: all,
+    summary: {
+      total: all.length,
+      ok: count("ok"),
+      warn: count("warn"),
+      fail: count("fail"),
+      runtimeFail: outcome.runtimeFail,
+      environmentFail: outcome.environmentFail,
+    },
+    environmentFindings: setting.mode,
+    outcome: outcome.outcome,
+  };
+
+  const symbols: Record<Severity, string> = { ok: "✓", warn: "⚠", fail: "✗" };
+  const widest = Math.max(...all.map((c) => c.name.length));
+  const lines: string[] = [];
+  for (const c of all) {
+    lines.push(`${symbols[c.severity]} ${c.name.padEnd(widest)}  ${c.detail}`);
+    if (c.hint) lines.push(`    ↳ ${c.hint}`);
+    if (c.scope === "environment" && c.severity === "fail") {
+      lines.push(
+        setting.mode === "report"
+          ? '    ↳ environment finding: Harnery does not run on this; reported without failing (doctor.environmentFindings is "report")'
+          : "    ↳ environment finding: Harnery does not run on this, but it still fails doctor",
+      );
+    }
+  }
+  let summary = `\n${count("ok")} ok, ${count("warn")} warn, ${count("fail")} fail`;
+  if (outcome.outcome === "reported") {
+    summary += ` (${outcome.environmentFail} environment finding${
+      outcome.environmentFail === 1 ? "" : "s"
+    } reported without failing)`;
+  }
+  return { json, text: `${lines.join("\n")}${summary}`, exitCode: outcome.exitCode };
+}
+
+export interface DoctorOutcome {
+  /** `pass`: nothing failed. `reported`: only environment checks failed and the project reports them. `fail`: exit 1. */
+  outcome: "pass" | "reported" | "fail";
+  exitCode: 0 | 1;
+  runtimeFail: number;
+  environmentFail: number;
+}
+
+/**
+ * Decide the exit code. A failing runtime check always fails; no setting
+ * changes that. Failing environment checks fail too unless the project
+ * opted in with `doctor.environmentFindings: "report"`, in which case they
+ * stay in the report and the outcome is `reported`.
+ */
+export function doctorOutcome(checks: Check[], mode: DoctorEnvironmentFindings): DoctorOutcome {
+  const failing = checks.filter((c) => c.severity === "fail");
+  const runtimeFail = failing.filter((c) => c.scope !== "environment").length;
+  const environmentFail = failing.length - runtimeFail;
+  if (runtimeFail > 0 || (environmentFail > 0 && mode === "fail")) {
+    return { outcome: "fail", exitCode: 1, runtimeFail, environmentFail };
+  }
+  return {
+    outcome: environmentFail > 0 ? "reported" : "pass",
+    exitCode: 0,
+    runtimeFail,
+    environmentFail,
+  };
+}
+
+/** Shown only when `doctor.environmentFindings` holds a value doctor ignored. */
+function doctorSettingCheck(error: string): Check {
+  return {
+    name: "doctor settings",
+    scope: "runtime",
+    severity: "warn",
+    detail: `${error}; environment findings fail doctor`,
+    hint: 'set doctor.environmentFindings to "fail" or "report" in .harnery/config.jsonc',
+  };
 }
 
 export async function runChecks(): Promise<Check[]> {
@@ -155,13 +231,19 @@ export async function runChecks(): Promise<Check[]> {
 function checkGitHookRegions(): Check {
   const root = findCoordProjectRoot();
   if (!root) {
-    return { name: "git hooks", severity: "ok", detail: "n/a (no .harnery/ above cwd)" };
+    return {
+      name: "git hooks",
+      scope: "runtime",
+      severity: "ok",
+      detail: "n/a (no .harnery/ above cwd)",
+    };
   }
   try {
     if (!gitHooksInstalled(root)) {
       const bin = resolveBinName(root);
       return {
         name: "git hooks",
+        scope: "runtime",
         severity: "warn",
         detail:
           `not installed - commits are not guarded against peer-claim conflicts and ` +
@@ -170,12 +252,18 @@ function checkGitHookRegions(): Check {
     }
     const { status, issues } = checkGitHooks(root);
     if (status === "fresh") {
-      return { name: "git hooks", severity: "ok", detail: "managed regions current" };
+      return {
+        name: "git hooks",
+        scope: "runtime",
+        severity: "ok",
+        detail: "managed regions current",
+      };
     }
-    return { name: "git hooks", severity: "warn", detail: issues.join("; ") };
+    return { name: "git hooks", scope: "runtime", severity: "warn", detail: issues.join("; ") };
   } catch (err) {
     return {
       name: "git hooks",
+      scope: "runtime",
       severity: "warn",
       detail: `check failed: ${(err as Error).message}`,
     };
@@ -193,6 +281,7 @@ export function codexWslBridgeCheck(
       : `${recentMidFlightCount} Codex mid-flight onboarding${recentMidFlightCount === 1 ? "" : "s"} recorded in the last 48h`;
   return {
     name: "codex:WSL bridge",
+    scope: "runtime",
     severity: status?.ok && !historical ? "ok" : "warn",
     detail: [status?.detail, historical].filter(Boolean).join("; "),
     hint:
@@ -218,6 +307,7 @@ export function codexHookRunsCheck(
   const events = runs.events.map((e) => `${e.event} ×${e.count}`).join(", ");
   return {
     name: "codex:hook runs",
+    scope: "runtime",
     severity: "warn",
     detail:
       `${runs.count} hook run${runs.count === 1 ? "" : "s"} started but never finished in the last 24h ` +
@@ -239,12 +329,13 @@ export function timeZoneCheck(resolution: TimeZoneResolution): Check {
       .join("; ");
     return {
       name: "time zone",
+      scope: "runtime",
       severity: "fail",
       detail: `invalid setting ${bad}; using ${using}`,
       hint: 'set an IANA zone name such as "Europe/Berlin" or "UTC", or remove the setting to use the system zone',
     };
   }
-  return { name: "time zone", severity: "ok", detail: using };
+  return { name: "time zone", scope: "runtime", severity: "ok", detail: using };
 }
 
 /** Report the per-project Windows bridge opt-in, or an invalid value init ignored. */
@@ -254,6 +345,7 @@ export function codexWindowsBridgeCheck(coordRoot: string | null): Check | null 
   if (bridge.error) {
     return {
       name: "codex:Windows hook route",
+      scope: "runtime",
       severity: "warn",
       detail: `${bridge.error}; Codex hooks are wired without commandWindows`,
       hint: "set hooks.codexWindowsBridge.entryPoint to a plain command name in .harnery/config.jsonc, then re-run init",
@@ -262,6 +354,7 @@ export function codexWindowsBridgeCheck(coordRoot: string | null): Check | null 
   if (!bridge.entryPoint) return null;
   return {
     name: "codex:Windows hook route",
+    scope: "runtime",
     severity: "ok",
     detail:
       `opted in: Windows-native Codex hooks hand off to \`${bridge.entryPoint}\` from WSL paths ` +
@@ -325,11 +418,17 @@ export function codexAuthorizationCheck(result: CodexHookAuthorizationResult): C
   const reviewHint =
     "terminal UI: run `/hooks`; Codex Desktop: open Settings > Hooks; after approval, start a fresh task";
   if (result.status === "runnable") {
-    return { name: "codex:hook authorization", severity: "ok", detail: result.detail };
+    return {
+      name: "codex:hook authorization",
+      scope: "runtime",
+      severity: "ok",
+      detail: result.detail,
+    };
   }
   if (result.status === "review_required" || result.status === "disabled") {
     return {
       name: "codex:hook authorization",
+      scope: "runtime",
       severity: "warn",
       detail: result.detail,
       hint: reviewHint,
@@ -337,6 +436,7 @@ export function codexAuthorizationCheck(result: CodexHookAuthorizationResult): C
   }
   return {
     name: "codex:hook authorization",
+    scope: "runtime",
     severity: "warn",
     detail: `authorization unverified: ${result.detail}`,
     hint: reviewHint,
@@ -353,6 +453,7 @@ async function checkCodexHookAuthorization(
   if (codexWslStatus) {
     return {
       name: "codex:hook authorization",
+      scope: "runtime",
       severity: "warn",
       detail:
         "unverified from WSL; the Windows-native Codex runtime owns this workspace's trust state",
@@ -371,6 +472,7 @@ function checkRipgrep(): Check {
     const managed = found === managedRgPath() ? ", managed" : "";
     return {
       name: "ripgrep",
+      scope: "runtime",
       severity: "ok",
       detail: `${r.out.replace(/^ripgrep\s*/, "")} (${found === "rg" ? "PATH" : found}${managed})`,
     };
@@ -378,6 +480,7 @@ function checkRipgrep(): Check {
   if (!rgInstallSupported()) {
     return {
       name: "ripgrep",
+      scope: "runtime",
       severity: "warn",
       detail: "missing (grep fallback; no pinned artifact for this OS/arch)",
       hint: "https://github.com/BurntSushi/ripgrep#installation",
@@ -386,12 +489,14 @@ function checkRipgrep(): Check {
   if (ripgrepAutoInstall()) {
     return {
       name: "ripgrep",
+      scope: "runtime",
       severity: "warn",
       detail: "missing (autoInstall on: will self-provision on first grep)",
     };
   }
   return {
     name: "ripgrep",
+    scope: "runtime",
     severity: "warn",
     detail: "missing (grep fallback works, just slower)",
     hint: `${resolveBinName()} doctor --fix  (pinned + checksum-verified, installs to the harnery tools dir)`,
@@ -421,6 +526,7 @@ function checkWorkflowAdapter(adapter: AdapterName): { check: Check; installed: 
     return {
       check: {
         name,
+        scope: "runtime",
         severity: "warn",
         detail: `${bin} missing (workflow --adapter ${adapter} unavailable)`,
         hint: `${ADAPTER_INSTALL_HINTS[adapter]}  then: ${ADAPTER_LOGIN_HINTS[adapter]}`,
@@ -433,6 +539,7 @@ function checkWorkflowAdapter(adapter: AdapterName): { check: Check; installed: 
     return {
       check: {
         name,
+        scope: "runtime",
         severity: "warn",
         detail: `${r.out} — installed, but no stored login or API key detected`,
         hint: ADAPTER_LOGIN_HINTS[adapter],
@@ -446,7 +553,10 @@ function checkWorkflowAdapter(adapter: AdapterName): { check: Check; installed: 
         ? "billing: subscription"
         : "billing: subscription (login unverifiable, CLI is the authority)"
       : `billing: ${probe.mode} (${probe.apiKeySource})`;
-  return { check: { name, severity: "ok", detail: `${r.out} — ${billing}` }, installed: true };
+  return {
+    check: { name, scope: "runtime", severity: "ok", detail: `${r.out} — ${billing}` },
+    installed: true,
+  };
 }
 
 function checkNode(): Check {
@@ -457,17 +567,22 @@ function checkNode(): Check {
  * Report the `node` on PATH, which is what Node-based tools run. Under Bun,
  * `process.versions.node` is the Node version Bun emulates, not an installed
  * Node, so it is used only when doctor itself runs on Node and PATH has none.
+ *
+ * The scope follows the runtime: on Node.js this is the runtime Harnery runs
+ * on; on Bun it is only the machine's `node`, an environment finding.
  */
 export function nodeCheck(
   onPath: { ok: boolean; out: string },
   runtime: { node: string; bun?: string },
 ): Check {
   const hint = "https://nodejs.org/en/download";
+  const scope: CheckScope = runtime.bun ? "environment" : "runtime";
   let v = onPath.ok ? onPath.out.replace(/^v/, "") : "";
   if (!v) {
     if (runtime.bun) {
       return {
         name: "node",
+        scope,
         severity: "warn",
         detail: "not on PATH (Bun runs harnery; Node-based tools need it)",
         hint,
@@ -486,12 +601,13 @@ export function nodeCheck(
   ) {
     return {
       name: "node",
+      scope,
       severity: "fail",
       detail: `${v} (need 22.23.4+, 24.22.1+, or 26.12.1+ on a supported line)`,
       hint,
     };
   }
-  return { name: "node", severity: "ok", detail: v };
+  return { name: "node", scope, severity: "ok", detail: v };
 }
 
 function checkGit(): Check {
@@ -499,12 +615,18 @@ function checkGit(): Check {
   if (!r.ok) {
     return {
       name: "git",
+      scope: "runtime",
       severity: "fail",
       detail: "missing",
       hint: macOrLinux("brew install git", "apt-get install -y git"),
     };
   }
-  return { name: "git", severity: "ok", detail: r.out.replace(/^git version\s*/, "") };
+  return {
+    name: "git",
+    scope: "runtime",
+    severity: "ok",
+    detail: r.out.replace(/^git version\s*/, ""),
+  };
 }
 
 function checkBun(): Check {
@@ -512,6 +634,7 @@ function checkBun(): Check {
   if (!r.ok) {
     return {
       name: "bun",
+      scope: "runtime",
       severity: "warn",
       detail: "missing (Node-only mode: fine, just slower than bun-native)",
       hint: "curl -fsSL https://bun.sh/install | bash",
@@ -526,12 +649,13 @@ export function bunCheck(version: string): Check {
   if (!match || !(major > 1 || (major === 1 && (minor > 4 || (minor === 4 && patch >= 4))))) {
     return {
       name: "bun",
+      scope: "runtime",
       severity: "fail",
       detail: `${version} (need ≥ 1.4.4 for the Brotli decoder fix)`,
       hint: "https://bun.sh/docs/installation",
     };
   }
-  return { name: "bun", severity: "ok", detail: version };
+  return { name: "bun", scope: "runtime", severity: "ok", detail: version };
 }
 
 function checkRestic(): Check {
@@ -539,12 +663,13 @@ function checkRestic(): Check {
   if (!r.ok) {
     return {
       name: "restic",
+      scope: "runtime",
       severity: "warn",
       detail: "missing (needed for `harn backup`)",
       hint: macOrLinux("brew install restic", "apt-get install -y restic"),
     };
   }
-  return { name: "restic", severity: "ok", detail: r.out };
+  return { name: "restic", scope: "runtime", severity: "ok", detail: r.out };
 }
 
 function checkRclone(): Check {
@@ -552,13 +677,14 @@ function checkRclone(): Check {
   if (!r.ok) {
     return {
       name: "rclone",
+      scope: "runtime",
       severity: "warn",
       detail: "missing (needed for `harn sync`)",
       hint: "curl https://rclone.org/install.sh | sudo bash",
     };
   }
   // first line is "rclone v1.XX.X"
-  return { name: "rclone", severity: "ok", detail: r.out };
+  return { name: "rclone", scope: "runtime", severity: "ok", detail: r.out };
 }
 
 function checkPlaywright(): Check {
@@ -569,6 +695,7 @@ function checkPlaywright(): Check {
   } catch {
     return {
       name: "playwright",
+      scope: "runtime",
       severity: "warn",
       detail: "module missing (needed for `harn browse`)",
       hint: "npm install -g playwright && npx playwright install chromium",
@@ -584,24 +711,32 @@ function checkPlaywright(): Check {
   if (!found) {
     return {
       name: "playwright",
+      scope: "runtime",
       severity: "warn",
       detail: "module ok but no browsers installed",
       hint: "npx playwright install chromium",
     };
   }
-  return { name: "playwright", severity: "ok", detail: `module + browsers at ${found}` };
+  return {
+    name: "playwright",
+    scope: "runtime",
+    severity: "ok",
+    detail: `module + browsers at ${found}`,
+  };
 }
 
+/** Environment: nothing in Harnery runs Python; only some examples do. */
 function checkPython(): Check {
   const r = whichVersion("python3");
   if (!r.ok) {
     return {
       name: "python3",
+      scope: "environment",
       severity: "warn",
       detail: "missing (optional; some examples use python)",
     };
   }
-  return { name: "python3", severity: "ok", detail: r.out };
+  return { name: "python3", scope: "environment", severity: "ok", detail: r.out };
 }
 
 /** Walk up from cwd to the nearest dir containing `.harnery/`; null if none. */
@@ -619,10 +754,16 @@ function findCoordProjectRoot(): string | null {
 function checkHarneryDir(): Check {
   const root = findCoordProjectRoot();
   if (root) {
-    return { name: ".harnery/", severity: "ok", detail: path.join(root, ".harnery") };
+    return {
+      name: ".harnery/",
+      scope: "runtime",
+      severity: "ok",
+      detail: path.join(root, ".harnery"),
+    };
   }
   return {
     name: ".harnery/",
+    scope: "runtime",
     severity: "warn",
     detail: "no .harnery/ found above cwd",
     hint: `initialize the project with \`${resolveBinName()} init\` from the repository root`,
@@ -640,7 +781,12 @@ function checkHarneryDir(): Check {
 function checkAdapterHooks(installedAdapters: AdapterId[] = []): Check {
   const root = findCoordProjectRoot();
   if (!root) {
-    return { name: "adapter hooks", severity: "ok", detail: "n/a (no .harnery/ above cwd)" };
+    return {
+      name: "adapter hooks",
+      scope: "runtime",
+      severity: "ok",
+      detail: "n/a (no .harnery/ above cwd)",
+    };
   }
   const drift = loadAdapterWiring(root);
   // A adapter with zero harnery hooks is only worth flagging when the project
@@ -653,7 +799,7 @@ function checkAdapterHooks(installedAdapters: AdapterId[] = []): Check {
   const unwired =
     summary.wired.length > 0 ? summary.unwired.filter((id) => installedAdapters.includes(id)) : [];
   if (drift.length === 0 && unwired.length === 0) {
-    return { name: "adapter hooks", severity: "ok", detail: "wired + current" };
+    return { name: "adapter hooks", scope: "runtime", severity: "ok", detail: "wired + current" };
   }
   const bin = resolveBinName(root);
   const parts = drift.map((d) => {
@@ -709,7 +855,13 @@ function checkAdapterHooks(installedAdapters: AdapterId[] = []): Check {
   } else {
     hint = `run ${wireHints.join(" and ")} (idempotent, additive)`;
   }
-  return { name: "adapter hooks", severity: "warn", detail: parts.join("  |  "), hint };
+  return {
+    name: "adapter hooks",
+    scope: "runtime",
+    severity: "warn",
+    detail: parts.join("  |  "),
+    hint,
+  };
 }
 
 function macOrLinux(mac: string, linux: string): string {

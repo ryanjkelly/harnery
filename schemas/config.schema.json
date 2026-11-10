@@ -460,6 +460,19 @@
         }
       }
     },
+    "doctor": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "How `harn doctor` treats failing checks. Project config only.",
+      "properties": {
+        "environmentFindings": {
+          "type": "string",
+          "enum": ["fail", "report"],
+          "default": "fail",
+          "description": "`report` keeps failing environment-scope checks in the report and exits 0 when no runtime-scope check fails. A failing runtime check always exits 1."
+        }
+      }
+    },
     "workflow": {
       "type": "object",
       "additionalProperties": false,

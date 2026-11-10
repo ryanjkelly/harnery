@@ -118,6 +118,8 @@ interface HarneryConfig {
    * a missing rg only produces a rate-limited install hint.
    */
   tools?: { ripgrep?: { autoInstall?: boolean } };
+  /** `harn doctor` policy. Project config only; read via `doctorEnvironmentFindings()`. */
+  doctor?: { environmentFindings?: unknown };
   /**
    * Workflow-engine defaults. `{ subscriptionOnly: true }` pins every
    * `workflow run` in this repo to subscription billing (API-key vars are
@@ -837,6 +839,31 @@ export function ripgrepAutoInstall(coordRoot?: string | null): boolean {
   const root = coordRoot ?? findCoordRoot();
   if (!root) return false;
   return readConfig(root).tools?.ripgrep?.autoInstall === true;
+}
+
+/** How `harn doctor` treats a failing check whose scope is `environment`. */
+export type DoctorEnvironmentFindings = "fail" | "report";
+
+/**
+ * Project opt-in for `harn doctor`: `"report"` keeps failing environment
+ * checks in the report but exits 0 when nothing else fails. Read from the
+ * project config only, so one machine's user file cannot relax every
+ * project's doctor. Unset or invalid → `"fail"`; an invalid value is
+ * returned in `error` so doctor can say it was ignored.
+ */
+export function doctorEnvironmentFindings(coordRoot?: string | null): {
+  mode: DoctorEnvironmentFindings;
+  error: string | null;
+} {
+  const root = coordRoot === undefined ? findCoordRoot() : coordRoot;
+  if (!root) return { mode: "fail", error: null };
+  const raw = readProjectConfig(root).doctor?.environmentFindings;
+  if (raw === undefined) return { mode: "fail", error: null };
+  if (raw === "fail" || raw === "report") return { mode: raw, error: null };
+  return {
+    mode: "fail",
+    error: `doctor.environmentFindings ${JSON.stringify(raw)} is not "fail" or "report"`,
+  };
 }
 
 /** Wait before queueing while Linux memory pressure is high (PSI `full avg10`). */
