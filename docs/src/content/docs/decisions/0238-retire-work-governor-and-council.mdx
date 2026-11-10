@@ -74,6 +74,21 @@ discovering a governor service. The storage catalog drops `governor-service`,
 `governor-service-log`, `work-item-history`, `governor-history`,
 `council-history` and `agent-mailbox-history`.
 
+**Run engine parts found during the removal.** Deleting the work items
+took more of the run engine with it than the list above names:
+
+- The workspace provider's `cancelWorkspace` export and its `cancellation`
+  module. Only work items called them.
+- The `WorkflowWorkContext` and `WorkflowAttemptContext` types, the attempt
+  types that hung off them, their normalize and freeze helpers, and the
+  `WORKFLOW_WORK_CONTEXT_SCHEMA_VERSION` and
+  `WORKFLOW_ATTEMPT_CONTEXT_SCHEMA_VERSION` constants.
+- `ctx.work` and `ctx.attempt` in workflow scripts.
+
+Stored run manifests keep their work-item fields as read-only history, so
+runs recorded before the removal still load and inspect. Integrating a run
+whose workspace a work item owned now refuses.
+
 **Dashboard routes.** Pages:
 
 - `/work` and `/work/[workId]`
