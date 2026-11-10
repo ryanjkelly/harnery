@@ -72,11 +72,6 @@
       "types": "./dist/core/run/index.d.ts",
       "import": "./dist/core/run/index.js"
     },
-    "./core/workflow": {
-      "bun": "./src/core/run/index.ts",
-      "types": "./dist/core/run/index.d.ts",
-      "import": "./dist/core/run/index.js"
-    },
     "./core/guard": {
       "bun": "./src/core/guard/index.ts",
       "types": "./dist/core/guard/index.d.ts",

@@ -35,6 +35,7 @@ describe("workspace product-tier surface", () => {
       readFileSync(resolve(import.meta.dir, "../../package.json"), "utf8"),
     ) as { exports: Record<string, unknown> };
     expect(packageJson.exports["./core/run"]).toBeDefined();
+    expect(packageJson.exports["./core/workflow"]).toBeUndefined();
     expect(packageJson.exports["./core/workspaces"]).toBeUndefined();
     expect(packageJson.exports["./core/workspace-provider"]).toBeUndefined();
     expect(WORKSPACE_BINDING_SCHEMA_VERSION).toBe(1);
