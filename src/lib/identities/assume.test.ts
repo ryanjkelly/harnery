@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { failingLockFileSeam } from "../../../tests/helpers/lock-file-seam.ts";
 import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { ensureLiveCoordinationHeartbeat } from "../../core/agents/state/live-coordination-writer.ts";
 import { resolveName } from "../../core/agents/state/names.ts";
@@ -19,7 +20,7 @@ import {
   resolveLiveEventLedgerRouteV3,
 } from "../../core/events/v3/live-routing.ts";
 import { readLedgerV3 } from "../../core/events/v3/reader.ts";
-import { assumeIdentity, IdentityAssumeError } from "./assume.ts";
+import { acquireAssumeLock, assumeIdentity, IdentityAssumeError } from "./assume.ts";
 
 describe("assumeIdentity", () => {
   let root: string;
@@ -227,5 +228,44 @@ describe("assumeIdentity fork-ancestor guard", () => {
     const result = assumeIdentity(root, "fork-1", "Willow");
     expect(result.changed).toBe(true);
     expect(result.name).toBe("Willow");
+  });
+});
+
+describe("acquireAssumeLock", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), "harn-assume-lock-"));
+  });
+
+  afterEach(() => {
+    removeDir(root);
+  });
+
+  test("retries after EPERM on Windows while a peer releases the lock", () => {
+    const seam = failingLockFileSeam("EPERM", "win32", 1);
+    const release = acquireAssumeLock(root, seam);
+    expect(seam.calls).toBe(2);
+    expect(existsSync(path.join(root, ".harnery", "identity-assume.lock"))).toBe(true);
+    release();
+    expect(existsSync(path.join(root, ".harnery", "identity-assume.lock"))).toBe(false);
+  });
+
+  test("reports busy, not EPERM, when Windows keeps refusing the create", () => {
+    const seam = failingLockFileSeam("EPERM", "win32");
+    let caught: unknown;
+    try {
+      acquireAssumeLock(root, seam);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(IdentityAssumeError);
+    expect((caught as IdentityAssumeError).code).toBe("identity_busy");
+  });
+
+  test("throws EPERM on other platforms", () => {
+    const seam = failingLockFileSeam("EPERM", "linux");
+    expect(() => acquireAssumeLock(root, seam)).toThrow("EPERM");
+    expect(seam.calls).toBe(1);
   });
 });

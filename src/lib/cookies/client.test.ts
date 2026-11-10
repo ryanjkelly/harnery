@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { failingLockFileSeam } from "../../../tests/helpers/lock-file-seam.ts";
 import {
   type Cookie,
   CookieJar,
@@ -127,5 +128,27 @@ describe("cookie name prefixes", () => {
     expect(violatesCookiePrefix(cookie({ name: "plain", secure: false, domain: ".x.test" }))).toBe(
       false,
     );
+  });
+});
+
+describe("CookieJar lock file", () => {
+  const cookie: Cookie = { name: "a", value: "1", domain: "example.com" } as Cookie;
+
+  test("waits through EPERM on Windows while a peer releases the lock", () => {
+    const path = storePath();
+    const lockSeam = failingLockFileSeam("EPERM", "win32", 2);
+    new CookieJar({ path, lockSeam }).save({ cookies: [cookie], origins: [] });
+    expect(lockSeam.calls).toBe(3);
+    expect(new CookieJar({ path }).load().cookies).toHaveLength(1);
+  });
+
+  test("throws EPERM on other platforms and leaves the store unchanged", () => {
+    const path = storePath();
+    const lockSeam = failingLockFileSeam("EPERM", "linux");
+    expect(() =>
+      new CookieJar({ path, lockSeam }).save({ cookies: [cookie], origins: [] }),
+    ).toThrow("EPERM");
+    expect(lockSeam.calls).toBe(1);
+    expect(new CookieJar({ path }).exists()).toBe(false);
   });
 });

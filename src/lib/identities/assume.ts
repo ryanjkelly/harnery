@@ -14,7 +14,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { recordLiveIdentityChangeV3 } from "../../core/agents/live-authority-v3.ts";
 import { recordLiveSweepObservationV3 } from "../../core/agents/live-lifecycle-v3.ts";
@@ -31,6 +31,7 @@ import {
   eventAdapterIdV3FromPlatform,
 } from "../../core/events/v3/adapter-id.ts";
 import { readRemoteMachines } from "../../core/presence/index.ts";
+import { isHeldFileLockFailure, type LockFileSeam, realLockFileSeam } from "../held-lock.ts";
 import { type AgentIdentity, bareName, ensureIdentity, lookupById, lookupByName } from "./index.ts";
 
 const ASSUME_LOCK = "identity-assume.lock";
@@ -204,7 +205,11 @@ function resolveTarget(
   return { identity: existing, name: existing?.name ?? name };
 }
 
-function acquireLock(coordRoot: string): () => void {
+/** Takes the identity-assume lock file, or throws `identity_busy`. Exported for tests. */
+export function acquireAssumeLock(
+  coordRoot: string,
+  seam: LockFileSeam = realLockFileSeam,
+): () => void {
   const dir = join(coordRoot, ".harnery");
   const path = join(dir, ASSUME_LOCK);
   mkdirSync(dir, { recursive: true });
@@ -212,7 +217,7 @@ function acquireLock(coordRoot: string): () => void {
 
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      writeFileSync(path, token, { encoding: "utf8", flag: "wx" });
+      seam.createExclusive(path, token);
       return () => {
         try {
           if (readFileSync(path, "utf8") === token) unlinkSync(path);
@@ -221,7 +226,7 @@ function acquireLock(coordRoot: string): () => void {
         }
       };
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if (!isHeldFileLockFailure(error, seam)) throw error;
       try {
         if (Date.now() - statSync(path).mtimeMs > ASSUME_LOCK_STALE_MS) {
           unlinkSync(path);
@@ -248,9 +253,9 @@ export function assumeIdentity(
   coordRoot: string,
   instanceId: string,
   target: string,
-  opts?: { forceAncestor?: boolean },
+  opts?: { forceAncestor?: boolean; lockSeam?: LockFileSeam },
 ): IdentityAssumeResult {
-  const release = acquireLock(coordRoot);
+  const release = acquireAssumeLock(coordRoot, opts?.lockSeam);
   try {
     const hb = readLiveCoordinationRow(coordRoot, instanceId);
     if (!hb) {

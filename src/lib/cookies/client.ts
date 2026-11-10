@@ -1,9 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
-  closeSync,
   existsSync,
   mkdirSync,
-  openSync,
   readFileSync,
   renameSync,
   statSync,
@@ -11,6 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { isHeldFileLockFailure, type LockFileSeam, realLockFileSeam } from "../held-lock.ts";
 
 /**
  * Shared cookie-store library.
@@ -54,6 +53,9 @@ export interface CookieJarOptions {
   path: string;
   /** `exportedFrom` tag stamped on every save. Defaults to `"harn-cookies"`. */
   source?: string;
+  /** Lock file create and platform. Tests substitute them to exercise the
+   * Windows branch; leave unset otherwise. */
+  lockSeam?: LockFileSeam;
 }
 
 export interface InfoResult {
@@ -171,35 +173,21 @@ function atomicWrite(path: string, contents: string): void {
   }
 }
 
-function withStoreLock<T>(path: string, operation: () => T): T {
+function withStoreLock<T>(path: string, seam: LockFileSeam, operation: () => T): T {
   mkdirSync(dirname(path), { recursive: true });
   const lockPath = `${path}.lock`;
   const deadline = Date.now() + LOCK_WAIT_MS;
-  let lockFd: number | undefined;
 
-  while (lockFd === undefined) {
+  for (;;) {
     try {
-      lockFd = openSync(lockPath, "wx", 0o600);
-      try {
-        writeFileSync(
-          lockFd,
-          `${JSON.stringify({ pid: process.pid, acquiredAt: new Date().toISOString() })}\n`,
-        );
-      } catch (error) {
-        closeSync(lockFd);
-        lockFd = undefined;
-        try {
-          unlinkSync(lockPath);
-        } catch {
-          // Preserve the lock-write error.
-        }
-        throw error;
-      }
+      seam.createExclusive(
+        lockPath,
+        `${JSON.stringify({ pid: process.pid, acquiredAt: new Date().toISOString() })}\n`,
+        0o600,
+      );
+      break;
     } catch (error) {
-      if (!isErrorCode(error, "EEXIST")) {
-        if (lockFd !== undefined) closeSync(lockFd);
-        throw error;
-      }
+      if (!isHeldFileLockFailure(error, seam)) throw error;
       if (Date.now() >= deadline) {
         throw new Error(
           `Cookie-store update timed out waiting for lock "${lockPath}" after ${LOCK_WAIT_MS}ms. ` +
@@ -210,7 +198,6 @@ function withStoreLock<T>(path: string, operation: () => T): T {
     }
   }
 
-  closeSync(lockFd);
   try {
     return operation();
   } finally {
@@ -226,10 +213,12 @@ function withStoreLock<T>(path: string, operation: () => T): T {
 export class CookieJar {
   readonly path: string;
   private readonly source: string;
+  private readonly lockSeam: LockFileSeam;
 
   constructor(opts: CookieJarOptions) {
     this.path = opts.path;
     this.source = opts.source ?? "harn-cookies";
+    this.lockSeam = opts.lockSeam ?? realLockFileSeam;
   }
 
   exists(): boolean {
@@ -258,7 +247,7 @@ export class CookieJar {
    * (constructor-provided source). Creates the parent directory if needed.
    */
   save(store: CookieStore): void {
-    withStoreLock(this.path, () => this.saveUnlocked(store));
+    withStoreLock(this.path, this.lockSeam, () => this.saveUnlocked(store));
   }
 
   private saveUnlocked(store: CookieStore): CookieStore {
@@ -276,7 +265,7 @@ export class CookieJar {
   }
 
   private update<T>(operation: (store: CookieStore) => { store: CookieStore; result: T }): T {
-    return withStoreLock(this.path, () => {
+    return withStoreLock(this.path, this.lockSeam, () => {
       const updated = operation(this.load());
       this.saveUnlocked(updated.store);
       return updated.result;
