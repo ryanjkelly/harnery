@@ -169,6 +169,7 @@ export const claudeCodeSpawner: Spawner = async (req: SpawnRequest): Promise<Spa
       ...claudeMcpLaunch(req.mcp).env,
     },
     timeout: req.timeoutMs,
+    processGroup: true,
   });
   return normalizeClaudeResult({ ...r, durationMs: Date.now() - t0 });
 };

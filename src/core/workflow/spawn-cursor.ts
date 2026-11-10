@@ -148,6 +148,7 @@ export const cursorSpawner: Spawner = async (req: SpawnRequest): Promise<SpawnRe
       agentId: req.agentId,
     }),
     timeout: req.timeoutMs,
+    processGroup: true,
   });
   return normalizeCursorResult({ ...r, durationMs: Date.now() - t0 });
 };

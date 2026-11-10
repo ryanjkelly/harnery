@@ -148,6 +148,7 @@ export const openCodeSpawner: Spawner = async (req: SpawnRequest): Promise<Spawn
       agentId: req.agentId,
     }),
     timeout: req.timeoutMs,
+    processGroup: true,
   });
   return normalizeOpenCodeResult({ ...r, durationMs: Date.now() - t0 });
 };

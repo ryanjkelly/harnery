@@ -61,3 +61,72 @@ describe("exec surfaces the spawn errno (ADR 0046)", () => {
     expect(result.spawnErrno).toBeUndefined();
   });
 });
+
+// A harness CLI can start its own children. On timeout, `processGroup` must stop
+// all of them, including a grandchild that ignores SIGTERM and holds the pipes.
+describe.skipIf(process.platform === "win32")("exec processGroup", () => {
+  const alive = (pid: number): boolean => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  async function waitGone(pid: number, ms = 3_000): Promise<boolean> {
+    const until = Date.now() + ms;
+    while (Date.now() < until) {
+      if (!alive(pid)) return true;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    return !alive(pid);
+  }
+
+  test("a TERM-ignoring child and grandchild leave nothing behind after the timeout", async () => {
+    const { mkdtempSync, readFileSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const dir = mkdtempSync(join(tmpdir(), "exec-pgroup-"));
+    const pidFile = join(dir, "grandchild.pid");
+    let grandchild = 0;
+    try {
+      const started = Date.now();
+      const result = await exec(
+        ["sh", "-c", `trap '' TERM; sh -c "trap '' TERM; echo \\$\\$ > ${pidFile}; exec sleep 60" & wait`],
+        { timeout: 500, processGroup: { graceMs: 500, drainMs: 200 } },
+      );
+      grandchild = Number(readFileSync(pidFile, "utf8").trim());
+      expect(result.timedOut).toBe(true);
+      expect(result.signal).toBe("SIGKILL");
+      expect(Date.now() - started).toBeLessThan(5_000);
+      expect(grandchild).toBeGreaterThan(0);
+      expect(await waitGone(grandchild)).toBe(true);
+    } finally {
+      if (grandchild && alive(grandchild)) process.kill(grandchild, "SIGKILL");
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  test("a clean child resolves normally and reports no signal", async () => {
+    const result = await exec(["sh", "-c", "printf 'a\\n'"], { processGroup: true, raw: true });
+    expect(result).toEqual({ stdout: "a\n", stderr: "", exitCode: 0 });
+  });
+
+  test("output past maxOutputBytes kills the group and says so", async () => {
+    const result = await exec(["sh", "-c", "yes x"], {
+      processGroup: true,
+      maxOutputBytes: 64 * 1024,
+      timeout: 10_000,
+    });
+    expect(result.outputLimitExceeded).toBe(true);
+    expect(result.signal).toBe("SIGKILL");
+    expect(result.timedOut).toBeUndefined();
+  });
+
+  test("a missing binary still reports ENOENT", async () => {
+    const result = await exec(["harnery-definitely-not-a-real-binary-xyz"], { processGroup: true });
+    expect(result.exitCode).toBe(127);
+    expect(result.spawnErrno).toBe("ENOENT");
+  });
+});

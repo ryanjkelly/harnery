@@ -140,6 +140,7 @@ export const codexSpawner: Spawner = async (req: SpawnRequest): Promise<SpawnRes
         agentId: req.agentId,
       }),
       timeout: req.timeoutMs,
+      processGroup: true,
     });
     return normalizeCodexResult({
       ...r,
