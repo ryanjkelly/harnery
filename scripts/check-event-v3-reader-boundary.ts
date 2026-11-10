@@ -51,6 +51,67 @@ const FORBIDDEN = [
   "readEventV3SegmentManifest(",
 ] as const;
 
+/**
+ * The same storage location spelled as path segments, e.g.
+ * `join(root, ".harnery", "ledgers", "v3")`. Like the string token it covers
+ * the active ledger and its `v3-archives` and `v3-recoveries` siblings. It is
+ * matched across the whole file so a call wrapped over several lines is caught.
+ */
+export const LEDGER_SEGMENT_JOIN_TOKEN = '"ledgers", "v3"';
+const LEDGER_SEGMENT_JOIN = /["'`]ledgers["'`]\s*,\s*["'`]v3(?=["'`-])/g;
+
+export interface EventV3ReaderBoundaryException {
+  file: string;
+  token: string;
+  /** The exact trimmed source line. Any other line in the file is still checked. */
+  declaration: string;
+  reason: string;
+}
+
+/**
+ * Exact declarations outside the allowed modules that may name V3 storage.
+ * Each entry is one line in one file; prefer importing a location from its
+ * owner over adding an entry here.
+ */
+export const EXACT_DECLARATION_EXCEPTIONS: readonly EventV3ReaderBoundaryException[] = [
+  {
+    file: "src/core/events/v3/archive-retention.ts",
+    token: LEDGER_SEGMENT_JOIN_TOKEN,
+    declaration: 'return join(resolve(repoRoot), ".harnery", "ledgers", "v3-archives");',
+    reason:
+      "eventV3ArchivesRoot is the single owner of the closed-epoch root; other modules import it.",
+  },
+  {
+    file: "src/core/events/v3/recovery-record.ts",
+    token: LEDGER_SEGMENT_JOIN_TOKEN,
+    declaration: 'return join(resolve(coordRoot), ".harnery", "ledgers", "v3-recoveries");',
+    reason: "The single owner of the recovery-record root, a sibling of the ledger, not a segment.",
+  },
+  {
+    file: "src/core/events/v3/recovery.ts",
+    token: LEDGER_SEGMENT_JOIN_TOKEN,
+    declaration: 'const archives = join(resolve(root), ".harnery", "ledgers", "v3-archives");',
+    reason:
+      "Recovery names the closed-epoch root to place a quarantined epoch. Debt: use eventV3ArchivesRoot.",
+  },
+  {
+    file: "src/commands/doctor.ts",
+    token: LEDGER_SEGMENT_JOIN_TOKEN,
+    declaration:
+      'const directory = path.join(coordRoot, ".harnery", "ledgers", "v3", "diagnostics");',
+    reason:
+      "Doctor counts loose diagnostic records, which are not ledger segments. Debt: take the directory from the writer's layout.",
+  },
+  {
+    file: "src/core/agents/health.ts",
+    token: LEDGER_SEGMENT_JOIN_TOKEN,
+    declaration:
+      'const active = join(resolve(coordRoot), ".harnery", "ledgers", "v3", "active.ndjson");',
+    reason:
+      "A bounded tail read of the active file for a health snapshot. Debt: move the tail read behind the canonical reader.",
+  },
+];
+
 export function scanEventV3ReaderBoundary(root: string): EventV3ReaderBoundaryViolation[] {
   const sourceRoots = [join(root, "src"), join(root, "web")].filter(existsSync);
   if (sourceRoots.length === 0) return [];
@@ -58,13 +119,21 @@ export function scanEventV3ReaderBoundary(root: string): EventV3ReaderBoundaryVi
   for (const absolute of sourceRoots.flatMap(walk)) {
     const file = relative(root, absolute).split("\\").join("/");
     if (ALLOWED.has(file) || file.endsWith(".test.ts")) continue;
-    const lines = readFileSync(absolute, "utf8").split("\n");
+    const text = readFileSync(absolute, "utf8");
+    const lines = text.split("\n");
     for (const [index, line] of lines.entries()) {
       for (const token of FORBIDDEN) {
         if (line.includes(token) && !isAllowedStorageCatalogInventory(file, line, token)) {
           violations.push({ file, line: index + 1, token });
         }
       }
+    }
+    for (const match of text.matchAll(LEDGER_SEGMENT_JOIN)) {
+      const lineIndex = text.slice(0, match.index).split("\n").length - 1;
+      if (isExactDeclarationException(file, lines[lineIndex] ?? "", LEDGER_SEGMENT_JOIN_TOKEN)) {
+        continue;
+      }
+      violations.push({ file, line: lineIndex + 1, token: LEDGER_SEGMENT_JOIN_TOKEN });
     }
   }
   return violations.sort(
@@ -80,6 +149,13 @@ function isAllowedStorageCatalogInventory(file: string, line: string, token: str
     token === ".harnery/ledgers/v3" &&
     file === STORAGE_CATALOG &&
     STORAGE_CATALOG_INVENTORY_DECLARATIONS.has(line.trim())
+  );
+}
+
+function isExactDeclarationException(file: string, line: string, token: string): boolean {
+  const declaration = line.trim();
+  return EXACT_DECLARATION_EXCEPTIONS.some(
+    (entry) => entry.file === file && entry.token === token && entry.declaration === declaration,
   );
 }
 

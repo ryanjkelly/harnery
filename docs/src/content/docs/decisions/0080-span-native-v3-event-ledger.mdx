@@ -180,3 +180,40 @@ unfulfilled override is expected but missing, and the current native hooks are
 unsupported. Latency projections carry that state and its reason alongside
 the optional percentage. Existing authorities are not rewritten, so older
 turns without a context event remain expected but missing.
+
+## Addendum: reader-boundary gate scope and exceptions (2026-11-10)
+
+The repository gate for the one-reader rule
+(`scripts/check-event-v3-reader-boundary.ts`, run by `check:event-v3`) had
+been failing since 2026-11-05 without notice, because no CI step ran it. It
+now runs in the `core` group of `check:local`, and a unit test scans the real
+source tree and expects no findings.
+
+The gate now treats the storage location the same way in both spellings: the
+`.harnery/ledgers/v3` string and the path-segment form
+`join(root, ".harnery", "ledgers", "v3")`, including calls wrapped over several
+lines. Both forms cover the active ledger and its `v3-archives` and
+`v3-recoveries` siblings. Previously the gate flagged display labels while it
+missed a real traversal written as segments.
+
+Code outside the allowed modules that needs a ledger location imports it from
+its owner: the canonical reader's `EVENT_V3_LEDGER_RELATIVE_ROOT` for the
+active epoch, and `eventV3ArchivesRoot` for closed epochs. Catalog and segment
+manifest parsing stays in `catalog.ts`. Recovery's import of archived ready
+events validates sealed segments through `verifyRetainedSealedSegmentsV3`
+rather than parsing the catalog itself, and the epoch cutover drains ready
+records through the writer's `drainReadyEventsHeldLeaseV3`.
+
+`core/events/v3/history.ts` is the one sanctioned raw inspection reader. It
+counts and searches rows across the active and closed epochs for operators,
+does not validate catalogs or authority, and is never a source for
+projections or decisions. Consumers that need the canonical boundary keep
+`readLedgerV3`. Archive search stays outside the canonical reader because the
+canonical reader serves only the active epoch's authority.
+
+The few remaining exceptions are single exact declarations, each listed with
+its reason in the gate's `EXACT_DECLARATION_EXCEPTIONS`. Unit tests fail if an
+exception lacks a reason, covers any other line or file, or no longer matches
+real source. Three of them (recovery's archive root, doctor's diagnostics
+directory and the health snapshot's tail read) are recorded as debt to move
+behind their owners.

@@ -1,8 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { scanEventV3ReaderBoundary } from "../../scripts/check-event-v3-reader-boundary.ts";
+import { join, resolve } from "node:path";
+import {
+  EXACT_DECLARATION_EXCEPTIONS,
+  LEDGER_SEGMENT_JOIN_TOKEN,
+  scanEventV3ReaderBoundary,
+} from "../../scripts/check-event-v3-reader-boundary.ts";
+
+const REPO_ROOT = resolve(import.meta.dir, "../..");
 
 const roots: string[] = [];
 
@@ -81,6 +87,74 @@ describe("event V3 canonical reader boundary", () => {
     expect(scanEventV3ReaderBoundary(root)).toEqual([
       { file: "src/core/storage/runtime-reader.ts", line: 1, token: ".harnery/ledgers/v3" },
     ]);
+  });
+
+  test("reports the path-segment form of the ledger location, including wrapped calls", () => {
+    const root = fixtureRoot();
+    write(
+      root,
+      "src/core/events/v3/history.ts",
+      [
+        'const active = join(coordRoot, ".harnery", "ledgers", "v3");',
+        "const archives = join(",
+        "  root,",
+        '  ".harnery",',
+        '  "ledgers",',
+        '  "v3-archives",',
+        ");",
+        "const other = join(root, 'ledgers', 'v3', 'segments');",
+      ].join("\n"),
+    );
+    expect(scanEventV3ReaderBoundary(root)).toEqual([
+      { file: "src/core/events/v3/history.ts", line: 1, token: LEDGER_SEGMENT_JOIN_TOKEN },
+      { file: "src/core/events/v3/history.ts", line: 5, token: LEDGER_SEGMENT_JOIN_TOKEN },
+      { file: "src/core/events/v3/history.ts", line: 8, token: LEDGER_SEGMENT_JOIN_TOKEN },
+    ]);
+  });
+
+  test("ignores unrelated ledger names that only share a prefix", () => {
+    const root = fixtureRoot();
+    write(
+      root,
+      "src/core/other.ts",
+      'join(root, ".harnery", "ledgers", "v30");\njoin(root, "v3");',
+    );
+    expect(scanEventV3ReaderBoundary(root)).toEqual([]);
+  });
+
+  test("every exact-declaration exception carries a reason and names one line", () => {
+    for (const entry of EXACT_DECLARATION_EXCEPTIONS) {
+      expect(entry.reason.trim().length).toBeGreaterThan(20);
+      expect(entry.declaration).toBe(entry.declaration.trim());
+      expect(entry.declaration).not.toContain("\n");
+      expect(entry.file.endsWith(".test.ts")).toBe(false);
+    }
+  });
+
+  test("an exception covers only its exact declaration in its own file", () => {
+    for (const entry of EXACT_DECLARATION_EXCEPTIONS) {
+      const root = fixtureRoot();
+      const variant = `${entry.declaration.replace(/;$/, "")}; // second use`;
+      write(root, entry.file, [entry.declaration, variant].join("\n"));
+      write(root, "src/core/elsewhere.ts", entry.declaration);
+      const found = scanEventV3ReaderBoundary(root);
+      expect(found).toHaveLength(2);
+      expect(found).toContainEqual({ file: "src/core/elsewhere.ts", line: 1, token: entry.token });
+      expect(found).toContainEqual({ file: entry.file, line: 2, token: entry.token });
+    }
+  });
+
+  test("every exception still matches a real declaration, so stale entries are removed", () => {
+    for (const entry of EXACT_DECLARATION_EXCEPTIONS) {
+      const lines = readFileSync(join(REPO_ROOT, entry.file), "utf8")
+        .split("\n")
+        .map((line) => line.trim());
+      expect(lines).toContain(entry.declaration);
+    }
+  });
+
+  test("the real source tree has no reader-boundary violations", () => {
+    expect(scanEventV3ReaderBoundary(REPO_ROOT)).toEqual([]);
   });
 });
 

@@ -9,6 +9,7 @@ const groups = {
   core: [
     ["Lint", root, "bun", ["run", "lint"]],
     ["Typecheck", root, "bun", ["run", "typecheck"]],
+    ["Event V3 contract and reader boundary", root, "bun", ["run", "check:event-v3"]],
     ["Core tests", root, "bun", ["run", "test"]],
   ],
   integration: [["Integration tests", root, "bun", ["run", "test:integration"]]],
