@@ -295,6 +295,35 @@ export function eventV3Paths(coordRoot: string) {
   };
 }
 
+export type EventV3ActiveTailV3 =
+  | { readonly status: "missing" }
+  | { readonly status: "unsafe" }
+  | { readonly status: "read"; readonly start: number; readonly bytes: Buffer };
+
+/**
+ * Read at most `maxBytes` raw bytes from the end of the active file without
+ * validating frames, for bounded health snapshots. `start` is the byte offset
+ * of the first returned byte; when it is above zero the first line may be
+ * partial. A symlink or non-file is reported as unsafe; read errors throw.
+ */
+export function readEventV3ActiveTailV3(coordRoot: string, maxBytes: number): EventV3ActiveTailV3 {
+  const active = eventV3Paths(coordRoot).active;
+  if (!existsSync(active)) return { status: "missing" };
+  let handle: number | undefined;
+  try {
+    const stat = lstatSync(active);
+    if (stat.isSymbolicLink() || !stat.isFile()) return { status: "unsafe" };
+    if (stat.size === 0) return { status: "read", start: 0, bytes: Buffer.alloc(0) };
+    const start = Math.max(0, stat.size - maxBytes);
+    const bytes = Buffer.allocUnsafe(stat.size - start);
+    handle = openSync(active, "r");
+    const count = readSync(handle, bytes, 0, bytes.length, start);
+    return { status: "read", start, bytes: bytes.subarray(0, count) };
+  } finally {
+    if (handle !== undefined) closeSync(handle);
+  }
+}
+
 /** Stable file target for change notification only; reads still go through readLedgerV3. */
 export function eventV3ActiveWatchPath(coordRoot: string): string {
   return eventV3Paths(coordRoot).active;

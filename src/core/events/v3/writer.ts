@@ -444,6 +444,11 @@ export function eventV3Paths(coordRoot: string) {
   };
 }
 
+/** Directory holding loose diagnostic records written beside the ledger. */
+export function eventV3DiagnosticsRootV3(coordRoot: string): string {
+  return eventV3Paths(coordRoot).diagnostics;
+}
+
 export function ensureEventV3Layout(coordRoot: string) {
   assertSupportedPath(coordRoot);
   const paths = eventV3Paths(coordRoot);

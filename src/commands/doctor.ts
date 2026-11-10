@@ -37,6 +37,7 @@ import {
   countSummarizedSinceV3,
   listDiagnosticSummariesV3,
 } from "../core/events/v3/producers/diagnostic-summaries.ts";
+import { eventV3DiagnosticsRootV3 } from "../core/events/v3/writer.ts";
 import { ADAPTER_SPECS, type AdapterId } from "../core/hooks/adapter/events.ts";
 import { loadAdapterWiring, summarizeAdapterWiring } from "../core/hooks/adapter/wiring.ts";
 import {
@@ -387,7 +388,7 @@ export function countRecentCodexMidFlightOnboardings(
   } catch {
     // Summary reads are best-effort; loose diagnostics below still count.
   }
-  const directory = path.join(coordRoot, ".harnery", "ledgers", "v3", "diagnostics");
+  const directory = eventV3DiagnosticsRootV3(coordRoot);
   if (!existsSync(directory)) return count;
   for (const name of readdirSync(directory)) {
     if (!name.startsWith("mid_flight_onboarding-") || !name.endsWith(".json")) continue;

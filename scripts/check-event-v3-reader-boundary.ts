@@ -87,29 +87,6 @@ export const EXACT_DECLARATION_EXCEPTIONS: readonly EventV3ReaderBoundaryExcepti
     declaration: 'return join(resolve(coordRoot), ".harnery", "ledgers", "v3-recoveries");',
     reason: "The single owner of the recovery-record root, a sibling of the ledger, not a segment.",
   },
-  {
-    file: "src/core/events/v3/recovery.ts",
-    token: LEDGER_SEGMENT_JOIN_TOKEN,
-    declaration: 'const archives = join(resolve(root), ".harnery", "ledgers", "v3-archives");',
-    reason:
-      "Recovery names the closed-epoch root to place a quarantined epoch. Debt: use eventV3ArchivesRoot.",
-  },
-  {
-    file: "src/commands/doctor.ts",
-    token: LEDGER_SEGMENT_JOIN_TOKEN,
-    declaration:
-      'const directory = path.join(coordRoot, ".harnery", "ledgers", "v3", "diagnostics");',
-    reason:
-      "Doctor counts loose diagnostic records, which are not ledger segments. Debt: take the directory from the writer's layout.",
-  },
-  {
-    file: "src/core/agents/health.ts",
-    token: LEDGER_SEGMENT_JOIN_TOKEN,
-    declaration:
-      'const active = join(resolve(coordRoot), ".harnery", "ledgers", "v3", "active.ndjson");',
-    reason:
-      "A bounded tail read of the active file for a health snapshot. Debt: move the tail read behind the canonical reader.",
-  },
 ];
 
 export function scanEventV3ReaderBoundary(root: string): EventV3ReaderBoundaryViolation[] {

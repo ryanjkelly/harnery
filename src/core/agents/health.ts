@@ -1,5 +1,4 @@
-import { closeSync, existsSync, lstatSync, openSync, readSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { type EventV3ActiveTailV3, readEventV3ActiveTailV3 } from "../events/v3/reader.ts";
 import type { SupervisorCapability, SupervisorSourceReference } from "../supervisor/contract.ts";
 
 export interface CoordinationHealthDiagnostic {
@@ -27,19 +26,17 @@ export function collectCoordinationHealthSnapshot(
   now = new Date(),
 ): CoordinationHealthSnapshot {
   const observedAt = now.toISOString();
-  const active = join(resolve(coordRoot), ".harnery", "ledgers", "v3", "active.ndjson");
-  if (!existsSync(active)) return unavailable(observedAt, "ledger-missing");
-
-  let handle: number | undefined;
+  let tail: EventV3ActiveTailV3;
   try {
-    const stat = lstatSync(active);
-    if (stat.isSymbolicLink() || !stat.isFile()) return unavailable(observedAt, "ledger-unsafe");
-    if (stat.size === 0) return available(observedAt, [], [], 0);
-    const start = Math.max(0, stat.size - MAX_TAIL_BYTES);
-    const bytes = Buffer.allocUnsafe(stat.size - start);
-    handle = openSync(active, "r");
-    const count = readSync(handle, bytes, 0, bytes.length, start);
-    const lines = bytes.subarray(0, count).toString("utf8").split("\n");
+    tail = readEventV3ActiveTailV3(coordRoot, MAX_TAIL_BYTES);
+  } catch {
+    return unavailable(observedAt, "tail-read-failed", "error");
+  }
+  if (tail.status === "missing") return unavailable(observedAt, "ledger-missing");
+  if (tail.status === "unsafe") return unavailable(observedAt, "ledger-unsafe");
+  try {
+    const start = tail.start;
+    const lines = tail.bytes.toString("utf8").split("\n");
     if (start > 0) lines.shift();
     const completeLines = lines.filter((line) => line.length > 0);
     const diagnostics: CoordinationHealthDiagnostic[] = [];
@@ -66,8 +63,6 @@ export function collectCoordinationHealthSnapshot(
     );
   } catch {
     return unavailable(observedAt, "tail-read-failed", "error");
-  } finally {
-    if (handle !== undefined) closeSync(handle);
   }
 }
 

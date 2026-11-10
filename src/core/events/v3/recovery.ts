@@ -13,6 +13,7 @@ import {
 import { basename, join, resolve } from "node:path";
 import { stateDirMode, stateFileMode } from "../../storage/modes.ts";
 import { fsyncParentDirectory } from "../../workflow/durable-record.ts";
+import { eventV3ArchivesRoot } from "./archive-retention.ts";
 import { initializeEventLedgerV3 } from "./bootstrap.ts";
 import { canonicalJsonV3, sha256V3 } from "./canonical.ts";
 import { readEventV3ControlState } from "./control.ts";
@@ -231,7 +232,7 @@ function listPendingRecoveryIntents(root: string): EventV3RecoveryIntent[] {
 }
 
 function findArchivedAuthority(root: string, digest: string): string | undefined {
-  const archives = join(resolve(root), ".harnery", "ledgers", "v3-archives");
+  const archives = eventV3ArchivesRoot(root);
   if (!existsSync(archives)) return undefined;
   const matches = readdirSync(archives, { withFileTypes: true })
     .filter((entry) => entry.isDirectory() && /^epoch-[0-9]+(?:-[0-9]+)?$/.test(entry.name))
