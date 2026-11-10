@@ -372,72 +372,72 @@ describe("event ledger V3 persistent coordination recorder", () => {
     ).toBe(true);
   });
 
-  test("resumes transaction quarantine after every durable recovery boundary", () => {
-    const steps: CoordinationTransactionRecoveryStep[] = [
-      "intent_published",
-      "transaction_quarantined",
-      "producer_pending_cleared",
-      "outbox_ready_removed",
-      "receipt_committed",
-    ];
-    for (const failedStep of steps) {
-      const root = startedRoot();
-      let authorityState = sha256V3("prior");
-      const pending = pendingTaskInput(root, () => authorityState);
-      expect(() => recordCoordinationAuthorityV3(pending.input)).toThrow(
-        "simulated mutation crash",
-      );
-      authorityState = sha256V3(`conflict-${failedStep}`);
-      const transactionId = onlyPendingTransactionId(root);
-      let failOnce = true;
-      expect(() =>
-        quarantineConflictingCoordinationTransactionV3(root, {
-          transaction_id: transactionId,
-          actor_instance_id: "inst_operator",
-          observed_current_state_digest: authorityState,
-          approval_record_id: `test-${failedStep}`,
-          now: () => new Date("2026-08-29T03:20:00.000Z"),
-          onStep: (step) => {
-            if (step === failedStep && failOnce) {
-              failOnce = false;
-              throw new Error(`crash-${failedStep}`);
-            }
-          },
-        }),
-      ).toThrow(`crash-${failedStep}`);
-
-      if (failedStep === "intent_published") {
-        authorityState = sha256V3("prior");
-        const raced = recordCoordinationAuthorityV3(
-          lifecycleInput(root, "writer-racing-recovery", authorityState, sha256V3("after"), {
-            readStateDigest: () => authorityState,
-            apply: () => {
-              throw new Error("recovery intent must fence the normal writer");
-            },
-          }),
-        );
-        expect(raced.state).toBe("pending_transaction");
-        authorityState = sha256V3(`conflict-${failedStep}`);
-      }
-
-      const receipt = quarantineConflictingCoordinationTransactionV3(root, {
+  // One case per recovery step: each step builds a fresh ledger with real durable writes,
+  // so each gets its own time budget and a failure names the step that broke.
+  const recoverySteps: CoordinationTransactionRecoveryStep[] = [
+    "intent_published",
+    "transaction_quarantined",
+    "producer_pending_cleared",
+    "outbox_ready_removed",
+    "receipt_committed",
+  ];
+  test.each(
+    recoverySteps,
+  )("resumes transaction quarantine after the %s durable recovery boundary", (failedStep) => {
+    const root = startedRoot();
+    let authorityState = sha256V3("prior");
+    const pending = pendingTaskInput(root, () => authorityState);
+    expect(() => recordCoordinationAuthorityV3(pending.input)).toThrow("simulated mutation crash");
+    authorityState = sha256V3(`conflict-${failedStep}`);
+    const transactionId = onlyPendingTransactionId(root);
+    let failOnce = true;
+    expect(() =>
+      quarantineConflictingCoordinationTransactionV3(root, {
         transaction_id: transactionId,
         actor_instance_id: "inst_operator",
         observed_current_state_digest: authorityState,
         approval_record_id: `test-${failedStep}`,
-        now: () => new Date("2026-08-29T03:20:01.000Z"),
-      });
-      expect(receipt.transaction_id).toBe(transactionId);
-      const next = recordCoordinationAuthorityV3(
-        lifecycleInput(root, `after-${failedStep}`, authorityState, sha256V3("after"), {
+        now: () => new Date("2026-08-29T03:20:00.000Z"),
+        onStep: (step) => {
+          if (step === failedStep && failOnce) {
+            failOnce = false;
+            throw new Error(`crash-${failedStep}`);
+          }
+        },
+      }),
+    ).toThrow(`crash-${failedStep}`);
+
+    if (failedStep === "intent_published") {
+      authorityState = sha256V3("prior");
+      const raced = recordCoordinationAuthorityV3(
+        lifecycleInput(root, "writer-racing-recovery", authorityState, sha256V3("after"), {
           readStateDigest: () => authorityState,
           apply: () => {
-            authorityState = sha256V3("after");
+            throw new Error("recovery intent must fence the normal writer");
           },
         }),
       );
-      expect(next.state, failedStep).toBe("recorded");
+      expect(raced.state).toBe("pending_transaction");
+      authorityState = sha256V3(`conflict-${failedStep}`);
     }
+
+    const receipt = quarantineConflictingCoordinationTransactionV3(root, {
+      transaction_id: transactionId,
+      actor_instance_id: "inst_operator",
+      observed_current_state_digest: authorityState,
+      approval_record_id: `test-${failedStep}`,
+      now: () => new Date("2026-08-29T03:20:01.000Z"),
+    });
+    expect(receipt.transaction_id).toBe(transactionId);
+    const next = recordCoordinationAuthorityV3(
+      lifecycleInput(root, `after-${failedStep}`, authorityState, sha256V3("after"), {
+        readStateDigest: () => authorityState,
+        apply: () => {
+          authorityState = sha256V3("after");
+        },
+      }),
+    );
+    expect(next.state, failedStep).toBe("recorded");
   });
 
   test("continues across a mid-generation re-attestation instead of refusing forever", () => {
