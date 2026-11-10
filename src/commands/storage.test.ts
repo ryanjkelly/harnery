@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { initializeV3Fixture, seedV3Session } from "../../tests/helpers/event-v3-runtime.ts";
 import { createHarneryProgram, type EmitContext, loadLazyCommand } from "../commander.ts";
 import { harneryStorageFamilies } from "../core/storage/builtins.ts";
 import type {
@@ -26,6 +27,7 @@ describe("storage command", () => {
       "health",
       "inventory",
       "maintain",
+      "retire",
       "status",
     ]);
     expect(
@@ -187,6 +189,74 @@ describe("storage command", () => {
     });
     expect(applied).toBe(0);
   });
+});
+
+describe("storage retire command", () => {
+  async function retire(root: string, args: string[]) {
+    const output = captureEmit();
+    const program = createHarneryProgram({ emit: output.emit, context: { repoRoot: root } });
+    await program.parseAsync(["storage", "retire", ...args], { from: "user" });
+    return output;
+  }
+
+  function seed(root: string, name: string): string {
+    const dir = join(root, ".harnery", name);
+    mkdirSync(join(dir, "nested"), { recursive: true });
+    writeFileSync(join(dir, "nested", "record.json"), "{}");
+    return dir;
+  }
+
+  test("lists, previews, and removes one folder only with the previewed digest", async () => {
+    const root = fixture();
+    mkdirSync(join(root, ".harnery"));
+    const dir = seed(root, "work");
+    const unreadable = await retire(root, ["work"]);
+    expect(unreadable.errors[0]).toMatchObject({ code: "coordination_unavailable" });
+    initializeV3Fixture(root);
+
+    const listed = await retire(root, ["--json"]);
+    expect(listed.exitCodes).toEqual([]);
+    const list = listed.data[0] as { roots: { name: string; state: string; files?: number }[] };
+    expect(list.roots.find(({ name }) => name === "work")).toMatchObject({
+      state: "present",
+      files: 1,
+    });
+
+    const preview = await retire(root, ["work"]);
+    const text = preview.text.join("\n");
+    expect(preview.errors).toEqual([]);
+    expect(text).toContain("Would remove");
+    const digest = /inventory_sha256: ([a-f0-9]{64})/.exec(text)?.[1];
+    expect(digest).toBeDefined();
+    expect(text).toContain(`storage retire work --yes --inventory-sha256 ${digest}`);
+    expect(existsSync(dir)).toBeTrue();
+
+    const missing = await retire(root, ["work", "--yes"]);
+    expect(missing.exitCodes).toEqual([1]);
+    expect(missing.errors[0]).toMatchObject({ code: "inventory_digest_required" });
+
+    const unlisted = await retire(root, ["../work"]);
+    expect(unlisted.errors[0]).toMatchObject({ code: "not_a_retired_root" });
+
+    const removed = await retire(root, ["work", "--yes", "--inventory-sha256", digest!, "--json"]);
+    expect(removed.exitCodes).toEqual([]);
+    expect(removed.data[0]).toMatchObject({ outcome: "retired", applied: true, files: 1 });
+    expect(existsSync(dir)).toBeFalse();
+
+    const again = await retire(root, ["work"]);
+    expect(again.text.join("\n")).toContain("already retired");
+  }, 20_000);
+
+  test("refuses a folder another agent claims", async () => {
+    const root = fixture();
+    initializeV3Fixture(root);
+    const dir = seed(root, "mailbox");
+    seedV3Session(root, "retire-peer", { name: "Peer", claims: [".harnery/mailbox/nested"] });
+    const preview = await retire(root, ["mailbox", "--json"]);
+    expect(preview.exitCodes).toEqual([1]);
+    expect(preview.errors[0]).toMatchObject({ code: "peer_claim" });
+    expect(existsSync(join(dir, "nested", "record.json"))).toBeTrue();
+  }, 20_000);
 });
 
 function fixture(): string {

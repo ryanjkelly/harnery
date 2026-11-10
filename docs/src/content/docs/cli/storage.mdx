@@ -67,3 +67,52 @@ delete log data.
 
 Use `harn storage status --transaction <transaction-id> --json` to inspect a
 saved transaction without changing storage.
+
+## Retire the records of removed features
+
+```bash
+harn storage retire
+harn storage retire work
+harn storage retire work --yes --inventory-sha256 <digest>
+```
+
+When Harnery removes a feature, the records it wrote stay in each project's
+`.harnery` folder. `harn rm` never deletes anything in the live workspace's
+`.harnery`, so `storage retire` is the one way to delete them. It accepts only
+the folders Harnery lists as retired, each with the ADR that removed its
+feature:
+
+| Folder | Retired by |
+|---|---|
+| `work` | ADR 0238 |
+| `governors` | ADR 0238 |
+| `governor-service` | ADR 0238 |
+| `councils` | ADR 0238 |
+| `mailbox` | ADR 0238 |
+
+With no name, the command lists those folders and shows, for each one,
+whether it exists and how many files and bytes it holds. This listing reads
+metadata only.
+
+With a name, the command previews by default. It prints the file, folder and
+byte counts and a digest of the complete inventory, and changes nothing. To
+delete the folder, repeat the command with `--yes` and that digest. The command
+then inspects the folder again and refuses if anything changed since the
+preview.
+
+The command refuses a folder when any of the following is true:
+
+- the name is not exactly one listed folder, or it is a path;
+- the folder, or `.harnery` itself, is a symbolic link;
+- the folder crosses a mount boundary or holds a special file or Git metadata;
+- Git tracks a file inside it;
+- another agent claims a path inside it, on it, or above it, or those claims cannot be read;
+- a registered storage root or host exclusion is the folder, sits inside it, or contains it;
+- it holds more than 10,000 entries.
+
+A symbolic link inside the folder is removed as a link, and its target is left
+alone. If the folder is already gone, the command reports it as already retired
+and succeeds. Retirement never runs automatically, and session-start
+maintenance never touches these folders. Archive a folder first if you want to
+keep its records. JSON output uses `harnery.storage-retired-roots/v1` for the
+listing and `harnery.storage-retirement/v1` for a preview or removal.

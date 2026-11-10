@@ -1,0 +1,82 @@
+---
+title: "ADR 0239: Retire state of removed features"
+description: Add storage retire, an explicit, preview-first command that deletes only the listed record folders of removed features, and leave rm's protection of the live .harnery unchanged.
+sidebar:
+  order: 239
+---
+
+**Date:** 2026-11-09
+**Status:** Accepted
+
+## Context
+
+ADR 0238 removed work items, governors and councils. The records those
+features wrote stay in every consuming project, in five folders directly under
+`.harnery`: `work`, `governors`, `governor-service`, `councils` and `mailbox`.
+Nothing reads them any more, and nothing could delete them:
+
+- `harn rm` refuses any path in the live workspace's `.git` or `.harnery`, and
+  `--allow-protected` can never name that state (ADR 0196).
+- `harn storage maintain` acts only on families in the storage catalog
+  (ADR 0129). ADR 0238 removed the catalog entries for these folders.
+
+The only option left was deleting the folders by hand, which skips every
+check Harnery runs before a deletion.
+
+There was a second problem. `rm`'s refusal for the live `.harnery` told the
+user to name the path with `--allow-protected`, an override that the same
+command always refuses for that path. ADR 0196's 2026-10-03 amendment already
+says a refusal must not suggest an override that cannot apply.
+
+## Decision
+
+Add `harn storage retire [name]` and keep `rm` as it is.
+
+- **A listed set of folders.** `src/core/storage/retire.ts` lists each
+  retired folder with the ADR that removed its feature. The first five come
+  from ADR 0238. Being absent from the catalog does not make a folder
+  eligible, because a host's own state or a later feature's state would
+  qualify too. Only a listed name does.
+- **List, preview, then confirm.** With no name, the command reports each
+  listed folder, whether it exists, and its file and byte counts. With a name,
+  it previews the file, folder and byte counts and a SHA-256 digest of the
+  complete inventory. Deletion needs `--yes` and that digest. The command
+  inspects the folder again and refuses on any difference.
+- **Guards.** The name must match a list entry exactly. The folder sits
+  directly under the resolved coordination root's `.harnery`, and neither of
+  them is a link. The command refuses mount crossings, special files, Git
+  metadata, tracked files, and folders over 10,000 entries. It also refuses a
+  peer claim that overlaps the folder, or unreadable claims. Any registered
+  storage root or host exclusion that equals, contains or sits inside the
+  folder blocks it as well. That last check covers registered roots inside the
+  folder, which a lookup of the paths a root covers would miss. Links inside
+  the folder are removed as links and never followed.
+- **Never automatic.** Only the `storage retire` command imports the retirement module.
+  Session-start maintenance has no provider for these folders, and a test
+  checks both points.
+- **A truthful `rm` refusal.** When the refused path is the live workspace's
+  own `.git` or `.harnery`, the message no longer names `--allow-protected`.
+  The toolkit library keeps its message generic, and the `rm` command adds a
+  pointer to `storage retire`.
+
+## Alternatives considered
+
+- **Let `rm --allow-protected` reach into the live `.harnery` when no catalog
+  root overlaps.** Rejected: it would weaken ADR 0196's rule that live state
+  can never be allowed, and its safety would rest on the catalog being
+  complete.
+- **Add the folders to storage maintenance.** Rejected: maintenance can run at
+  session start. A retirement list that maintenance executed would delete
+  every project's records unasked, before anyone could archive them. It would
+  also need a made-up catalog family, and its per-run file budget would split
+  one folder across several transactions.
+- **Retire any folder the catalog does not list.** Rejected: that would also
+  match host state and the state of features added later.
+
+## Consequences
+
+- Each consuming project can delete the five folders with
+  `harn storage retire <name>`, one at a time, after a preview.
+- When Harnery removes another feature that stored data, its folders join the
+  list under that feature's ADR.
+- `rm`'s rules are unchanged; only its refusal text for live state changed.

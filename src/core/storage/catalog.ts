@@ -1,4 +1,4 @@
-import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { harneryStorageFamilies } from "./builtins.ts";
 import { resolveLogStorageConfiguration, withEffectiveLogRetention } from "./config.ts";
 import type {
@@ -99,6 +99,44 @@ export class HarneryStorageCatalog {
       family.resolved_roots.some((root) => rootMatchesPath(root, candidate)),
     );
   }
+
+  /**
+   * Every registered root and host exclusion that equals `path`, sits inside
+   * it, or contains it. Unlike `familiesForPath`, a root equal to the path or
+   * registered below it counts too. Pattern roots count when any pattern could
+   * reach the path or something below it, so the answer errs toward overlap.
+   */
+  rootsOverlapping(path: string): readonly HarneryStorageRootOverlap[] {
+    const candidate = resolve(path);
+    const overlaps: HarneryStorageRootOverlap[] = [];
+    for (const family of this.families)
+      for (const root of family.resolved_roots)
+        if (rootOverlapsPath(root, candidate))
+          overlaps.push({ kind: "family", id: family.id, root: root.path });
+    for (const exclusion of this.exclusions)
+      if (rootOverlapsPath(exclusion.root, candidate))
+        overlaps.push({ kind: "exclusion", id: exclusion.owner, root: exclusion.root.path });
+    return overlaps;
+  }
+}
+
+export interface HarneryStorageRootOverlap {
+  kind: "family" | "exclusion";
+  /** The family id, or the exclusion's owner. */
+  id: string;
+  root: string;
+}
+
+function rootOverlapsPath(root: HarneryStorageRoot, candidate: string): boolean {
+  const rootPath = resolve(root.path);
+  if (rootPath === candidate) return true;
+  const below = relative(candidate, rootPath);
+  if (below !== ".." && !below.startsWith(`..${sep}`) && !isAbsolute(below)) return true;
+  if (root.match === "exact") return false;
+  const remainder = relative(rootPath, candidate).replaceAll("\\", "/");
+  if (remainder === ".." || remainder.startsWith("../") || isAbsolute(remainder)) return false;
+  if (root.match === "subtree") return true;
+  return (root.include ?? ["**"]).some((pattern) => patternCouldContain(pattern, remainder));
 }
 
 function inferredProjectRoot(coordRoot: string): string {

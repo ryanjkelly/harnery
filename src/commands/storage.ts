@@ -1,7 +1,15 @@
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
 import { resolveCoordRoot as resolveCanonicalCoordRoot } from "../core/agents/coord-client.ts";
+import { resolveBinName } from "../core/config.ts";
+import {
+  readCoordinationViewV3,
+  requireAuthoritySafeCoordinationViewV3,
+} from "../core/events/v3/coordination-view.ts";
+import { liveInstanceIdV3 } from "../core/events/v3/live-route-observer.ts";
+import { resolveOwner } from "../core/hooks/resolve/owner.ts";
 import { createStorageCatalog } from "../core/storage/catalog.ts";
 import type {
   HarneryStorageClass,
@@ -21,6 +29,12 @@ import {
   readMaintenanceTransaction,
 } from "../core/storage/maintenance.ts";
 import { createStructuredLogMaintenanceProviders } from "../core/storage/maintenance-providers.ts";
+import {
+  HarneryRetirementError,
+  type HarneryStorageRetirementReport,
+  listRetiredRoots,
+  retireStorageRoot,
+} from "../core/storage/retire.ts";
 import { parseDurationMs } from "../lib/duration.ts";
 
 const STORAGE_CLASSES = new Set<HarneryStorageClass>([
@@ -50,6 +64,12 @@ interface MaintainOptions {
   transaction?: string;
   yes?: boolean;
   authorizeStructuredLogDeletion?: boolean;
+  json?: boolean;
+}
+
+interface RetireOptions {
+  yes?: boolean;
+  inventorySha256?: string;
   json?: boolean;
 }
 
@@ -185,6 +205,55 @@ export function registerStorageCommand(
     });
 
   storage
+    .command("retire [name]")
+    .description("List the record folders of removed features, or preview and remove one exactly")
+    .option("--yes", "Remove the folder; needs --inventory-sha256 from its preview")
+    .option("--inventory-sha256 <digest>", "The inventory digest the preview printed")
+    .option("--json", "Emit the versioned retirement schema")
+    .action(async (name: string | undefined, options: RetireOptions) => {
+      await run(emit, async () => {
+        const catalog = catalogFor(context);
+        if (name === undefined) {
+          if (options.yes || options.inventorySha256 !== undefined)
+            throw new StorageCommandError(
+              "retired_root_required",
+              "name one retired folder to preview or remove",
+            );
+          const report = listRetiredRoots(catalog);
+          if (options.json) {
+            emit.config({ format: "json" });
+            emit.data(report);
+          } else {
+            emit.rows(
+              report.roots.map((root) => ({
+                name: root.name,
+                retired_by: root.retired_by,
+                state: root.state,
+                files: root.files ?? 0,
+                bytes: root.bytes ?? 0,
+                reason: root.reason ?? "",
+              })),
+            );
+          }
+          return;
+        }
+        const report = retireStorageRoot(catalog, name, {
+          yes: options.yes === true,
+          ...(options.inventorySha256 !== undefined
+            ? { inventory_sha256: options.inventorySha256 }
+            : {}),
+          peerClaims: () => peerClaims(catalog.context.coord_root),
+        });
+        if (options.json) {
+          emit.config({ format: "json" });
+          emit.data(report);
+        } else {
+          emit.text(retirementText(report, resolveBinName(catalog.context.coord_root)));
+        }
+      });
+    });
+
+  storage
     .command("status")
     .description("Inspect maintenance transactions without changing storage")
     .option("--transaction <id>", "Show one exact transaction")
@@ -225,6 +294,58 @@ function catalogFor(context?: HarneryProgramContext) {
     { coord_root: coordRoot, project_root: resolve(context?.repoRoot ?? coordRoot) },
     context?.storage,
   );
+}
+
+/** Files other live agents claim. Unreadable coordination state refuses. */
+function peerClaims(coordRoot: string): string[] {
+  if (!existsSync(resolve(coordRoot, ".harnery"))) return [];
+  let view: ReturnType<typeof requireAuthoritySafeCoordinationViewV3>;
+  try {
+    view = requireAuthoritySafeCoordinationViewV3(readCoordinationViewV3(coordRoot));
+  } catch (error) {
+    throw new StorageCommandError(
+      "coordination_unavailable",
+      `cannot read other agents' file claims, so nothing is removed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  const owner = resolveOwner({ payload: null, coordRoot });
+  const ownId = owner ? liveInstanceIdV3(owner.instance_id) : undefined;
+  const ownSession = ownId ? view.instances[ownId]?.session_id : undefined;
+  const claims: string[] = [];
+  for (const peer of Object.values(view.instances)) {
+    if (
+      !peer.authority_eligible ||
+      peer.instance_id === ownId ||
+      (ownSession && peer.session_id === ownSession)
+    )
+      continue;
+    claims.push(...peer.files_touched);
+  }
+  return claims;
+}
+
+function retirementText(report: HarneryStorageRetirementReport, bin: string): string {
+  if (report.outcome === "already_retired")
+    return `${report.name}: already retired (${report.path} does not exist)`;
+  const size = `${report.files} file(s), ${report.directories} folder(s), ${report.bytes} bytes`;
+  const lines = [
+    report.outcome === "retired"
+      ? `Removed ${report.path}: ${size}`
+      : `Would remove ${report.path}: ${size}`,
+    `Retired by ${report.retired_by} (${report.feature})`,
+  ];
+  if (report.links.length)
+    lines.push(
+      "Links removed as links (their targets are untouched):",
+      ...report.links.map((link) => `  ${link.path} -> ${link.target}`),
+    );
+  if (report.outcome === "preview")
+    lines.push(
+      `inventory_sha256: ${report.inventory_sha256}`,
+      "Preview only. To remove it, run:",
+      `  ${bin} storage retire ${report.name} --yes --inventory-sha256 ${report.inventory_sha256}`,
+    );
+  return lines.join("\n");
 }
 
 function parseStorageClass(value: string | undefined): HarneryStorageClass | undefined {
@@ -303,7 +424,9 @@ async function run(emit: EmitContext, action: () => Promise<void>): Promise<void
   } catch (error) {
     emit.error({
       code:
-        error instanceof StorageCommandError || error instanceof HarneryMaintenanceError
+        error instanceof StorageCommandError ||
+        error instanceof HarneryMaintenanceError ||
+        error instanceof HarneryRetirementError
           ? error.code
           : "storage_inspection_failed",
       message: error instanceof Error ? error.message : String(error),
