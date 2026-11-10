@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { descriptorBackedPathsSupported } from "../src/core/workflow/workspaces/paths.ts";
+import { descriptorBackedPathsSupported } from "../src/core/run/workspaces/paths.ts";
 import { removeDir } from "./helpers/remove-dir.ts";
 
 let sequence = 0;

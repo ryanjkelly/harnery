@@ -7,7 +7,7 @@ import type {
   WorkspaceObservation,
   WorkspaceProofOutcome,
   WorkspaceResourceState,
-} from "../../src/core/workflow/index.ts";
+} from "../../src/core/run/index.ts";
 import {
   createLocalGitWorktreeProvider,
   inspectWorkflowWorkspace,
@@ -19,7 +19,7 @@ import {
   renderWorkflowWorkspaceStatus,
   WORKSPACE_BINDING_SCHEMA_VERSION,
   WORKSPACE_RECEIPT_SCHEMA_VERSION,
-} from "../../src/core/workflow/index.ts";
+} from "../../src/core/run/index.ts";
 
 type ApprovedWorkspaceTypes = {
   path: ValidatedFilesystemPath;
@@ -30,11 +30,11 @@ type ApprovedWorkspaceTypes = {
 };
 
 describe("workspace product-tier surface", () => {
-  test("uses the existing core/workflow export without adding a provider subpath", () => {
+  test("uses the core/run export without adding a provider subpath", () => {
     const packageJson = JSON.parse(
       readFileSync(resolve(import.meta.dir, "../../package.json"), "utf8"),
     ) as { exports: Record<string, unknown> };
-    expect(packageJson.exports["./core/workflow"]).toBeDefined();
+    expect(packageJson.exports["./core/run"]).toBeDefined();
     expect(packageJson.exports["./core/workspaces"]).toBeUndefined();
     expect(packageJson.exports["./core/workspace-provider"]).toBeUndefined();
     expect(WORKSPACE_BINDING_SCHEMA_VERSION).toBe(1);

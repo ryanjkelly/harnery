@@ -13,9 +13,9 @@ import {
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
 import { processMayBeAlive } from "../../../lib/process-alive.ts";
+import { fsyncParentDirectory } from "../../run/durable-record.ts";
+import { acquireNoClobberLease } from "../../run/workspaces/leases.ts";
 import { stateFileMode } from "../../storage/modes.ts";
-import { fsyncParentDirectory } from "../../workflow/durable-record.ts";
-import { acquireNoClobberLease } from "../../workflow/workspaces/leases.ts";
 import { eventV3ArchivesRoot } from "./archive-retention.ts";
 import { canonicalJsonV3, sha256V3 } from "./canonical.ts";
 import { verifyRetainedSealedSegmentsV3 } from "./catalog.ts";

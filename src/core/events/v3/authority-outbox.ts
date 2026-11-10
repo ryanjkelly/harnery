@@ -11,8 +11,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { fsyncParentDirectory } from "../../run/durable-record.ts";
 import { stateFileMode } from "../../storage/modes.ts";
-import { fsyncParentDirectory } from "../../workflow/durable-record.ts";
 import { canonicalJsonV3, sha256V3 } from "./canonical.ts";
 import type { EventV3 } from "./contract.ts";
 import { liveGenesisIdV3 } from "./control.ts";

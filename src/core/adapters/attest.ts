@@ -8,7 +8,7 @@
  * replying; a one-iteration ceiling made a healthy Claude CLI look unreachable.
  */
 
-import type { SpawnResult } from "../workflow/types.ts";
+import type { SpawnResult } from "../run/types.ts";
 import { probeFilesystemProjection } from "./attest-projection.ts";
 import type { AdapterAttestation, AttestableDimension } from "./attestation.ts";
 import {

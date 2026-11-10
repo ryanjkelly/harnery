@@ -12,7 +12,7 @@ import {
 import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
-import { acquireNoClobberLease } from "../../workflow/workspaces/leases.ts";
+import { acquireNoClobberLease } from "../../run/workspaces/leases.ts";
 import {
   EVENT_V3_STRANDED_CANDIDATE_APPROVAL_RECORD_ID,
   initializeEventLedgerV3,

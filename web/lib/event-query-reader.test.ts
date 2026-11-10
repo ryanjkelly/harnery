@@ -5,7 +5,7 @@ import { join } from "node:path";
 import {
   endWorkflowChildSessionV3,
   startWorkflowChildSessionV3,
-} from "../../src/core/workflow/live-session-v3";
+} from "../../src/core/run/live-session-v3";
 import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import { __resetCoordRootCache } from "./coord-reader";
 import { readEventQuery } from "./event-query-reader";

@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { __resetCoordRootCache } from "@/lib/coord-reader";
 import { initializeEventLedgerV3 } from "../../../../src/core/events/v3/bootstrap";
-import { startWorkflowChildSessionV3 } from "../../../../src/core/workflow/live-session-v3";
+import { startWorkflowChildSessionV3 } from "../../../../src/core/run/live-session-v3";
 import { GET } from "./route";
 
 let root: string;

@@ -25,6 +25,7 @@ import {
   resolveArtifactRef,
 } from "../artifacts/index.ts";
 import { currentHarneryRuntimeBuild } from "../events/v3/runtime-build.ts";
+import { readWorkflowProof } from "../run/proof.ts";
 import { writePrivateJsonAtomic } from "../storage/atomic-json.ts";
 import { stateDirMode } from "../storage/modes.ts";
 import {
@@ -37,7 +38,6 @@ import {
   type SupervisorCapability,
   type SupervisorFinding,
 } from "../supervisor/contract.ts";
-import { readWorkflowProof } from "../workflow/proof.ts";
 import {
   DIAGNOSTIC_ADVICE_SCHEMA_VERSION,
   DIAGNOSTIC_BUNDLE_FILES,

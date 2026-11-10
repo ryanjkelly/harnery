@@ -53,9 +53,9 @@ import {
   ADAPTER_BINARIES,
   ADAPTER_INSTALL_HINTS,
   ADAPTER_LOGIN_HINTS,
-} from "../core/workflow/adapters.ts";
-import { probeBilling } from "../core/workflow/billing.ts";
-import type { AdapterName } from "../core/workflow/types.ts";
+} from "../core/run/adapters.ts";
+import { probeBilling } from "../core/run/billing.ts";
+import type { AdapterName } from "../core/run/types.ts";
 import { checkGitHooks, gitHooksInstalled } from "../lib/instructions/git-hooks.ts";
 import { findRg, installRg, managedRgPath, rgInstallSupported } from "../lib/tools/ripgrep.ts";
 

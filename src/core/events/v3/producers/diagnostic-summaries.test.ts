@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { removeDir } from "../../../../../tests/helpers/remove-dir.ts";
 import { countRecentCodexMidFlightOnboardings } from "../../../../commands/doctor.ts";
-import { acquireNoClobberLease } from "../../../workflow/workspaces/leases.ts";
+import { acquireNoClobberLease } from "../../../run/workspaces/leases.ts";
 import {
   countSummarizedSinceV3,
   DIAGNOSTIC_LOOSE_EXEMPLAR_LIMIT,

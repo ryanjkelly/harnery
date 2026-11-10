@@ -13,9 +13,9 @@ import { delimiter, join, resolve } from "node:path";
 import { checkpointContext } from "../../src/core/context/index.ts";
 import { initializeEventLedgerV3 } from "../../src/core/events/v3/bootstrap.ts";
 import { sha256V3 } from "../../src/core/events/v3/canonical.ts";
-import { runWorkflow } from "../../src/core/workflow/engine.ts";
-import { createLocalGitWorktreeProvider } from "../../src/core/workflow/workspaces/local-git.ts";
-import { readWorkflowLiveness } from "../../src/core/workflow/workspaces/recovery.ts";
+import { runWorkflow } from "../../src/core/run/engine.ts";
+import { createLocalGitWorktreeProvider } from "../../src/core/run/workspaces/local-git.ts";
+import { readWorkflowLiveness } from "../../src/core/run/workspaces/recovery.ts";
 import { removeDir } from "../helpers/remove-dir.ts";
 import {
   descriptorPathsAvailable,

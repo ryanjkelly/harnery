@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { ADAPTER_SPECS } from "../hooks/adapter/events.ts";
-import type { SpawnRequest, SpawnResult } from "../workflow/types.ts";
+import type { SpawnRequest, SpawnResult } from "../run/types.ts";
 import type { AdapterAttestation, AttestableDimension } from "./attestation.ts";
 import { isAttestationCurrent, readAttestation } from "./attestation.ts";
 import type { AdapterRegistry } from "./registry.ts";

@@ -2,9 +2,9 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Command } from "commander";
-import { registerWorkflowCommand } from "../../src/commands/workflow.ts";
-import { createLocalGitWorktreeProvider, runWorkflow } from "../../src/core/workflow/index.ts";
-import { readWorkspaceEvents } from "../../src/core/workflow/workspaces/state.ts";
+import { registerWorkflowCommand } from "../../src/commands/run.ts";
+import { createLocalGitWorktreeProvider, runWorkflow } from "../../src/core/run/index.ts";
+import { readWorkspaceEvents } from "../../src/core/run/workspaces/state.ts";
 import { removeDir } from "../helpers/remove-dir.ts";
 import {
   descriptorPathsAvailable,

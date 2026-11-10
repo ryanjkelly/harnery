@@ -20,7 +20,7 @@
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { SpawnRequest, SpawnResult } from "../workflow/types.ts";
+import type { SpawnRequest, SpawnResult } from "../run/types.ts";
 import type { Adapter } from "./types.ts";
 
 /** Distinct names so a control artifact can never be mistaken for a treatment

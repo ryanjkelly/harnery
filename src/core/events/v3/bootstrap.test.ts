@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from 
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
-import { acquireNoClobberLease } from "../../workflow/workspaces/leases.ts";
+import { acquireNoClobberLease } from "../../run/workspaces/leases.ts";
 import { initializeEventLedgerV3 } from "./bootstrap.ts";
 import { sha256V3 } from "./canonical.ts";
 import {

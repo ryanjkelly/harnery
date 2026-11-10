@@ -226,12 +226,12 @@ try {
       JSON.parse(readFileSync(manifestPath, "utf8")).schema_version !== 2) fail("artifact CLI migration did not apply v2");
   log("artifact CLI create, hold, show, release, owner-scoped unhold, and explicit migration OK");
 
-  log("checking public `harnery/core/workflow` import ...");
+  log("checking public `harnery/core/run` import ...");
   const workflowProbe = join(workdir, "workflow-import.mjs");
   writeFileSync(
     workflowProbe,
     [
-      'import { WORKFLOW_PROOF_SCHEMA_VERSION, WORKSPACE_BINDING_SCHEMA_VERSION, WORKSPACE_RECEIPT_SCHEMA_VERSION, createLocalGitWorktreeProvider, deriveWorkspaceLifecycle, inspectWorkflowWorkspace, isWorkspaceLifecycleState, listWorkflowWorkspaceInspections, prepareIntegration, readWorkflowProof, readWorkflowWorkspaceStatus, renderWorkflowWorkspaceStatus, runWorkflow, WorkflowRunError } from "harnery/core/workflow";',
+      'import { WORKFLOW_PROOF_SCHEMA_VERSION, WORKSPACE_BINDING_SCHEMA_VERSION, WORKSPACE_RECEIPT_SCHEMA_VERSION, createLocalGitWorktreeProvider, deriveWorkspaceLifecycle, inspectWorkflowWorkspace, isWorkspaceLifecycleState, listWorkflowWorkspaceInspections, prepareIntegration, readWorkflowProof, readWorkflowWorkspaceStatus, renderWorkflowWorkspaceStatus, runWorkflow, WorkflowRunError } from "harnery/core/run";',
       'if (WORKFLOW_PROOF_SCHEMA_VERSION !== 2) throw new Error("unexpected workflow proof schema version");',
       'if (WORKSPACE_BINDING_SCHEMA_VERSION !== 1 || WORKSPACE_RECEIPT_SCHEMA_VERSION !== 1) throw new Error("unexpected workspace schema version");',
       'if (typeof readWorkflowProof !== "function" || typeof runWorkflow !== "function") throw new Error("workflow functions missing");',
@@ -248,7 +248,7 @@ try {
       "const workspaceStatus = readWorkflowWorkspaceStatus(process.cwd(), report.runId);",
       'if (workspaceStatus.selection !== "shared" || workspaceStatus.integrity.status !== "verified") throw new Error("workspace inspection invalid");',
       'if (!inspectWorkflowWorkspace(process.cwd(), report.runId).ok || listWorkflowWorkspaceInspections(process.cwd()).length < 1 || !/shared/.test(renderWorkflowWorkspaceStatus(workspaceStatus))) throw new Error("workspace inspection surface missing");',
-      'const durable = await import("harnery/core/workflow");',
+      'const durable = await import("harnery/core/run");',
       'for (const name of ["createWorkflowApproval", "resolveWorkflowApproval", "readWorkflowApproval", "acquireWorkflowResumeLease"]) {',
       '  if (typeof durable[name] !== "function") throw new Error(name + " missing");',
       "}",
@@ -267,7 +267,7 @@ try {
     encoding: "utf8",
     env: { ...process.env, PATH: "/usr/bin:/bin" },
   });
-  log("harnery/core/workflow import OK");
+  log("harnery/core/run import OK");
 
   log("checking public `harnery/core/policy` import ...");
   const policyProbe = join(workdir, "policy-import.mjs");

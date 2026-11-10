@@ -11,9 +11,9 @@ import { resolveCoordRoot } from "../core/agents/coord-client.ts";
 import { resolveBinName, workflowSubscriptionOnly } from "../core/config.ts";
 import type { PolicyIsolation } from "../core/policy/index.ts";
 import { loadPolicyFile } from "../core/policy/index.ts";
-import type { WorkflowApproval, WorkflowApprovalStatus } from "../core/workflow/approvals.ts";
-import { WorkflowParkedError } from "../core/workflow/engine.ts";
-import type { WorkspaceProvider } from "../core/workflow/index.ts";
+import type { WorkflowApproval, WorkflowApprovalStatus } from "../core/run/approvals.ts";
+import { WorkflowParkedError } from "../core/run/engine.ts";
+import type { WorkspaceProvider } from "../core/run/index.ts";
 
 /**
  * `workflow run <script>`: execute a workflow script — bounded, schema-gated,
@@ -183,7 +183,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
       }
       try {
         const { createLocalGitWorktreeProvider, runWorkflow } = await import(
-          "../core/workflow/index.ts"
+          "../core/run/index.ts"
         );
         const workspace = opts.workspaceRoot
           ? {
@@ -282,7 +282,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
       }
       try {
         const { assertWorkflowRunResumable, createLocalGitWorktreeProvider, runWorkflow } =
-          await import("../core/workflow/index.ts");
+          await import("../core/run/index.ts");
         const { manifest } = assertWorkflowRunResumable(coordRoot, runId);
         const binding = manifest.execution.workspace_binding;
         if (binding && binding.provider.id !== "local-git-worktree") {
@@ -363,7 +363,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
         process.exit(1);
       }
       const { inspectWorkflowWorkspace, renderWorkflowWorkspaceStatus } = await import(
-        "../core/workflow/index.ts"
+        "../core/run/index.ts"
       );
       const inspection = inspectWorkflowWorkspace(coordRoot, runId);
       if (!inspection.ok) {
@@ -391,7 +391,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
         });
         process.exit(1);
       }
-      const { listWorkflowWorkspaceInspections } = await import("../core/workflow/index.ts");
+      const { listWorkflowWorkspaceInspections } = await import("../core/run/index.ts");
       const inspections = listWorkflowWorkspaceInspections(coordRoot).filter(
         (inspection) => !inspection.ok || inspection.value.selection !== "shared",
       );
@@ -467,7 +467,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
       try {
         const provider = await builtInProviderForRun(coordRoot, runId);
         const { IntegrationPrepareParkedError, prepareIntegration } = await import(
-          "../core/workflow/index.ts"
+          "../core/run/index.ts"
         );
         try {
           const plan = await prepareIntegration({
@@ -547,7 +547,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
       }
       try {
         const provider = await builtInProviderForRun(coordRoot, runId);
-        const { applyIntegration } = await import("../core/workflow/index.ts");
+        const { applyIntegration } = await import("../core/run/index.ts");
         const receipt = await applyIntegration({ coordRoot, runId, provider });
         if (opts.json) {
           emit.config({ format: "json" });
@@ -591,7 +591,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
       }
       try {
         const provider = await builtInProviderForRun(coordRoot, runId);
-        const { cleanupWorkspace } = await import("../core/workflow/index.ts");
+        const { cleanupWorkspace } = await import("../core/run/index.ts");
         const result = await cleanupWorkspace({ coordRoot, runId, provider });
         if (opts.json) {
           emit.config({ format: "json" });
@@ -639,7 +639,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
       }
       try {
         const { createLocalGitWorktreeProvider, readWorkflowRunManifest } = await import(
-          "../core/workflow/index.ts"
+          "../core/run/index.ts"
         );
         const binding = readWorkflowRunManifest(coordRoot, runId).execution.workspace_binding;
         if (binding?.provider.id !== "local-git-worktree") {
@@ -716,7 +716,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
         });
         process.exit(1);
       }
-      const { listWorkflowApprovals } = await import("../core/workflow/approvals.ts");
+      const { listWorkflowApprovals } = await import("../core/run/approvals.ts");
       const records = listWorkflowApprovals(coordRoot, { status: opts.status });
       if (opts.json) {
         emit.config({ format: "json" });
@@ -749,7 +749,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
       }
       try {
         const { readWorkflowApproval, renderWorkflowApproval } = await import(
-          "../core/workflow/approvals.ts"
+          "../core/run/approvals.ts"
         );
         const approval = readWorkflowApproval(coordRoot, approvalId);
         if (opts.json) {
@@ -779,7 +779,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
         }
         try {
           const { resolveWorkflowApproval, renderWorkflowApproval } = await import(
-            "../core/workflow/approvals.ts"
+            "../core/run/approvals.ts"
           );
           const resolved = resolveWorkflowApproval({
             coordRoot,
@@ -824,9 +824,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
         process.exit(1);
       }
       try {
-        const { readWorkflowProof, renderWorkflowProof } = await import(
-          "../core/workflow/proof.ts"
-        );
+        const { readWorkflowProof, renderWorkflowProof } = await import("../core/run/proof.ts");
         const proof = readWorkflowProof(coordRoot, runId);
         if (opts.json) {
           emit.config({ format: "json" });
@@ -843,7 +841,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
 
 async function builtInProviderForRun(coordRoot: string, runId: string): Promise<WorkspaceProvider> {
   const { createLocalGitWorktreeProvider, readWorkflowRunManifest } = await import(
-    "../core/workflow/index.ts"
+    "../core/run/index.ts"
   );
   const manifest = readWorkflowRunManifest(coordRoot, runId);
   const binding = manifest.execution.workspace_binding;

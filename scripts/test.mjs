@@ -82,7 +82,7 @@ const partitionTimings = [];
 // own process so a timed-out operation cannot leak into the other suite's
 // cleanup. Retain every test and its assertions.
 const workflowProcessFiles = new Set([
-  "src/core/workflow/engine.test.ts",
+  "src/core/run/engine.test.ts",
 ]);
 
 // The complete suite has several intentionally process-heavy families. Keep
@@ -113,7 +113,7 @@ const namedCorePartitions = [
   },
   {
     label: "workflow test partition",
-    matches: (file) => file.startsWith("src/core/workflow/"),
+    matches: (file) => file.startsWith("src/core/run/"),
     extraArgs: workflowTestArgs,
   },
   {
