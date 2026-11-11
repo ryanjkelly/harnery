@@ -11,8 +11,7 @@
  * `hooksSetupHint`, `hooks`, `agents`, `instructions`, `tools`, `workflow`, `skills`, `presence`, plus the tunable
  * `coord` (heartbeat freshness), `logs` (structured-log storage budgets),
  * `artifacts` (working-file retention),
- * `backup` (restic repo/password/prune policy), `sync` (rclone
- * remote/prefix), `computer` (opt-in desktop control), `autoUpdate` (activity-fired
+ * `backup` (restic repo/password/prune policy), `computer` (opt-in desktop control), `autoUpdate` (activity-fired
  * project self-update), and `web` (dashboard port) sections. The `files` deny/override section
  * is parsed separately by `web/lib/files.ts`.
  *
@@ -226,12 +225,6 @@ interface HarneryConfig {
     keep_weekly?: number;
     keep_monthly?: number;
   };
-  /**
-   * `harn sync` (rclone) defaults: the `remote` name and `prefix` subpath. Read
-   * via `syncJsoncConfig()`. `harn sync init` also persists these to
-   * `~/.config/harnery/sync.json`, which is consulted as a lower-precedence fallback.
-   */
-  sync?: { remote?: string; prefix?: string };
   /** Standalone dashboard defaults. */
   web?: { port?: number; bind?: string };
   /**
@@ -1822,24 +1815,4 @@ export function backupConfig(coordRoot?: string | null): BackupConfig {
     keepWeekly: posIntOr(b.keep_weekly, 4),
     keepMonthly: posIntOr(b.keep_monthly, 6),
   };
-}
-
-/**
- * `harn sync` (rclone) remote/prefix from `.harnery/config.jsonc` `sync`, or null
- * when unset. This is the config-file layer only; `harn sync` consults env
- * (`HARNERY_SYNC_REMOTE`/`_PREFIX`) first and the `~/.config/harnery/sync.json`
- * file (written by `harn sync init`) as a lower-precedence fallback.
- * `coordRoot` is resolved via `findCoordRoot()` when not passed.
- */
-export function syncJsoncConfig(
-  coordRoot?: string | null,
-): { remote: string; prefix: string } | null {
-  const root = coordRoot ?? findCoordRoot();
-  if (!root) return null;
-  const s = readConfig(root).sync ?? {};
-  if (typeof s.remote === "string" && s.remote.trim()) {
-    const prefix = typeof s.prefix === "string" && s.prefix.trim() ? s.prefix.trim() : "harnery";
-    return { remote: s.remote.trim(), prefix };
-  }
-  return null;
 }

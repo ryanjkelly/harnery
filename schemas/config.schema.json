@@ -678,22 +678,6 @@
           "description": "Monthly snapshots to keep on `harn backup prune` (overridable with --keep-monthly)."
         }
       }
-    },
-    "sync": {
-      "type": "object",
-      "additionalProperties": false,
-      "description": "`harn sync` (rclone) defaults for the curated cross-machine subset (identities/, journal/archived/). Env overrides: HARNERY_SYNC_REMOTE, HARNERY_SYNC_PREFIX. `harn sync init` also records these in ~/.config/harnery/sync.json (a lower-precedence fallback than this section).",
-      "properties": {
-        "remote": {
-          "type": "string",
-          "description": "rclone remote name (e.g. 'gdrive'). Set up the remote with `rclone config`; harnery doesn't wrap the OAuth flow."
-        },
-        "prefix": {
-          "type": "string",
-          "default": "harnery",
-          "description": "Subpath under the rclone remote root that holds the synced subset."
-        }
-      }
     }
   },
   "$defs": {

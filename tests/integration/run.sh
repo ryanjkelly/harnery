@@ -55,7 +55,6 @@ echo ""
 check "harn --help mentions tokens" "$HARN --help" "tokens"
 check "harn --help mentions doctor" "$HARN --help" "doctor"
 check "harn --help mentions backup" "$HARN --help" "backup"
-check "harn --help mentions sync" "$HARN --help" "sync"
 check "harn --help mentions web" "$HARN --help" "web"
 check "harn --help mentions agents" "$HARN --help" "agents"
 check "harn --help mentions adapter" "$HARN --help" "adapter"
@@ -126,19 +125,10 @@ check "harn web --help mentions start" "$HARN web --help" "start"
 check "harn backup --help mentions snapshot" "$HARN backup --help" "snapshot"
 check "harn backup --help mentions restore" "$HARN backup --help" "restore"
 
-# 9. harn sync --help mentions subcommands
-check "harn sync --help mentions push" "$HARN sync --help" "push"
-check "harn sync --help mentions pull" "$HARN sync --help" "pull"
-
-# 10. Error path: harn backup init without restic surfaces a structured error
+# 9. Error path: harn backup init without restic surfaces a structured error
 if ! command -v restic >/dev/null 2>&1; then
   check "harn backup init without restic emits restic_missing" \
     "$HARN backup init 2>&1" "restic_missing" 1
-fi
-
-if ! command -v rclone >/dev/null 2>&1; then
-  check "harn sync init without rclone emits rclone_missing" \
-    "$HARN sync init 2>&1" "rclone_missing" 1
 fi
 
 echo ""

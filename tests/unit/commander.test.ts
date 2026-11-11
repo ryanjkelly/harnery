@@ -56,15 +56,16 @@ describe("createHarneryProgram", () => {
     expect(program.description()).toBeTruthy();
   });
 
-  test("registers the logging, inbox, messaging, and conversation surfaces", () => {
+  test("registers the logging surface and none of the removed messaging commands", () => {
     const names = new Set(createHarneryProgram().commands.map((command) => command.name()));
-    for (const name of ["logs", "inbox", "messages", "conversations"]) {
-      expect(names.has(name), name).toBeTrue();
+    expect(names.has("logs")).toBeTrue();
+    for (const name of ["inbox", "messages", "conversations", "sync"]) {
+      expect(names.has(name), name).toBeFalse();
     }
   });
 
-  test("honors command exclusions for every new top-level surface", () => {
-    const excluded = ["logs", "inbox", "messages", "conversations"];
+  test("honors command exclusions for every top-level surface", () => {
+    const excluded = ["logs"];
     const names = new Set(
       createHarneryProgram({ skipCommands: excluded }).commands.map((command) => command.name()),
     );

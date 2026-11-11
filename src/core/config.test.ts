@@ -29,7 +29,6 @@ import {
   resolveBinName,
   sessionFinalizationConfig,
   stripJsonComments,
-  syncJsoncConfig,
   writeComputerPreference,
   writeSignInPreference,
 } from "./config.ts";
@@ -579,31 +578,6 @@ describe("backupConfig", () => {
       maxBytes: 12345,
       schedule: { ifStale: "24h", tags: ["daily"] },
     });
-  });
-});
-
-describe("syncJsoncConfig", () => {
-  const roots: string[] = [];
-  afterEach(() => {
-    for (const r of roots.splice(0)) removeDir(r);
-  });
-
-  test("null when no sync section", () => {
-    const root = makeRoot(`{}`);
-    roots.push(root);
-    expect(syncJsoncConfig(root)).toBeNull();
-  });
-
-  test("reads remote + prefix; prefix defaults to harnery", () => {
-    const root = makeRoot(`{ "sync": { "remote": "gdrive" } }`);
-    roots.push(root);
-    expect(syncJsoncConfig(root)).toEqual({ remote: "gdrive", prefix: "harnery" });
-  });
-
-  test("honors an explicit prefix", () => {
-    const root = makeRoot(`{ "sync": { "remote": "gdrive", "prefix": "hq/coord" } }`);
-    roots.push(root);
-    expect(syncJsoncConfig(root)).toEqual({ remote: "gdrive", prefix: "hq/coord" });
   });
 });
 

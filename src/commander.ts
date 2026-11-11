@@ -207,14 +207,6 @@ export interface HarneryProgramContext {
   storage?: import("./core/storage/contract.ts").HarneryHostStorageRegistration;
   /** Maintenance implementations registered at construction time by storage owners. */
   storageMaintenanceProviders?: readonly import("./core/storage/maintenance.ts").HarneryMaintenanceProvider[];
-  /** Private inbox implementation. Omission keeps the commands visible but unavailable to invoke. */
-  coordinationInbox?: import("./core/inbox/service.ts").HarneryInboxService;
-  /** Adapter-native conversation providers. Omission keeps explicit history access unavailable. */
-  conversations?: {
-    catalog: import("./core/conversations/catalog.ts").HarneryConversationCatalog;
-    projectScopeId: string;
-    records?: () => readonly import("./core/conversations/contract.ts").HarneryConversationRecordV1[];
-  };
   /**
    * Default Host header for `tunnel up` when `--vhost` is omitted: a literal
    * host, or a resolver evaluated at start time (e.g. read a dev stack's
@@ -750,38 +742,6 @@ function harneryCommandBundles({
     lazy("logs", "List and query bounded Harnery log families", async (program) =>
       (await import("./commands/logs.ts")).registerLogsCommand(program, emit, context),
     ),
-    lazy("inbox", "Inspect private coordination inbox state", async (program) =>
-      (await import("./commands/inbox.ts")).registerInboxCommand(
-        program,
-        emit,
-        context?.coordinationInbox,
-      ),
-    ),
-    lazy(
-      "messages",
-      "Queue a durable coordination message; dry-run unless --yes",
-      async (program) =>
-        (await import("./commands/messages.ts")).registerMessagesCommand(
-          program,
-          emit,
-          context?.coordinationInbox,
-        ),
-      { hasOptions: true },
-    ),
-    lazy("conversations", "Query conversation evidence", async (program) => {
-      const { registerConversationsCommand } = await import("./commands/conversations.ts");
-      registerConversationsCommand(
-        program,
-        emit,
-        context?.conversations?.catalog,
-        context?.conversations
-          ? {
-              project_scope_id: context.conversations.projectScopeId,
-              ...(context.conversations.records ? { records: context.conversations.records } : {}),
-            }
-          : undefined,
-      );
-    }),
     lazy("events", "Inspect the canonical event ledger", async (program) =>
       (await import("./commands/events.ts")).registerEventsCommand(program, emit, context),
     ),
@@ -888,11 +848,6 @@ function harneryCommandBundles({
           emit,
           context,
         ),
-    ),
-    lazy(
-      "sync",
-      "Cross-machine sync of curated .harnery/ subset (identities and archived journals) via rclone. Google Drive is the expected remote; any rclone backend works.",
-      async (program) => (await import("./commands/sync.ts")).registerSyncCommand(program, emit),
     ),
     {
       commands: [

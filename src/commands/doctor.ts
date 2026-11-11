@@ -223,7 +223,6 @@ export async function runChecks(): Promise<Check[]> {
     ...(codexHookRuns ? [codexHookRuns] : []),
     ...workflow.map((w) => w.check),
     checkRestic(),
-    checkRclone(),
     checkPlaywright(),
     checkPython(),
   ];
@@ -671,21 +670,6 @@ function checkRestic(): Check {
     };
   }
   return { name: "restic", scope: "runtime", severity: "ok", detail: r.out };
-}
-
-function checkRclone(): Check {
-  const r = whichVersion("rclone", ["version"]);
-  if (!r.ok) {
-    return {
-      name: "rclone",
-      scope: "runtime",
-      severity: "warn",
-      detail: "missing (needed for `harn sync`)",
-      hint: "curl https://rclone.org/install.sh | sudo bash",
-    };
-  }
-  // first line is "rclone v1.XX.X"
-  return { name: "rclone", scope: "runtime", severity: "ok", detail: r.out };
 }
 
 function checkPlaywright(): Check {
