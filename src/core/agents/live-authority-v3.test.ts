@@ -396,7 +396,7 @@ describe("live V3 coordination", () => {
       hostBuild: "fixture",
       configDigest: sha256V3("config"),
       approvalRecordId: "test-epoch-handoff",
-      forceNewEpoch: true,
+      replacement: { kind: "approved", command: "initialize_force_new_epoch" },
     });
     const route = resolveLiveEventLedgerRouteV3(root);
     if (route.state !== "v3") throw new Error("expected replacement V3 route");

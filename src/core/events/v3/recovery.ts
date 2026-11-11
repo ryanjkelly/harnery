@@ -101,7 +101,13 @@ export function recoverInvalidEventLedgerV3(
       hostBuild: intent.host_build,
       configDigest: intent.config_digest,
       approvalRecordId: intent.approval_record_id,
-      forceNewEpoch: true,
+      replacement: {
+        kind: "approved",
+        command: "recover",
+        // Decided before the leases: the failed authority must still be the one there.
+        replaces: (control) =>
+          control.state === "invalid" && control.reason === "ledger_integrity_failure",
+      },
       now: () => new Date(intent.created_at),
     });
     archivedEpoch = initialized.archived_epoch;

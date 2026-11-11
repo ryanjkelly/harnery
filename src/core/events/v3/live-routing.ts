@@ -6,7 +6,7 @@ import {
   rotateOversizedEventLedgerV3,
 } from "./bootstrap.ts";
 import type { EventV3 } from "./contract.ts";
-import { readEventV3ControlState } from "./control.ts";
+import { eventV3ControlSchemaRefreshableV3, readEventV3ControlState } from "./control.ts";
 import { repairEventV3ControlPair } from "./control-writer.ts";
 import {
   type LiveEventLedgerRouteV3,
@@ -44,8 +44,12 @@ export function resolveLiveEventLedgerRouteV3(coordRoot: string): LiveEventLedge
   let control = readEventV3ControlState(coordRoot);
   if (control.state === "closed") return { state: "blocked", reason: "v3_not_initialized" };
   if (control.state === "repairable") control = repairEventV3ControlPair(coordRoot);
+  // Only an epoch whose genesis precedes a breaking schema change, or whose
+  // capability profile is stale, is refreshed. An epoch holding a schema this
+  // runtime does not know blocks it with `epoch_schema_unknown`; nothing is
+  // appended, archived or replaced.
   if (
-    (control.state === "invalid" && control.reason === "genesis_schema_digest_incompatible") ||
+    eventV3ControlSchemaRefreshableV3(control) ||
     ((control.state === "candidate" || control.state === "active") &&
       !runtimeCapabilityProfileCurrentV3(control))
   ) {

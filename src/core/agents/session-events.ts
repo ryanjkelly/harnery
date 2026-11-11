@@ -149,10 +149,6 @@ function recordCommandObservation(
       ...(deferDrain ? { writerOptions: { deferDrain: true } } : {}),
     });
     if (result.state === "generation_unavailable") {
-      const expectedLifecycleReopenGap =
-        result.reason === "turn_not_started" &&
-        hook.session_start_derivation === "approved_lifecycle_reopen";
-      if (expectedLifecycleReopenGap) return false;
       writeProducerDiagnosticV3(coordRoot, "command_emit_unjoinable", {
         type,
         instance_id: instanceId,

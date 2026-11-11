@@ -50,8 +50,6 @@ function semanticRead(extra: EventV3[] = []): ReadLedgerV3Result {
     diagnostics: [],
     complete: true,
     genesis_id: "gex_fixture",
-    active_schema_digest: start.contract.schema_digest,
-    advances: [],
     bytes: 400,
   };
 }
@@ -81,6 +79,19 @@ describe("semantic evidence projection", () => {
     expect(withOutput?.source.observed_through_event_id).toBe(
       baseline?.source.observed_through_event_id,
     );
+  });
+
+  test("reports a command that ran outside any turn as a session action", () => {
+    const command = eventV3Fixture("command.completed", 4) as unknown as Extract<
+      EventV3,
+      { event_type: "command.completed" }
+    >;
+    // A command recorded against its session carries no turn_id.
+    delete fixtureObject(command.scope).turn_id;
+    fixtureObject(command.payload).outcome = "succeeded";
+    const result = projectSemanticEvidenceV1(semanticRead([command]));
+    expect(result).toHaveLength(1);
+    expect(result[0]?.source.observed_through_event_id).toBe(command.event_id);
   });
 
   test("changes the digest at a typed wait boundary", () => {

@@ -97,6 +97,40 @@ describe("shared V3 run-quality evidence adapter", () => {
     ).toEqual([expect.objectContaining({ event_id: observed.event_id, kind: "progress" })]);
   });
 
+  test("pairs and cites a command that ran outside any turn", () => {
+    // The fixture scope carries no turn_id, as a command recorded against its
+    // session does.
+    const started = buildEventV3("command.started", {
+      ...common(1),
+      links: { caused_by: [], span_id: "span_session_command" },
+      payload: {
+        executable: "fixture",
+        executable_class: "fixture",
+        exact_command: fingerprint("d"),
+        intent_kind: "test",
+        intent_length: 4,
+        sensitive_argument_count: 0,
+      },
+    });
+    const completed = buildEventV3("command.completed", {
+      ...common(2),
+      links: { caused_by: [started.event_id], span_id: "span_session_command" },
+      payload: {
+        outcome: "succeeded",
+        exit_code: 0,
+        duration_ms: measurement(10),
+        span: spanSummary("span_session_command"),
+      },
+    });
+    expect("turn_id" in completed.scope).toBe(false);
+    expect(normalizeRunQualityPairingV3([started, completed])).toEqual([]);
+    expect(normalizeRunQualityEventV3(completed)).toEqual([]);
+    const observed = progress(3, [completed.event_id], [completed.event_id]);
+    expect(
+      normalizeRunQualityEventV3(observed, new Map([[completed.event_id, completed]])),
+    ).toEqual([expect.objectContaining({ event_id: observed.event_id, kind: "progress" })]);
+  });
+
   test("separates recovered terminals and tool/command pairing gaps", () => {
     const toolRequested = buildEventV3("tool.requested", {
       ...common(1),

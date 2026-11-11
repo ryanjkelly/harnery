@@ -10,7 +10,8 @@ export interface CommandProducerContextV3 {
   instance_id: `inst_${string}`;
   session_id: `sid_${string}`;
   generation_id: `gen_${string}`;
-  turn_id: `tid_${string}`;
+  /** Absent for a command that started outside any turn. */
+  turn_id?: `tid_${string}`;
   attestation_id: `att_${string}`;
   producer_id: `prd_${string}`;
   boot_id: `boot_${string}`;
@@ -77,7 +78,7 @@ export function normalizeCommandEventV3(
     instance_id: context.instance_id,
     session_id: context.session_id,
     generation_id: context.generation_id,
-    turn_id: context.turn_id,
+    ...(context.turn_id ? { turn_id: context.turn_id } : {}),
   };
   const provenance = {
     source_event: `session-tee.${signal}`,

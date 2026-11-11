@@ -1,4 +1,5 @@
 import { type EventV3ActiveTailV3, readEventV3ActiveTailV3 } from "../events/v3/reader.ts";
+import { inspectEventV3QueueV3 } from "../events/v3/writer.ts";
 import type { SupervisorCapability, SupervisorSourceReference } from "../supervisor/contract.ts";
 
 export interface CoordinationHealthDiagnostic {
@@ -134,4 +135,119 @@ function unavailable(
     diagnostics: [],
     omitted_event_count: 0,
   };
+}
+
+/** Queued rows the writer's door declines for one generation and one reason. */
+export interface EventQueueWaitingGroupV3 {
+  generation_id: string;
+  instance_id?: string;
+  reason: string;
+  count: number;
+  first_waiting_sequence?: number;
+  oldest_age_ms: number;
+}
+
+/** Files the drain renamed aside, grouped by generation and reason. */
+export interface EventQueueSetAsideGroupV3 {
+  generation_id?: string;
+  reason: string;
+  count: number;
+  oldest_age_ms: number;
+}
+
+export interface EventQueueHealthV3 {
+  waiting_total: number;
+  set_aside_total: number;
+  waiting: EventQueueWaitingGroupV3[];
+  set_aside: EventQueueSetAsideGroupV3[];
+}
+
+/**
+ * Summarize the ledger queue for health reports: valid rows the door will not
+ * admit yet and files it set aside, per generation and reason, with the first
+ * waiting producer sequence and the age of the oldest.
+ */
+export function collectEventQueueHealthV3(
+  coordRoot: string,
+  nowMs = Date.now(),
+  options: { generationId?: string } = {},
+): EventQueueHealthV3 {
+  const inspection = inspectEventV3QueueV3(coordRoot, options);
+  const waiting = new Map<string, EventQueueWaitingGroupV3>();
+  for (const row of inspection.waiting) {
+    const generationId = row.generation_id ?? "unscoped";
+    const key = `${generationId}\0${row.reason}`;
+    const age = Math.max(0, nowMs - row.queued_at_ms);
+    const group = waiting.get(key);
+    if (!group) {
+      waiting.set(key, {
+        generation_id: generationId,
+        ...(row.instance_id ? { instance_id: row.instance_id } : {}),
+        reason: row.reason,
+        count: 1,
+        ...(row.producer_sequence !== undefined
+          ? { first_waiting_sequence: row.producer_sequence }
+          : {}),
+        oldest_age_ms: age,
+      });
+      continue;
+    }
+    group.count += 1;
+    group.oldest_age_ms = Math.max(group.oldest_age_ms, age);
+    if (
+      row.producer_sequence !== undefined &&
+      (group.first_waiting_sequence === undefined ||
+        row.producer_sequence < group.first_waiting_sequence)
+    ) {
+      group.first_waiting_sequence = row.producer_sequence;
+    }
+  }
+  const setAside = new Map<string, EventQueueSetAsideGroupV3>();
+  for (const file of inspection.set_aside) {
+    const key = `${file.generation_id ?? ""}\0${file.reason}`;
+    const age = Math.max(0, nowMs - file.set_aside_at_ms);
+    const group = setAside.get(key);
+    if (group) {
+      group.count += 1;
+      group.oldest_age_ms = Math.max(group.oldest_age_ms, age);
+    } else {
+      setAside.set(key, {
+        ...(file.generation_id ? { generation_id: file.generation_id } : {}),
+        reason: file.reason,
+        count: 1,
+        oldest_age_ms: age,
+      });
+    }
+  }
+  return {
+    waiting_total: inspection.waiting.length,
+    set_aside_total: inspection.set_aside.length,
+    waiting: [...waiting.values()],
+    set_aside: [...setAside.values()],
+  };
+}
+
+/**
+ * The notice a session sees when its own events wait in the ledger queue, or
+ * undefined when none do. `binName` is the command name to print.
+ */
+export function waitingEventsNoticeV3(
+  coordRoot: string,
+  generationId: string,
+  binName: string,
+): string | undefined {
+  const queue = collectEventQueueHealthV3(coordRoot, Date.now(), { generationId });
+  const first = queue.waiting[0];
+  if (!first) return undefined;
+  const sequence =
+    first.first_waiting_sequence !== undefined
+      ? `, first at producer sequence ${first.first_waiting_sequence}`
+      : "";
+  return (
+    `${queue.waiting_total} event(s) of generation ${generationId} are waiting in the ledger queue ` +
+    `because the ledger would reject them now (reason ${first.reason}${sequence}); ` +
+    "this session's coordination changes are applied locally but not yet recorded. " +
+    "Start a new session, or wait for the next epoch rotation, which re-records this session's state; " +
+    `\`${binName} agents health\` lists waiting events`
+  );
 }

@@ -557,6 +557,8 @@ export function recordLiveClaimChangeV3(
     operation: "acquired" | "released";
     path: string;
     access?: "read" | "write";
+    /** Further causal parents, such as the acquisition a release on another's behalf ends. */
+    causedBy?: readonly `evt_${string}`[];
   },
 ): LiveCoordinationAuthorityV3Result {
   liveCoordinationWriteModeV3(input.coordRoot);
@@ -629,7 +631,7 @@ export function recordLiveIdentityChangeV3(
 }
 
 function recordLiveAuthority<S extends CoordinationAuthoritySignalV3>(
-  input: LiveAuthorityBaseV3,
+  input: LiveAuthorityBaseV3 & { causedBy?: readonly `evt_${string}`[] },
   signal: S,
   observation: CoordinationObservationBySignalV3[S],
   expected: Heartbeat,
@@ -655,6 +657,7 @@ function recordLiveAuthority<S extends CoordinationAuthoritySignalV3>(
     platform: livePlatformV3(),
     expected_prior_state_digest: coordinationAuthorityStateDigestV3(expected),
     desired_state_digest: coordinationAuthorityStateDigestV3(desired),
+    ...(input.causedBy?.length ? { caused_by: input.causedBy } : {}),
     reconciler: {
       readStateDigest: () => {
         const heartbeat = readHeartbeat(input.coordRoot, subject);

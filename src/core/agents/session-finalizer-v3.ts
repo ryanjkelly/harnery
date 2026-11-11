@@ -32,11 +32,16 @@ import {
 } from "../events/v3/producers/recorder.ts";
 import { readLedgerV3 } from "../events/v3/reader.ts";
 import { assertEventV3 } from "../events/v3/validate.ts";
-import { EVENT_V3_LEDGER_RELATIVE_ROOT, writeEventV3 } from "../events/v3/writer.ts";
+import {
+  EVENT_V3_LEDGER_RELATIVE_ROOT,
+  generationHasWaitingRowsV3,
+  writeEventV3,
+} from "../events/v3/writer.ts";
 import { fsyncParentDirectory } from "../storage/durable-record.ts";
 import { stateDirMode, stateFileMode } from "../storage/modes.ts";
 import { acquireNoClobberLease } from "../storage/no-clobber-lease.ts";
 import { readCodexArchiveObservationsV3 } from "./codex-archive-v3.ts";
+import { GENERATION_ROWS_WAITING_V3 } from "./live-lifecycle-v3.ts";
 import {
   listSessionFinalizationRequestsV3,
   SESSION_FINALIZATION_REQUEST_FORMAT_V3,
@@ -115,6 +120,11 @@ export interface ObserveHostDisappearedV3Input {
 export function endSessionExplicitV3(input: EndSessionExplicitV3Input) {
   const route = resolveLiveEventLedgerRouteV3(input.coordRoot);
   if (route.state !== "v3") return { state: "unavailable" as const, reason: route.reason };
+  // The closers and the end cite only part of the generation's chains, so
+  // they must not overtake rows of it the ledger door is still holding.
+  if (generationHasWaitingRowsV3(input.coordRoot, input.generation_id)) {
+    return { state: "unavailable" as const, reason: GENERATION_ROWS_WAITING_V3 };
+  }
   const observedAt = input.observed_at ?? new Date().toISOString();
   try {
     closeAbandonedCommandSpansV3({
@@ -177,6 +187,9 @@ export function requestSessionEndExplicitV3(
     if (!record.state.current_turn_id && record.state.spans.length === 0) {
       return endSessionExplicitV3(input);
     }
+    if (generationHasWaitingRowsV3(input.coordRoot, input.generation_id)) {
+      return { state: "unavailable" as const, reason: GENERATION_ROWS_WAITING_V3 };
+    }
     const existing = listSessionFinalizationRequestsV3(input.coordRoot).find(
       (request) =>
         request.status === "pending" &&
@@ -236,6 +249,9 @@ export function observeHostDisappearedV3(input: ObserveHostDisappearedV3Input) {
         state.instance_id === input.instance_id && state.generation_id === input.generation_id,
     );
     if (!record) return { state: "generation_unavailable" as const };
+    if (generationHasWaitingRowsV3(input.coordRoot, input.generation_id)) {
+      return { state: "unavailable" as const, reason: GENERATION_ROWS_WAITING_V3 };
+    }
     const observedAt = input.observed_at ?? new Date().toISOString();
     const policy = sessionFinalizationConfig(input.coordRoot);
     const request = ensureRequest(input.coordRoot, record, {
@@ -384,9 +400,17 @@ export function reconcileSessionFinalizationV3(
         result.already_terminal += 1;
         continue;
       }
+      // Salvage, the command closer and the end all cite only part of the
+      // generation's chains. While the door holds rows of it, emit none of
+      // them and leave the request pending; explicit-end expiry still applies.
+      const waiting = generationHasWaitingRowsV3(coordRoot, request.generation_id);
       if (request.trigger === "explicit_end") {
         let state = explicitEndReadiness(request, record, events);
-        if (state === "pending" && explicitEndSalvageEligible(request, record, events)) {
+        if (
+          state === "pending" &&
+          !waiting &&
+          explicitEndSalvageEligible(request, record, events)
+        ) {
           // Salvage (ADR 0078) precedes expiry: the requested turn is closed
           // and every remaining span is in the approved set, so derived
           // recovery terminals complete the end instead of cancelling it.
@@ -412,7 +436,9 @@ export function reconcileSessionFinalizationV3(
             continue;
           }
         }
-        if (state === "pending") {
+        // A ready end held by waiting rows ages like a pending one, so a
+        // generation that never drains cannot pin the request forever.
+        if (state === "pending" || (state === "ready" && waiting)) {
           // Expiry: a pending explicit end whose allowed span never closes has
           // no other escape (readiness re-evaluates to pending forever, and a
           // second request is refused while one is pending). Cancelling is
@@ -425,6 +451,9 @@ export function reconcileSessionFinalizationV3(
             result.diagnostics.push(`expired_pending_explicit_end:${request.request_id}`);
             continue;
           }
+          if (waiting) {
+            result.diagnostics.push(`${request.request_id}:${GENERATION_ROWS_WAITING_V3}`);
+          }
           result.pending += 1;
           continue;
         }
@@ -436,6 +465,11 @@ export function reconcileSessionFinalizationV3(
       } else if (record.state.last_event_id !== request.last_event_id) {
         cancelRequest(coordRoot, request, now.toISOString());
         result.cancelled += 1;
+        continue;
+      }
+      if (waiting) {
+        result.diagnostics.push(`${request.request_id}:${GENERATION_ROWS_WAITING_V3}`);
+        result.pending += 1;
         continue;
       }
       if (Date.parse(request.not_before) > now.getTime()) {
@@ -676,6 +710,10 @@ function ensureRequest(
   )
     return null;
   if (!record.state.last_event_id) return null;
+  // The observation cites only the hook chain. While the ledger door holds
+  // rows of this generation, write neither it nor the request; the next
+  // reconcile pass observes again.
+  if (generationHasWaitingRowsV3(coordRoot, record.state.generation_id)) return null;
   const request: SessionFinalizationRequestV3 = {
     format: SESSION_FINALIZATION_REQUEST_FORMAT_V3,
     format_version: SESSION_FINALIZATION_REQUEST_VERSION_V3,
@@ -698,7 +736,8 @@ function ensureRequest(
   const durability = writeEventV3(coordRoot, observation, {
     expectedGenesisId: input.route.genesis_id,
   });
-  if (durability.state === "epoch_replaced") return null;
+  // A waiting observation is durable in the queue; one set aside never reaches the ledger.
+  if (durability.state === "epoch_replaced" || durability.state === "set_aside") return null;
   writeRequest(coordRoot, request, true);
   return request;
 }

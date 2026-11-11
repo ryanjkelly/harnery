@@ -10,20 +10,20 @@ import { readLedgerFramesV3, readLedgerFramesV3Since } from "./reader.ts";
 const nextDigest = `sha256:${"b".repeat(64)}`;
 
 describe("event ledger V3 canonical stream reader", () => {
-  test("honors an additive schema advance at its exact physical boundary", () => {
+  test("reads a schema-advance row as an ordinary row and tracks no boundary", () => {
     const genesis = fixture("ledger.genesis", 1);
     const advance = fixture("ledger.schema_advanced", 2);
-    const postAdvance = fixture("ledger.comparability_advanced", 3);
+    const later = fixture("ledger.comparability_advanced", 3);
     const advancePayload = object(advance.payload);
     advancePayload.prior_schema_digest = EVENT_V3_SCHEMA_DIGEST;
     advancePayload.next_schema_digest = nextDigest;
-    advancePayload.compatible_reader_builds = ["build_fixture"];
-    advancePayload.effective_segment_ordinal = 2;
+    advancePayload.compatible_reader_builds = ["build_other"];
+    advancePayload.effective_segment_ordinal = 1;
     advancePayload.effective_byte_offset = 0;
-    object(postAdvance.contract).schema_digest = nextDigest;
+    object(later.contract).schema_digest = nextDigest;
 
     const result = readLedgerFramesV3(
-      [frame(genesis, 1, 0), frame(advance, 1, 1000), frame(postAdvance, 2, 0)],
+      [frame(genesis, 1, 0), frame(advance, 1, 1000), frame(later, 1, 3000)],
       {
         reader_build: "build_fixture",
         accepted_schema_digests: [EVENT_V3_SCHEMA_DIGEST, nextDigest],
@@ -32,43 +32,36 @@ describe("event ledger V3 canonical stream reader", () => {
 
     expect(result.diagnostics).toEqual([]);
     expect(result.complete).toBe(true);
-    expect(result.active_schema_digest).toBe(nextDigest);
-    expect(result.advances).toEqual([
-      expect.objectContaining({
-        prior_schema_digest: EVENT_V3_SCHEMA_DIGEST,
-        next_schema_digest: nextDigest,
-        effective_position: { segment_ordinal: 2, byte_offset: 0 },
-      }),
-    ]);
+    expect(result.genesis_schema_digest).toBe(EVENT_V3_SCHEMA_DIGEST);
+    expect(result.schema_digests).toEqual([EVENT_V3_SCHEMA_DIGEST, nextDigest].sort());
+    expect(Object.keys(result)).not.toContain("advances");
   });
 
-  test("fails closed for unsupported, incompatible, or skipped advances", () => {
+  test("reports a row of an unknown digest once, as unsupported, and not its dependents", () => {
     const genesis = fixture("ledger.genesis", 1);
-    const advance = fixture("ledger.schema_advanced", 2);
-    const postAdvance = fixture("ledger.comparability_advanced", 3);
-    const payload = object(advance.payload);
-    payload.prior_schema_digest = EVENT_V3_SCHEMA_DIGEST;
-    payload.next_schema_digest = nextDigest;
-    payload.compatible_reader_builds = ["build_other"];
-    payload.effective_segment_ordinal = 1;
-    payload.effective_byte_offset = 2000;
-    object(postAdvance.contract).schema_digest = nextDigest;
+    const newer = fixture("ledger.comparability_advanced", 2);
+    object(newer.contract).schema_digest = nextDigest;
+    // A newer runtime's row may carry fields this runtime's schema rejects.
+    object(newer.payload).field_from_a_newer_schema = true;
+    const dependent = fixture("ledger.comparability_advanced", 3);
+    object(dependent.links).caused_by = [newer.event_id as string];
 
-    const result = readLedgerFramesV3(
-      [frame(genesis, 1, 0), frame(advance, 1, 1000), frame(postAdvance, 1, 3000)],
-      { reader_build: "build_fixture" },
-    );
+    const result = readLedgerFramesV3([
+      frame(genesis, 1, 0),
+      frame(newer, 1, 1000),
+      frame(dependent, 1, 2000),
+    ]);
 
     expect(result.complete).toBe(false);
-    expect(result.diagnostics.map(({ code }) => code)).toEqual(
-      expect.arrayContaining([
-        "advance_digest_unsupported",
-        "advance_reader_incompatible",
-        "advance_boundary_missed",
-        "unsupported_schema_digest",
-        "unexpected_schema_digest",
-      ]),
-    );
+    expect(result.diagnostics).toEqual([
+      {
+        code: "unsupported_schema_digest",
+        segment_ordinal: 1,
+        byte_offset: 1000,
+        event_id: newer.event_id as string,
+      },
+    ]);
+    expect(result.schema_digests).toEqual([EVENT_V3_SCHEMA_DIGEST, nextDigest].sort());
   });
 
   test("requires matching activation authority when reading as active", () => {
@@ -121,14 +114,14 @@ describe("event ledger V3 canonical stream reader", () => {
     expect(missing.diagnostics.at(-1)?.code).toBe("cursor_position_missing");
   });
 
-  test("rejects noncanonical frames and digest changes without an advance", () => {
+  test("rejects noncanonical frames and accepts any digest of the accepted set without an advance", () => {
     const genesis = fixture("ledger.genesis", 1);
     const changed = fixture("ledger.comparability_advanced", 2);
     object(changed.contract).schema_digest = nextDigest;
     const digestResult = readLedgerFramesV3([frame(genesis, 1, 0), frame(changed, 1, 1000)], {
       accepted_schema_digests: [EVENT_V3_SCHEMA_DIGEST, nextDigest],
     });
-    expect(digestResult.diagnostics.map(({ code }) => code)).toContain("unexpected_schema_digest");
+    expect(digestResult.diagnostics).toEqual([]);
 
     const pretty = frame(genesis, 1, 0);
     pretty.raw = JSON.stringify(genesis, null, 2);

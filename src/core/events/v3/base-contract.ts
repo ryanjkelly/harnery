@@ -575,7 +575,7 @@ export const CommandStartedV3BaseSchema = eventSchema(
     intent_fingerprint: Type.Optional(FingerprintV3BaseSchema),
     sensitive_argument_count: Type.Integer({ minimum: 0 }),
   }),
-  "turn",
+  "generation",
   ToolLinksSchema,
 );
 
@@ -587,7 +587,7 @@ export const CommandOutputObservedV3BaseSchema = eventSchema(
     lines: Type.Optional(Type.Integer({ minimum: 0 })),
     content_fingerprint: Type.Optional(FingerprintV3BaseSchema),
   }),
-  "turn",
+  "generation",
   ToolLinksSchema,
 );
 
@@ -601,7 +601,7 @@ export const CommandCompletedV3BaseSchema = eventSchema(
     error_class: Type.Optional(SafeToken),
     recovery: Type.Optional(RecoveryV3BaseSchema),
   }),
-  "turn",
+  "generation",
   ToolLinksSchema,
 );
 

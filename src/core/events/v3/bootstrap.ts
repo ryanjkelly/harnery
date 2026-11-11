@@ -31,6 +31,7 @@ import {
   EVENT_V3_ACTIVATION_MANIFEST,
   EVENT_V3_GENESIS_MANIFEST,
   type EventV3ControlState,
+  eventV3ControlSchemaRefreshableV3,
   readEventV3ControlState,
 } from "./control.ts";
 import { repairEventV3ControlPair } from "./control-writer.ts";
@@ -53,7 +54,12 @@ export interface InitializeEventLedgerV3Input {
   hostBuild: string;
   configDigest: `sha256:${string}`;
   approvalRecordId: string;
-  forceNewEpoch?: boolean;
+  /**
+   * Why this initializer may replace the epoch that is present. Unset, it
+   * replaces only an epoch whose genesis precedes a breaking schema change (or
+   * an unbound ledger directory), on the same terms as an automatic cutover.
+   */
+  replacement?: EventV3EpochReplacementV3;
   /**
    * Activate a candidate epoch that was already created for this root.
    *
@@ -66,6 +72,60 @@ export interface InitializeEventLedgerV3Input {
    */
   resumeCandidate?: boolean;
   now?: () => Date;
+  /** Observe the replacement steps; tests use it to interleave another writer. */
+  onStep?: (step: EventV3EpochReplacementStepV3) => void;
+}
+
+/**
+ * A point in an epoch replacement. `replacement_decided` comes after the
+ * decision under the bootstrap lease and before the publication and append
+ * leases are taken, the window in which another writer may still append.
+ */
+export type EventV3EpochReplacementStepV3 = "replacement_decided";
+
+/** Why an initializer may replace the epoch present. */
+export type EventV3EpochReplacementV3 =
+  | EventV3AutomaticEpochReplacementV3
+  | EventV3ApprovedEpochReplacementV3;
+
+/**
+ * A replacement no operator approved for this epoch: a runtime refresh, a size
+ * rotation, or `init` refreshing a runtime profile. `replaces` names the
+ * control states the caller decided to replace. It is asked under the
+ * bootstrap lease and again under the publication and append leases, the last
+ * point before any epoch bytes move, from a control read that sees every row
+ * appended until then. An automatic replacement never archives an epoch this
+ * runtime cannot serve, an unknown schema above all, other than one whose
+ * genesis precedes a breaking change: it refuses with nothing archived,
+ * nothing published and the control pair unchanged.
+ */
+export interface EventV3AutomaticEpochReplacementV3 {
+  kind: "automatic";
+  cause: "runtime_refresh" | "size_rotation" | "init_refresh";
+  replaces: (control: EventV3ControlState) => boolean;
+}
+
+/**
+ * An operator's explicit, approved command: `ledger-v3 initialize
+ * --force-new-epoch --yes` or `ledger-v3 recover`. The only replacement that
+ * may archive an epoch this runtime cannot serve. `replaces`, when given, must
+ * still hold under the publication and append leases.
+ */
+export interface EventV3ApprovedEpochReplacementV3 {
+  kind: "approved";
+  command: "initialize_force_new_epoch" | "recover";
+  replaces?: (control: EventV3ControlState) => boolean;
+}
+
+/** The refusal of a replacement the epoch present no longer permits. */
+export class EventV3EpochNotReplacedError extends Error {
+  constructor(
+    readonly reason: string,
+    readonly control: EventV3ControlState,
+  ) {
+    super(`event_v3_epoch_not_replaced:${reason}`);
+    this.name = "EventV3EpochNotReplacedError";
+  }
 }
 
 export interface InitializeEventLedgerV3Result {
@@ -140,6 +200,7 @@ export function initializeEventLedgerV3(
  */
 export function refreshIncompatibleEventLedgerV3(
   coordRoot: string,
+  options: Pick<InitializeEventLedgerV3Input, "onStep"> = {},
 ): RefreshIncompatibleEventLedgerV3Result {
   const root = resolve(coordRoot);
   return withBootstrapLease(root, () => {
@@ -147,25 +208,29 @@ export function refreshIncompatibleEventLedgerV3(
     if (current.state === "active" && runtimeCapabilityProfileCurrent(current)) {
       return { state: "current", control: current };
     }
-    const refreshable =
-      (current.state === "invalid" && current.reason === "genesis_schema_digest_incompatible") ||
-      ((current.state === "candidate" || current.state === "active") &&
-        !runtimeCapabilityProfileCurrent(current));
-    if (!refreshable) {
-      const reason = "reason" in current ? `${current.state}:${current.reason}` : current.state;
-      throw new Error(`event_v3_runtime_refresh_refused:${reason}`);
+    if (!runtimeRefreshable(current)) {
+      throw new Error(`event_v3_runtime_refresh_refused:${controlStateLabel(current)}`);
     }
     const configPath = join(root, ".harnery", "config.jsonc");
-    const initialized = initializeEventLedgerV3Locked({
-      coordRoot: root,
-      harneryBuild: currentHarneryRuntimeBuild(),
-      hostBuild: repositoryBuild(root),
-      configDigest: sha256V3(
-        existsSync(configPath) ? readFileSync(configPath) : Buffer.from("{}\n"),
-      ),
-      approvalRecordId: "harnery-runtime-v3-auto-refresh",
-      forceNewEpoch: true,
-    });
+    let initialized: InitializeEventLedgerV3Result;
+    try {
+      initialized = initializeEventLedgerV3Locked({
+        coordRoot: root,
+        harneryBuild: currentHarneryRuntimeBuild(),
+        hostBuild: repositoryBuild(root),
+        configDigest: sha256V3(
+          existsSync(configPath) ? readFileSync(configPath) : Buffer.from("{}\n"),
+        ),
+        approvalRecordId: "harnery-runtime-v3-auto-refresh",
+        replacement: { kind: "automatic", cause: "runtime_refresh", replaces: runtimeRefreshable },
+        ...(options.onStep ? { onStep: options.onStep } : {}),
+      });
+    } catch (error) {
+      if (error instanceof EventV3EpochNotReplacedError) {
+        throw new Error(`event_v3_runtime_refresh_refused:${controlStateLabel(error.control)}`);
+      }
+      throw error;
+    }
     return {
       state: "refreshed",
       ...(initialized.archived_epoch ? { archived_epoch: initialized.archived_epoch } : {}),
@@ -243,7 +308,9 @@ function strandedBootstrapCandidate(
 }
 
 export interface RotateOversizedEventLedgerV3Result {
-  state: "rotated" | "not_oversized" | "not_active" | "disabled";
+  state: "rotated" | "not_oversized" | "not_active" | "disabled" | "refused";
+  /** Why a rotation decided on this epoch was refused under the append lease. */
+  reason?: string;
   active_bytes: number;
   threshold_bytes: number;
   archived_epoch?: string;
@@ -269,7 +336,7 @@ export interface RotateOversizedEventLedgerV3Result {
  */
 export function rotateOversizedEventLedgerV3(
   coordRoot: string,
-  options: { thresholdBytes?: number } = {},
+  options: { thresholdBytes?: number } & Pick<InitializeEventLedgerV3Input, "onStep"> = {},
 ): RotateOversizedEventLedgerV3Result {
   const root = resolve(coordRoot);
   const threshold = options.thresholdBytes ?? resolveEventLedgerRotateActiveBytesV3(root);
@@ -297,16 +364,32 @@ export function rotateOversizedEventLedgerV3(
       return { state: "not_active", active_bytes: activeBytes, threshold_bytes: threshold };
     }
     const configPath = join(root, ".harnery", "config.jsonc");
-    const initialized = initializeEventLedgerV3Locked({
-      coordRoot: root,
-      harneryBuild: currentHarneryRuntimeBuild(),
-      hostBuild: repositoryBuild(root),
-      configDigest: sha256V3(
-        existsSync(configPath) ? readFileSync(configPath) : Buffer.from("{}\n"),
-      ),
-      approvalRecordId: "harnery-runtime-v3-size-rotation",
-      forceNewEpoch: true,
-    });
+    let initialized: InitializeEventLedgerV3Result;
+    try {
+      initialized = initializeEventLedgerV3Locked({
+        coordRoot: root,
+        harneryBuild: currentHarneryRuntimeBuild(),
+        hostBuild: repositoryBuild(root),
+        configDigest: sha256V3(
+          existsSync(configPath) ? readFileSync(configPath) : Buffer.from("{}\n"),
+        ),
+        approvalRecordId: "harnery-runtime-v3-size-rotation",
+        replacement: {
+          kind: "automatic",
+          cause: "size_rotation",
+          replaces: (control) => control.state === "active" || control.state === "candidate",
+        },
+        ...(options.onStep ? { onStep: options.onStep } : {}),
+      });
+    } catch (error) {
+      if (!(error instanceof EventV3EpochNotReplacedError)) throw error;
+      return {
+        state: "refused",
+        reason: error.reason,
+        active_bytes: activeBytes,
+        threshold_bytes: threshold,
+      };
+    }
     if (initialized.archived_epoch) {
       reanchorArchivedHookProducersV3({
         coordRoot: root,
@@ -335,15 +418,45 @@ function initializeEventLedgerV3Locked(
   if (resumeCandidate && current.state === "repairable") {
     current = repairEventV3ControlPair(root);
   }
-  if (!input.forceNewEpoch && current.state === "active") {
+  const replacement = input.replacement;
+  const approved = replacement?.kind === "approved";
+  // An epoch is present but cannot be served. Only the schema verdict the
+  // routing boundary refreshes may replace it without an approved command;
+  // every other reason (an unknown schema, a damaged ledger) needs the approved
+  // replace or recover command, so no automatic path archives what it cannot read.
+  if (!approved && automaticallyUnreplaceable(current)) {
+    throw new EventV3EpochNotReplacedError(current.reason, current);
+  }
+  if (approved && replacement.replaces && !replacement.replaces(current)) {
+    throw new EventV3EpochNotReplacedError(epochChangedReason(current), current);
+  }
+  const forceNewEpoch = approved || replacement?.replaces(current) === true;
+  if (!forceNewEpoch && current.state === "active") {
     return { state: "active", initialized: false, control: current };
   }
-  if (!input.forceNewEpoch && resumeCandidate && current.state === "candidate") {
+  if (!forceNewEpoch && resumeCandidate && current.state === "candidate") {
     return activateCandidateEpoch(root, current.genesis, input.approvalRecordId);
   }
-  if (!input.forceNewEpoch && current.state === "candidate") {
+  if (!forceNewEpoch && current.state === "candidate") {
     throw new Error("event_v3_candidate_requires_explicit_activation_or_epoch_replacement");
   }
+  // What must still hold under the publication and append leases. Another
+  // writer may append until then, and the bootstrap lease does not exclude it.
+  const decided = current;
+  const refusal = (control: EventV3ControlState): string | undefined => {
+    if (approved) {
+      return replacement.replaces && !replacement.replaces(control)
+        ? epochChangedReason(control)
+        : undefined;
+    }
+    if (automaticallyUnreplaceable(control)) return control.reason;
+    const stillDecided =
+      sameEpoch(decided, control) &&
+      (forceNewEpoch
+        ? replacement?.replaces(control) === true
+        : sameControlVerdict(decided, control));
+    return stillDecided ? undefined : epochChangedReason(control);
+  };
 
   const now = input.now ?? (() => new Date());
   const createdAt = now().toISOString();
@@ -389,7 +502,8 @@ function initializeEventLedgerV3Locked(
   // whole, so it can never leave a replaced epoch stranded in candidate state.
   const activation = buildActivationManifestV3(activationInput(candidate, input.approvalRecordId));
 
-  const archivedEpoch = archiveCurrentEpoch(root, createdAt);
+  input.onStep?.("replacement_decided");
+  const archivedEpoch = archiveCurrentEpoch(root, createdAt, refusal);
   publishControlFile(join(root, EVENT_V3_GENESIS_MANIFEST), candidate);
   let activated: InitializeEventLedgerV3Result;
   try {
@@ -418,6 +532,45 @@ function completeStrandedCandidateActivation(
       `event_v3_epoch_stranded_before_activation:${cause instanceof Error ? cause.message : String(cause)}`,
     );
   }
+}
+
+/** An invalid state no automatic path replaces: anything but the refreshable schema verdict. */
+function automaticallyUnreplaceable(
+  control: EventV3ControlState,
+): control is Extract<EventV3ControlState, { state: "invalid" }> {
+  return control.state === "invalid" && !eventV3ControlSchemaRefreshableV3(control);
+}
+
+/** The states a runtime refresh replaces: a breaking schema change or a stale capability profile. */
+function runtimeRefreshable(control: EventV3ControlState): boolean {
+  return (
+    eventV3ControlSchemaRefreshableV3(control) ||
+    ((control.state === "candidate" || control.state === "active") &&
+      !runtimeCapabilityProfileCurrent(control))
+  );
+}
+
+/** Same state and same reason. */
+function sameControlVerdict(decided: EventV3ControlState, control: EventV3ControlState): boolean {
+  return (
+    decided.state === control.state &&
+    ("reason" in decided ? decided.reason : undefined) ===
+      ("reason" in control ? control.reason : undefined)
+  );
+}
+
+/** False only when both states name a control pair and the pairs differ. */
+function sameEpoch(decided: EventV3ControlState, control: EventV3ControlState): boolean {
+  if (!("genesis" in decided) || !("genesis" in control)) return true;
+  return decided.genesis.event.event_id === control.genesis.event.event_id;
+}
+
+function epochChangedReason(control: EventV3ControlState): string {
+  return `epoch_changed_before_replacement:${controlStateLabel(control)}`;
+}
+
+function controlStateLabel(control: EventV3ControlState): string {
+  return "reason" in control ? `${control.state}:${control.reason}` : control.state;
 }
 
 function runtimeCapabilityProfileCurrent(
@@ -511,12 +664,26 @@ function completeCandidateActivation(
   return { state: "active", initialized: true, control: active };
 }
 
-function archiveCurrentEpoch(root: string, createdAt: string): string | undefined {
+/**
+ * Move the current epoch whole into the archive, under the publication and
+ * append leases. `refusal` judges the control state read under those leases,
+ * before any epoch bytes move: that read sees every row appended until the
+ * leases were taken, from a witness only when it names the current storage
+ * exactly and otherwise from a canonical read. A refusal leaves the epoch,
+ * its queue and its control pair exactly as they were.
+ */
+function archiveCurrentEpoch(
+  root: string,
+  createdAt: string,
+  refusal: (control: EventV3ControlState) => string | undefined,
+): string | undefined {
   const current = join(root, EVENT_V3_LEDGER_RELATIVE_ROOT);
   if (!existsSync(current)) return undefined;
   return withEventV3PublicationLease(root, () =>
     withEventV3LedgerLease(root, {}, () => {
       const control = readEventV3ControlState(root);
+      const refused = refusal(control);
+      if (refused !== undefined) throw new EventV3EpochNotReplacedError(refused, control);
       if (control.state === "active" || control.state === "candidate") {
         drainReadyEventsHeldLeaseV3(root);
       }

@@ -1,10 +1,26 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import { createHarneryProgram, type EmitContext, loadLazyCommand } from "../commander.ts";
+import {
+  ReplayEventsV3,
+  unknownDigestQueuedRowV3,
+} from "../core/events/v3/__fixtures__/ledger-replay.ts";
 import { ensureEventLedgerV3 } from "../core/events/v3/bootstrap.ts";
+import { canonicalJsonV3 } from "../core/events/v3/canonical.ts";
+import { readEventV3ControlState } from "../core/events/v3/control.ts";
+import { EVENT_V3_SCHEMA_DIGEST } from "../core/events/v3/generated.ts";
 import { recordHookSignalV3 } from "../core/events/v3/producers/recorder.ts";
 
 const roots: string[] = [];
@@ -97,6 +113,95 @@ describe("ledger-v3 command", () => {
         producer_states_by_adapter: { openclaw: 1 },
       },
     });
+  });
+
+  test("status reports the genesis schema, the digests present and the verdict", async () => {
+    const root = mkdtempSync(join(tmpdir(), "harnery-ledger-v3-schema-status-"));
+    roots.push(root);
+    ensureEventLedgerV3(root, "ledger-v3-schema-status-test");
+    const result = await runSupport(["status", "--root", root]);
+    expect(result.error).toBeUndefined();
+    expect(result.data).toMatchObject({
+      state: "active",
+      schema: {
+        runtime_schema_digest: EVENT_V3_SCHEMA_DIGEST,
+        genesis_schema_digest: EVENT_V3_SCHEMA_DIGEST,
+        present_schema_digests: [EVENT_V3_SCHEMA_DIGEST],
+        verdict: "serve",
+      },
+    });
+  });
+
+  test("initialize --force-new-epoch previews the replacement and changes nothing without --yes", async () => {
+    const root = mkdtempSync(join(tmpdir(), "harnery-ledger-v3-force-"));
+    roots.push(root);
+    const control = ensureEventLedgerV3(root, "ledger-v3-force-test");
+    const active = join(root, ".harnery", "ledgers", "v3", "active.ndjson");
+    const before = readFileSync(active, "utf8");
+    const archives = join(root, ".harnery", "ledgers", "v3-archives");
+    const base = ["initialize", "--root", root, "--approval-record-id", "test-force"];
+
+    const preview = await runSupport([...base, "--force-new-epoch"]);
+    expect(preview.error).toBeUndefined();
+    expect(preview.data).toMatchObject({
+      state: "dry_run",
+      current: { state: "active", genesis_id: control.genesis.event.payload.genesis_id },
+      would_archive: join(root, ".harnery", "ledgers", "v3"),
+      would_create: { manifest_version: 2, initial_schema_digest: EVENT_V3_SCHEMA_DIGEST },
+    });
+    expect((preview.data as { confirm: string }).confirm).toContain("--force-new-epoch --yes");
+    expect(readFileSync(active, "utf8")).toBe(before);
+    expect(existsSync(archives)).toBeFalse();
+
+    const replaced = await runSupport([...base, "--force-new-epoch", "--yes"]);
+    expect(replaced.error).toBeUndefined();
+    expect(replaced.data).toMatchObject({ state: "active", initialized: true });
+    expect((replaced.data as { archived_epoch?: string }).archived_epoch).toBeDefined();
+    expect(readdirSync(archives)).toHaveLength(1);
+  });
+
+  test("initialize --force-new-epoch previews an epoch with an unknown schema and replaces it only with --yes", async () => {
+    const root = mkdtempSync(join(tmpdir(), "harnery-ledger-v3-force-unknown-"));
+    roots.push(root);
+    const control = ensureEventLedgerV3(root, "ledger-v3-force-unknown-test");
+    const active = join(root, ".harnery", "ledgers", "v3", "active.ndjson");
+    const events = new ReplayEventsV3();
+    appendFileSync(
+      active,
+      `${canonicalJsonV3(unknownDigestQueuedRowV3(events, events.session("newer")))}\n`,
+    );
+    const before = readFileSync(active, "utf8");
+    const archives = join(root, ".harnery", "ledgers", "v3-archives");
+    const base = ["initialize", "--root", root, "--approval-record-id", "test-force-unknown"];
+
+    const preview = await runSupport([...base, "--force-new-epoch"]);
+    expect(preview.error).toBeUndefined();
+    expect(preview.data).toMatchObject({
+      state: "dry_run",
+      current: { state: "invalid", reason: "epoch_schema_unknown" },
+      would_archive: join(root, ".harnery", "ledgers", "v3"),
+    });
+    expect(readFileSync(active, "utf8")).toBe(before);
+    expect(existsSync(archives)).toBeFalse();
+
+    const plain = await runSupport(base);
+    expect(plain.error).toBeDefined();
+    expect(readFileSync(active, "utf8")).toBe(before);
+    expect(existsSync(archives)).toBeFalse();
+
+    const replaced = await runSupport([...base, "--force-new-epoch", "--yes"]);
+    expect(replaced.error).toBeUndefined();
+    expect(replaced.data).toMatchObject({ state: "active", initialized: true });
+    const archived = (replaced.data as { archived_epoch: string }).archived_epoch;
+    expect(readFileSync(join(archived, "active.ndjson"), "utf8")).toBe(before);
+    expect(readdirSync(archives)).toHaveLength(1);
+    const after = readEventV3ControlState(root);
+    expect(after.state).toBe("active");
+    if (after.state === "active") {
+      expect(after.genesis.event.payload.genesis_id).not.toBe(
+        control.genesis.event.payload.genesis_id,
+      );
+    }
   });
 
   test("the environment override wins over the program context root", async () => {

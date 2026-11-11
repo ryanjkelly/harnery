@@ -2,6 +2,10 @@ import { createHash } from "node:crypto";
 import { resolveBinName } from "../config.ts";
 import { type EventV3ControlState, readEventV3ControlState } from "../events/v3/control.ts";
 import {
+  EPOCH_SCHEMA_UNKNOWN_REASON_V3,
+  GENESIS_SCHEMA_DIGEST_INCOMPATIBLE_REASON_V3,
+} from "../events/v3/schema-lineage.ts";
+import {
   SUPERVISOR_DIAGNOSTIC_LIMITS,
   type SupervisorCapability,
   type SupervisorFindingClass,
@@ -69,8 +73,7 @@ export function ledgerControlStateFindingCandidateV1(
   input: LedgerControlStateFindingInputV1,
 ): SupervisorFindingCandidateV1 | undefined {
   const { current, capability } = input;
-  const incompatibleObserver =
-    current.state === "invalid" && current.reason === "genesis_schema_digest_incompatible";
+  const incompatibleObserver = schemaReasonDescribesObserver(current.state, current.reason);
   if (current.state === "active") return undefined;
   const priorDrift = leadingDriftRun(input.previous ?? []);
   if (priorDrift.length === 0) return undefined;
@@ -112,6 +115,20 @@ export function ledgerControlStateFindingCandidateV1(
     ],
     capabilities: [capability],
   };
+}
+
+/**
+ * The two schema verdicts the control reader returns describe the runtime that
+ * read the epoch, not the epoch: an older-group genesis this runtime would
+ * refresh, or a schema this runtime's lineage does not hold (ADR 0245). The
+ * reader compares no digests here; it trusts the control reason.
+ */
+function schemaReasonDescribesObserver(state: string, reason: string | undefined): boolean {
+  return (
+    state === "invalid" &&
+    (reason === GENESIS_SCHEMA_DIGEST_INCOMPATIBLE_REASON_V3 ||
+      reason === EPOCH_SCHEMA_UNKNOWN_REASON_V3)
+  );
 }
 
 /** `invalid` and `closed` stop recording outright; the rest degrade it. */
@@ -160,8 +177,8 @@ export function observeLedgerControlState(
   const observedAt = now.toISOString();
   try {
     const control = readEventV3ControlState(coordRoot);
-    const incompatible =
-      control.state === "invalid" && control.reason === "genesis_schema_digest_incompatible";
+    const reason = "reason" in control ? control.reason : undefined;
+    const incompatible = schemaReasonDescribesObserver(control.state, reason);
     return {
       observation: {
         state: control.state,
@@ -172,7 +189,10 @@ export function observeLedgerControlState(
         ? {
             source_kind: "event-ledger.control-state",
             state: "unsupported",
-            reason_code: "schema-digest-incompatible",
+            reason_code:
+              reason === EPOCH_SCHEMA_UNKNOWN_REASON_V3
+                ? "schema-digest-unknown"
+                : "schema-digest-incompatible",
           }
         : { source_kind: "event-ledger.control-state", state: "supported" },
     };

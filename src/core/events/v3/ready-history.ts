@@ -21,6 +21,8 @@ import { canonicalJsonV3, sha256V3 } from "./canonical.ts";
 import { verifyRetainedSealedSegmentsV3 } from "./catalog.ts";
 import type { EventV3 } from "./contract.ts";
 import { type LedgerFrameV3, readLedgerFramesV3 } from "./reader.ts";
+import { admitRowsV3, applyRowV3, createRowValidationStateV3 } from "./row-validation.ts";
+import { schemaGroupForDigestV3 } from "./schema-lineage.ts";
 import { assertEventV3 } from "./validate.ts";
 
 export interface ReadyHistoryImportV3 {
@@ -52,7 +54,7 @@ export function importArchivedReadyEventsV3(
   regularDirectory(archives);
   regularDirectory(dir);
   const run = (): ReadyHistoryImportV3 => {
-    const plan = prepareReadyHistoryV3(dir, options.maxEvents ?? 1000);
+    const plan = prepareReadyHistoryV3(dir, options.maxEvents ?? 1000, "strict");
     if (options.yes) appendReadyHistoryV3(dir, plan);
     return {
       epoch,
@@ -76,12 +78,29 @@ export function importArchivedReadyEventsV3(
   }
 }
 
-/** Caller holds publication and append leases until the directory is archived. */
+/**
+ * Carry the queued rows the door would admit into the epoch's own history
+ * before it is archived. Caller holds publication and append leases until the
+ * directory is archived.
+ *
+ * Only admissible rows move. A valid row the door declines (it waits for a
+ * predecessor, a parent or an attestation that never arrived), a file that can
+ * never be appended, and a row of a schema outside the epoch's additive group
+ * stay in the archived queue with their bytes intact, so a session whose rows
+ * wait never stops the epoch from rotating. Nothing is deleted.
+ */
 export function carryReadyEventHistoryV3(dir: string): void {
-  appendReadyHistoryV3(dir, prepareReadyHistoryV3(dir, Number.MAX_SAFE_INTEGER));
+  appendReadyHistoryV3(dir, prepareReadyHistoryV3(dir, Number.MAX_SAFE_INTEGER, "door"));
 }
 
-function prepareReadyHistoryV3(dir: string, maxEvents: number): Plan {
+/**
+ * `strict` is the explicit recovery import: it refuses the whole import when
+ * any queued file is unusable or any row cannot be admitted. `door` is the
+ * cutover carry: it admits what the door admits and leaves the rest.
+ */
+type ReadyHistoryModeV3 = "strict" | "door";
+
+function prepareReadyHistoryV3(dir: string, maxEvents: number, mode: ReadyHistoryModeV3): Plan {
   if (!Number.isSafeInteger(maxEvents) || maxEvents < 1) {
     throw new Error("max-events must be a positive whole number");
   }
@@ -103,26 +122,25 @@ function prepareReadyHistoryV3(dir: string, maxEvents: number): Plan {
   if (typeof genesis !== "string" || !/^sha256:[a-f0-9]{64}$/.test(digest)) {
     throw new Error("ready history import requires an identifiable original epoch");
   }
+  // Rows of any digest additive to the epoch's genesis share it, so an epoch
+  // holding two digests of one group can rotate. An epoch from before a
+  // breaking change is validated against its own group, never the runtime's.
+  const accepted = schemaGroupForDigestV3(digest)?.group ?? [digest];
   const candidates = new Map<string, { event: EventV3; row: string }>();
+  const conflicted = new Set<string>();
   for (const name of names) {
-    const path = join(spool, name);
-    regularFile(path);
-    const row = readFileSync(path, "utf8");
-    if (Buffer.byteLength(row) > 16 * 1024)
-      throw new Error("ready history frame exceeds row limit");
-    const event = parseFrame(row);
-    const tag = name.match(/-(gex_[a-f0-9-]+)\.(ready|committed)$/)?.[1];
-    const prefix = `${String(event.producer.sequence).padStart(16, "0")}-${event.event_id}-${sha256V3(row).slice(7)}`;
-    if (
-      (tag && tag !== genesis) ||
-      name !== `${prefix}${tag ? `-${tag}` : ""}.${name.endsWith(".ready") ? "ready" : "committed"}`
-    ) {
-      throw new Error("ready history filename, digest, or epoch fence mismatch");
-    }
+    const candidate = readCandidate(spool, name, genesis, mode);
+    if (!candidate) continue;
+    const { event, row } = candidate;
     const prior = candidates.get(event.event_id);
-    if (prior && prior.row !== row) throw new Error("conflicting ready history event ID");
+    if (prior && prior.row !== row) {
+      if (mode === "strict") throw new Error("conflicting ready history event ID");
+      conflicted.add(event.event_id);
+    }
     candidates.set(event.event_id, { event, row });
   }
+  // Two queued files that disagree about one event ID: neither is carried.
+  for (const eventId of conflicted) candidates.delete(eventId);
   const frames: LedgerFrameV3[] = [];
   const committed = new Map<string, string>();
   const segments = join(dir, "segments");
@@ -165,51 +183,37 @@ function prepareReadyHistoryV3(dir: string, maxEvents: number): Plan {
   let alreadyPresent = 0;
   for (const [id, candidate] of candidates) {
     if (!committed.has(id)) continue;
-    if (committed.get(id) !== candidate.row)
+    if (committed.get(id) !== candidate.row && mode === "strict") {
       throw new Error("ready and committed history conflict");
-    candidates.delete(id);
-    alreadyPresent++;
-  }
-  const ordered: Array<{ event: EventV3; row: string }> = [];
-  const attestations = new Set(
-    frames
-      .map(({ raw }) => JSON.parse(raw) as EventV3)
-      .filter(
-        (event) =>
-          event.event_type === "session.started" ||
-          event.event_type === "session.attestation_changed",
-      )
-      .map((event) => event.attestation_id),
-  );
-  while (candidates.size) {
-    const next = [...candidates.values()].find(
-      ({ event }) =>
-        (event.links as { caused_by: string[] }).caused_by.every((id) => committed.has(id)) &&
-        (event.event_type === "session.started" ||
-          !event.attestation_id ||
-          attestations.has(
-            event.event_type === "session.attestation_changed"
-              ? event.payload.prior_attestation_id
-              : event.attestation_id,
-          )) &&
-        ![...candidates.values()].some(
-          ({ event: other }) =>
-            other.producer.producer_id === event.producer.producer_id &&
-            other.producer.boot_id === event.producer.boot_id &&
-            other.producer.sequence < event.producer.sequence,
-        ),
-    );
-    if (!next) throw new Error("ready history has missing or cyclic causal dependencies");
-    candidates.delete(next.event.event_id);
-    committed.set(next.event.event_id, next.row);
-    if (
-      next.event.event_type === "session.started" ||
-      next.event.event_type === "session.attestation_changed"
-    ) {
-      attestations.add(next.event.attestation_id);
     }
-    ordered.push(next);
+    // An identical row is already present; a different row under a committed
+    // ID can never be appended and stays queued.
+    if (committed.get(id) === candidate.row) alreadyPresent++;
+    candidates.delete(id);
   }
+  if (candidates.size === 0) {
+    if (tail) throw new Error("incomplete active tail does not match a recoverable ready frame");
+    return { events: [], rows: [], alreadyPresent, activeBytes };
+  }
+  // The committed history must itself read complete before the door can
+  // judge anything against it.
+  const history = readLedgerFramesV3(frames, { accepted_schema_digests: accepted });
+  if (!history.complete || history.genesis_id !== genesis) {
+    throw new Error(
+      `ready history validation failed: ${history.diagnostics.map(({ code }) => code).join(",")}`,
+    );
+  }
+  const state = createRowValidationStateV3(accepted);
+  for (const { raw } of frames) applyRowV3(state, { raw, event: JSON.parse(raw) as EventV3 });
+  const admission = admitRowsV3(state, [...candidates.values()], ({ event, row }) => ({
+    raw: row.slice(0, -1),
+    event,
+  }));
+  if (mode === "strict" && admission.waiting.length > 0) {
+    const codes = [...new Set(admission.waiting.flatMap(({ codes }) => codes))];
+    throw new Error(`ready history has rows the door would not admit: ${codes.join(",")}`);
+  }
+  const ordered = admission.admitted;
   if (tail && !ordered.some(({ row }) => row.startsWith(tail))) {
     throw new Error("incomplete active tail does not match a recoverable ready frame");
   }
@@ -226,7 +230,7 @@ function prepareReadyHistoryV3(dir: string, maxEvents: number): Plan {
         return frame;
       }),
     ],
-    { accepted_schema_digests: [digest] },
+    { accepted_schema_digests: accepted },
   );
   if (!read.complete || read.genesis_id !== genesis) {
     throw new Error(
@@ -258,6 +262,47 @@ function appendReadyHistoryV3(dir: string, plan: Plan): void {
     closeSync(fd);
   }
   fsyncParentDirectory(active);
+}
+
+/**
+ * Read one queued file of the archived epoch. In strict mode any defect
+ * refuses the import. In door mode a file that is not a regular file, is too
+ * large, does not parse as a canonical event, carries a digest outside the
+ * lineage, or does not match its name or epoch fence is left where it is.
+ */
+function readCandidate(
+  spool: string,
+  name: string,
+  genesis: string,
+  mode: ReadyHistoryModeV3,
+): { event: EventV3; row: string } | undefined {
+  const path = join(spool, name);
+  try {
+    regularFile(path);
+    const row = readFileSync(path, "utf8");
+    if (Buffer.byteLength(row) > 16 * 1024)
+      throw new Error("ready history frame exceeds row limit");
+    if (mode === "door") {
+      const stamped = (JSON.parse(row) as { contract?: { schema_digest?: unknown } } | null)
+        ?.contract?.schema_digest;
+      if (typeof stamped !== "string" || schemaGroupForDigestV3(stamped) === undefined) {
+        return undefined;
+      }
+    }
+    const event = parseFrame(row);
+    const tag = name.match(/-(gex_[a-f0-9-]+)\.(ready|committed)$/)?.[1];
+    const prefix = `${String(event.producer.sequence).padStart(16, "0")}-${event.event_id}-${sha256V3(row).slice(7)}`;
+    if (
+      (tag && tag !== genesis) ||
+      name !== `${prefix}${tag ? `-${tag}` : ""}.${name.endsWith(".ready") ? "ready" : "committed"}`
+    ) {
+      throw new Error("ready history filename, digest, or epoch fence mismatch");
+    }
+    return { event, row };
+  } catch (error) {
+    if (mode === "strict") throw error;
+    return undefined;
+  }
 }
 
 function parseFrame(row: string): EventV3 {

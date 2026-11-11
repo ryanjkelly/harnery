@@ -15,9 +15,11 @@ import { join } from "node:path";
 import { coordFreshnessSeconds } from "../../config.ts";
 import { type EventAdapterIdV3, eventAdapterIdV3FromPlatform } from "../../events/v3/adapter-id.ts";
 import { writeProducerDiagnosticV3 } from "../../events/v3/producers/intake.ts";
-import { recordLiveSweepObservationV3 } from "../live-lifecycle-v3.ts";
+import {
+  liveSubjectGenerationWaitingV3,
+  recordLiveSweepObservationV3,
+} from "../live-lifecycle-v3.ts";
 
-/** platform → adapter, for the swept-event envelope (mirrors heartbeat-writer's adapterOf). */
 /**
  * Record the sweep before deleting disposable cache state.
  *
@@ -26,6 +28,10 @@ import { recordLiveSweepObservationV3 } from "../live-lifecycle-v3.ts";
  * authorize cache housekeeping. Preserve the failed observation in the V3
  * diagnostics spool instead. If neither durable record can be written, fail
  * closed and keep the file.
+ *
+ * While the ledger door holds rows of the subject's generation, nothing is
+ * recorded and the file is kept, so the next sweep retries. That holds on the
+ * failure path too: a waiting generation never takes the diagnostic route.
  */
 function emitSwept(
   coordRoot: string,
@@ -35,12 +41,10 @@ function emitSwept(
   reason: "stale" | "unparseable" | "missing_ts",
   ageSecs?: number,
 ): boolean {
+  const subject = { coordRoot, owner: instanceId, nativeSessionId: sessionId, adapter };
   try {
-    recordLiveSweepObservationV3({
-      coordRoot,
-      owner: instanceId,
-      nativeSessionId: sessionId,
-      adapter,
+    const result = recordLiveSweepObservationV3({
+      ...subject,
       observation:
         reason === "stale"
           ? "stale_heartbeat"
@@ -49,8 +53,9 @@ function emitSwept(
             : "missing_timestamp",
       ageMs: Math.max(0, (ageSecs ?? 0) * 1_000),
     });
-    return true;
+    return result.state === "recorded";
   } catch (error) {
+    if (liveSubjectGenerationWaitingV3(subject)) return false;
     return Boolean(
       writeProducerDiagnosticV3(coordRoot, "heartbeat_sweep_unrecorded", {
         adapter,

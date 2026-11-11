@@ -26,6 +26,7 @@ import {
   eventV3ControlWitnessPathV3,
   parseEventV3AppendValidationCheckpointV3,
 } from "./reader.ts";
+import { epochCompatibilityV3 } from "./schema-lineage.ts";
 
 export { EVENT_V3_CONTROL_CHECKPOINT_RELATIVE_PATH, EVENT_V3_CONTROL_WITNESS_RELATIVE_PATH };
 
@@ -42,7 +43,7 @@ export type EventV3ControlWitnessControlStateV3 = "active" | "candidate";
 
 interface EventV3ControlWitnessPayloadCommonV3 {
   format: "harnery-event-v3-control-witness";
-  format_version: 2;
+  format_version: 3;
   genesis_id: `gex_${string}`;
   genesis_event_id: `evt_${string}`;
   genesis_manifest_digest: `sha256:${string}`;
@@ -51,6 +52,8 @@ interface EventV3ControlWitnessPayloadCommonV3 {
   root_id: `root_${string}`;
   storage: EventV3AuthorityStorageVersionV3;
   checkpoint_digest: `sha256:${string}`;
+  /** Every schema digest the epoch's rows carry, sorted; the checkpoint's own list. */
+  schema_digests: string[];
 }
 
 interface EventV3ActiveControlWitnessPayloadV3 extends EventV3ControlWitnessPayloadCommonV3 {
@@ -90,8 +93,8 @@ export function activeControlWitnessMatchesV3(
   coordRoot: string,
   binding: ActiveControlWitnessBindingV3,
 ): boolean {
-  return witnessMatchesV3(coordRoot, "active", (storage, checkpointDigest) =>
-    activeWitnessPayloadV3(binding, storage, checkpointDigest),
+  return witnessMatchesV3(coordRoot, "active", binding.genesis, (storage, checkpoint) =>
+    activeWitnessPayloadV3(binding, storage, checkpoint),
   );
 }
 
@@ -113,8 +116,8 @@ export function candidateControlWitnessMatchesV3(
   coordRoot: string,
   binding: CandidateControlWitnessBindingV3,
 ): boolean {
-  return witnessMatchesV3(coordRoot, "candidate", (storage, checkpointDigest) =>
-    candidateWitnessPayloadV3(binding, storage, checkpointDigest),
+  return witnessMatchesV3(coordRoot, "candidate", binding.genesis, (storage, checkpoint) =>
+    candidateWitnessPayloadV3(binding, storage, checkpoint),
   );
 }
 
@@ -128,11 +131,8 @@ export function publishActiveControlWitnessV3(
   validatedStorage: EventV3AuthorityStorageVersionV3,
   checkpoint: EventV3AppendValidationCheckpointV3,
 ): boolean {
-  return publishControlWitnessV3(
-    coordRoot,
-    validatedStorage,
-    checkpoint,
-    (storage, checkpointDigest) => activeWitnessPayloadV3(binding, storage, checkpointDigest),
+  return publishControlWitnessV3(coordRoot, validatedStorage, checkpoint, (storage, witnessed) =>
+    activeWitnessPayloadV3(binding, storage, witnessed),
   );
 }
 
@@ -147,12 +147,58 @@ export function publishCandidateControlWitnessV3(
   validatedStorage: EventV3AuthorityStorageVersionV3,
   checkpoint: EventV3AppendValidationCheckpointV3,
 ): boolean {
-  return publishControlWitnessV3(
-    coordRoot,
-    validatedStorage,
-    checkpoint,
-    (storage, checkpointDigest) => candidateWitnessPayloadV3(binding, storage, checkpointDigest),
+  return publishControlWitnessV3(coordRoot, validatedStorage, checkpoint, (storage, witnessed) =>
+    candidateWitnessPayloadV3(binding, storage, witnessed),
   );
+}
+
+/**
+ * The schema digests an authenticated witness for this exact genesis lists,
+ * whatever storage it names. A ledger only grows within an epoch, so a digest
+ * a witness once listed is still present; a runtime that does not know one
+ * can block without reading the ledger. Undefined when no such witness exists.
+ */
+export function controlWitnessSchemaDigestsV3(
+  coordRoot: string,
+  genesis: CandidateGenesisManifestV3,
+): readonly string[] | undefined {
+  try {
+    const witness = readAuthenticatedWitnessV3(coordRoot);
+    if (!witness) return undefined;
+    if (
+      witness.payload.genesis_manifest_digest !== sha256V3(canonicalJsonV3(genesis)) ||
+      witness.payload.genesis_id !== genesis.event.payload.genesis_id
+    ) {
+      return undefined;
+    }
+    return witness.payload.schema_digests;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The schema digests an authenticated witness lists when it names exactly the
+ * storage on disk now and the genesis manifest with this canonical digest and
+ * genesis ID. Unlike `controlWitnessSchemaDigestsV3`, the list is current, so
+ * a caller may rely on it holding every digest present, not only on a digest
+ * it lists being present. The manifest is identified by digest because the
+ * caller may hold one this runtime cannot fully parse (an older-group
+ * genesis). Undefined when no such witness exists.
+ */
+export function currentControlWitnessSchemaDigestsV3(
+  coordRoot: string,
+  binding: { genesis_manifest_digest: string; genesis_id: string },
+): readonly string[] | undefined {
+  const witness = readAdvanceableControlWitnessV3(coordRoot);
+  if (
+    !witness ||
+    witness.payload.genesis_manifest_digest !== binding.genesis_manifest_digest ||
+    witness.payload.genesis_id !== binding.genesis_id
+  ) {
+    return undefined;
+  }
+  return witness.payload.schema_digests;
 }
 
 /**
@@ -206,6 +252,7 @@ export function advanceControlWitnessV3(
         ...prior.payload,
         storage,
         checkpoint_digest: checkpointDigestV3(checkpoint),
+        schema_digests: [...checkpoint.schema_digests],
       },
       checkpoint,
     );
@@ -214,27 +261,40 @@ export function advanceControlWitnessV3(
   }
 }
 
+/** What a witness records about the checkpoint it names. */
+interface WitnessedCheckpointV3 {
+  checkpoint_digest: `sha256:${string}`;
+  schema_digests: readonly string[];
+}
+
 type WitnessPayloadBuilderV3 = (
   storage: EventV3AuthorityStorageVersionV3,
-  checkpointDigest: `sha256:${string}`,
+  checkpoint: WitnessedCheckpointV3,
 ) => EventV3ControlWitnessPayload;
 
 /**
  * One matcher for both control states. The witness on disk must authenticate,
- * carry the requested `control_state`, and canonicalize identically to the
- * payload this exact binding would produce over the storage observed both
- * before and after the read.
+ * carry the requested `control_state`, list only schemas this runtime serves
+ * with that genesis, and canonicalize identically to the payload this exact
+ * binding would produce over the storage observed both before and after the
+ * read.
  */
 function witnessMatchesV3(
   coordRoot: string,
   controlState: EventV3ControlWitnessControlStateV3,
+  genesis: CandidateGenesisManifestV3,
   build: WitnessPayloadBuilderV3,
 ): boolean {
   try {
     const before = eventV3AuthorityStorageVersionV3(coordRoot);
     const witness = readAuthenticatedWitnessV3(coordRoot);
     if (!witness || witness.payload.control_state !== controlState) return false;
-    const expected = build(before, witness.payload.checkpoint_digest);
+    const compatibility = epochCompatibilityV3({
+      genesis_schema_digest: genesis.profile.initial_schema_digest,
+      present_schema_digests: witness.payload.schema_digests,
+    });
+    if (compatibility.verdict !== "serve") return false;
+    const expected = build(before, witness.payload);
     if (canonicalJsonV3(witness.payload) !== canonicalJsonV3(expected)) return false;
     const after = eventV3AuthorityStorageVersionV3(coordRoot);
     return sameStorageVersion(before, after);
@@ -252,7 +312,14 @@ function publishControlWitnessV3(
   try {
     const current = eventV3AuthorityStorageVersionV3(coordRoot);
     if (!sameStorageVersion(validatedStorage, current)) return false;
-    return publishWitnessV3(coordRoot, build(current, checkpointDigestV3(checkpoint)), checkpoint);
+    return publishWitnessV3(
+      coordRoot,
+      build(current, {
+        checkpoint_digest: checkpointDigestV3(checkpoint),
+        schema_digests: checkpoint.schema_digests,
+      }),
+      checkpoint,
+    );
   } catch {
     return false;
   }
@@ -261,10 +328,10 @@ function publishControlWitnessV3(
 function activeWitnessPayloadV3(
   binding: ActiveControlWitnessBindingV3,
   storage: EventV3AuthorityStorageVersionV3,
-  checkpointDigest: `sha256:${string}`,
+  checkpoint: WitnessedCheckpointV3,
 ): EventV3ActiveControlWitnessPayloadV3 {
   return {
-    ...commonWitnessPayloadV3(binding, storage, checkpointDigest),
+    ...commonWitnessPayloadV3(binding, storage, checkpoint),
     control_state: "active",
     activation_id: binding.activation.activation_id,
     activation_event_id: binding.activation.event.event_id as `evt_${string}`,
@@ -275,10 +342,10 @@ function activeWitnessPayloadV3(
 function candidateWitnessPayloadV3(
   binding: CandidateControlWitnessBindingV3,
   storage: EventV3AuthorityStorageVersionV3,
-  checkpointDigest: `sha256:${string}`,
+  checkpoint: WitnessedCheckpointV3,
 ): EventV3CandidateControlWitnessPayloadV3 {
   return {
-    ...commonWitnessPayloadV3(binding, storage, checkpointDigest),
+    ...commonWitnessPayloadV3(binding, storage, checkpoint),
     control_state: "candidate",
   };
 }
@@ -286,12 +353,12 @@ function candidateWitnessPayloadV3(
 function commonWitnessPayloadV3(
   binding: CandidateControlWitnessBindingV3,
   storage: EventV3AuthorityStorageVersionV3,
-  checkpointDigest: `sha256:${string}`,
+  checkpoint: WitnessedCheckpointV3,
 ): EventV3ControlWitnessPayloadCommonV3 {
   const scope = binding.genesis.event.scope as { root_id: `root_${string}` };
   return {
     format: "harnery-event-v3-control-witness",
-    format_version: 2,
+    format_version: 3,
     genesis_id: binding.genesis.event.payload.genesis_id as `gex_${string}`,
     genesis_event_id: binding.genesis.event.event_id as `evt_${string}`,
     genesis_manifest_digest: sha256V3(canonicalJsonV3(binding.genesis)),
@@ -299,7 +366,8 @@ function commonWitnessPayloadV3(
     privacy_key_epoch: binding.genesis.profile.privacy_key_epoch,
     root_id: scope.root_id,
     storage,
-    checkpoint_digest: checkpointDigest,
+    checkpoint_digest: checkpoint.checkpoint_digest,
+    schema_digests: [...checkpoint.schema_digests],
   };
 }
 
@@ -405,6 +473,7 @@ function parseWitnessV3(value: unknown): EventV3ControlWitness {
     "genesis_manifest_digest",
     "privacy_key_epoch",
     "root_id",
+    "schema_digests",
     "storage",
   ];
   const expectedPayloadKeys =
@@ -420,7 +489,8 @@ function parseWitnessV3(value: unknown): EventV3ControlWitness {
   }
   if (
     payload.format !== "harnery-event-v3-control-witness" ||
-    payload.format_version !== 2 ||
+    payload.format_version !== 3 ||
+    !sortedSchemaDigests(payload.schema_digests) ||
     !token(payload.genesis_id, "gex_") ||
     !token(payload.genesis_event_id, "evt_") ||
     (controlState === "active" &&
@@ -456,6 +526,15 @@ function object(value: unknown): Record<string, unknown> {
 function token(value: unknown, prefix: string): value is string {
   return (
     typeof value === "string" && value.startsWith(prefix) && /^[a-zA-Z0-9._-]{1,160}$/.test(value)
+  );
+}
+
+function sortedSchemaDigests(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.length <= 256 &&
+    value.every(digest) &&
+    value.every((item, index) => index === 0 || value[index - 1] < item)
   );
 }
 

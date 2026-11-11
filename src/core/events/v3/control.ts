@@ -6,10 +6,11 @@ import type { EventV3 } from "./contract.ts";
 import {
   activeControlWitnessMatchesV3,
   candidateControlWitnessMatchesV3,
+  controlWitnessSchemaDigestsV3,
+  currentControlWitnessSchemaDigestsV3,
   publishActiveControlWitnessV3,
   publishCandidateControlWitnessV3,
 } from "./control-witness.ts";
-import { EVENT_V3_SCHEMA_DIGEST } from "./generated.ts";
 import { activationIdV3, eventIdV3, genesisIdV3 } from "./ids.ts";
 import {
   eventV3AuthorityStorageVersionV3,
@@ -17,6 +18,12 @@ import {
   readEventV3AppendValidationCheckpointV3,
   readLedgerV3,
 } from "./reader.ts";
+import {
+  EPOCH_SCHEMA_UNKNOWN_REASON_V3,
+  type EventV3EpochCompatibilityV3,
+  epochCompatibilityV3,
+  GENESIS_SCHEMA_DIGEST_INCOMPATIBLE_REASON_V3,
+} from "./schema-lineage.ts";
 import { validateEventV3 } from "./validate.ts";
 
 export const EVENT_V3_GENESIS_MANIFEST = ".harnery/ledgers/v3/genesis.json" as const;
@@ -39,8 +46,16 @@ export interface CandidateProfileV3 {
   candidate_created_at: string;
 }
 
+/**
+ * Genesis manifest versions this runtime reads. Every new epoch is written as
+ * version 2: a runtime from before additive schema epochs reads only version
+ * 1, so it refuses a newer epoch instead of misjudging it (ADR 0245).
+ */
+export type GenesisManifestVersionV3 = 1 | 2;
+export const GENESIS_MANIFEST_VERSION_V3 = 2 as const;
+
 export interface CandidateGenesisManifestV3 {
-  manifest_version: 1;
+  manifest_version: GenesisManifestVersionV3;
   kind: "candidate_genesis";
   profile: CandidateProfileV3;
   event: GenesisEventV3;
@@ -139,7 +154,7 @@ export function buildCandidateGenesisManifestV3(
     },
   });
   const manifest: CandidateGenesisManifestV3 = {
-    manifest_version: 1,
+    manifest_version: GENESIS_MANIFEST_VERSION_V3,
     kind: "candidate_genesis",
     profile,
     event,
@@ -259,8 +274,22 @@ export function readEventV3ControlState(coordRoot: string): EventV3ControlState 
   if (!hasGenesis) return { state: "invalid", reason: "activation_without_genesis_manifest" };
 
   const genesisResult = readGenesisManifest(genesisPath);
-  if (!genesisResult.ok) return { state: "invalid", reason: genesisResult.reason };
+  if (!genesisResult.ok) {
+    if (genesisResult.reason === GENESIS_SCHEMA_DIGEST_INCOMPATIBLE_REASON_V3) {
+      return { state: "invalid", reason: olderGroupGenesisReasonV3(coordRoot, genesisPath) };
+    }
+    return { state: "invalid", reason: genesisResult.reason };
+  }
   const genesis = genesisResult.value;
+  // A witness another runtime published may list a digest this runtime does
+  // not know. That answers the question without a full read.
+  const witnessedDigests = controlWitnessSchemaDigestsV3(coordRoot, genesis);
+  if (
+    witnessedDigests &&
+    epochSchemaCompatibilityV3(genesis, witnessedDigests).verdict === "unknown"
+  ) {
+    return { state: "invalid", reason: EPOCH_SCHEMA_UNKNOWN_REASON_V3 };
+  }
   const candidateDigest = candidateManifestDigestV3(genesis);
   const activationForWitness = hasActivation
     ? readActivationManifest(activationPath, genesis, candidateDigest)
@@ -296,8 +325,18 @@ export function readEventV3ControlState(coordRoot: string): EventV3ControlState 
   const storageBeforeValidation = eventV3AuthorityStorageVersionV3(coordRoot);
   const ledger = readControlLedger(coordRoot);
   if (!ledger.complete) {
-    return { state: "invalid", reason: "ledger_integrity_failure" };
+    // Rows from a runtime with a schema this one does not know describe this
+    // reader, not a damaged ledger: block only this runtime.
+    const unknownOnly =
+      ledger.diagnostics.length > 0 &&
+      ledger.diagnostics.every(({ code }) => code === "unsupported_schema_digest");
+    return {
+      state: "invalid",
+      reason: unknownOnly ? EPOCH_SCHEMA_UNKNOWN_REASON_V3 : "ledger_integrity_failure",
+    };
   }
+  const compatibility = epochSchemaCompatibilityV3(genesis, ledger.schema_digests ?? []);
+  if (compatibility.verdict !== "serve") return { state: "invalid", reason: compatibility.reason };
   const genesisPair = exactEventPair(
     ledger.events.map((entry) => entry.event),
     genesis.event,
@@ -361,6 +400,74 @@ export function readEventV3ControlState(coordRoot: string): EventV3ControlState 
   return active;
 }
 
+/**
+ * Judge an epoch whose genesis schema is in a group before this runtime's.
+ * The genesis profile check knows only the genesis digest, and replacement is
+ * the effect of its verdict, so the digests the epoch's rows carry are learned
+ * before `replace_breaking` may stand: any digest this runtime's lineage does
+ * not hold makes the epoch `epoch_schema_unknown`, which nothing replaces
+ * automatically. The present digests come from a witness naming exactly the
+ * storage on disk when one exists, otherwise from a canonical read, which
+ * records the stamped digest of every frame it can parse, rejected or not.
+ * Only this path pays for that read: an epoch whose genesis is in the
+ * runtime's own group never reaches it.
+ */
+function olderGroupGenesisReasonV3(coordRoot: string, genesisPath: string): string {
+  const manifest = readJsonObject(genesisPath);
+  const genesisDigest = readGenesisManifestSchemaDigestV3(coordRoot);
+  if (!manifest.ok || genesisDigest === undefined) return EPOCH_SCHEMA_UNKNOWN_REASON_V3;
+  const event = isObject(manifest.value.event) ? manifest.value.event : {};
+  const genesisId = isObject(event.payload) ? event.payload.genesis_id : undefined;
+  const witnessed =
+    typeof genesisId === "string"
+      ? currentControlWitnessSchemaDigestsV3(coordRoot, {
+          genesis_manifest_digest: sha256V3(canonicalJsonV3(manifest.value)),
+          genesis_id: genesisId,
+        })
+      : undefined;
+  const present = witnessed ?? readLedgerV3(coordRoot).schema_digests ?? [];
+  const compatibility = epochCompatibilityV3({
+    genesis_schema_digest: genesisDigest,
+    present_schema_digests: present,
+  });
+  return compatibility.verdict === "unknown"
+    ? EPOCH_SCHEMA_UNKNOWN_REASON_V3
+    : GENESIS_SCHEMA_DIGEST_INCOMPATIBLE_REASON_V3;
+}
+
+/**
+ * True only for the one schema verdict a runtime refreshes automatically: an
+ * epoch whose genesis schema precedes a breaking change. An epoch holding a
+ * schema this runtime does not know is never refreshed.
+ */
+export function eventV3ControlSchemaRefreshableV3(control: EventV3ControlState): boolean {
+  return (
+    control.state === "invalid" && control.reason === GENESIS_SCHEMA_DIGEST_INCOMPATIBLE_REASON_V3
+  );
+}
+
+/** The epoch's genesis schema and the digests present, judged by this runtime. */
+export function epochSchemaCompatibilityV3(
+  genesis: CandidateGenesisManifestV3,
+  presentSchemaDigests: readonly string[],
+): EventV3EpochCompatibilityV3 {
+  return epochCompatibilityV3({
+    genesis_schema_digest: genesis.profile.initial_schema_digest,
+    present_schema_digests: presentSchemaDigests,
+  });
+}
+
+/**
+ * Read the genesis schema digest a manifest records, without validating the
+ * rest of it, for reporting an epoch this runtime may not be able to serve.
+ */
+export function readGenesisManifestSchemaDigestV3(coordRoot: string): string | undefined {
+  const parsed = readJsonObject(join(coordRoot, EVENT_V3_GENESIS_MANIFEST));
+  if (!parsed.ok || !isObject(parsed.value.profile)) return undefined;
+  const digest = parsed.value.profile.initial_schema_digest;
+  return typeof digest === "string" ? digest : undefined;
+}
+
 export function eventV3WriteGateOpen(coordRoot: string, mode: EventV3WriteMode): boolean {
   const control = readEventV3ControlState(coordRoot);
   return mode === "candidate" ? control.state === "candidate" : control.state === "active";
@@ -387,11 +494,22 @@ function parseGenesisManifestValue(value: unknown): ParseResult<CandidateGenesis
   if (!exactKeys(value, ["event", "kind", "manifest_version", "profile"])) {
     return fail("genesis_manifest_shape_invalid");
   }
-  if (value.manifest_version !== 1 || value.kind !== "candidate_genesis") {
+  const manifestVersion = value.manifest_version;
+  if ((manifestVersion !== 1 && manifestVersion !== 2) || value.kind !== "candidate_genesis") {
     return fail("genesis_manifest_version_invalid");
   }
   const profile = parseCandidateProfile(value.profile);
   if (!profile.ok) return profile;
+  // The genesis event must carry its profile's digest, which the profile check
+  // has already judged. Comparing before validation keeps an event from a
+  // schema this runtime does not know from being reported as merely invalid.
+  if (
+    !isObject(value.event) ||
+    !isObject(value.event.contract) ||
+    value.event.contract.schema_digest !== profile.value.initial_schema_digest
+  ) {
+    return fail("genesis_profile_binding_mismatch");
+  }
   const validation = validateEventV3(value.event);
   if (!validation.ok || validation.event?.event_type !== "ledger.genesis") {
     return fail("genesis_event_invalid");
@@ -401,7 +519,7 @@ function parseGenesisManifestValue(value: unknown): ParseResult<CandidateGenesis
     return fail("genesis_producer_sequence_invalid");
   }
   if (
-    event.contract.schema_digest !== EVENT_V3_SCHEMA_DIGEST ||
+    event.contract.schema_digest !== profile.value.initial_schema_digest ||
     event.payload.genesis_profile_digest !== candidateProfileDigestV3(profile.value) ||
     event.payload.contract_digest !== profile.value.contract_source_digest ||
     event.payload.generated_schema_digest !== profile.value.initial_schema_digest ||
@@ -413,7 +531,12 @@ function parseGenesisManifestValue(value: unknown): ParseResult<CandidateGenesis
   }
   return {
     ok: true,
-    value: { manifest_version: 1, kind: "candidate_genesis", profile: profile.value, event },
+    value: {
+      manifest_version: manifestVersion,
+      kind: "candidate_genesis",
+      profile: profile.value,
+      event,
+    },
   };
 }
 
@@ -525,11 +648,11 @@ function parseCandidateProfile(value: unknown): ParseResult<CandidateProfileV3> 
     "producer_build_ids",
   ];
   if (!exactKeys(value, keys)) return fail("genesis_profile_shape_invalid");
-  if (
-    isSha256(value.initial_schema_digest) &&
-    value.initial_schema_digest !== EVENT_V3_SCHEMA_DIGEST
-  ) {
-    return fail("genesis_schema_digest_incompatible");
+  if (isSha256(value.initial_schema_digest)) {
+    const compatibility = epochCompatibilityV3({
+      genesis_schema_digest: value.initial_schema_digest,
+    });
+    if (compatibility.verdict !== "serve") return fail(compatibility.reason);
   }
   if (
     !isSha256(value.initial_schema_digest) ||

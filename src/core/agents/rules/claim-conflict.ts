@@ -21,7 +21,9 @@ import { adapterFromPlatform as sharedAdapterFromPlatform } from "../../adapter.
 import { resolveBinName } from "../../config.ts";
 import { writeProducerDiagnosticV3 } from "../../events/v3/producers/intake.ts";
 import { stripCoordRoot } from "../claim-path.ts";
+import { releaseClaimOnBehalfV3 } from "../claim-release-v3.ts";
 import { LiveCoordinationAuthorityV3Error, recordLiveClaimChangeV3 } from "../live-authority-v3.ts";
+import { GENERATION_ROWS_WAITING_V3 } from "../live-lifecycle-v3.ts";
 import { readLiveCoordinationRows } from "../state/live-coordination-view.ts";
 
 const FRESHNESS_SECS = 600;
@@ -280,13 +282,28 @@ function releaseClaimThroughLedger(
   actor: ClaimRequest,
 ): string | null {
   const owner = readPeers(coordRoot).find((peer) => peer.instance_id === actor.instance_id);
+  const base = {
+    coordRoot,
+    owner: actor.instance_id,
+    nativeSessionId: actor.session_id ?? owner?.session_id ?? actor.instance_id,
+    adapter: sharedAdapterFromPlatform(owner?.platform, { context: "claim-conflict" }),
+  };
   try {
+    if (subjectInstanceId !== actor.instance_id) {
+      // On another session's behalf: release only a claim the canonical view
+      // shows it holding, citing the acquisition. A claim the view does not
+      // show needs no release; one whose holder has waiting rows stays held.
+      const released = releaseClaimOnBehalfV3({
+        ...base,
+        subject: subjectInstanceId,
+        path: relPath,
+      });
+      return released.state === "skipped" && released.reason === GENERATION_ROWS_WAITING_V3
+        ? GENERATION_ROWS_WAITING_V3
+        : null;
+    }
     recordLiveClaimChangeV3({
-      coordRoot,
-      owner: actor.instance_id,
-      subject: subjectInstanceId,
-      nativeSessionId: actor.session_id ?? owner?.session_id ?? actor.instance_id,
-      adapter: sharedAdapterFromPlatform(owner?.platform, { context: "claim-conflict" }),
+      ...base,
       operation: "released",
       path: relPath,
       access: "write",

@@ -341,8 +341,12 @@ function applyEvent(projection: SafetyProjectionV3, positioned: PositionedEventV
       return;
     case "turn.started":
     case "tool.requested":
-    case "command.started":
       state.activity = "working";
+      return;
+    case "command.started":
+      // A command outside any turn (a session-start hook, a CLI call between
+      // turns) is not evidence the agent is working.
+      if ("turn_id" in event.scope && event.scope.turn_id) state.activity = "working";
       return;
     case "turn.completed":
       state.activity = "idle";

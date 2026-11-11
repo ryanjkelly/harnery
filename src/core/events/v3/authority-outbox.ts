@@ -209,6 +209,14 @@ export function reconcileAuthorityTransactionV3(
   if (durability.state === "epoch_replaced") {
     throw new Error("authority transaction epoch was replaced before its event committed");
   }
+  // `ready` and `waiting` both leave the event durable in the queue, so the
+  // receipt below still holds; a waiting row leaves when what it waits for
+  // arrives or the epoch rotates. A file set aside can never be appended.
+  if (durability.state === "set_aside") {
+    throw new Error(
+      `authority transaction event was set aside and cannot be appended: ${durability.reason}`,
+    );
+  }
   const receipt: AuthorityReceiptV3 = {
     format: "harnery-event-v3-authority-receipt",
     format_version: 1,

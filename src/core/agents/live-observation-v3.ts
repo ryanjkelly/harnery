@@ -201,6 +201,10 @@ export function recordLiveCoordinationObservationV3(
   if (durability.state === "epoch_replaced") {
     throw new LiveCoordinationAuthorityV3Error("epoch_replaced");
   }
+  // A waiting row is durable in the queue; a set-aside one never reaches the ledger.
+  if (durability.state === "set_aside") {
+    throw new LiveCoordinationAuthorityV3Error(`event_set_aside:${durability.reason}`);
+  }
   return { state: "recorded", event };
 }
 

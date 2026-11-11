@@ -10,12 +10,29 @@ import {
   livePlatformV3,
   resolveLiveEventLedgerRouteV3,
 } from "../events/v3/live-routing.ts";
-import { readJoinableHookProducerStateV3 } from "../events/v3/producers/recorder.ts";
-import { writeEventV3 } from "../events/v3/writer.ts";
+import {
+  type HookProducerStateV3,
+  readHookProducerStateV3,
+  readJoinableHookProducerStateV3,
+} from "../events/v3/producers/recorder.ts";
+import { generationHasWaitingRowsV3, writeEventV3 } from "../events/v3/writer.ts";
 import { LiveCoordinationAuthorityV3Error } from "./live-authority-v3.ts";
 import { liveCoordinationAdapterV3 } from "./state/live-coordination-view.ts";
 
-export type LiveLifecycleObservationV3Result = { state: "recorded"; event: EventV3 };
+/**
+ * Reason a producer acting on another generation declined to emit: the ledger
+ * door is still holding rows of that generation. The producer leaves its own
+ * state as it was and retries on its next pass.
+ */
+export const GENERATION_ROWS_WAITING_V3 = "generation_rows_waiting" as const;
+
+export type LiveLifecycleObservationV3Result =
+  | { state: "recorded"; event: EventV3 }
+  | {
+      state: "waiting";
+      reason: typeof GENERATION_ROWS_WAITING_V3;
+      generation_id: `gen_${string}`;
+    };
 
 interface LiveLifecycleObservationBaseV3 {
   coordRoot: string;
@@ -76,6 +93,19 @@ function recordObservation<T extends "lifecycle.sweep_observed" | "session.resum
   }
   const hook = requireHookState(input);
   if (!hook.last_event_id) throw new LiveCoordinationAuthorityV3Error("generation_has_no_event");
+  // A sweep observation is written about the subject generation by another
+  // process. It cites only the subject's hook chain, so it must not overtake
+  // rows of that generation the door is still holding.
+  if (
+    eventType === "lifecycle.sweep_observed" &&
+    generationHasWaitingRowsV3(input.coordRoot, hook.generation_id)
+  ) {
+    return {
+      state: "waiting",
+      reason: GENERATION_ROWS_WAITING_V3,
+      generation_id: hook.generation_id,
+    };
+  }
   const rootId = control.genesis.event.scope.root_id as `root_${string}`;
   const context = fingerprintContextV3(
     input.coordRoot,
@@ -127,7 +157,42 @@ function recordObservation<T extends "lifecycle.sweep_observed" | "session.resum
   if (durability.state === "epoch_replaced") {
     throw new LiveCoordinationAuthorityV3Error("epoch_replaced");
   }
+  // A waiting row is durable in the queue; a set-aside one never reaches the ledger.
+  if (durability.state === "set_aside") {
+    throw new LiveCoordinationAuthorityV3Error(`event_set_aside:${durability.reason}`);
+  }
   return { state: "recorded", event };
+}
+
+/**
+ * The subject's generation when the ledger door is holding rows of it, or
+ * undefined. Unlike the sweep itself this also resolves a generation whose
+ * hook state is no longer joinable, so a caller's failure path can tell a
+ * waiting subject from one that is simply gone. Never throws.
+ */
+export function liveSubjectGenerationWaitingV3(
+  input: LiveLifecycleObservationBaseV3,
+): `gen_${string}` | undefined {
+  try {
+    const attested = withAttestedAdapter(input);
+    const instanceId = liveInstanceIdV3(input.owner);
+    let hook: HookProducerStateV3 | undefined = readJoinableHookProducerStateV3(
+      input.coordRoot,
+      attested.adapter,
+      input.nativeSessionId,
+      instanceId,
+    );
+    if (!hook) {
+      const any = readHookProducerStateV3(input.coordRoot, attested.adapter, input.nativeSessionId);
+      if (any?.instance_id === instanceId) hook = any;
+    }
+    if (!hook) return undefined;
+    return generationHasWaitingRowsV3(input.coordRoot, hook.generation_id)
+      ? hook.generation_id
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function withAttestedAdapter<T extends LiveLifecycleObservationBaseV3>(input: T): T {

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
+  appendFileSync,
   chmodSync,
   existsSync,
   mkdirSync,
@@ -13,7 +14,16 @@ import { delimiter, join } from "node:path";
 import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import { createHarneryProgram, type EmitContext } from "../commander.ts";
 import { stripJsonComments } from "../core/config.ts";
-import { initializeEventLedgerV3, sha256V3 } from "../core/events/v3/index.ts";
+import {
+  ReplayEventsV3,
+  unknownDigestQueuedRowV3,
+} from "../core/events/v3/__fixtures__/ledger-replay.ts";
+import { canonicalJsonV3 } from "../core/events/v3/canonical.ts";
+import {
+  initializeEventLedgerV3,
+  readEventV3ControlState,
+  sha256V3,
+} from "../core/events/v3/index.ts";
 import { ADAPTER_SPECS } from "../core/hooks/adapter/events.ts";
 import {
   type ClaudeHookGroup,
@@ -23,6 +33,8 @@ import {
 import {
   codexHookReviewAction,
   eventLedgerV3RuntimeIssues,
+  eventLedgerV3UnservableReason,
+  initEventLedgerV3Replacement,
   resolveInitAdapters,
   stampBinName,
   stampWorkflowDefaults,
@@ -772,6 +784,50 @@ describe("event ledger V3 init compatibility", () => {
     for (const dir of dirs.splice(0)) removeDir(dir);
   });
 
+  test("init leaves an epoch with an unknown schema in place and names the replace command", async () => {
+    const root = mkdtempSync(join(tmpdir(), "harnery-init-v3-unknown-"));
+    dirs.push(root);
+    initializeEventLedgerV3({
+      coordRoot: root,
+      harneryBuild: "fixture",
+      hostBuild: "fixture",
+      configDigest: sha256V3("config"),
+      approvalRecordId: "test-init-unknown",
+      now: () => new Date("2026-08-18T12:00:00.000Z"),
+    });
+    const events = new ReplayEventsV3();
+    const session = events.session("newer");
+    const active = join(root, ".harnery", "ledgers", "v3", "active.ndjson");
+    appendFileSync(active, `${canonicalJsonV3(unknownDigestQueuedRowV3(events, session))}\n`);
+    const before = readFileSync(active, "utf8");
+    const control = readEventV3ControlState(root);
+    expect(control).toEqual({ state: "invalid", reason: "epoch_schema_unknown" });
+    expect(eventLedgerV3RuntimeIssues(control)).toEqual([]);
+    expect(eventLedgerV3UnservableReason(control)).toBe("epoch_schema_unknown");
+
+    const result = await runInit(root, ["--adapter", "codex"]);
+
+    expect(result.text).toContain("event ledger V3 is invalid (epoch_schema_unknown)");
+    expect(result.text).toContain("ledger-v3 initialize --force-new-epoch --yes");
+    expect(readFileSync(active, "utf8")).toBe(before);
+    expect(existsSync(join(root, ".harnery", "ledgers", "v3-archives"))).toBeFalse();
+  });
+
+  test("names a refreshable schema verdict as a runtime issue", () => {
+    expect(
+      eventLedgerV3RuntimeIssues({
+        state: "invalid",
+        reason: "genesis_schema_digest_incompatible",
+      }),
+    ).toEqual(["schema digest"]);
+    expect(
+      eventLedgerV3UnservableReason({
+        state: "invalid",
+        reason: "genesis_schema_digest_incompatible",
+      }),
+    ).toBeUndefined();
+  });
+
   test("keeps the active epoch when only the live producer build changes", () => {
     const root = mkdtempSync(join(tmpdir(), "harnery-init-v3-runtime-"));
     dirs.push(root);
@@ -791,7 +847,7 @@ describe("event ledger V3 init compatibility", () => {
       hostBuild: "fixture",
       configDigest: sha256V3("config"),
       approvalRecordId: "test-init-runtime-upgrade",
-      forceNewEpoch: eventLedgerV3RuntimeIssues(initialized.control).length > 0,
+      replacement: initEventLedgerV3Replacement(),
       now: () => new Date("2026-08-18T12:01:00.000Z"),
     });
 

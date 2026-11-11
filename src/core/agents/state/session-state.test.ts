@@ -21,6 +21,18 @@ function event(
 }
 
 describe("session state transition table", () => {
+  test("keeps an idle session idle through a command that ran outside any turn", () => {
+    const events = [
+      event("session.started", "2026-08-12T10:00:00Z"),
+      event("command.started", "2026-08-12T10:00:01Z"),
+      event("command.completed", "2026-08-12T10:00:02Z"),
+    ];
+    expect(foldSessionState(events)).toMatchObject({
+      activity: "idle",
+      activity_source: "session.started",
+    });
+  });
+
   test("tracks direct activity evidence and does not clear a wait on unrelated output", () => {
     const events = [
       event("session.started", "2026-08-12T10:00:00Z"),

@@ -11,10 +11,16 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { removeDir } from "../../../../../tests/helpers/remove-dir.ts";
 import type { ParsedPayload } from "../../../hooks/adapter/parse.ts";
-import type { AuthorityReconcilerV3 } from "../authority-outbox.ts";
+import { adjacentAdditiveDigestsV3 } from "../__fixtures__/ledger-replay.ts";
+import { restampStoredEventDigestsV3 } from "../__fixtures__/stored-event-digest.ts";
+import {
+  type AuthorityReconcilerV3,
+  listPendingAuthorityTransactionsV3,
+} from "../authority-outbox.ts";
 import { buildEventV3 } from "../builder.ts";
 import { canonicalJsonV3, sha256V3 } from "../canonical.ts";
 import { adapterCapabilityProfileDigestV3 } from "../capabilities.ts";
+import type { EventV3 } from "../contract.ts";
 import {
   type CandidateGenesisManifestV3,
   type CandidateProfileV3,
@@ -296,6 +302,65 @@ describe("event ledger V3 persistent coordination recorder", () => {
       ({ event }) => event.producer.component === "agent-coord",
     );
     expect(events).toHaveLength(2);
+  });
+
+  test("F3 reconciles a ready authority transaction whose event row carries the previous additive digest", () => {
+    const root = startedRoot();
+    let state = sha256V3("prior");
+    const input = {
+      coordRoot: root,
+      mode: "candidate" as const,
+      signal: "task-changed" as const,
+      observation: {
+        native_observation_id: "upgrade-task",
+        state: "set" as const,
+        task: "Crash before the upgrade",
+      },
+      adapter: "claude-code" as const,
+      native_actor_session_id: "native-session",
+      actor_instance_id: "inst_operator" as const,
+      subject_instance_id: "inst_worker" as const,
+      producer_id: "prd_coord" as const,
+      build_id: "build_fixture" as const,
+      platform: "linux" as const,
+      expected_prior_state_digest: sha256V3("prior"),
+      desired_state_digest: sha256V3("desired"),
+      reconciler: {
+        readStateDigest: () => state,
+        apply: () => {
+          state = sha256V3("desired");
+          throw new Error("simulated writer death after apply");
+        },
+      },
+    };
+    expect(() => recordCoordinationAuthorityV3(input)).toThrow(
+      "simulated writer death after apply",
+    );
+    const { older } = adjacentAdditiveDigestsV3();
+    expect(listPendingAuthorityTransactionsV3(root)).toHaveLength(1);
+    expect(restampStoredEventDigestsV3(root, older)).toBe(2);
+    expect(
+      (JSON.parse(listPendingAuthorityTransactionsV3(root)[0]!.event_row) as EventV3).contract
+        .schema_digest,
+    ).toBe(older);
+
+    const next = recordCoordinationAuthorityV3(
+      lifecycleInput(root, "after-upgrade", state, sha256V3("after"), {
+        readStateDigest: () => state,
+        apply: () => {
+          state = sha256V3("after");
+        },
+      }),
+    );
+    expect(next.state).toBe("recorded");
+    expect(listPendingAuthorityTransactionsV3(root)).toHaveLength(0);
+    const read = readLedgerV3(root);
+    expect(read).toMatchObject({ complete: true, diagnostics: [] });
+    const coordination = read.events.filter(
+      ({ event }) => event.producer.component === "agent-coord",
+    );
+    expect(coordination).toHaveLength(2);
+    expect(coordination[0]?.event.contract.schema_digest).toBe(older);
   });
 
   test("quarantines one irreconcilable prepared transaction without inventing its event", () => {

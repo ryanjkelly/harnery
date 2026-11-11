@@ -20,7 +20,6 @@ import {
 } from "./catalog.ts";
 import type { EventV3 } from "./contract.ts";
 import { readAdvanceableControlWitnessV3 } from "./control-witness.ts";
-import { EVENT_V3_SCHEMA_DIGEST } from "./generated.ts";
 import {
   type EventV3RecoveryFailure,
   type EventV3RecoveryReceipt,
@@ -37,6 +36,7 @@ import {
   rowIdentityV3,
   rowValidationStateFromCheckpointV3,
 } from "./row-validation.ts";
+import { acceptedSchemaDigestsV3 } from "./schema-lineage.ts";
 import { validateEventV3 } from "./validate.ts";
 
 export type LedgerDiagnosticCodeV3 =
@@ -45,7 +45,6 @@ export type LedgerDiagnosticCodeV3 =
   | "unsupported_major"
   | "invalid_contract"
   | "unsupported_schema_digest"
-  | "unexpected_schema_digest"
   | "noncanonical_frame"
   | "conflicting_event_id"
   | "causal_parent_missing"
@@ -59,11 +58,6 @@ export type LedgerDiagnosticCodeV3 =
   | "genesis_digest_mismatch"
   | "missing_activation"
   | "activation_genesis_mismatch"
-  | "advance_prior_mismatch"
-  | "advance_reader_incompatible"
-  | "advance_digest_unsupported"
-  | "advance_boundary_invalid"
-  | "advance_boundary_missed"
   | "cursor_genesis_mismatch"
   | "cursor_position_missing"
   | "catalog_invalid"
@@ -94,16 +88,13 @@ export interface PositionedEventV3 {
   position: LedgerFrameV3["position"];
 }
 
-export interface SchemaAdvanceV3 {
-  event_id: string;
-  prior_schema_digest: string;
-  next_schema_digest: string;
-  effective_position: LedgerFrameV3["position"];
-}
-
 export interface ReadLedgerV3Options {
   authority?: "candidate" | "active";
   reader_build?: string;
+  /**
+   * Schema digests a row may carry. Defaults to the runtime's whole additive
+   * group: rows of any digest in it share one epoch.
+   */
   accepted_schema_digests?: readonly string[];
 }
 
@@ -112,8 +103,10 @@ export interface ReadLedgerV3Result {
   diagnostics: LedgerDiagnosticV3[];
   complete: boolean;
   genesis_id?: string;
-  active_schema_digest?: string;
-  advances: SchemaAdvanceV3[];
+  /** Schema digest the genesis row records. */
+  genesis_schema_digest?: string;
+  /** Every schema digest a read frame carries, sorted, including digests the reader rejected. */
+  schema_digests?: string[];
   bytes: number;
   failed_epochs?: EventV3RecoveryReceipt[];
 }
@@ -197,12 +190,6 @@ export function digestEventV3AuthorityDirectoryV3(root: string): `sha256:${strin
   return `sha256:${createHash("sha256").update(canonicalJsonV3(files)).digest("hex")}`;
 }
 
-export interface PendingAdvance {
-  event_id: string;
-  next_schema_digest: string;
-  position: LedgerFrameV3["position"];
-}
-
 interface EventShape {
   contract: { schema_digest: string };
   event_id: string;
@@ -245,19 +232,26 @@ export interface EventV3AuthorityStorageVersionV3 {
   active_bytes: number;
 }
 
+/**
+ * The validator tail a complete read leaves behind, so a writer or a later
+ * reader can validate only the bytes appended after it.
+ *
+ * `schema_digests` lists, sorted, every schema digest the validated rows
+ * carry. It records what the epoch holds, never what a runtime accepts: each
+ * runtime builds its accepted set from its own additive group and checks this
+ * list against it.
+ */
 export interface EventV3AppendValidationCheckpointV3 {
   format: "harnery-event-v3-append-validation-checkpoint";
-  format_version: 1;
+  format_version: 2;
   reader_build: string;
-  accepted_schema_digests: string[];
+  schema_digests: string[];
   seen_event_ids: string[];
   producer_sequences: Array<[string, number]>;
   attestation_ids: string[];
   clocks: Array<[string, number, string?]>;
   event_count: number;
   genesis_id?: string;
-  active_schema_digest?: string;
-  pending?: PendingAdvance;
   active_segment_ordinal: number;
   validated_active_bytes: number;
 }
@@ -265,12 +259,15 @@ export interface EventV3AppendValidationCheckpointV3 {
 interface LedgerValidationStateV3 extends RowValidationStateV3 {
   diagnostics: LedgerDiagnosticV3[];
   events: PositionedEventV3[];
-  advances: SchemaAdvanceV3[];
   reader_build: string;
   event_count: number;
   first_position?: LedgerFrameV3["position"];
   genesis_id?: string;
-  pending?: PendingAdvance;
+  genesis_schema_digest?: string;
+  /** Digests of the rows this state has applied. */
+  schema_digests: Set<string>;
+  /** Digests of frames rejected as `unsupported_schema_digest`. */
+  unsupported_schema_digests: Set<string>;
 }
 
 interface CachedLedgerReadV3 {
@@ -375,6 +372,31 @@ export function readEventV3AppendValidationCheckpointV3(
 }
 
 /**
+ * The committed canonical frames (without the trailing newline) of the given
+ * event IDs, taken from the validator state of a complete canonical read of
+ * the active authority. IDs the read does not hold are absent from the map;
+ * an incomplete read returns undefined. The read goes through the same cache
+ * and witnessed fast path as `readLedgerV3`, so it is meant for the rare
+ * caller that must compare a row's bytes with a committed row's, not for the
+ * normal append path.
+ */
+export function readCommittedFramesV3(
+  coordRoot: string,
+  eventIds: readonly string[],
+): Map<string, string> | undefined {
+  const options: ReadLedgerV3Options = {};
+  if (!readLedgerV3(coordRoot, options).complete) return undefined;
+  const cached = ledgerReadCacheV3.get(ledgerReadCacheKeyV3(coordRoot, options));
+  if (!cached?.result.complete) return undefined;
+  const frames = new Map<string, string>();
+  for (const eventId of eventIds) {
+    const raw = cached.validation_state.seen_ids.get(eventId);
+    if (raw) frames.set(eventId, raw);
+  }
+  return frames;
+}
+
+/**
  * Validate only the bytes appended after an authenticated checkpoint.
  * Unsupported or semantically invalid transitions return undefined so the
  * control reader falls back to a complete canonical validation.
@@ -395,6 +417,7 @@ export function advanceEventV3AppendValidationCheckpointV3(
   );
   if (!appended || appended.diagnostics.length > 0) return undefined;
   const state = validationStateFromCheckpointV3(parsed);
+  if (!state) return undefined;
   validateLedgerFramesIntoStateV3(appended.frames, state);
   if (state.diagnostics.length > 0) return undefined;
   return checkpointFromValidationStateV3(state, {
@@ -412,10 +435,9 @@ export function parseEventV3AppendValidationCheckpointV3(
   const checkpoint = value as Partial<EventV3AppendValidationCheckpointV3>;
   if (
     checkpoint.format !== "harnery-event-v3-append-validation-checkpoint" ||
-    checkpoint.format_version !== 1 ||
+    checkpoint.format_version !== 2 ||
     typeof checkpoint.reader_build !== "string" ||
-    !Array.isArray(checkpoint.accepted_schema_digests) ||
-    !checkpoint.accepted_schema_digests.every((item) => typeof item === "string") ||
+    !sortedSchemaDigestList(checkpoint.schema_digests) ||
     !Array.isArray(checkpoint.seen_event_ids) ||
     !checkpoint.seen_event_ids.every((item) => typeof item === "string") ||
     !Array.isArray(checkpoint.producer_sequences) ||
@@ -446,9 +468,7 @@ export function parseEventV3AppendValidationCheckpointV3(
     !Number.isSafeInteger(checkpoint.validated_active_bytes) ||
     (checkpoint.validated_active_bytes ?? -1) < 0 ||
     (checkpoint.genesis_id !== undefined && typeof checkpoint.genesis_id !== "string") ||
-    (checkpoint.active_schema_digest !== undefined &&
-      typeof checkpoint.active_schema_digest !== "string") ||
-    !validPendingAdvanceV3(checkpoint.pending)
+    Object.keys(checkpoint).some((key) => !CHECKPOINT_KEYS.has(key))
   ) {
     return undefined;
   }
@@ -586,12 +606,13 @@ function validateLedgerFramesV3(
   witnessed = false,
 ): { result: ReadLedgerV3Result; state: LedgerValidationStateV3 } {
   const state: LedgerValidationStateV3 = {
-    ...createRowValidationStateV3(options.accepted_schema_digests ?? [EVENT_V3_SCHEMA_DIGEST]),
+    ...createRowValidationStateV3(options.accepted_schema_digests ?? acceptedSchemaDigestsV3()),
     diagnostics: [],
     events: [],
-    advances: [],
     reader_build: options.reader_build ?? "build_harnery-v3",
     event_count: 0,
+    schema_digests: new Set(),
+    unsupported_schema_digests: new Set(),
   };
   validateLedgerFramesIntoStateV3(frames, state, witnessed);
   return { result: finishLedgerValidationV3(state, options, ledgerFramesBytesV3(frames)), state };
@@ -607,20 +628,9 @@ function validateLedgerFramesIntoStateV3(
   witnessed = false,
 ): void {
   state.first_position ??= frames[0]?.position;
-  const { diagnostics, events, advances, accepted, reader_build: readerBuild } = state;
+  const { diagnostics, events, accepted } = state;
 
   for (const frame of frames) {
-    if (state.pending) {
-      const comparison = comparePosition(frame.position, state.pending.position);
-      if (comparison === 0) {
-        state.active_schema_digest = state.pending.next_schema_digest;
-        state.pending = undefined;
-      } else if (comparison > 0) {
-        diagnostics.push(diagnostic("advance_boundary_missed", frame, state.pending.event_id));
-        state.pending = undefined;
-      }
-    }
-
     let parsed: unknown;
     try {
       parsed = JSON.parse(frame.raw);
@@ -632,6 +642,41 @@ function validateLedgerFramesIntoStateV3(
     const looseContract = record(loose.contract);
     if (looseContract.major !== 3) {
       diagnostics.push(diagnostic("unsupported_major", frame));
+      continue;
+    }
+    // The stamped digest is read before the row's shape is validated: a row
+    // written by a runtime with a schema this one does not know is an unknown
+    // digest, not an invalid event. Its ID, producer sequence and (for a
+    // genesis) epoch ID are remembered for dependency purposes only, so later
+    // rows are not also reported as missing a parent, a genesis or a sequence. It never reaches the per-row checks or any checkpoint, because
+    // the read is incomplete.
+    const stamped = looseContract.schema_digest;
+    if (typeof stamped === "string" && !accepted.has(stamped)) {
+      const eventId = typeof loose.event_id === "string" ? loose.event_id : undefined;
+      diagnostics.push(diagnostic("unsupported_schema_digest", frame, eventId));
+      state.unsupported_schema_digests.add(stamped);
+      const genesisId = record(loose.payload).genesis_id;
+      if (
+        loose.event_type === "ledger.genesis" &&
+        state.genesis_id === undefined &&
+        typeof genesisId === "string"
+      ) {
+        state.genesis_id = genesisId;
+      }
+      if (eventId !== undefined && !state.seen_ids.has(eventId)) {
+        state.seen_ids.set(eventId, frame.raw);
+        const producer = record(loose.producer);
+        if (
+          typeof producer.producer_id === "string" &&
+          typeof producer.boot_id === "string" &&
+          Number.isSafeInteger(producer.sequence)
+        ) {
+          state.producer_sequences.set(
+            `${producer.producer_id}\0${producer.boot_id}`,
+            producer.sequence as number,
+          );
+        }
+      }
       continue;
     }
     let event: EventV3;
@@ -671,8 +716,8 @@ function validateLedgerFramesIntoStateV3(
         diagnostics.push(diagnostic("genesis_not_first", frame, shape.event_id));
       const payload = shape.payload;
       state.genesis_id = string(payload.genesis_id);
-      state.active_schema_digest = string(payload.generated_schema_digest);
-      if (state.active_schema_digest !== shape.contract.schema_digest) {
+      state.genesis_schema_digest = string(payload.generated_schema_digest);
+      if (state.genesis_schema_digest !== shape.contract.schema_digest) {
         diagnostics.push(diagnostic("genesis_digest_mismatch", frame, shape.event_id));
       }
     } else if (state.genesis_id === undefined) {
@@ -683,41 +728,7 @@ function validateLedgerFramesIntoStateV3(
       diagnostics.push(diagnostic(code, frame, shape.event_id));
     }
     applyRowV3(state, row);
-
-    if (shape.event_type === "ledger.schema_advanced") {
-      const payload = shape.payload;
-      const nextDigest = string(payload.next_schema_digest);
-      const priorDigest = string(payload.prior_schema_digest);
-      const effectivePosition = {
-        segment_ordinal: number(payload.effective_segment_ordinal),
-        byte_offset: number(payload.effective_byte_offset),
-      };
-      if (priorDigest !== state.active_schema_digest) {
-        diagnostics.push(diagnostic("advance_prior_mismatch", frame, shape.event_id));
-      }
-      if (!accepted.has(nextDigest)) {
-        diagnostics.push(diagnostic("advance_digest_unsupported", frame, shape.event_id));
-      }
-      const compatibleBuilds = stringArray(payload.compatible_reader_builds);
-      if (!compatibleBuilds.includes(readerBuild)) {
-        diagnostics.push(diagnostic("advance_reader_incompatible", frame, shape.event_id));
-      }
-      if (comparePosition(effectivePosition, frame.position) <= 0 || state.pending) {
-        diagnostics.push(diagnostic("advance_boundary_invalid", frame, shape.event_id));
-      } else {
-        state.pending = {
-          event_id: shape.event_id,
-          next_schema_digest: nextDigest,
-          position: effectivePosition,
-        };
-        advances.push({
-          event_id: shape.event_id,
-          prior_schema_digest: priorDigest,
-          next_schema_digest: nextDigest,
-          effective_position: effectivePosition,
-        });
-      }
-    }
+    state.schema_digests.add(shape.contract.schema_digest);
 
     events.push({ event, position: frame.position });
     state.event_count += 1;
@@ -769,8 +780,12 @@ function finishLedgerValidationV3(
     diagnostics,
     complete: diagnostics.length === 0,
     genesis_id: state.genesis_id,
-    active_schema_digest: state.active_schema_digest,
-    advances: state.advances,
+    ...(state.genesis_schema_digest !== undefined
+      ? { genesis_schema_digest: state.genesis_schema_digest }
+      : {}),
+    schema_digests: [
+      ...new Set([...state.schema_digests, ...state.unsupported_schema_digests]),
+    ].sort(),
     bytes,
     failed_epochs: [],
   };
@@ -861,13 +876,6 @@ function diagnostic(
   };
 }
 
-function comparePosition(
-  left: LedgerFrameV3["position"],
-  right: LedgerFrameV3["position"],
-): number {
-  return left.segment_ordinal - right.segment_ordinal || left.byte_offset - right.byte_offset;
-}
-
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -878,18 +886,10 @@ function string(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
-function number(value: unknown): number {
-  return typeof value === "number" ? value : -1;
-}
-
-function stringArray(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === "string")
-    : [];
-}
-
 function ledgerReadCacheKeyV3(coordRoot: string, options: ReadLedgerV3Options): string {
-  const accepted = [...new Set(options.accepted_schema_digests ?? [EVENT_V3_SCHEMA_DIGEST])].sort();
+  const accepted = [
+    ...new Set(options.accepted_schema_digests ?? acceptedSchemaDigestsV3()),
+  ].sort();
   return JSON.stringify([
     resolve(coordRoot),
     options.authority ?? "",
@@ -925,7 +925,8 @@ function resumeCachedLedgerReadV3(
     ...cached.validation_state,
     diagnostics: [],
     events: [...cached.validation_state.events],
-    advances: [...cached.validation_state.advances],
+    schema_digests: new Set(cached.validation_state.schema_digests),
+    unsupported_schema_digests: new Set(cached.validation_state.unsupported_schema_digests),
   };
   validateLedgerFramesIntoStateV3(appended.frames, state);
   const validated = finishLedgerValidationV3(state, options, cached.result.bytes + appended.bytes);
@@ -951,7 +952,8 @@ function isolateValidationStateV3(state: LedgerValidationStateV3): LedgerValidat
     ...state,
     diagnostics: [...state.diagnostics],
     events: [...state.events],
-    advances: [...state.advances],
+    schema_digests: new Set(state.schema_digests),
+    unsupported_schema_digests: new Set(state.unsupported_schema_digests),
   };
 }
 
@@ -961,9 +963,9 @@ function checkpointFromValidationStateV3(
 ): EventV3AppendValidationCheckpointV3 {
   return {
     format: "harnery-event-v3-append-validation-checkpoint",
-    format_version: 1,
+    format_version: 2,
     reader_build: state.reader_build,
-    accepted_schema_digests: [...state.accepted].sort(),
+    schema_digests: [...state.schema_digests].sort(),
     seen_event_ids: [...state.seen_ids.keys()].sort(),
     producer_sequences: [...state.producer_sequences.entries()].sort(([left], [right]) =>
       left.localeCompare(right),
@@ -978,54 +980,54 @@ function checkpointFromValidationStateV3(
       ),
     event_count: state.event_count,
     ...(state.genesis_id ? { genesis_id: state.genesis_id } : {}),
-    ...(state.active_schema_digest ? { active_schema_digest: state.active_schema_digest } : {}),
-    ...(state.pending
-      ? {
-          pending: {
-            ...state.pending,
-            position: { ...state.pending.position },
-          },
-        }
-      : {}),
     active_segment_ordinal: active.segment_ordinal,
     validated_active_bytes: active.bytes,
   };
 }
 
+/**
+ * Rebuild a reader state from a checkpoint. The accepted set is always the
+ * runtime's own additive group, never anything the checkpoint's writer
+ * accepted; a checkpoint listing a digest outside that group is unusable, and
+ * the caller falls back to a complete read that reports the digest.
+ */
 function validationStateFromCheckpointV3(
   checkpoint: EventV3AppendValidationCheckpointV3,
-): LedgerValidationStateV3 {
+): LedgerValidationStateV3 | undefined {
+  const rowState = rowValidationStateFromCheckpointV3(checkpoint);
+  if (checkpoint.schema_digests.some((digest) => !rowState.accepted.has(digest))) return undefined;
   return {
-    ...rowValidationStateFromCheckpointV3(checkpoint),
+    ...rowState,
     diagnostics: [],
     events: [],
-    advances: [],
     reader_build: checkpoint.reader_build,
     event_count: checkpoint.event_count,
     ...(checkpoint.genesis_id ? { genesis_id: checkpoint.genesis_id } : {}),
-    ...(checkpoint.pending
-      ? {
-          pending: {
-            ...checkpoint.pending,
-            position: { ...checkpoint.pending.position },
-          },
-        }
-      : {}),
+    schema_digests: new Set(checkpoint.schema_digests),
+    unsupported_schema_digests: new Set(),
   };
 }
 
-function validPendingAdvanceV3(value: unknown): boolean {
-  if (value === undefined) return true;
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const pending = value as Partial<PendingAdvance>;
+const CHECKPOINT_KEYS = new Set([
+  "format",
+  "format_version",
+  "reader_build",
+  "schema_digests",
+  "seen_event_ids",
+  "producer_sequences",
+  "attestation_ids",
+  "clocks",
+  "event_count",
+  "genesis_id",
+  "active_segment_ordinal",
+  "validated_active_bytes",
+]);
+
+function sortedSchemaDigestList(value: unknown): value is string[] {
   return (
-    typeof pending.event_id === "string" &&
-    typeof pending.next_schema_digest === "string" &&
-    Boolean(pending.position) &&
-    Number.isSafeInteger(pending.position?.segment_ordinal) &&
-    Number.isSafeInteger(pending.position?.byte_offset) &&
-    (pending.position?.segment_ordinal ?? 0) > 0 &&
-    (pending.position?.byte_offset ?? -1) >= 0
+    Array.isArray(value) &&
+    value.every((item) => typeof item === "string" && /^sha256:[a-f0-9]{64}$/.test(item)) &&
+    value.every((item, index) => index === 0 || value[index - 1] < item)
   );
 }
 

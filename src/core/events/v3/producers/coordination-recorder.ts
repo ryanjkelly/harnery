@@ -104,6 +104,13 @@ export interface RecordCoordinationAuthorityV3Input<
   bridge?: "codex-wsl";
   expected_prior_state_digest: `sha256:${string}`;
   desired_state_digest: `sha256:${string}`;
+  /**
+   * Further causal parents beyond the actor's own chain. A transition made on
+   * another generation's behalf cites the subject's event it acts on (for a
+   * claim release, the claim's acquisition) so the ledger door holds it
+   * behind that event.
+   */
+  caused_by?: readonly `evt_${string}`[];
   monotonic_ns?: string;
   observed_at?: string;
   reconciler: AuthorityReconcilerV3;
@@ -300,6 +307,7 @@ export function recordCoordinationAuthorityV3<S extends CoordinationAuthoritySig
         ...(input.signal === "wait-ended" && waitSpan?.open_event_id
           ? [waitSpan.open_event_id]
           : []),
+        ...(input.caused_by ?? []),
       ].filter((value, index, values) => values.indexOf(value) === index),
       observed_at: input.observed_at,
       monotonic_ns: input.monotonic_ns,

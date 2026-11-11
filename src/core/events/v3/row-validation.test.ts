@@ -16,6 +16,7 @@ import {
   rowIdentityV3,
   rowValidationStateFromCheckpointV3,
 } from "./row-validation.ts";
+import { acceptedSchemaDigestsV3 } from "./schema-lineage.ts";
 
 const SESSION_ATTESTATION = "att_00000000-0000-7000-8000-000000000001";
 
@@ -31,10 +32,7 @@ function at(event: Record<string, unknown>, observedAt: string, monotonicNs?: st
 }
 
 function freshState(): RowValidationStateV3 {
-  return {
-    ...createRowValidationStateV3([EVENT_V3_SCHEMA_DIGEST]),
-    active_schema_digest: EVENT_V3_SCHEMA_DIGEST,
-  };
+  return createRowValidationStateV3([EVENT_V3_SCHEMA_DIGEST]);
 }
 
 /** Admit rows in order, failing the test when any row would raise a diagnostic. */
@@ -56,7 +54,6 @@ function snapshot(state: RowValidationStateV3): string {
       clock.observed_at_ms,
       clock.monotonic_ns?.toString(),
     ]),
-    active_schema_digest: state.active_schema_digest,
   });
 }
 
@@ -138,14 +135,13 @@ describe("shared event ledger V3 row check", () => {
     expect(checkRowV3(state, row(changed))).toEqual(["unresolved_attestation"]);
   });
 
-  test("reports schema digests outside the accepted set or unlike the active digest", () => {
+  test("reports a schema digest outside the accepted set, and accepts any digest inside it", () => {
     const { state } = openedSession();
     const foreign = at(fixture("coord.task_changed", 3), "2026-08-18T14:00:02.000Z", "30");
     object(foreign.contract).schema_digest = `sha256:${"b".repeat(64)}`;
-    expect(checkRowV3(state, row(foreign))).toEqual([
-      "unsupported_schema_digest",
-      "unexpected_schema_digest",
-    ]);
+    expect(checkRowV3(state, row(foreign))).toEqual(["unsupported_schema_digest"]);
+    state.accepted.add(`sha256:${"b".repeat(64)}`);
+    expect(checkRowV3(state, row(foreign))).toEqual([]);
   });
 
   test("passes a replayed committed row and changes nothing when it is applied", () => {
@@ -182,9 +178,9 @@ describe("shared event ledger V3 row check", () => {
   test("rebuilds the row state an append validation checkpoint records", () => {
     const checkpoint: EventV3AppendValidationCheckpointV3 = {
       format: "harnery-event-v3-append-validation-checkpoint",
-      format_version: 1,
+      format_version: 2,
       reader_build: "build_fixture",
-      accepted_schema_digests: [EVENT_V3_SCHEMA_DIGEST],
+      schema_digests: [EVENT_V3_SCHEMA_DIGEST],
       seen_event_ids: [
         "evt_00000000-0000-7000-8000-000000000001",
         "evt_00000000-0000-7000-8000-000000000002",
@@ -196,12 +192,12 @@ describe("shared event ledger V3 row check", () => {
       ],
       event_count: 2,
       genesis_id: "gex_00000000-0000-7000-8000-000000000001",
-      active_schema_digest: EVENT_V3_SCHEMA_DIGEST,
       active_segment_ordinal: 1,
       validated_active_bytes: 2000,
     };
     const state = rowValidationStateFromCheckpointV3(checkpoint);
-    expect(state.active_schema_digest).toBe(EVENT_V3_SCHEMA_DIGEST);
+    // The accepted set is this runtime's additive group, never one a checkpoint records.
+    expect([...state.accepted]).toEqual([...acceptedSchemaDigestsV3()]);
     expect(state.clocks.get("clk_00000000-0000-7000-8000-000000000001")?.monotonic_ns).toBe(20n);
 
     const next = at(fixture("coord.task_changed", 3), "2026-08-18T14:00:02.000Z", "30");

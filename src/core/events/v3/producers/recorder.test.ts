@@ -34,6 +34,8 @@ import { type ParsedPayload, parsePayload } from "../../../hooks/adapter/parse.t
 import { clearRuntimeTelemetryCachesForTest } from "../../../hooks/adapter/runtime-telemetry.ts";
 import { stableScopeId } from "../../../run/scope-id.ts";
 import { acquireNoClobberLease } from "../../../storage/no-clobber-lease.ts";
+import { adjacentAdditiveDigestsV3 } from "../__fixtures__/ledger-replay.ts";
+import { restampStoredEventDigestsV3 } from "../__fixtures__/stored-event-digest.ts";
 import { buildEventV3 } from "../builder.ts";
 import { canonicalJsonV3, sha256V3 } from "../canonical.ts";
 import { adapterCapabilityProfileDigestV3 } from "../capabilities.ts";
@@ -1240,6 +1242,34 @@ describe("event ledger V3 persistent hook recorder", () => {
     expect(events[0]?.event_type).toBe("ledger.genesis");
     expect(events[1]?.event_type).toBe("session.started");
     expect(events[1]?.producer.sequence).toBe(1);
+  });
+
+  test("F3 replays a pending hook event stamped with the previous additive digest after an upgrade", () => {
+    const root = candidateRoot();
+    const input = baseInput(root, "session-start", parsed({ session_id: "upgrade-session" }));
+    expect(() =>
+      recordHookSignalV3({
+        ...input,
+        writerOptions: {
+          onStep: (step) => {
+            if (step === "ready_temp_flushed") throw new Error("simulated producer kill");
+          },
+        },
+      }),
+    ).toThrow("simulated producer kill");
+    const { older } = adjacentAdditiveDigestsV3();
+    expect(restampStoredEventDigestsV3(root, older)).toBe(1);
+
+    const recovered = recordHookSignalV3(input);
+    expect(recovered.state).toBe("recorded");
+    if (recovered.state === "recorded") {
+      expect(recovered.recovered).toBeTrue();
+      expect(recovered.durability.state).toBe("committed");
+    }
+    const read = readLedgerV3(root);
+    expect(read).toMatchObject({ complete: true, diagnostics: [] });
+    const started = read.events.find(({ event }) => event.event_type === "session.started");
+    expect(started?.event.contract.schema_digest).toBe(older);
   });
 
   test("recovers an approved lifecycle reopen marker until the first real prompt", () => {
@@ -2734,11 +2764,13 @@ describe("event ledger V3 persistent hook recorder", () => {
         coordRoot: root,
         mode: "candidate",
         nativeSessionId: nativeSession,
-        producer_id: "prd_fixture",
+        // The live route reconciles under the hook producer that wrote the turn.
+        producer_id: "prd_hook",
         build_id: "build_fixture",
         platform: "linux",
       }),
     ).toEqual({ state: "settled" });
+    expect(readLedgerV3(root)).toMatchObject({ complete: true, diagnostics: [] });
     const contexts = readLedgerV3(root)
       .events.map(({ event }) => event)
       .filter((event) => event.event_type === "context.observed");

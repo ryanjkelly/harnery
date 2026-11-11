@@ -14,7 +14,6 @@ function emptyLedger(): ReadLedgerV3Result {
     events: [],
     diagnostics: [],
     complete: true,
-    advances: [],
     bytes: 0,
   };
 }
@@ -176,7 +175,6 @@ function readOf(...events: PositionedEventV3[]): ReadLedgerV3Result {
     events,
     diagnostics: [],
     complete: true,
-    advances: [],
     bytes: events.length * 100,
   };
 }

@@ -7,6 +7,7 @@ import {
   readEventV3ControlState,
 } from "./control.ts";
 import { liveEventV3BuildId } from "./runtime-identity.ts";
+import { EPOCH_SCHEMA_UNKNOWN_REASON_V3 } from "./schema-lineage.ts";
 
 export type LiveEventLedgerRouteV3 =
   | {
@@ -32,6 +33,9 @@ export function liveEventLedgerRouteFromControlV3(
   control: EventV3ControlState,
 ): LiveEventLedgerRouteV3 {
   if (control.state === "closed") return { state: "blocked", reason: "v3_not_initialized" };
+  if (control.state === "invalid" && control.reason === EPOCH_SCHEMA_UNKNOWN_REASON_V3) {
+    return { state: "blocked", reason: EPOCH_SCHEMA_UNKNOWN_REASON_V3 };
+  }
   if (control.state !== "candidate" && control.state !== "active") {
     return { state: "blocked", reason: `${control.state}:${control.reason}` };
   }

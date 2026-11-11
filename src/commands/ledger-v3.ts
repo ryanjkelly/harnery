@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
+import { resolveBinName } from "../core/config.ts";
 import {
   compressSealedLegacyV1Segments,
   inventoryLegacyV1Segments,
@@ -11,6 +12,12 @@ import {
   verifyLegacyV1HardFence,
   writeLegacyV1Canary,
 } from "../core/events/legacy-storage/index.ts";
+import {
+  type EventV3ControlState,
+  GENESIS_MANIFEST_VERSION_V3,
+  readGenesisManifestSchemaDigestV3,
+} from "../core/events/v3/control.ts";
+import { EVENT_V3_SCHEMA_DIGEST } from "../core/events/v3/generated.ts";
 import {
   cleanEventV3Archives,
   initializeEventLedgerV3,
@@ -20,6 +27,8 @@ import {
   scanHookProducerStateRecordsV3,
   sha256V3,
 } from "../core/events/v3/index.ts";
+import { EVENT_V3_LEDGER_RELATIVE_ROOT, readLedgerV3 } from "../core/events/v3/reader.ts";
+import { epochCompatibilityV3 } from "../core/events/v3/schema-lineage.ts";
 import type { EventV3SupportClassificationEvidence } from "../core/events/v3/support-storage/index.ts";
 import {
   authorizeEventV3SupportReplacement,
@@ -69,6 +78,7 @@ export function registerLedgerV3Command(
         }, {});
         emit.data({
           ...control,
+          schema: epochSchemaStatusV3(root, control),
           summary: {
             adapters: Object.keys(counts).sort(),
             producer_states: producers.length,
@@ -123,24 +133,46 @@ export function registerLedgerV3Command(
     .description("Create V3 control state, or archive and replace the current V3 epoch")
     .option("--root <path>", "Explicit coordination root")
     .requiredOption("--approval-record-id <id>", "Durable approval record identifier")
-    .option("--force-new-epoch", "Archive the current V3 epoch and create a new one")
-    .action((options: { root?: string; approvalRecordId: string; forceNewEpoch?: boolean }) => {
-      try {
-        const root = resolve(options.root ?? coordRoot(context));
-        emit.data(
-          initializeEventLedgerV3({
-            coordRoot: root,
-            harneryBuild: repositoryBuild(resolve(import.meta.dir, "..", "..")),
-            hostBuild: repositoryBuild(root),
-            configDigest: configDigest(root),
-            approvalRecordId: options.approvalRecordId,
-            forceNewEpoch: options.forceNewEpoch === true,
-          }),
-        );
-      } catch (error) {
-        emitFailure(emit, "ledger_v3_initialize_failed", error);
-      }
-    });
+    .option(
+      "--force-new-epoch",
+      "Preview archiving the current V3 epoch and creating a new one; add --yes to do it",
+    )
+    .option("--yes", "Confirm the epoch replacement --force-new-epoch previews")
+    .action(
+      (options: {
+        root?: string;
+        approvalRecordId: string;
+        forceNewEpoch?: boolean;
+        yes?: boolean;
+      }) => {
+        try {
+          const root = resolve(options.root ?? coordRoot(context));
+          if (options.forceNewEpoch === true && options.yes !== true) {
+            emit.data(forceNewEpochPreviewV3(root, options.approvalRecordId));
+            return;
+          }
+          emit.data(
+            initializeEventLedgerV3({
+              coordRoot: root,
+              harneryBuild: repositoryBuild(resolve(import.meta.dir, "..", "..")),
+              hostBuild: repositoryBuild(root),
+              configDigest: configDigest(root),
+              approvalRecordId: options.approvalRecordId,
+              ...(options.forceNewEpoch === true
+                ? {
+                    replacement: {
+                      kind: "approved",
+                      command: "initialize_force_new_epoch",
+                    } as const,
+                  }
+                : {}),
+            }),
+          );
+        } catch (error) {
+          emitFailure(emit, "ledger_v3_initialize_failed", error);
+        }
+      },
+    );
 
   command
     .command("recover")
@@ -486,6 +518,51 @@ export function registerLedgerV3Command(
         }
       },
     );
+}
+
+/**
+ * The epoch's schemas as this runtime judges them: the genesis digest, every
+ * digest the ledger's rows carry, and the single compatibility verdict.
+ */
+function epochSchemaStatusV3(root: string, control: EventV3ControlState) {
+  const genesisDigest =
+    "genesis" in control
+      ? control.genesis.profile.initial_schema_digest
+      : readGenesisManifestSchemaDigestV3(root);
+  if (genesisDigest === undefined) return null;
+  const present = readLedgerV3(root).schema_digests ?? [];
+  const compatibility = epochCompatibilityV3({
+    genesis_schema_digest: genesisDigest,
+    present_schema_digests: present,
+  });
+  return {
+    runtime_schema_digest: EVENT_V3_SCHEMA_DIGEST,
+    genesis_schema_digest: genesisDigest,
+    present_schema_digests: [...new Set([genesisDigest, ...present])].sort(),
+    verdict: compatibility.verdict,
+    reason: compatibility.reason,
+  };
+}
+
+/** What `initialize --force-new-epoch --yes` would archive and create, changing nothing. */
+function forceNewEpochPreviewV3(root: string, approvalRecordId: string) {
+  const control = readEventV3ControlState(root);
+  const ledger = resolve(root, EVENT_V3_LEDGER_RELATIVE_ROOT);
+  return {
+    state: "dry_run",
+    current: {
+      state: control.state,
+      ...("reason" in control ? { reason: control.reason } : {}),
+      ...("genesis" in control ? { genesis_id: control.genesis.event.payload.genesis_id } : {}),
+    },
+    schema: epochSchemaStatusV3(root, control),
+    would_archive: existsSync(ledger) ? ledger : null,
+    would_create: {
+      manifest_version: GENESIS_MANIFEST_VERSION_V3,
+      initial_schema_digest: EVENT_V3_SCHEMA_DIGEST,
+    },
+    confirm: `${resolveBinName()} ledger-v3 initialize --root ${JSON.stringify(root)} --approval-record-id ${JSON.stringify(approvalRecordId)} --force-new-epoch --yes`,
+  };
 }
 
 function coordRoot(context: HarneryProgramContext | undefined): string {

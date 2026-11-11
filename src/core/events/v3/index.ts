@@ -287,7 +287,6 @@ export {
   readLedgerFramesV3Since,
   readLedgerV3,
   readLedgerV3Since,
-  type SchemaAdvanceV3,
 } from "./reader.ts";
 export {
   type RecoverInvalidEventLedgerV3Input,

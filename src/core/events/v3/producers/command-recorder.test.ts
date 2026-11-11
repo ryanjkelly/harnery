@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { removeDir } from "../../../../../tests/helpers/remove-dir.ts";
@@ -11,6 +19,8 @@ import {
   type CommandTurnStepV3,
   commandObservationV3,
 } from "../__fixtures__/command-turns.ts";
+import { adjacentAdditiveDigestsV3 } from "../__fixtures__/ledger-replay.ts";
+import { restampStoredEventDigestsV3 } from "../__fixtures__/stored-event-digest.ts";
 import { buildEventV3 } from "../builder.ts";
 import { canonicalJsonV3, sha256V3 } from "../canonical.ts";
 import { adapterCapabilityProfileDigestV3 } from "../capabilities.ts";
@@ -23,12 +33,17 @@ import {
 } from "../control.ts";
 import { repairEventV3ControlPair } from "../control-writer.ts";
 import { loadOrCreateFingerprintKeyStoreV3 } from "../fingerprint-keys.ts";
-import { EVENT_V3_SCHEMA_DIGEST } from "../generated.ts";
+import { EVENT_V3_SCHEMA_DIGEST, EVENT_V3_SCHEMA_LINEAGE } from "../generated.ts";
+import { projectLatencyV3 } from "../latency.ts";
 import { listLiveDisplayV3 } from "../live-feed.ts";
-import { readLedgerV3 } from "../reader.ts";
+import {
+  eventV3ControlCheckpointPathV3,
+  eventV3ControlWitnessPathV3,
+  readLedgerV3,
+} from "../reader.ts";
 import { eventV3Paths } from "../writer.ts";
 import { closeAbandonedCommandSpansV3, recordCommandSignalV3 } from "./command-recorder.ts";
-import { recordHookSignalV3 } from "./recorder.ts";
+import { readHookProducerStateByInstanceV3, recordHookSignalV3 } from "./recorder.ts";
 
 const roots: string[] = [];
 
@@ -269,6 +284,36 @@ describe("event ledger V3 persistent session-tee recorder", () => {
     expect(commandEvents[1]?.event.producer.sequence).toBe(2);
   });
 
+  test("F3 replays a pending command event stamped with the previous additive digest after an upgrade", () => {
+    const root = startedTurnRoot();
+    const startInput = commandInput(root, "command.started");
+    expect(() =>
+      recordCommandSignalV3({
+        ...startInput,
+        writerOptions: {
+          onStep: (step) => {
+            if (step === "ready_temp_flushed") throw new Error("simulated start producer kill");
+          },
+        },
+      }),
+    ).toThrow("simulated start producer kill");
+    const { older } = adjacentAdditiveDigestsV3();
+    expect(restampStoredEventDigestsV3(root, older)).toBe(1);
+
+    const recovered = recordCommandSignalV3(startInput);
+    expect(recovered.state).toBe("recorded");
+    if (recovered.state === "recorded") {
+      expect(recovered.recovered).toBe(true);
+      expect(recovered.durability.state).toBe("committed");
+    }
+    const read = readLedgerV3(root);
+    expect(read).toMatchObject({ complete: true, diagnostics: [] });
+    const commandEvents = read.events.filter(
+      ({ event }) => event.producer.component === "session-tee",
+    );
+    expect(commandEvents.map(({ event }) => event.contract.schema_digest)).toEqual([older]);
+  });
+
   test("replays a pending command start instead of mistaking its state file for a commit", () => {
     const root = startedTurnRoot();
     const startInput = commandInput(root, "command.started");
@@ -326,56 +371,181 @@ describe("event ledger V3 persistent session-tee recorder", () => {
 });
 
 describe("event ledger V3 commands outside an open turn (d)", () => {
-  /** Body for a case the recorder does not implement yet. */
-  const pendingNoTurn = () => {
-    throw new Error("pending: command events still require an open turn");
-  };
-
-  test("today: a command before the first prompt is refused as turn_not_started", () => {
-    // The no-turn command work replaces this: the command is recorded against its session.
+  test("a command with no open turn records its start, output and completion with its session and no turn", () => {
     const root = candidateRoot();
-    const results = runCommandTurnSteps(root, COMMAND_WITHOUT_TURN_V3);
-    expect(results.slice(1)).toEqual([
-      { state: "generation_unavailable", reason: "turn_not_started" },
-      { state: "generation_unavailable", reason: "turn_not_started" },
-      { state: "generation_unavailable", reason: "turn_not_started" },
-    ]);
-    const commandEvents = readLedgerV3(root).events.filter(
-      ({ event }) => event.producer.component === "session-tee",
-    );
-    expect(commandEvents).toEqual([]);
-  });
-
-  test("today: a completion that lands after the next turn starts throws", () => {
-    // The no-turn command work replaces this: the completion closes the original span.
-    const root = candidateRoot();
-    const beforeCompletion = COMMAND_ACROSS_TURNS_V3.slice(0, -1);
-    expect(runCommandTurnSteps(root, beforeCompletion)).toEqual([
-      "recorded",
+    expect(runCommandTurnSteps(root, COMMAND_WITHOUT_TURN_V3)).toEqual([
       "recorded",
       "recorded",
       "recorded",
       "recorded",
     ]);
-    expect(() => runCommandTurnSteps(root, COMMAND_ACROSS_TURNS_V3.slice(-1))).toThrow(
-      "V3 command producer state does not match the joined hook generation",
-    );
+    const read = readLedgerV3(root);
+    expect(read.diagnostics).toEqual([]);
+    const session = read.events.find(({ event }) => event.event_type === "session.started")?.event;
+    if (!session || !("generation_id" in session.scope)) throw new Error("session start missing");
+    const commands = sessionTeeEvents(root);
+    expect(commands.map((event) => event.event_type)).toEqual([
+      "command.started",
+      "command.output_observed",
+      "command.completed",
+    ]);
+    for (const event of commands) {
+      expect(event.scope).toMatchObject({
+        session_id: session.scope.session_id,
+        generation_id: session.scope.generation_id,
+      });
+      expect("turn_id" in event.scope).toBeFalse();
+    }
+    expect(new Set(commands.map((event) => eventLinks(event).span_id)).size).toBe(1);
   });
 
-  test.todo(
-    "a command with no open turn records its start, output and completion with its session and no turn",
-    pendingNoTurn,
-  );
-  test.todo("a command with no open turn takes the session span as its parent", pendingNoTurn);
-  test.todo(
-    "a command with no open turn writes no command_emit_unjoinable diagnostic",
-    pendingNoTurn,
-  );
-  test.todo(
-    "a command whose completion crosses a turn end and the next turn start keeps one span and its original turn",
-    pendingNoTurn,
-  );
-  test.todo("turn rollups skip a command with no turn and session totals count it", pendingNoTurn);
+  test("a command with no open turn takes the session span as its parent", () => {
+    const root = candidateRoot();
+    runCommandTurnSteps(root, COMMAND_WITHOUT_TURN_V3);
+    const hook = readHookProducerStateByInstanceV3(root, "inst_fixture");
+    if (!hook) throw new Error("hook state missing");
+    for (const event of sessionTeeEvents(root)) {
+      expect(eventLinks(event).parent_span_id).toBe(hook.session_span.span_id);
+    }
+  });
+
+  test("a command with no open turn writes no command_emit_unjoinable diagnostic", () => {
+    const root = candidateRoot();
+    runCommandTurnSteps(root, COMMAND_WITHOUT_TURN_V3);
+    const diagnostics = join(root, ".harnery/ledgers/v3/diagnostics");
+    const names = existsSync(diagnostics) ? readdirSync(diagnostics) : [];
+    expect(names.filter((name) => name.startsWith("command_emit_unjoinable-"))).toEqual([]);
+  });
+
+  test("a command whose completion crosses a turn end and the next turn start keeps one span and its original turn", () => {
+    const root = candidateRoot();
+    expect(runCommandTurnSteps(root, COMMAND_ACROSS_TURNS_V3)).toEqual([
+      "recorded",
+      "recorded",
+      "recorded",
+      "recorded",
+      "recorded",
+      "recorded",
+    ]);
+    const read = readLedgerV3(root);
+    expect(read.diagnostics).toEqual([]);
+    const turns = read.events
+      .map(({ event }) => event)
+      .filter((event) => event.event_type === "turn.started")
+      .map((event) => (event.scope as { turn_id: string }).turn_id);
+    expect(turns).toHaveLength(2);
+    const commands = sessionTeeEvents(root);
+    expect(commands.map((event) => event.event_type)).toEqual([
+      "command.started",
+      "command.completed",
+    ]);
+    expect(commands.map((event) => (event.scope as { turn_id?: string }).turn_id)).toEqual([
+      turns[0],
+      turns[0],
+    ]);
+    expect(new Set(commands.map((event) => eventLinks(event).span_id)).size).toBe(1);
+  });
+
+  test("a command started outside a turn completes without a turn after the first prompt", () => {
+    const root = candidateRoot();
+    const steps: CommandTurnStepV3[] = [
+      { kind: "hook", signal: "session-start" },
+      { kind: "command", signal: "command.started", native_command_id: "cmd-into-turn" },
+      { kind: "hook", signal: "user-prompt-submit", turn_id: "turn-after" },
+      { kind: "command", signal: "command.completed", native_command_id: "cmd-into-turn" },
+    ];
+    expect(runCommandTurnSteps(root, steps)).toEqual([
+      "recorded",
+      "recorded",
+      "recorded",
+      "recorded",
+    ]);
+    expect(readLedgerV3(root).diagnostics).toEqual([]);
+    for (const event of sessionTeeEvents(root)) expect("turn_id" in event.scope).toBeFalse();
+  });
+
+  test("one epoch holding command rows of the previous digest and the current one reads complete", () => {
+    const previous = EVENT_V3_SCHEMA_LINEAGE.groups.at(-1)?.at(-2);
+    if (!previous) throw new Error("expected an earlier digest in the runtime's additive group");
+    const root = candidateRoot();
+    const steps: CommandTurnStepV3[] = [
+      { kind: "hook", signal: "session-start" },
+      { kind: "hook", signal: "user-prompt-submit", turn_id: "turn-before" },
+      { kind: "command", signal: "command.started", native_command_id: "cmd-before" },
+      { kind: "command", signal: "command.completed", native_command_id: "cmd-before" },
+      { kind: "hook", signal: "stop", turn_id: "turn-before" },
+      { kind: "command", signal: "command.started", native_command_id: "cmd-between" },
+      { kind: "command", signal: "command.completed", native_command_id: "cmd-between" },
+      { kind: "hook", signal: "user-prompt-submit", turn_id: "turn-after" },
+      { kind: "command", signal: "command.started", native_command_id: "cmd-after" },
+      { kind: "command", signal: "command.completed", native_command_id: "cmd-after" },
+      { kind: "hook", signal: "stop", turn_id: "turn-after" },
+    ];
+    expect(runCommandTurnSteps(root, steps).every((state) => state === "recorded")).toBeTrue();
+    const before = readLedgerV3(root);
+    expect(before.diagnostics).toEqual([]);
+    const firstTurn = sessionTeeEvents(root)[0]?.scope as { turn_id?: string } | undefined;
+    if (!firstTurn?.turn_id) throw new Error("expected the first command inside a turn");
+
+    // Rewrite the first turn's command rows as a runtime on the previous
+    // digest wrote them: with turn_id, which that schema required.
+    const restamped = restampRows(
+      root,
+      (event) =>
+        event.producer.component === "session-tee" &&
+        (event.scope as { turn_id?: string }).turn_id === firstTurn.turn_id,
+      previous,
+    );
+    expect(restamped).toBe(2);
+
+    const after = readLedgerV3(root);
+    expect(after.complete).toBeTrue();
+    expect(after.diagnostics).toEqual([]);
+    const commands = after.events
+      .map(({ event }) => event)
+      .filter((event) => event.producer.component === "session-tee");
+    const shapes = commands.map((event) => ({
+      digest: event.contract.schema_digest,
+      turn: "turn_id" in event.scope,
+    }));
+    expect(shapes).toEqual([
+      { digest: previous, turn: true },
+      { digest: previous, turn: true },
+      { digest: EVENT_V3_SCHEMA_DIGEST, turn: false },
+      { digest: EVENT_V3_SCHEMA_DIGEST, turn: false },
+      { digest: EVENT_V3_SCHEMA_DIGEST, turn: true },
+      { digest: EVENT_V3_SCHEMA_DIGEST, turn: true },
+    ]);
+
+    const latency = projectLatencyV3(after);
+    expect(latency).toEqual(projectLatencyV3(before));
+    expect(latency.diagnostics).toEqual([]);
+    expect(latency.turns.map((turn) => turn.span_counts.command)).toEqual([1, 1]);
+    // Turn telemetry lives on each turn terminal; the restamp leaves it as recorded.
+    expect(turnTelemetry(after)).toEqual(turnTelemetry(before));
+  });
+
+  test("turn rollups skip a command with no turn and session totals count it", () => {
+    const root = candidateRoot();
+    const steps: CommandTurnStepV3[] = [
+      ...COMMAND_WITHOUT_TURN_V3,
+      { kind: "hook", signal: "user-prompt-submit", turn_id: "turn-rollup" },
+      { kind: "command", signal: "command.started", native_command_id: "cmd-in-turn" },
+      { kind: "command", signal: "command.completed", native_command_id: "cmd-in-turn" },
+      { kind: "hook", signal: "stop", turn_id: "turn-rollup" },
+    ];
+    expect(runCommandTurnSteps(root, steps).every((state) => state === "recorded")).toBeTrue();
+    const read = readLedgerV3(root);
+    expect(read.diagnostics).toEqual([]);
+    const completions = sessionTeeEvents(root).filter(
+      (event) => event.event_type === "command.completed",
+    );
+    expect(completions).toHaveLength(2);
+    const latency = projectLatencyV3(read);
+    expect(latency.diagnostics).toEqual([]);
+    expect(latency.turns).toHaveLength(1);
+    expect(latency.turns[0]?.span_counts.command).toBe(1);
+  });
 });
 
 /** Drive one signal script; hooks report their state, commands their whole result. */
@@ -394,6 +564,47 @@ function runCommandTurnSteps(root: string, steps: readonly CommandTurnStepV3[]):
     });
     return result.state === "generation_unavailable" ? result : result.state;
   });
+}
+
+/**
+ * Restamp matching rows of the active file with another schema digest, as a
+ * runtime on that digest would have written them. Digests have one length, so
+ * every row keeps its byte length; the witness and checkpoint are removed so
+ * the next read starts from the rows.
+ */
+function restampRows(root: string, match: (event: EventV3) => boolean, digest: string): number {
+  const active = eventV3Paths(root).active;
+  let count = 0;
+  const rows = readFileSync(active, "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map((row) => {
+      const event = JSON.parse(row) as EventV3;
+      if (!match(event)) return row;
+      count += 1;
+      (event.contract as { schema_digest: string }).schema_digest = digest;
+      return canonicalJsonV3(event);
+    });
+  writeFileSync(active, rows.map((row) => `${row}\n`).join(""));
+  rmSync(eventV3ControlWitnessPathV3(root), { force: true });
+  rmSync(eventV3ControlCheckpointPathV3(root), { force: true });
+  return count;
+}
+
+function turnTelemetry(read: ReturnType<typeof readLedgerV3>): unknown[] {
+  return read.events
+    .map(({ event }) => event)
+    .filter((event) => event.event_type === "turn.completed")
+    .map((event) => {
+      const payload = event.payload as Record<string, unknown>;
+      return { usage: payload.usage, inference: payload.inference, harness: payload.harness };
+    });
+}
+
+function sessionTeeEvents(root: string): EventV3[] {
+  return readLedgerV3(root)
+    .events.map(({ event }) => event)
+    .filter((event) => event.producer.component === "session-tee");
 }
 
 function commandGeneration(root: string): `gen_${string}` {

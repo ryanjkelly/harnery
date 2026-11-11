@@ -157,7 +157,7 @@ describe("event ledger V3 stranded candidate epochs", () => {
       initializeEventLedgerV3({
         ...baseInput(root, "2026-09-03T10:29:26.416Z"),
         approvalRecordId: "not a usable approval record",
-        forceNewEpoch: true,
+        replacement: { kind: "approved", command: "initialize_force_new_epoch" },
       }),
     ).toThrow();
 

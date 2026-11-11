@@ -203,8 +203,6 @@ function readOf(...events: EventV3Fixture[]): ReadLedgerV3Result {
     diagnostics: [],
     complete: true,
     genesis_id: "gex_fixture",
-    active_schema_digest: "sha256:fixture",
-    advances: [],
     bytes: 0,
   };
 }

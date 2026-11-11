@@ -17,7 +17,11 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { recordLiveIdentityChangeV3 } from "../../core/agents/live-authority-v3.ts";
-import { recordLiveSweepObservationV3 } from "../../core/agents/live-lifecycle-v3.ts";
+import {
+  GENERATION_ROWS_WAITING_V3,
+  liveSubjectGenerationWaitingV3,
+  recordLiveSweepObservationV3,
+} from "../../core/agents/live-lifecycle-v3.ts";
 import type { Heartbeat } from "../../core/agents/state/heartbeat-writer.ts";
 import {
   readLiveCoordinationRow,
@@ -43,6 +47,7 @@ export type IdentityAssumeErrorCode =
   | "identity_in_use"
   | "identity_is_ancestor"
   | "identity_not_found"
+  | "identity_rows_waiting"
   | "invalid_identity"
   | "no_live_generation"
   | "not_session"
@@ -147,7 +152,8 @@ export function reclaimAbandonedLocalConflict(
     const ts = Date.parse(liveRow.last_heartbeat);
     if (Number.isFinite(ts)) ageSecs = Math.max(0, Math.floor((Date.now() - ts) / 1000));
   }
-  if (existsSync(hbPath)) {
+  const heartbeatExists = existsSync(hbPath);
+  if (heartbeatExists) {
     try {
       const hb = JSON.parse(readFileSync(hbPath, "utf8")) as Heartbeat;
       // Native producer identity is private cache metadata, not ledger authority.
@@ -157,6 +163,22 @@ export function reclaimAbandonedLocalConflict(
     } catch {
       /* content unreadable — still reclaim the file */
     }
+  }
+  // The sweep below cites only the holder's hook chain. While the ledger door
+  // holds rows of its generation, refuse before any cache file is removed.
+  const waiting = liveSubjectGenerationWaitingV3({
+    coordRoot,
+    owner: conflict.instance_id,
+    nativeSessionId: sessionId,
+    adapter,
+  });
+  if (waiting) {
+    throw new IdentityAssumeError(
+      "identity_rows_waiting",
+      `the holder ${conflict.instance_id} still has events waiting to enter the ledger (generation ${waiting}, reason ${GENERATION_ROWS_WAITING_V3}); retry once they are admitted or the epoch rotates`,
+    );
+  }
+  if (heartbeatExists) {
     try {
       unlinkSync(hbPath);
     } catch {

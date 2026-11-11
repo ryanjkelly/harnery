@@ -63,30 +63,60 @@ export function runtimeSchemaGroupV3(
   return found;
 }
 
+/** Control and route reason for an epoch holding a schema this runtime does not know. */
+export const EPOCH_SCHEMA_UNKNOWN_REASON_V3 = "epoch_schema_unknown" as const;
+
+/**
+ * Control reason for an epoch whose genesis schema precedes a breaking change.
+ * It is the only schema reason a runtime refreshes automatically (ADR 0111).
+ */
+export const GENESIS_SCHEMA_DIGEST_INCOMPATIBLE_REASON_V3 =
+  "genesis_schema_digest_incompatible" as const;
+
 /**
  * Decide whether this runtime may serve an epoch with the given schemas.
  *
- * Current rule, kept until the compatibility work switches callers over: serve
- * only when the genesis digest equals the runtime digest, otherwise replace.
- *
- * Intended rule, as each runtime applies it to the epoch it finds:
- *
  * | The epoch's schemas, as the running runtime sees them | Verdict |
  * |---|---|
- * | All in the runtime's own additive group | `serve`; the runtime stamps its own digest on what it writes |
- * | Genesis digest known, in a group before a breaking change | `replace_breaking` |
- * | Any digest the runtime does not know | `unknown`: block this runtime only, reason `epoch_schema_unknown`; replacing needs the approved command |
+ * | Every digest present, genesis included, in the runtime's own additive group | `serve`; the runtime stamps its own digest on what it writes |
+ * | Every digest in the lineage, genesis digest in a group before a breaking change | `replace_breaking`, reason `genesis_schema_digest_incompatible` |
+ * | Any digest the runtime's lineage does not hold | `unknown`, reason `epoch_schema_unknown`: block this runtime only; replacing needs the approved command |
  *
  * `present_schema_digests` lists every digest the epoch's rows carry; the
- * genesis digest always counts as present.
+ * genesis digest always counts as present. Every caller that decides whether
+ * to serve, replace or block an epoch asks this function and compares no
+ * digests itself.
  */
 export function epochCompatibilityV3(
   input: EventV3EpochSchemasV3,
-  _lineage: EventV3SchemaLineageV3 = EVENT_V3_SCHEMA_LINEAGE,
+  lineage: EventV3SchemaLineageV3 = EVENT_V3_SCHEMA_LINEAGE,
   runtimeDigest: string = EVENT_V3_SCHEMA_DIGEST,
 ): EventV3EpochCompatibilityV3 {
-  if (input.genesis_schema_digest === runtimeDigest) {
-    return { verdict: "serve", reason: "genesis_schema_digest_matches_runtime" };
+  const runtime = runtimeSchemaGroupV3(lineage, runtimeDigest);
+  const present = new Set([input.genesis_schema_digest, ...(input.present_schema_digests ?? [])]);
+  let olderGroup = false;
+  for (const digest of present) {
+    const found = schemaGroupForDigestV3(digest, lineage);
+    if (!found || found.group_index > runtime.group_index) {
+      return { verdict: "unknown", reason: EPOCH_SCHEMA_UNKNOWN_REASON_V3 };
+    }
+    if (found.group_index < runtime.group_index) olderGroup = true;
   }
-  return { verdict: "replace_breaking", reason: "genesis_schema_digest_incompatible" };
+  if (!olderGroup) return { verdict: "serve", reason: "epoch_schema_in_runtime_group" };
+  const genesis = schemaGroupForDigestV3(input.genesis_schema_digest, lineage)!;
+  if (genesis.group_index < runtime.group_index) {
+    return { verdict: "replace_breaking", reason: GENESIS_SCHEMA_DIGEST_INCOMPATIBLE_REASON_V3 };
+  }
+  // A row from an older group inside an epoch whose genesis is in the
+  // runtime's group cannot have passed any reader; nothing this runtime
+  // recognizes explains it.
+  return { verdict: "unknown", reason: EPOCH_SCHEMA_UNKNOWN_REASON_V3 };
+}
+
+/** The digests a row may carry in an epoch this runtime serves: its own additive group. */
+export function acceptedSchemaDigestsV3(
+  lineage: EventV3SchemaLineageV3 = EVENT_V3_SCHEMA_LINEAGE,
+  runtimeDigest: string = EVENT_V3_SCHEMA_DIGEST,
+): readonly EventV3SchemaDigestV3[] {
+  return runtimeSchemaGroupV3(lineage, runtimeDigest).group;
 }

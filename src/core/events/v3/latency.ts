@@ -137,7 +137,9 @@ export function projectLatencyV3(read: ReadLedgerV3Result): LatencyProjectionV3 
 
   const turns = [...terminalByTurn.values()].map((terminal) => {
     const key = turnKey(terminal);
-    const turnEvents = events.filter((event) => turnKey(event) === key);
+    // A command recorded outside any turn carries no turn_id: it belongs to its
+    // session, not to a turn, so no turn rollup counts it.
+    const turnEvents = events.filter((event) => hasTurn(event) && turnKey(event) === key);
     return projectTurn(
       terminal,
       turnEvents,
@@ -737,6 +739,10 @@ function mergeIntervals(intervals: Interval[]): Interval[] {
     else output.push({ ...interval });
   }
   return output;
+}
+
+function hasTurn(event: EventShape): boolean {
+  return typeof event.scope.turn_id === "string" && event.scope.turn_id.length > 0;
 }
 
 function turnKey(event: EventShape): string {

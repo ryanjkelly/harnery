@@ -65,7 +65,12 @@ interface CommandRecorderStateV3 {
   instance_id: `inst_${string}`;
   session_id: `sid_${string}`;
   generation_id: `gen_${string}`;
-  turn_id: `tid_${string}`;
+  /**
+   * The turn open when the command started, absent when it started outside
+   * any turn. It never changes afterwards: a completion that lands after that
+   * turn ended stays in the span and scope the command started with.
+   */
+  turn_id?: `tid_${string}`;
   attestation_id: `att_${string}`;
   privacy_epoch_id: `pep_${string}`;
   boot_id: `boot_${string}`;
@@ -109,8 +114,10 @@ export type RecordCommandSignalV3Result =
 
 /**
  * Join a CLI/session-tee command to an already-started hook generation and
- * record it through its own crash-recoverable producer sequence. This is
- * inert until the exact candidate or active control gate is open.
+ * record it through its own crash-recoverable producer sequence. A command
+ * that starts inside a turn joins that turn; one that starts outside any turn
+ * is recorded against its session, with the session span as its parent. This
+ * is inert until the exact candidate or active control gate is open.
  */
 export function recordCommandSignalV3(
   input: RecordCommandSignalV3Input,
@@ -122,9 +129,6 @@ export function recordCommandSignalV3(
   const hook = readHookProducerStateByInstanceV3(input.coordRoot, input.instance_id);
   if (!hook || hook.adapter !== input.adapter) {
     return { state: "generation_unavailable", reason: "hook_generation_not_joinable" };
-  }
-  if (!hook.current_turn_id) {
-    return { state: "generation_unavailable", reason: "turn_not_started" };
   }
   const rootId = control.genesis.event.scope.root_id as `root_${string}`;
   const epochId = control.genesis.profile.privacy_key_epoch;
@@ -192,7 +196,7 @@ export function recordCommandSignalV3(
       instance_id: state.instance_id,
       session_id: state.session_id,
       generation_id: state.generation_id,
-      turn_id: state.turn_id,
+      ...(state.turn_id ? { turn_id: state.turn_id } : {}),
       attestation_id: state.attestation_id,
       producer_id: input.producer_id,
       boot_id: state.boot_id,
@@ -342,7 +346,7 @@ export function closeAbandonedCommandSpansV3(
           instance_id: state.instance_id,
           session_id: state.session_id,
           generation_id: state.generation_id,
-          turn_id: state.turn_id,
+          ...(state.turn_id ? { turn_id: state.turn_id } : {}),
         },
         attestation_id: state.attestation_id,
         links: {
@@ -409,7 +413,12 @@ function newCommandState(
   hook: NonNullable<ReturnType<typeof readHookProducerStateByInstanceV3>>,
   epochId: `pep_${string}`,
 ): CommandRecorderStateV3 {
-  const parentSpanId = selectCommandParentSpan(hook.spans, hook.current_turn_id!);
+  const turnId = hook.current_turn_id;
+  // Inside a turn the command nests under the one tool span that launched it,
+  // when that span is unambiguous. Outside any turn it nests under the session.
+  const parentSpanId = turnId
+    ? selectCommandParentSpan(hook.spans, turnId)
+    : hook.session_span.span_id;
   const bootId = `boot_${randomUUID()}` as const;
   const opened = openSpanStateV3({
     span_id: spanIdV3(),
@@ -427,7 +436,7 @@ function newCommandState(
     instance_id: input.instance_id,
     session_id: hook.session_id,
     generation_id: hook.generation_id,
-    turn_id: hook.current_turn_id!,
+    ...(turnId ? { turn_id: turnId } : {}),
     attestation_id: hook.attestation_id,
     privacy_epoch_id: epochId,
     boot_id: bootId,
@@ -454,9 +463,10 @@ function matchesHookState(
     state.instance_id === input.instance_id &&
     state.session_id === hook.session_id &&
     state.generation_id === hook.generation_id &&
-    state.turn_id === hook.current_turn_id &&
-    // attestation_id is deliberately absent: a re-attestation within the
-    // generation is a continuation, adopted by the caller, not a mismatch.
+    // turn_id and attestation_id are deliberately absent. A command keeps the
+    // turn it started under, so a turn that ended or began since then is a
+    // continuation, as is a re-attestation within the generation (adopted by
+    // the caller).
     state.privacy_epoch_id === epochId
   );
 }
@@ -583,7 +593,7 @@ function readCommandState(path: string): CommandRecorderStateV3 {
     !/^inst_[a-zA-Z0-9._-]{1,128}$/.test(state.instance_id) ||
     !/^sid_[a-f0-9]{64}$/.test(state.session_id) ||
     !/^gen_[0-9a-f-]{36}$/.test(state.generation_id) ||
-    !/^tid_[a-f0-9]{64}$/.test(state.turn_id) ||
+    (state.turn_id !== undefined && !/^tid_[a-f0-9]{64}$/.test(state.turn_id)) ||
     !/^att_[0-9a-f-]{36}$/.test(state.attestation_id) ||
     !/^pep_[a-zA-Z0-9._-]+$/.test(state.privacy_epoch_id) ||
     !/^boot_[a-zA-Z0-9._-]+$/.test(state.boot_id) ||

@@ -1,10 +1,19 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
 import { acquireNoClobberLease } from "../../storage/no-clobber-lease.ts";
+import { priorBreakingDigestV3 } from "./__fixtures__/ledger-replay.ts";
 import { initializeEventLedgerV3 } from "./bootstrap.ts";
 import { sha256V3 } from "./canonical.ts";
 import {
@@ -16,6 +25,8 @@ import { resolveLiveEventLedgerRouteV3 } from "./live-routing.ts";
 import { eventV3Paths } from "./writer.ts";
 
 const roots: string[] = [];
+/** The newest digest before the lineage's last breaking change. */
+const PRIOR_BREAKING_DIGEST = priorBreakingDigestV3();
 
 afterEach(() => {
   for (const root of roots.splice(0)) removeDir(root);
@@ -42,7 +53,7 @@ describe("universal V3 ledger initialization", () => {
 
     const replaced = initializeEventLedgerV3({
       ...baseInput(root, "2026-08-18T12:02:00.000Z"),
-      forceNewEpoch: true,
+      replacement: { kind: "approved", command: "initialize_force_new_epoch" },
     });
 
     expect(replaced.initialized).toBeTrue();
@@ -73,7 +84,7 @@ describe("universal V3 ledger initialization", () => {
     const genesis = JSON.parse(readFileSync(genesisPath, "utf8")) as {
       profile: { initial_schema_digest: string };
     };
-    genesis.profile.initial_schema_digest = `sha256:${"a".repeat(64)}`;
+    genesis.profile.initial_schema_digest = PRIOR_BREAKING_DIGEST;
     writeFileSync(genesisPath, `${JSON.stringify(genesis)}\n`, "utf8");
 
     expect(readEventV3ControlState(root)).toEqual({
@@ -88,7 +99,7 @@ describe("universal V3 ledger initialization", () => {
     const archivedGenesis = JSON.parse(
       readFileSync(join(replaced.archived_epoch!, "genesis.json"), "utf8"),
     ) as { profile: { initial_schema_digest: string } };
-    expect(archivedGenesis.profile.initial_schema_digest).toBe(`sha256:${"a".repeat(64)}`);
+    expect(archivedGenesis.profile.initial_schema_digest).toBe(PRIOR_BREAKING_DIGEST);
   });
 
   test("refreshes a schema-incompatible epoch at the live routing boundary", () => {
@@ -98,7 +109,7 @@ describe("universal V3 ledger initialization", () => {
     const genesis = JSON.parse(readFileSync(genesisPath, "utf8")) as {
       profile: { initial_schema_digest: string };
     };
-    genesis.profile.initial_schema_digest = `sha256:${"b".repeat(64)}`;
+    genesis.profile.initial_schema_digest = PRIOR_BREAKING_DIGEST;
     writeFileSync(genesisPath, `${JSON.stringify(genesis)}\n`, "utf8");
 
     const route = resolveLiveEventLedgerRouteV3(root);
@@ -114,7 +125,7 @@ describe("universal V3 ledger initialization", () => {
     const genesis = JSON.parse(readFileSync(genesisPath, "utf8")) as {
       profile: { initial_schema_digest: string };
     };
-    genesis.profile.initial_schema_digest = `sha256:${"d".repeat(64)}`;
+    genesis.profile.initial_schema_digest = PRIOR_BREAKING_DIGEST;
     writeFileSync(genesisPath, `${JSON.stringify(genesis)}\n`, "utf8");
     const lease = acquireNoClobberLease({
       path: join(root, ".harnery", "private", "event-v3-bootstrap-lease"),
@@ -130,6 +141,70 @@ describe("universal V3 ledger initialization", () => {
     });
     lease.release();
     expect(resolveLiveEventLedgerRouteV3(root)).toMatchObject({ state: "v3", mode: "active" });
+  });
+
+  test("decides a replacement from the state read under the bootstrap lease", () => {
+    const root = freshRoot();
+    initialize(root, "2026-08-18T12:00:00.000Z");
+    const before = readFileSync(eventV3Paths(root).active, "utf8");
+    const seen: string[] = [];
+
+    const kept = initializeEventLedgerV3({
+      ...baseInput(root, "2026-08-18T12:02:00.000Z"),
+      replacement: {
+        kind: "automatic",
+        cause: "init_refresh",
+        replaces: (current) => {
+          seen.push(current.state);
+          return false;
+        },
+      },
+    });
+    expect(seen).toEqual(["active"]);
+    expect(kept.initialized).toBeFalse();
+    expect(kept.archived_epoch).toBeUndefined();
+    expect(readFileSync(eventV3Paths(root).active, "utf8")).toBe(before);
+
+    const replaced = initializeEventLedgerV3({
+      ...baseInput(root, "2026-08-18T12:03:00.000Z"),
+      replacement: { kind: "automatic", cause: "init_refresh", replaces: () => true },
+    });
+    expect(replaced.initialized).toBeTrue();
+    expect(replaced.archived_epoch).toBeDefined();
+  });
+
+  test("refuses to replace a present epoch it cannot serve unless forced", () => {
+    const root = freshRoot();
+    initialize(root, "2026-08-18T12:00:00.000Z");
+    appendFileSync(eventV3Paths(root).active, "{not an event\n");
+    const before = readFileSync(eventV3Paths(root).active, "utf8");
+    expect(readEventV3ControlState(root)).toEqual({
+      state: "invalid",
+      reason: "ledger_integrity_failure",
+    });
+
+    expect(() => initialize(root, "2026-08-18T12:01:00.000Z")).toThrow(
+      "event_v3_epoch_not_replaced:ledger_integrity_failure",
+    );
+    expect(readFileSync(eventV3Paths(root).active, "utf8")).toBe(before);
+    expect(existsSync(join(root, ".harnery", "ledgers", "v3-archives"))).toBeFalse();
+
+    const replaced = initializeEventLedgerV3({
+      ...baseInput(root, "2026-08-18T12:02:00.000Z"),
+      replacement: { kind: "approved", command: "initialize_force_new_epoch" },
+    });
+    expect(replaced.archived_epoch).toBeDefined();
+    expect(readFileSync(join(replaced.archived_epoch!, "active.ndjson"), "utf8")).toBe(before);
+    expect(readEventV3ControlState(root).state).toBe("active");
+  });
+
+  test("writes genesis manifest version 2 for a first-time initialization", () => {
+    const root = freshRoot();
+    initialize(root, "2026-08-18T12:00:00.000Z");
+    const genesis = JSON.parse(readFileSync(join(root, EVENT_V3_GENESIS_MANIFEST), "utf8"));
+    expect(genesis.manifest_version).toBe(2);
+    const activation = JSON.parse(readFileSync(join(root, EVENT_V3_ACTIVATION_MANIFEST), "utf8"));
+    expect(activation.manifest_version).toBe(1);
   });
 
   test("resumes a candidate left before activation publication", () => {

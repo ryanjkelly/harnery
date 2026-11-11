@@ -9125,8 +9125,7 @@
             "root_id",
             "instance_id",
             "session_id",
-            "generation_id",
-            "turn_id"
+            "generation_id"
           ],
           "properties": {
             "root_id": {
@@ -9618,8 +9617,7 @@
             "root_id",
             "instance_id",
             "session_id",
-            "generation_id",
-            "turn_id"
+            "generation_id"
           ],
           "properties": {
             "root_id": {
@@ -24304,8 +24302,7 @@
             "root_id",
             "instance_id",
             "session_id",
-            "generation_id",
-            "turn_id"
+            "generation_id"
           ],
           "properties": {
             "root_id": {

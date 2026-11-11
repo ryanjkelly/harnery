@@ -258,7 +258,7 @@ describe("session event live ledger routing", () => {
     expect(events[1]!.payload).toMatchObject({ stream: "stdout", bytes: 11, lines: 1 });
   });
 
-  test("classifies a command outside an open turn as unjoinable", () => {
+  test("records a command outside an open turn against its session", () => {
     const root = activeRoot();
     const instanceId = "agent-v3-no-turn";
     process.env.HARNERY_COORD_ROOT_OVERRIDE = root;
@@ -281,13 +281,47 @@ describe("session event live ledger routing", () => {
       cmd: "acme agents status",
       intent: "inspect status",
     });
+    writeSessionEvent("command.completed", {
+      instance_id: instanceId,
+      cmd_id: "cmd-no-turn",
+      exit: 0,
+      duration_ms: 5,
+    });
 
-    const diagnostics = readdirSync(join(root, ".harnery/ledgers/v3/diagnostics"));
-    expect(diagnostics.some((name) => name.startsWith("command_emit_unjoinable-"))).toBeTrue();
-    expect(diagnostics.some((name) => name.startsWith("command_emit_rejected-"))).toBeFalse();
+    expect(diagnosticNames(root)).toEqual([]);
+    const read = readLedgerV3(root);
+    expect(read.diagnostics).toEqual([]);
+    const commands = read.events
+      .map(({ event }) => event)
+      .filter((event) => event.producer.component === "session-tee");
+    expect(commands.map((event) => event.event_type)).toEqual([
+      "command.started",
+      "command.completed",
+    ]);
+    for (const event of commands) expect("turn_id" in event.scope).toBeFalse();
   });
 
-  test("skips the lifecycle-reopen gap and records the first prompted command", () => {
+  test("still reports a command whose session has no hook generation", () => {
+    const root = activeRoot();
+    process.env.HARNERY_COORD_ROOT_OVERRIDE = root;
+    writeSessionEvent("command.started", {
+      instance_id: "agent-v3-no-generation",
+      cmd_id: "cmd-no-generation",
+      cmd: "acme agents status",
+      intent: "inspect status",
+    });
+    const unjoinable = diagnosticNames(root).filter((name) =>
+      name.startsWith("command_emit_unjoinable-"),
+    );
+    expect(unjoinable).toHaveLength(1);
+    const body = readFileSync(
+      join(root, ".harnery/ledgers/v3/diagnostics", unjoinable[0] as string),
+      "utf8",
+    );
+    expect(body).toContain("hook_generation_not_found");
+  });
+
+  test("records the lifecycle-reopen gap against the session, then joins the first prompt", () => {
     const root = activeRoot();
     const instanceId = "agent-v3-reopen";
     const nativeSession = "native-v3-reopen";
@@ -334,14 +368,18 @@ describe("session event live ledger routing", () => {
     ] as const) {
       writeSessionEvent(type, { instance_id: instanceId, cmd_id: "cmd-reopen", ...fields });
     }
-    expect(
-      readdirSync(join(root, ".harnery/ledgers/v3/diagnostics")).some((name) =>
-        name.startsWith("command_emit_unjoinable-"),
-      ),
-    ).toBeFalse();
-    expect(
-      readLedgerV3(root).events.some(({ event }) => event.producer.component === "session-tee"),
-    ).toBeFalse();
+    expect(diagnosticNames(root).some((name) => name.startsWith("command_emit_unjoinable-"))).toBe(
+      false,
+    );
+    const gapCommands = readLedgerV3(root)
+      .events.map(({ event }) => event)
+      .filter((event) => event.producer.component === "session-tee");
+    expect(gapCommands.map((event) => event.event_type)).toEqual([
+      "command.started",
+      "command.output_observed",
+      "command.completed",
+    ]);
+    for (const event of gapCommands) expect("turn_id" in event.scope).toBeFalse();
     const awaitingPrompt = readHookProducerStateV3(root, "claude-code", nativeSession);
     expect(awaitingPrompt).toMatchObject({
       session_start_derivation: "approved_lifecycle_reopen",
@@ -375,14 +413,26 @@ describe("session event live ledger routing", () => {
       exit: 0,
       duration_ms: 10,
     });
-    expect(
-      readLedgerV3(root)
-        .events.map(({ event }) => event)
-        .filter((event) => event.producer.component === "session-tee")
-        .map((event) => event.event_type),
-    ).toEqual(["command.started", "command.completed"]);
+    const read = readLedgerV3(root);
+    expect(read.diagnostics).toEqual([]);
+    const commands = read.events
+      .map(({ event }) => event)
+      .filter((event) => event.producer.component === "session-tee");
+    expect(commands.map((event) => event.event_type)).toEqual([
+      "command.started",
+      "command.output_observed",
+      "command.completed",
+      "command.started",
+      "command.completed",
+    ]);
+    expect(commands.slice(3).every((event) => "turn_id" in event.scope)).toBeTrue();
   });
 });
+
+function diagnosticNames(root: string): string[] {
+  const directory = join(root, ".harnery/ledgers/v3/diagnostics");
+  return existsSync(directory) ? readdirSync(directory) : [];
+}
 
 function activeRoot(): string {
   const root = temporaryRoot();

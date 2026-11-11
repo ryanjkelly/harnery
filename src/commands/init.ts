@@ -34,10 +34,13 @@ import {
   portableHookCommands,
   stripJsonComments,
 } from "../core/config.ts";
+import type { EventV3AutomaticEpochReplacementV3 } from "../core/events/v3/bootstrap.ts";
 import { canonicalJsonV3 } from "../core/events/v3/canonical.ts";
 import { ADAPTER_CAPABILITY_PROFILES_V3 } from "../core/events/v3/capabilities.ts";
-import type { EventV3ControlState } from "../core/events/v3/control.ts";
-import { EVENT_V3_SCHEMA_DIGEST } from "../core/events/v3/generated.ts";
+import {
+  type EventV3ControlState,
+  eventV3ControlSchemaRefreshableV3,
+} from "../core/events/v3/control.ts";
 import {
   initializeEventLedgerV3,
   readEventV3ControlState,
@@ -334,7 +337,11 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
         const gitHooks = checkGitHooks(projectRoot);
         if (gitHooks.status !== "fresh") issues.push(...gitHooks.issues);
         const ledger = readEventV3ControlState(projectRoot);
-        if (ledger.state !== "active") issues.push(`event ledger V3 is ${ledger.state}`);
+        if (ledger.state !== "active") {
+          issues.push(
+            `event ledger V3 is ${ledger.state}${"reason" in ledger ? ` (${ledger.reason})` : ""}`,
+          );
+        }
         const ledgerRuntimeIssues = eventLedgerV3RuntimeIssues(ledger);
         if (ledgerRuntimeIssues.length > 0) {
           issues.push(`event ledger V3 is runtime-stale (${ledgerRuntimeIssues.join(", ")})`);
@@ -412,13 +419,23 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
       }
 
       // ── 1d. universal V3 event ledger ────────────────────────────────────
-      if (dryRun) {
+      const ledgerUnservable = eventLedgerV3UnservableReason(readEventV3ControlState(projectRoot));
+      if (ledgerUnservable) {
+        // init never archives an epoch it cannot serve except on the schema
+        // verdict the routing boundary refreshes. Report it and continue with
+        // the rest of init; replacing takes the approved command.
+        actions.push(
+          `! event ledger V3 is invalid (${ledgerUnservable}); init leaves it in place. ` +
+            `Replace it with \`${bin} ledger-v3 initialize --force-new-epoch --yes\` ` +
+            `or recover it with \`${bin} ledger-v3 recover\``,
+        );
+      } else if (dryRun) {
         const ledger = readEventV3ControlState(projectRoot);
         const runtimeIssues = eventLedgerV3RuntimeIssues(ledger);
         actions.push(
           ledger.state === "active" && runtimeIssues.length === 0
             ? "· event ledger V3 is active"
-            : ledger.state === "active"
+            : runtimeIssues.length > 0
               ? `+ would refresh event ledger V3 runtime profile (${runtimeIssues.join(", ")})`
               : `+ would initialize event ledger V3 (current state: ${ledger.state})`,
         );
@@ -432,7 +449,8 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
           hostBuild: gitBuild(projectRoot),
           configDigest: digestConfig(resolve(coordDir, "config.jsonc")),
           approvalRecordId: "harnery-init-v3-universal",
-          forceNewEpoch: runtimeIssues.length > 0,
+          // Judged under the bootstrap lease and again under the append lease.
+          replacement: initEventLedgerV3Replacement(),
         });
         actions.push(
           initialized.archived_epoch
@@ -572,15 +590,18 @@ function digestConfig(path: string): `sha256:${string}` {
 
 /**
  * Runtime contracts bound into an immutable V3 epoch. `init` replaces the
- * epoch only when the schema or adapter capability contract changed. A new
- * Harnery build alone keeps the current epoch and its live session generations.
+ * epoch only on the verdicts the routing boundary refreshes: a genesis schema
+ * from before a breaking change, or a changed adapter capability contract. An
+ * epoch on any schema of the runtime's additive group is served as it is, and
+ * a new Harnery build alone keeps the current epoch and its live session
+ * generations. The schema judgment is the control reader's (ADR 0245); this
+ * function compares no digests itself.
  */
 export function eventLedgerV3RuntimeIssues(control: EventV3ControlState): string[] {
+  if (eventV3ControlSchemaRefreshableV3(control)) return ["schema digest"];
   if (control.state !== "active") return [];
   const issues: string[] = [];
   const profile = control.genesis.profile;
-  if (profile.initial_schema_digest !== EVENT_V3_SCHEMA_DIGEST) issues.push("schema digest");
-  if (profile.contract_source_digest !== EVENT_V3_SCHEMA_DIGEST) issues.push("contract digest");
   const expectedCapabilities = Object.values(ADAPTER_CAPABILITY_PROFILES_V3).map((value) =>
     sha256V3(canonicalJsonV3(value)),
   );
@@ -592,6 +613,27 @@ export function eventLedgerV3RuntimeIssues(control: EventV3ControlState): string
     issues.push("adapter capabilities");
   }
   return issues;
+}
+
+/**
+ * How `init` replaces an epoch: automatically, and only while the epoch present
+ * has a runtime issue `init` refreshes. Never an epoch it cannot serve.
+ */
+export function initEventLedgerV3Replacement(): EventV3AutomaticEpochReplacementV3 {
+  return {
+    kind: "automatic",
+    cause: "init_refresh",
+    replaces: (current) => eventLedgerV3RuntimeIssues(current).length > 0,
+  };
+}
+
+/**
+ * The control reason of an epoch that is present but that `init` must not
+ * replace: any invalid state other than the refreshable schema verdict.
+ */
+export function eventLedgerV3UnservableReason(control: EventV3ControlState): string | undefined {
+  if (control.state !== "invalid" || eventV3ControlSchemaRefreshableV3(control)) return undefined;
+  return control.reason;
 }
 
 export function codexHookReviewAction(adapter: AdapterId): string | null {

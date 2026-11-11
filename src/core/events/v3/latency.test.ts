@@ -574,6 +574,25 @@ describe("event ledger V3 latency projection", () => {
     ).not.toBe(key);
   });
 
+  test("leaves a command with no turn out of every turn rollup", () => {
+    const turn = terminal("turn.completed", 1, "2026-08-18T14:00:00.000Z", 1000);
+    fixtureObject(turn.payload).tool_call_count = observed(0);
+    const joined = terminal("command.completed", 2, "2026-08-18T14:00:00.100Z", 200);
+    // A command recorded against its session carries no turn_id.
+    const unjoined = terminal("command.completed", 3, "2026-08-18T14:00:00.300Z", 500);
+    alignTurn(turn, [joined, unjoined]);
+    delete fixtureObject(unjoined.scope).turn_id;
+
+    const withoutTurn = projectLatencyV3(readOf(turn, joined, unjoined));
+    const turnOnly = projectLatencyV3(readOf(turn, joined));
+    expect(withoutTurn.diagnostics).toEqual([]);
+    expect(withoutTurn).toEqual(turnOnly);
+    expect(withoutTurn.turns[0]).toMatchObject({
+      command_ms: { state: "observed", value_ms: 200 },
+      span_counts: { tool: 0, command: 1, wait: 0 },
+    });
+  });
+
   test("refuses to project an incomplete ledger read", () => {
     const read = readOf();
     read.complete = false;
@@ -620,8 +639,6 @@ function readOf(...events: EventV3Fixture[]): ReadLedgerV3Result {
     diagnostics: [],
     complete: true,
     genesis_id: "gex_fixture",
-    active_schema_digest: "sha256:fixture",
-    advances: [],
     bytes: 0,
   };
 }

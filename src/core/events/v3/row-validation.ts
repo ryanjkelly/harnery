@@ -1,5 +1,6 @@
 import type { EventV3 } from "./contract.ts";
 import type { EventV3AppendValidationCheckpointV3 } from "./reader.ts";
+import { acceptedSchemaDigestsV3 } from "./schema-lineage.ts";
 
 /**
  * The per-row checks the canonical ledger reader applies to every new row,
@@ -16,15 +17,14 @@ import type { EventV3AppendValidationCheckpointV3 } from "./reader.ts";
  *   diagnostic, because that is what it has always done; the reader's
  *   diagnostics already make such a read incomplete.
  *
- * Genesis, activation and schema-advance handling stay in the reader. The
- * reader keeps `active_schema_digest` current before it calls `checkRowV3`.
+ * Genesis and activation handling stay in the reader. A row may carry any
+ * digest in the accepted set; nothing requires it to equal the genesis digest.
  */
 
 /** Diagnostic codes the shared row check can return. */
 export type RowDiagnosticCodeV3 =
   | "conflicting_event_id"
   | "unsupported_schema_digest"
-  | "unexpected_schema_digest"
   | "causal_parent_missing"
   | "wall_clock_regression_unmarked"
   | "monotonic_clock_regression"
@@ -45,19 +45,18 @@ export interface RowClockV3 {
 
 /** Validation state the shared row check reads and `applyRowV3` advances. */
 export interface RowValidationStateV3 {
-  /** Schema digests a row may carry. */
+  /** Schema digests a row may carry: the runtime's additive group. */
   accepted: Set<string>;
   /**
    * Event IDs already in the ledger, mapped to their canonical frame. A state
-   * rebuilt from a checkpoint knows only the IDs and maps each to "".
+   * rebuilt from a checkpoint knows only the IDs and maps each to "" until
+   * `learnCommittedFramesV3` fills in the bytes a decision needs.
    */
   seen_ids: Map<string, string>;
   /** Last sequence per `producer_id\0boot_id`. */
   producer_sequences: Map<string, number>;
   attestations: Set<string>;
   clocks: Map<string, RowClockV3>;
-  /** The digest every row must carry, once a genesis has set it. */
-  active_schema_digest?: string;
 }
 
 /** Whether the row's event ID is already in the ledger, and with which bytes. */
@@ -92,12 +91,16 @@ export function createRowValidationStateV3(
   };
 }
 
-/** Rebuild the row validation state recorded in an append validation checkpoint. */
+/**
+ * Rebuild the row validation state recorded in an append validation
+ * checkpoint. The accepted set is this runtime's own additive group, never a
+ * set another runtime recorded.
+ */
 export function rowValidationStateFromCheckpointV3(
   checkpoint: EventV3AppendValidationCheckpointV3,
 ): RowValidationStateV3 {
   return {
-    accepted: new Set(checkpoint.accepted_schema_digests),
+    accepted: new Set(acceptedSchemaDigestsV3()),
     seen_ids: new Map(checkpoint.seen_event_ids.map((eventId) => [eventId, ""])),
     producer_sequences: new Map(checkpoint.producer_sequences),
     attestations: new Set(checkpoint.attestation_ids),
@@ -110,9 +113,6 @@ export function rowValidationStateFromCheckpointV3(
         },
       ]),
     ),
-    ...(checkpoint.active_schema_digest
-      ? { active_schema_digest: checkpoint.active_schema_digest }
-      : {}),
   };
 }
 
@@ -139,12 +139,6 @@ export function checkRowV3(state: RowValidationStateV3, row: RowV3): RowDiagnost
   const event = shape(row);
   const codes: RowDiagnosticCodeV3[] = [];
   if (!state.accepted.has(event.contract.schema_digest)) codes.push("unsupported_schema_digest");
-  if (
-    state.active_schema_digest !== undefined &&
-    event.contract.schema_digest !== state.active_schema_digest
-  ) {
-    codes.push("unexpected_schema_digest");
-  }
   // The reader records a row's own ID before it checks the row's parents, so a
   // row naming itself as a parent has always passed this check.
   if (
@@ -185,6 +179,85 @@ export function applyRowV3(state: RowValidationStateV3, row: RowV3): void {
   }
 
   state.producer_sequences.set(producerKey(event), event.producer.sequence);
+}
+
+/** A row the door declined, with every code the reader would raise for it now. */
+export interface DeclinedRowV3<Row> {
+  row: Row;
+  codes: RowDiagnosticCodeV3[];
+}
+
+/**
+ * The door check, shared by the writer's drain and archive preparation. Admit
+ * rows in the given order, one pass after another, until a pass admits
+ * nothing. A row is admitted only when `checkRowV3` raises no code against the
+ * state plus every row admitted before it; `applyRowV3` then advances the
+ * state. A declined row changes nothing, so rows in a causal cycle never
+ * become admissible while the rows beside them are admitted.
+ *
+ * A row whose event ID is already committed passes only when its bytes equal
+ * the committed row's, which the reader skips as a replay; different bytes
+ * raise `conflicting_event_id` and wait. A state rebuilt from a checkpoint
+ * knows committed IDs without their bytes, so the caller first gives it those
+ * bytes with `learnCommittedFramesV3`; a row whose committed bytes the state
+ * still does not know is never proven identical and waits.
+ */
+export function admitRowsV3<Row>(
+  state: RowValidationStateV3,
+  rows: readonly Row[],
+  rowOf: (row: Row) => RowV3,
+): { admitted: Row[]; waiting: DeclinedRowV3<Row>[] } {
+  const admitted: Row[] = [];
+  let pending = [...rows];
+  for (;;) {
+    const remaining: Row[] = [];
+    for (const queued of pending) {
+      const row = rowOf(queued);
+      if (checkRowV3(state, row).length === 0) {
+        applyRowV3(state, row);
+        admitted.push(queued);
+      } else {
+        remaining.push(queued);
+      }
+    }
+    if (remaining.length === pending.length || remaining.length === 0) {
+      pending = remaining;
+      break;
+    }
+    pending = remaining;
+  }
+  return {
+    admitted,
+    waiting: pending.map((queued) => ({ row: queued, codes: checkRowV3(state, rowOf(queued)) })),
+  };
+}
+
+/**
+ * Give a state rebuilt from a checkpoint the committed bytes of every queued
+ * row whose event ID it knows only by ID, so that `checkRowV3` can tell an
+ * identical replay (a crash between append and receipt cleanup, or a producer
+ * resubmitting an event that already committed) from a different row under a
+ * committed ID. `committedFrames` is called at most once, and only when such a
+ * row exists, so the common drain pays nothing. It returns the committed
+ * canonical frame of each ID it can find, or undefined when it cannot read
+ * the ledger completely. Returns the rows whose committed bytes are still
+ * unknown; the caller must not judge them.
+ */
+export function learnCommittedFramesV3<Row>(
+  state: RowValidationStateV3,
+  rows: readonly Row[],
+  rowOf: (row: Row) => RowV3,
+  committedFrames: (eventIds: string[]) => ReadonlyMap<string, string> | undefined,
+): Row[] {
+  const unknown = rows.filter((queued) => state.seen_ids.get(shape(rowOf(queued)).event_id) === "");
+  if (unknown.length === 0) return [];
+  const eventIds = [...new Set(unknown.map((queued) => shape(rowOf(queued)).event_id))];
+  const frames = committedFrames(eventIds);
+  for (const eventId of eventIds) {
+    const raw = frames?.get(eventId);
+    if (raw) state.seen_ids.set(eventId, raw);
+  }
+  return unknown.filter((queued) => state.seen_ids.get(shape(rowOf(queued)).event_id) === "");
 }
 
 /**

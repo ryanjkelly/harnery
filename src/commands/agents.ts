@@ -29,6 +29,7 @@ import {
   readSessionFinalizationScope,
   readSessionWriteClaims,
 } from "../core/agents/finalization.ts";
+import { collectEventQueueHealthV3, type EventQueueHealthV3 } from "../core/agents/health.ts";
 import {
   emitEventV3,
   monorepoRoot,
@@ -3028,6 +3029,9 @@ function runHealEvents(opts: {
 interface HealthReport {
   since: string;
   generated_at: string;
+  // Valid rows the ledger writer will not admit yet, and queued files it set
+  // aside, by generation and reason.
+  event_queue: EventQueueHealthV3;
   event_telemetry: {
     source: "v3";
     authoritative: boolean;
@@ -4043,6 +4047,18 @@ function runHealth(opts: { since: string; json?: boolean }): void {
   const stopRemediation = readStopRemediationExhaustions(root, cutoffMs);
   const stream = readStreamStats(root);
   const eventLedger = collectEventLedgerHealthV3(root);
+  let eventQueue: EventQueueHealthV3 = {
+    waiting_total: 0,
+    set_aside_total: 0,
+    waiting: [],
+    set_aside: [],
+  };
+  let eventQueueError: string | undefined;
+  try {
+    eventQueue = collectEventQueueHealthV3(root, nowMs);
+  } catch (error) {
+    eventQueueError = errorText(error);
+  }
 
   // Canonical health.* events carry the full instance_id, already resolved to
   // `agent-<name>` (or `agent-<hex8>` fallback) by canonicalToHealEvent via
@@ -4193,9 +4209,26 @@ function runHealth(opts: { since: string; json?: boolean }): void {
     }
   }
 
+  for (const group of eventQueue.waiting) {
+    const sequence =
+      group.first_waiting_sequence !== undefined
+        ? `, first sequence ${group.first_waiting_sequence}`
+        : "";
+    findings.push(
+      `${group.count} event(s) of generation ${group.generation_id} wait in the ledger queue (${group.reason}${sequence}, oldest ${formatAge(Math.floor(group.oldest_age_ms / 1000))}); the session can start anew or wait for the next epoch rotation`,
+    );
+  }
+  for (const group of eventQueue.set_aside) {
+    findings.push(
+      `${group.count} queued file(s)${group.generation_id ? ` of generation ${group.generation_id}` : ""} set aside as ${group.reason} (oldest ${formatAge(Math.floor(group.oldest_age_ms / 1000))}); they are kept beside the queue and never appended`,
+    );
+  }
+  if (eventQueueError) findings.push(`event-ledger queue unreadable: ${eventQueueError}`);
+
   const report: HealthReport = {
     since: opts.since,
     generated_at: new Date().toISOString(),
+    event_queue: eventQueue,
     event_telemetry: {
       source: diagnosticEvents.source,
       authoritative: diagnosticEvents.authoritative,
@@ -4319,6 +4352,14 @@ function renderHealthBox(report: HealthReport): void {
     ["hook errors", hookErrStr],
     ["stream", streamStr],
     ["event ledger", ledgerStr],
+    ...(report.event_queue.waiting_total + report.event_queue.set_aside_total > 0
+      ? ([
+          [
+            "ledger queue",
+            `${report.event_queue.waiting_total} waiting across ${new Set(report.event_queue.waiting.map((group) => group.generation_id)).size} generation(s) · ${report.event_queue.set_aside_total} set aside`,
+          ],
+        ] as Array<[string, string]>)
+      : []),
     [
       "cache issues",
       report.heartbeat_cache_issues.count === 0

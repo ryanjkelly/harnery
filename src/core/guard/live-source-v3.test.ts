@@ -84,7 +84,6 @@ describe("V3 live run-quality source", () => {
       diagnostics: [{ code: "partial_final_frame", byte_offset: 4, segment_ordinal: 1 }],
       complete: false,
       bytes: 4,
-      advances: [],
     };
     try {
       projectRunQualityLiveSourceV3(
@@ -261,7 +260,6 @@ function completeRead(events: readonly { event_id: string }[]): ReadLedgerV3Resu
     diagnostics: [],
     complete: true,
     bytes: events.length * 100,
-    advances: [],
   };
 }
 

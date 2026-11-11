@@ -15,6 +15,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
+import { priorBreakingDigestV3 } from "./__fixtures__/ledger-replay.ts";
 import { initializeEventLedgerV3, refreshIncompatibleEventLedgerV3 } from "./bootstrap.ts";
 import { canonicalJsonV3, sha256V3 } from "./canonical.ts";
 import { liveGenesisIdV3 } from "./control.ts";
@@ -28,7 +29,9 @@ const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) removeDir(root);
 });
-const oldDigest = `sha256:${"a".repeat(64)}`;
+// A digest from before a breaking change: the one kind of old epoch a runtime
+// replaces on its own. A digest outside the lineage would block instead.
+const oldDigest = priorBreakingDigestV3();
 const epoch = "epoch-20261104164357439";
 
 test("schema cutover carries a deferred old-schema batch into its original searchable epoch", () => {
@@ -90,9 +93,12 @@ test("a cutover cannot borrow a nested publisher's lease before its ready rename
         onStep: (step) => {
           if (step !== "ready_temp_flushed" || interrupted) return;
           interrupted = true;
-          expect(() => initializeEventLedgerV3({ ...initialize, forceNewEpoch: true })).toThrow(
-            "event-v3-publication",
-          );
+          expect(() =>
+            initializeEventLedgerV3({
+              ...initialize,
+              replacement: { kind: "approved", command: "initialize_force_new_epoch" },
+            }),
+          ).toThrow("event-v3-publication");
           expect(liveGenesisIdV3(root)).toBe(genesis);
         },
       },
@@ -100,7 +106,10 @@ test("a cutover cannot borrow a nested publisher's lease before its ready rename
   ).toBe("recorded");
   expect(interrupted).toBeTrue();
   const ids = readLedgerV3(root).events.map(({ event }) => event.event_id);
-  const cutover = initializeEventLedgerV3({ ...initialize, forceNewEpoch: true });
+  const cutover = initializeEventLedgerV3({
+    ...initialize,
+    replacement: { kind: "approved", command: "initialize_force_new_epoch" },
+  });
   const history = scanEventHistoryV3(root).rows;
   for (const id of ids) {
     expect(history.filter(({ event_id }) => event_id === id)).toEqual([

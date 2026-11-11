@@ -314,7 +314,10 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
             : detail.includes("heartbeat_missing:")
               ? `; run \`${resolveBinName(root)} agents lifecycle active\` to open a fresh generation for this continuing session`
               : "";
-          process.stderr.write(`agent-coord set-task: V3 authority refused (${detail})${hint}\n`);
+          const waiting = await waitingEventsNotice(root, before?.v3_generation_id);
+          process.stderr.write(
+            `agent-coord set-task: V3 authority refused (${detail})${hint}${waiting ? `; ${waiting}` : ""}\n`,
+          );
           return 1;
         }
         if (!hb) {
@@ -325,6 +328,8 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
           );
           return 1;
         }
+        const waiting = await waitingEventsNotice(root, hb.v3_generation_id);
+        if (waiting) process.stderr.write(`agent-coord set-task: ${waiting}\n`);
         process.stdout.write(
           `${JSON.stringify({ instance_id: owner, task: hb.task ?? null, cleared: !task })}\n`,
         );
@@ -976,19 +981,20 @@ async function handleGitHook(fallbackRoot: string, rest: string[]): Promise<numb
       })?.instance_id;
       if (!owner) return 0;
       const { findGroupClaims } = await import("./state/heartbeat-writer.ts");
-      const { recordLiveClaimChangeV3 } = await import("./live-authority-v3.ts");
+      const { releaseClaimOnBehalfV3 } = await import("./claim-release-v3.ts");
       for (const path of paths) {
         try {
           for (const hit of findGroupClaims(root, owner, path)) {
-            recordLiveClaimChangeV3({
+            // Released only when the canonical view shows the member holding
+            // it, citing its acquisition; skipped while the member's
+            // generation has rows waiting at the ledger door.
+            releaseClaimOnBehalfV3({
               coordRoot: root,
               owner,
               subject: hit.instance_id,
               nativeSessionId: hit.session_id ?? owner,
               adapter: sharedAdapterFromPlatform(hit.platform, { context: "agent-coord" }),
-              operation: "released",
               path,
-              access: "write",
             });
           }
         } catch {
@@ -1106,3 +1112,20 @@ main()
     await closeProcessLoggers();
     process.exit(0);
   });
+
+/**
+ * Name this session's events that wait in the ledger queue, and the two ways
+ * out. A failure to inspect the queue never changes the command's result.
+ */
+async function waitingEventsNotice(
+  root: string,
+  generationId: string | undefined,
+): Promise<string | undefined> {
+  if (!generationId) return undefined;
+  try {
+    const { waitingEventsNoticeV3 } = await import("./health.ts");
+    return waitingEventsNoticeV3(root, generationId, resolveBinName(root));
+  } catch {
+    return undefined;
+  }
+}

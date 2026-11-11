@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { initializeEventLedgerV3 } from "../events/v3/bootstrap.ts";
 import { readEventV3ControlState } from "../events/v3/control.ts";
+import { EVENT_V3_SCHEMA_DIGEST, EVENT_V3_SCHEMA_LINEAGE } from "../events/v3/generated.ts";
 import { SUPERVISOR_DIAGNOSTIC_LIMITS, type SupervisorCapability } from "./contract.ts";
 import {
   type LedgerControlStateObservationV1,
@@ -147,7 +148,11 @@ describe("event ledger control-state finding", () => {
     expect(observeLedgerControlState(root, new Date()).observation.state).toBe("active");
 
     // A separate process pins a prior loaded schema while reading the same
-    // valid installation. It cannot alter this process's module cache.
+    // valid installation: the runtime digest before the installed one, with
+    // the lineage that runtime shipped, which ends at its own digest. It
+    // cannot alter this process's module cache.
+    const group = EVENT_V3_SCHEMA_LINEAGE.groups.at(-1)!;
+    const priorDigest = group.at(-2)!;
     const staleObserver = Bun.spawnSync(
       [
         process.execPath,
@@ -159,10 +164,12 @@ describe("event ledger control-state finding", () => {
             name: "prior-loaded-schema",
             setup(build) {
               build.onLoad({ filter: /generated[.]ts$/ }, ({ path }) => ({
-                contents: readFileSync(path, "utf8").replace(
-                  /export const EVENT_V3_SCHEMA_DIGEST =\s*"sha256:[a-f0-9]+"/,
-                  'export const EVENT_V3_SCHEMA_DIGEST = "sha256:${"a".repeat(64)}"',
-                ),
+                contents: readFileSync(path, "utf8")
+                  .replace(
+                    /export const EVENT_V3_SCHEMA_DIGEST =\s*"sha256:[a-f0-9]+"/,
+                    'export const EVENT_V3_SCHEMA_DIGEST = "${priorDigest}"',
+                  )
+                  .replace(/\s*"${EVENT_V3_SCHEMA_DIGEST}",(?=\s*\],\s*\],\s*\} as const)/, ""),
                 loader: "ts",
               }));
             },
@@ -176,8 +183,8 @@ describe("event ledger control-state finding", () => {
     expect(staleObserver.exitCode).toBe(0);
     const stale = JSON.parse(staleObserver.stdout.toString());
     expect(stale).toMatchObject({
-      observation: { state: "invalid", reason: "genesis_schema_digest_incompatible" },
-      capability: { state: "unsupported", reason_code: "schema-digest-incompatible" },
+      observation: { state: "invalid", reason: "epoch_schema_unknown" },
+      capability: { state: "unsupported", reason_code: "schema-digest-unknown" },
     });
     expect(readEventV3ControlState(root).state).toBe("active");
     expect([readFileSync(activePath, "utf8"), readFileSync(genesisPath, "utf8")]).toEqual(before);

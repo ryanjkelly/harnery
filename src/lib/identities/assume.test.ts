@@ -9,6 +9,10 @@ import {
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import {
+  admitWaitingSubjectRowsV3,
+  queueWaitingSubjectRowsV3,
+} from "../../../tests/helpers/event-v3-waiting.ts";
 import { failingLockFileSeam } from "../../../tests/helpers/lock-file-seam.ts";
 import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { ensureLiveCoordinationHeartbeat } from "../../core/agents/state/live-coordination-writer.ts";
@@ -108,6 +112,36 @@ describe("assumeIdentity", () => {
 
     const events = readLedgerV3(root).events.map(({ event }) => event);
     expect(events.some((event) => event.event_type === "lifecycle.sweep_observed")).toBe(true);
+  });
+
+  test("refuses the reclaim while the holder's generation has waiting rows, then reclaims", () => {
+    seedHeartbeat(root, "session-old", "Wendell");
+    writeFileSync(path.join(root, ".harnery", "pid-map", "999999999"), "session-old\tcodex");
+    const rows = queueWaitingSubjectRowsV3(root, "codex", "session-old");
+    const sweeps = () =>
+      readLedgerV3(root).events.filter(
+        ({ event }) => event.event_type === "lifecycle.sweep_observed",
+      ).length;
+
+    let caught: unknown;
+    try {
+      assumeIdentity(root, "session-new", "Wendell");
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(IdentityAssumeError);
+    expect((caught as IdentityAssumeError).code).toBe("identity_rows_waiting");
+    expect((caught as IdentityAssumeError).message).toContain("generation_rows_waiting");
+    expect(existsSync(path.join(root, ".harnery", "active", "session-old.json"))).toBe(true);
+    expect(existsSync(path.join(root, ".harnery", "pid-map", "999999999"))).toBe(true);
+    expect(sweeps()).toBe(0);
+    expect(resolveName(root, "session-new")?.name).toBe("Anna");
+
+    admitWaitingSubjectRowsV3(root, rows);
+    const result = assumeIdentity(root, "session-new", "Wendell");
+    expect(result.reclaimed_instance_id).toBe("session-old");
+    expect(sweeps()).toBe(1);
+    expect(readLedgerV3(root)).toMatchObject({ complete: true, diagnostics: [] });
   });
 
   test("reclaims a fresh namesake with no pid-map rows at all", () => {

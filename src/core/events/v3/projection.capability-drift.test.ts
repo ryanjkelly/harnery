@@ -102,7 +102,6 @@ describe("capability drift after terminal", () => {
       events,
       diagnostics: [],
       complete: true,
-      advances: [],
       bytes: 300,
     };
     const projection = reduceSafetyProjectionV3(read);

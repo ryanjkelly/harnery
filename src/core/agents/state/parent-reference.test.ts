@@ -63,7 +63,6 @@ function fixture() {
     events: [],
     complete: true,
     diagnostics: [],
-    advances: [],
     bytes: 0,
   });
   const child = generation(CHILD, "gen_child");

@@ -11,6 +11,10 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { initializeV3Fixture, seedV3Session } from "../../../../tests/helpers/event-v3-runtime.ts";
+import {
+  admitWaitingSubjectRowsV3,
+  queueWaitingSubjectRowsV3,
+} from "../../../../tests/helpers/event-v3-waiting.ts";
 import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
 import { initializeEventLedgerV3 } from "../../events/v3/bootstrap.ts";
 import { sha256V3 } from "../../events/v3/canonical.ts";
@@ -134,7 +138,7 @@ describe("staleSweep V3 audit fallback", () => {
       hostBuild: "fixture",
       configDigest: sha256V3("fixture-config"),
       approvalRecordId: "test-archived-cache-sweep",
-      forceNewEpoch: true,
+      replacement: { kind: "approved", command: "initialize_force_new_epoch" },
     });
     if (!rotated.archived_epoch) throw new Error("fixture epoch was not archived");
     const archivedActive = join(rotated.archived_epoch, "active.ndjson");
@@ -181,6 +185,43 @@ describe("staleSweep V3 audit fallback", () => {
     expect(readSweepDiagnostics(root)).toEqual([]);
   });
 
+  test("skips a generation with waiting rows, keeps its heartbeat, and records on the next pass", () => {
+    const root = fixtureRoot();
+    seedV3Session(root, "held", { adapter: "claude-code", sessionId: "held-session" });
+    const heartbeat = writeStaleHeartbeat(root, "held", "held-session", "claude-code");
+    const rows = queueWaitingSubjectRowsV3(root, "claude-code", "held-session");
+
+    expect(staleSweep(root).heartbeatsRemoved).toEqual([]);
+    expect(existsSync(heartbeat)).toBeTrue();
+    expect(sweepObservations(root)).toEqual([]);
+    expect(readSweepDiagnostics(root)).toEqual([]);
+    expect(readLedgerV3(root)).toMatchObject({ complete: true, diagnostics: [] });
+
+    admitWaitingSubjectRowsV3(root, rows);
+    expect(staleSweep(root).heartbeatsRemoved).toEqual(["held.json"]);
+    expect(existsSync(heartbeat)).toBeFalse();
+    expect(sweepObservations(root)).toHaveLength(1);
+    expect(readLedgerV3(root)).toMatchObject({ complete: true, diagnostics: [] });
+  });
+
+  test("keeps the heartbeat on the failure path while the generation has waiting rows", () => {
+    const root = fixtureRoot();
+    seedV3Session(root, "held-ended", { adapter: "codex", sessionId: "held-ended-session" });
+    const heartbeat = writeStaleHeartbeat(root, "held-ended", "held-ended-session", "codex");
+    const rows = queueWaitingSubjectRowsV3(root, "codex", "held-ended-session");
+    // Ending the generation makes the observation throw (not joinable), which
+    // would otherwise route the sweep to its diagnostic and delete the file.
+    endSession(root, "held-ended", "held-ended-session");
+
+    expect(staleSweep(root).heartbeatsRemoved).toEqual([]);
+    expect(existsSync(heartbeat)).toBeTrue();
+    expect(readSweepDiagnostics(root)).toEqual([]);
+
+    admitWaitingSubjectRowsV3(root, rows);
+    expect(staleSweep(root).heartbeatsRemoved).toEqual(["held-ended.json"]);
+    expect(readSweepDiagnostics(root)).toHaveLength(1);
+  });
+
   test("keeps a fresh malformed cache row without attempting an audit", () => {
     const root = fixtureRoot();
     const heartbeat = join(root, ".harnery", "active", "fresh-malformed.json");
@@ -203,6 +244,26 @@ describe("staleSweep V3 audit fallback", () => {
     expect(existsSync(heartbeat)).toBeTrue();
   });
 });
+
+function sweepObservations(root: string) {
+  return readLedgerV3(root)
+    .events.map(({ event }) => event)
+    .filter((event) => event.event_type === "lifecycle.sweep_observed");
+}
+
+function endSession(root: string, instanceId: string, sessionId: string): void {
+  const route = resolveLiveEventLedgerRouteV3(root);
+  if (route.state !== "v3") throw new Error(`fixture_v3_route:${route.reason}`);
+  const ended = recordLiveHookSignalV3({
+    coordRoot: root,
+    route,
+    eventName: "session-end",
+    adapter: "codex",
+    instanceId,
+    payload: { session_id: sessionId, raw: {} },
+  });
+  if (ended.state !== "recorded") throw new Error(`fixture_v3_end:${ended.state}`);
+}
 
 function fixtureRoot(): string {
   const root = mkdtempSync(join(tmpdir(), "harnery-stale-sweep-v3-"));
