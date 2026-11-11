@@ -27,6 +27,16 @@ import {
   eventV3RecoveryRecordsRoot,
   listEventV3RecoveryReceipts,
 } from "./recovery-record.ts";
+import {
+  applyRowV3,
+  checkRowV3,
+  createRowValidationStateV3,
+  type RowV3,
+  type RowValidationStateV3,
+  recordRowIdentityV3,
+  rowIdentityV3,
+  rowValidationStateFromCheckpointV3,
+} from "./row-validation.ts";
 import { validateEventV3 } from "./validate.ts";
 
 export type LedgerDiagnosticCodeV3 =
@@ -252,20 +262,14 @@ export interface EventV3AppendValidationCheckpointV3 {
   validated_active_bytes: number;
 }
 
-interface LedgerValidationStateV3 {
+interface LedgerValidationStateV3 extends RowValidationStateV3 {
   diagnostics: LedgerDiagnosticV3[];
   events: PositionedEventV3[];
   advances: SchemaAdvanceV3[];
-  accepted: Set<string>;
   reader_build: string;
-  seen_ids: Map<string, string>;
-  producer_sequences: Map<string, number>;
-  attestations: Set<string>;
-  clocks: Map<string, { observed_at_ms: number; monotonic_ns?: bigint }>;
   event_count: number;
   first_position?: LedgerFrameV3["position"];
   genesis_id?: string;
-  active_schema_digest?: string;
   pending?: PendingAdvance;
 }
 
@@ -582,15 +586,11 @@ function validateLedgerFramesV3(
   witnessed = false,
 ): { result: ReadLedgerV3Result; state: LedgerValidationStateV3 } {
   const state: LedgerValidationStateV3 = {
+    ...createRowValidationStateV3(options.accepted_schema_digests ?? [EVENT_V3_SCHEMA_DIGEST]),
     diagnostics: [],
     events: [],
     advances: [],
-    accepted: new Set(options.accepted_schema_digests ?? [EVENT_V3_SCHEMA_DIGEST]),
     reader_build: options.reader_build ?? "build_harnery-v3",
-    seen_ids: new Map(),
-    producer_sequences: new Map(),
-    attestations: new Set(),
-    clocks: new Map(),
     event_count: 0,
   };
   validateLedgerFramesIntoStateV3(frames, state, witnessed);
@@ -607,17 +607,7 @@ function validateLedgerFramesIntoStateV3(
   witnessed = false,
 ): void {
   state.first_position ??= frames[0]?.position;
-  const {
-    diagnostics,
-    events,
-    advances,
-    accepted,
-    reader_build: readerBuild,
-    seen_ids: seenIds,
-    producer_sequences: producerSequences,
-    attestations,
-    clocks,
-  } = state;
+  const { diagnostics, events, advances, accepted, reader_build: readerBuild } = state;
 
   for (const frame of frames) {
     if (state.pending) {
@@ -660,17 +650,20 @@ function validateLedgerFramesIntoStateV3(
       }
     }
     const shape = event as unknown as EventShape;
-    const priorFrame = seenIds.get(shape.event_id);
-    if (priorFrame !== undefined) {
-      if (priorFrame !== frame.raw) {
-        diagnostics.push(diagnostic("conflicting_event_id", frame, shape.event_id));
+    const row: RowV3 = { raw: frame.raw, event };
+    if (rowIdentityV3(state, row) !== "new") {
+      // A replayed row is skipped and a conflicting one reported; neither
+      // changes the validation state.
+      for (const code of checkRowV3(state, row)) {
+        diagnostics.push(diagnostic(code, frame, shape.event_id));
       }
+      applyRowV3(state, row);
       continue;
     }
-    seenIds.set(shape.event_id, frame.raw);
 
     if (shape.event_type === "ledger.genesis") {
       if (state.genesis_id !== undefined) {
+        recordRowIdentityV3(state, row);
         diagnostics.push(diagnostic("multiple_genesis", frame, shape.event_id));
         continue;
       }
@@ -686,25 +679,10 @@ function validateLedgerFramesIntoStateV3(
       diagnostics.push(diagnostic("missing_genesis", frame, shape.event_id));
     }
 
-    if (!accepted.has(shape.contract.schema_digest)) {
-      diagnostics.push(diagnostic("unsupported_schema_digest", frame, shape.event_id));
+    for (const code of checkRowV3(state, row)) {
+      diagnostics.push(diagnostic(code, frame, shape.event_id));
     }
-    if (
-      state.active_schema_digest !== undefined &&
-      shape.contract.schema_digest !== state.active_schema_digest
-    ) {
-      diagnostics.push(diagnostic("unexpected_schema_digest", frame, shape.event_id));
-    }
-
-    for (const parentId of shape.links.caused_by) {
-      if (!seenIds.has(parentId)) {
-        diagnostics.push(diagnostic("causal_parent_missing", frame, shape.event_id));
-        break;
-      }
-    }
-    validateClock(shape, frame, clocks, diagnostics);
-    validateAttestation(shape, frame, attestations, diagnostics);
-    validateProducerSequence(shape, frame, producerSequences, diagnostics);
+    applyRowV3(state, row);
 
     if (shape.event_type === "ledger.schema_advanced") {
       const payload = shape.payload;
@@ -846,71 +824,6 @@ function sliceLedgerReadSinceV3(
       : cursor,
     reset_required: false,
   };
-}
-
-function validateAttestation(
-  event: EventShape,
-  frame: LedgerFrameV3,
-  attestations: Set<string>,
-  diagnostics: LedgerDiagnosticV3[],
-): void {
-  if (event.event_type === "session.started") {
-    if (event.attestation_id) attestations.add(event.attestation_id);
-    return;
-  }
-  if (event.event_type === "session.attestation_changed") {
-    const prior = string(event.payload.prior_attestation_id);
-    if (!attestations.has(prior)) {
-      diagnostics.push(diagnostic("unresolved_attestation", frame, event.event_id));
-    }
-    if (event.attestation_id) attestations.add(event.attestation_id);
-    return;
-  }
-  if (event.attestation_id && !attestations.has(event.attestation_id)) {
-    diagnostics.push(diagnostic("unresolved_attestation", frame, event.event_id));
-  }
-}
-
-function validateClock(
-  event: EventShape,
-  frame: LedgerFrameV3,
-  clocks: Map<string, { observed_at_ms: number; monotonic_ns?: bigint }>,
-  diagnostics: LedgerDiagnosticV3[],
-): void {
-  const prior = clocks.get(event.time.clock_id);
-  const observedAtMs = Date.parse(event.time.observed_at);
-  if (prior && observedAtMs < prior.observed_at_ms && event.time.skew !== "regressed") {
-    diagnostics.push(diagnostic("wall_clock_regression_unmarked", frame, event.event_id));
-  }
-  const monotonicNs = event.time.monotonic_ns ? BigInt(event.time.monotonic_ns) : undefined;
-  if (
-    prior?.monotonic_ns !== undefined &&
-    monotonicNs !== undefined &&
-    monotonicNs < prior.monotonic_ns
-  ) {
-    diagnostics.push(diagnostic("monotonic_clock_regression", frame, event.event_id));
-  }
-  clocks.set(event.time.clock_id, {
-    observed_at_ms: observedAtMs,
-    ...(monotonicNs !== undefined ? { monotonic_ns: monotonicNs } : {}),
-  });
-}
-
-function validateProducerSequence(
-  event: EventShape,
-  frame: LedgerFrameV3,
-  sequences: Map<string, number>,
-  diagnostics: LedgerDiagnosticV3[],
-): void {
-  const key = `${event.producer.producer_id}\0${event.producer.boot_id}`;
-  const prior = sequences.get(key);
-  if (
-    (prior === undefined && event.producer.sequence !== 1) ||
-    (prior !== undefined && event.producer.sequence !== prior + 1)
-  ) {
-    diagnostics.push(diagnostic("producer_sequence_gap", frame, event.event_id));
-  }
-  sequences.set(key, event.producer.sequence);
 }
 
 function withCursorDiagnostic(
@@ -1083,28 +996,13 @@ function validationStateFromCheckpointV3(
   checkpoint: EventV3AppendValidationCheckpointV3,
 ): LedgerValidationStateV3 {
   return {
+    ...rowValidationStateFromCheckpointV3(checkpoint),
     diagnostics: [],
     events: [],
     advances: [],
-    accepted: new Set(checkpoint.accepted_schema_digests),
     reader_build: checkpoint.reader_build,
-    seen_ids: new Map(checkpoint.seen_event_ids.map((eventId) => [eventId, ""])),
-    producer_sequences: new Map(checkpoint.producer_sequences),
-    attestations: new Set(checkpoint.attestation_ids),
-    clocks: new Map(
-      checkpoint.clocks.map(([clockId, observedAtMs, monotonicNs]) => [
-        clockId,
-        {
-          observed_at_ms: observedAtMs,
-          ...(monotonicNs !== undefined ? { monotonic_ns: BigInt(monotonicNs) } : {}),
-        },
-      ]),
-    ),
     event_count: checkpoint.event_count,
     ...(checkpoint.genesis_id ? { genesis_id: checkpoint.genesis_id } : {}),
-    ...(checkpoint.active_schema_digest
-      ? { active_schema_digest: checkpoint.active_schema_digest }
-      : {}),
     ...(checkpoint.pending
       ? {
           pending: {
