@@ -120,6 +120,88 @@ describe("event ledger V3 additive schema advances", () => {
       Type.Literal("health.renamed");
     expect(validateAdditiveSchemaAdvanceV3(EventV3Schema, renamed).eligible).toBe(false);
   });
+
+  test("refuses an optional property added beside a new or lowered maxProperties", () => {
+    const prior = strict({ id: Type.String() });
+    const added = Type.Object(
+      { id: Type.String(), note: Type.Optional(Type.String()) },
+      { additionalProperties: false, maxProperties: 1 },
+    );
+    expect(validateAdditiveSchemaAdvanceV3(prior, added)).toEqual({
+      eligible: false,
+      strict: false,
+      issues: ["$:unmodelled_keyword_changed"],
+    });
+
+    const bounded = Type.Object(
+      { id: Type.String() },
+      { additionalProperties: false, maxProperties: 3 },
+    );
+    const lowered = Type.Object(
+      { id: Type.String(), note: Type.Optional(Type.String()) },
+      { additionalProperties: false, maxProperties: 2 },
+    );
+    expect(validateAdditiveSchemaAdvanceV3(bounded, lowered).issues).toEqual([
+      "$:unmodelled_keyword_changed",
+    ]);
+  });
+
+  test("refuses unmodelled keyword changes on arrays, unions and nested objects", () => {
+    const array = (options: Record<string, unknown>) =>
+      strict({ items: Type.Array(Type.String(), options) });
+    expect(validateAdditiveSchemaAdvanceV3(array({}), array({ uniqueItems: true })).issues).toEqual(
+      ["$/properties/items:unmodelled_keyword_changed"],
+    );
+
+    const union = (options: Record<string, unknown>) =>
+      Type.Union([strict({ a: Type.String() }), strict({ b: Type.String() })], options);
+    const widened = Type.Union(
+      [strict({ a: Type.String() }), strict({ b: Type.String() }), strict({ c: Type.String() })],
+      { minProperties: 1 },
+    );
+    expect(validateAdditiveSchemaAdvanceV3(union({}), widened).issues).toEqual([
+      "$:unmodelled_keyword_changed",
+    ]);
+
+    const nested = (options: Record<string, unknown>) =>
+      strict({
+        inner: Type.Object({ id: Type.String() }, { additionalProperties: false, ...options }),
+      });
+    expect(
+      validateAdditiveSchemaAdvanceV3(nested({}), nested({ patternProperties: { "^x": {} } }))
+        .issues,
+    ).toEqual(["$/properties/inner:unmodelled_keyword_changed"]);
+  });
+
+  test("ignores annotation-only changes and keeps equal unmodelled keywords", () => {
+    const prior = Type.Object(
+      { id: Type.String() },
+      { additionalProperties: false, maxProperties: 4, title: "before" },
+    );
+    const next = Type.Object(
+      { id: Type.String(), note: Type.Optional(Type.String({ description: "added" })) },
+      { additionalProperties: false, maxProperties: 4, title: "after", description: "changed" },
+    );
+    expect(validateAdditiveSchemaAdvanceV3(prior, next)).toEqual({
+      eligible: true,
+      strict: true,
+      issues: [],
+    });
+  });
+
+  test("never matches two prior union branches to the same next branch", () => {
+    const narrow = strict({ kind: Type.String() });
+    const wide = strict({ kind: Type.String(), note: Type.Optional(Type.String()) });
+    const other = strict({ other: Type.String() });
+    // Both prior branches fit `wide`, but it can stand in for only one of them.
+    expect(
+      validateAdditiveSchemaAdvanceV3(Type.Union([narrow, wide]), Type.Union([wide, other])),
+    ).toEqual({
+      eligible: false,
+      strict: false,
+      issues: ["$/anyOf/1:branch_removed_or_narrowed"],
+    });
+  });
 });
 
 function eventBranch(schema: TSchema, eventType: string): TObject {
