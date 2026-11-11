@@ -1,6 +1,6 @@
 ---
 title: Operate the V3 event ledger
-description: Initialize, inspect, back up, and advance Harnery's only supported event ledger.
+description: Initialize, inspect, back up, and replace Harnery's only supported event ledger.
 sidebar:
   order: 2
 ---
@@ -27,7 +27,9 @@ harn ledger-v3 initialize \
 The initializer writes an immutable genesis manifest with the exact schema,
 build, configuration, capability, and privacy-key digests. It then activates
 that candidate. Repeating the command is idempotent while the active epoch is
-compatible.
+one this runtime can serve. Without `--force-new-epoch`, neither `harn init`
+nor this command replaces an epoch that holds an unknown schema or fails
+the reader.
 
 Use `harn init --check` in automation. It exits nonzero unless the V3 control
 pair is active and internally consistent.
@@ -38,45 +40,68 @@ pair is active and internally consistent.
 harn ledger-v3 status
 ```
 
-The result identifies the control state, genesis and activation events, schema
-digest, approved producer builds, privacy epoch, and active ledger location.
-Writers accept only a build named by that control packet.
+The result identifies the control state, genesis and activation events,
+approved producer builds, privacy epoch, and active ledger location. Writers
+accept only a build named by that control packet. Its `schema` field lists the
+genesis schema digest, every digest present in the epoch, and this runtime's
+verdict: `serve`, `replace_breaking`, or `unknown`.
 
 The validating reader covers every sealed segment in `catalog.json` plus the
 active tail. Before the first rotation, an absent catalog is normal and the
 reader validates `active.ndjson` directly.
 
-## Advance to a new epoch
+## Schema changes keep the epoch
 
-A contract digest or approved-build change requires a new epoch:
+Rows of every schema in the runtime's additive group share one epoch, so an
+additive schema change continues in the same epoch with no new archive. A
+breaking change starts a new additive group. At a live hook or command
+boundary, Harnery archives and replaces the epoch automatically only when the
+current runtime can prove that the epoch's genesis schema is from before a
+breaking change, or that the active adapter capability profiles changed. The
+bootstrap lease serializes concurrent boundaries. A supported adapter bridge
+then opens one new session generation and restores the session's private
+task, lifecycle, and file-claim projection through canonical coordination
+events. Private task text and lifecycle reasons stay out of the ledger.
+
+A runtime that finds a schema digest it does not know blocks itself with
+`epoch_schema_unknown`, appends nothing, and replaces nothing. That usually
+means a newer Harnery release wrote to the epoch; update the runtime. The
+[`harn ledger-v3` reference](/cli/ledger-v3/#schema-changes-and-epochs) has
+the full rule, what `ledger-v3 status` reports about it, and how releases
+from before this rule behave.
+
+This automatic path does not cover a missing ledger, damaged control packet,
+an unknown schema, or any state whose cause is ambiguous. Those states keep
+the writer gate closed and require one of the explicit commands below.
+
+## Replace the epoch by command
 
 ```bash
 harn ledger-v3 initialize \
   --root <project-root> \
   --approval-record-id <durable-approval-id> \
-  --force-new-epoch
+  --force-new-epoch --yes
 ```
 
-The complete current V3 directory moves intact to
-`.harnery/ledgers/v3-archives/`. Harnery then creates and activates a fresh
-epoch. It never edits archived event bytes in place.
+Without `--yes`, the command only previews what it would archive and create.
+With it, the complete current V3 directory moves intact to
+`.harnery/ledgers/v3-archives/`, and Harnery creates and activates a fresh
+epoch. It never edits archived event bytes in place. This is the only way to
+replace an epoch with an unknown schema; `harn init` never does.
 
-Advance only after the new build passes producer conformance, consumer replay,
-privacy, terminal-race, rotation, and run-quality boundary tests. Sessions that
-started under the archived epoch remain audit evidence and do not become part
-of the new epoch retroactively.
+Sessions that started under the archived epoch remain audit evidence and do
+not become part of the new epoch retroactively.
 
-At a live hook or command boundary, Harnery automatically performs this archive
-and replacement only when the current runtime can prove that the stored schema
-or active adapter capability profiles are incompatible. The bootstrap lease
-serializes concurrent boundaries. A supported adapter bridge then opens one
-new session generation and restores the session's private task, lifecycle, and
-file-claim projection through canonical coordination events. Private task text
-and lifecycle reasons stay out of the ledger.
+## Rows the writer holds back
 
-This automatic path does not cover a missing ledger, damaged control packet,
-or any state whose cause is ambiguous. Those states keep the writer gate closed
-and require the explicit recovery process below.
+The writer appends a queued row only when the validating reader would accept
+it at that position. A valid row it cannot append yet waits in the queue, and
+a queued file that can never be appended is renamed aside and kept. Only the
+session that wrote the row is affected; other sessions keep coordinating.
+`harn agents health` lists waiting rows and set-aside files by generation and
+reason. A session whose rows wait can start a new session or wait for the
+next rotation. See [waiting rows and set-aside
+files](/cli/ledger-v3/#waiting-rows-and-set-aside-files).
 
 ## Backup and recovery
 
@@ -87,9 +112,17 @@ coordination state. Disposable caches in `active/` and process attribution in
 If an active control pair is damaged, producers and authority-bearing commands
 stop rather than inventing state. The command error names the unavailable V3
 control or session generation instead of reporting only a missing process-map
-entry. Restore the complete V3 epoch from a verified backup or initialize a new
-epoch with an explicit approval record. Do not copy individual rows or
-synthesize missing lifecycle events.
+entry.
+
+Before you act, read `harn ledger-v3 status` with the newest Harnery release
+you have. If it reports `active` or `epoch_schema_unknown`, the epoch is intact
+and the runtime that stopped is older than it: update that runtime. If it
+reports `ledger_integrity_failure`, recover with `harn ledger-v3 recover`. For
+other damage, restore the complete V3 epoch from a verified backup or replace
+it by command with an explicit approval record. Do not copy individual rows or
+synthesize missing lifecycle events. The [recovery
+reference](/cli/ledger-v3/#backup-and-recovery) explains why a release from
+before the schema lineage can misreport a newer epoch as an integrity failure.
 
 ## Evidence boundary
 

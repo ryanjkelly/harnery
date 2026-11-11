@@ -107,7 +107,7 @@ harn init
 
 ## Re-run after a Harnery upgrade
 
-Run `harn init` after updating Harnery. Existing commands pick up the new code immediately. Init migrates Harnery-owned entries when a release adds, renames, or retires a hook event or changes the command form. It replaces the V3 epoch only when the schema or adapter capability contract changed. A build-only update keeps the current epoch and its live sessions. [`harn doctor`](/cli/doctor/#keeping-hooks-current-after-an-upgrade) and `harn init --check` report any drift.
+Run `harn init` after updating Harnery. Existing commands pick up the new code immediately. Init migrates Harnery-owned entries when a release adds, renames, or retires a hook event or changes the command form. An additive event-schema change or a build-only update keeps the current V3 epoch and its live sessions. Init replaces the epoch only when its genesis schema is from before a breaking change or the adapter capability contract changed, and it never replaces an epoch that holds a schema the runtime does not know (see [`harn ledger-v3`](/cli/ledger-v3/#schema-changes-and-epochs)). [`harn doctor`](/cli/doctor/#keeping-hooks-current-after-an-upgrade) and `harn init --check` report any drift.
 
 The same is true of the instructions block and skills. You commit those files, while the installed Harnery version owns their templates, so a package upgrade shows up as drift until you re-run `init`.
 

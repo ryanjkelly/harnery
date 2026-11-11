@@ -66,11 +66,14 @@ harn events query --since 30d --outcome failed --count-by day
 
 ## Recover archived ready events
 
-A schema cutover previously could archive durable spool rows before promotion.
-New cutovers exclude publication and promotion while draining the old epoch.
-When its schema differs, the cutover explicitly validates and carries those
-rows into that epoch's historical file. A busy lease or an invalid ready batch
-stops the cutover before the directory moves.
+A cutover previously could archive durable spool rows before promotion. New
+cutovers exclude publication and promotion while draining the old epoch, and
+carry every queued row the writer would admit into that epoch's historical
+file. Rows the writer would not admit yet, rows of a schema outside the
+epoch's additive group, and files that can never be appended stay in the
+archived queue with their bytes intact, so they never stop a rotation. A busy
+lease, or committed history that fails validation while rows are queued, stops
+the cutover before the directory moves.
 
 Use `recover-ready` for an epoch that was already archived with stranded rows.
 The command requires one exact `epoch-<stamp>` archive name. It defaults to a
@@ -86,10 +89,11 @@ harn events recover-ready epoch-20261104164357439 --max-events 6 --yes
 
 Recovery checks canonical frames, filename digests, epoch fences, existing event
 IDs, causal and producer order, attestations, and sealed-segment integrity. The
-original manifest supplies the explicitly accepted schema digest; frames must
-still pass this implementation's structural validator. Unsupported shapes,
-conflicts, or missing dependencies stop the import before any rows are written.
-This validates historical rows and grants no current authority.
+original manifest's schema digest, with every digest additive to it, sets the
+accepted schemas; frames must still pass this implementation's structural
+validator. Unsupported shapes, conflicts, or missing dependencies stop the
+import before any rows are written. This validates historical rows and grants
+no current authority.
 
 Spool receipts stay intact as evidence. Repeating an import skips identical
 event IDs already in history. After an interrupted append, recovery can repair

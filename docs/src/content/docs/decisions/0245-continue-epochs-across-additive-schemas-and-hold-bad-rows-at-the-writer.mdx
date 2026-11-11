@@ -131,7 +131,7 @@ three verdicts for the running runtime:
 
 | The epoch's schemas, as the running runtime sees them | Verdict | Effect |
 |---|---|---|
-| Every digest present, the genesis digest included, is in the runtime's own group | `serve` | Serve the epoch. The runtime stamps its own digest on what it writes. |
+| Every digest present, the genesis digest included, is in the runtime's own group | `serve` | Serve the epoch. The runtime stamps its own digest on every event it builds. |
 | Every digest is in the lineage, and the genesis digest is in an older group | `replace_breaking` | Replace the epoch at the routing boundary, as ADR 0111 does today. |
 | Any digest present is absent from the runtime's lineage | `unknown` | Block this runtime only, with reason `epoch_schema_unknown`. Append nothing and replace nothing. |
 
@@ -258,8 +258,11 @@ admits nothing. When no valid checkpoint exists (for example after a torn-tail
 repair discarded it), the drain obtains one through a canonical read before it
 admits anything; within-batch ordering alone is no longer enough. A row that
 fails changes no state and stays in the queue. A row whose event ID is already
-committed passes as it does today, so replay after a crash between append and
-receipt cleanup still works. A causal cycle among queued rows no longer throws:
+committed is a crash replay only when its bytes equal the committed row's. The
+drain reads that one committed row, only in this case, and admits an identical
+replay as before, so recovery after a crash between append and receipt cleanup
+still works. A different row under a committed ID is not appended: it waits
+with reason `conflicting_event_id`. A causal cycle among queued rows no longer throws:
 the rows in the cycle wait, and the admissible rows beside them are appended.
 
 Files that can never be appended do not stall the queue. A queued file or
@@ -356,6 +359,34 @@ or a capability profile change) and reports every other state it cannot serve
 without archiving it. `ledger-v3 status` reports the genesis digest, the
 digests present and the verdict.
 
+The initializer takes a typed replacement, never a bare force flag. An
+automatic replacement (runtime refresh, size rotation, `init`) names its cause
+and the epoch it decided on. An approved replacement names the operator
+command. `archiveCurrentEpoch`, the only code that renames the live ledger
+directory, reads control again under the publication and append leases and
+judges that state before any byte moves. For an automatic replacement it
+refuses when the epoch has become unservable, including `epoch_schema_unknown`,
+when the genesis changed, or when the state is no longer the one decided on.
+Another runtime can append between a decision and the leases, so the decision
+alone is never enough. Only an approved replacement may archive an epoch the
+runtime cannot serve, and `recover` still requires an integrity failure under
+the leases.
+
+The `replace_breaking` verdict needs the digests present, not only the
+genesis. Control learns them from a witness that names the current storage, or
+from a canonical read, before that verdict stands. An epoch with an older-group
+genesis that also holds a digest the runtime does not know is `unknown` and is
+not replaced.
+
+### Stored events from the same group
+
+After an additive upgrade the epoch and producer state are kept, and crash
+recovery resubmits stored events unchanged: a hook or command producer's
+pending event, and an authority outbox transaction's event row. `writeEventV3`
+therefore accepts an event stamped with any digest of the runtime's own group
+and writes its original bytes. A digest outside the group is refused. Builders
+stamp only the runtime's own digest.
+
 ### Command events with no turn
 
 `command.started`, `command.output_observed` and `command.completed` use the
@@ -371,11 +402,33 @@ commands with no turn, and session totals count them.
 
 ## Result
 
-Implementation is in progress. The measures are: an additive schema change
-lands with the same genesis ID and no new archive; a runtime from before this
-decision, driven against epochs this one has written and created, appends
-nothing and replaces nothing through hooks, commands and rotation; a sequence
-gap in one session's queued rows leaves the ledger without a reader diagnostic
-while another session keeps coordinating; an unreadable queued file no longer
-stalls the queue; and every row in the archived epochs available for replay
-passes the door check in its recorded order.
+An upgrade rehearsal, `scripts/rehearse-event-v3-upgrade.ts`, installs the
+previous published release and a packed build of this one, each into its own
+prefix, and runs both CLIs against throwaway coordination roots. Each step
+records the archive count, the genesis ID and the active file's size and
+digest before and after, so "appended nothing" and "replaced nothing" are
+measured.
+
+In every required case:
+
+- The previous release blocked itself, appended nothing and replaced nothing
+  when it met an epoch this build had written to (through the control witness
+  and, with the witness removed, through a full read) and when it met an epoch
+  this build had created, through hooks, commands and rotation.
+- This build served an epoch the previous release had created, in place, with
+  the same genesis ID and no new archive.
+- A size rotation with both builds running produced exactly one archive.
+- Ten alternating turns of the two builds on one root produced no archive.
+- The adapter capability profile digests of both builds were equal, so the
+  upgrade itself replaces no epoch.
+
+Two cases are recorded, not required. The previous release's explicit `init`
+and `ledger-v3 initialize` do archive and replace an epoch they cannot read;
+this is the documented limit of the manifest version. A late row from a
+previous-release process, staged into the queue after this build rotated, was
+kept out of the new epoch.
+
+The shared row check gave the same result as the previous reader on 28
+retained production epochs (391,393 events), and every row of those epochs
+passed the door check in its recorded order. The rehearsal runs on Linux and
+on Windows in CI.

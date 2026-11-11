@@ -1,6 +1,6 @@
 ---
 title: harn ledger-v3
-description: Initialize, inspect, back up, and advance Harnery's only supported event ledger.
+description: Initialize, inspect, back up, and replace Harnery's only supported event ledger.
 sidebar:
   order: 43
 ---
@@ -22,8 +22,18 @@ harn ledger-v3 initialize \
 
 The initializer writes an immutable genesis manifest with the exact schema,
 build, configuration, capability, and privacy-key digests. It then activates
-that candidate. Repeating the command is idempotent while the active epoch is
-compatible.
+that candidate. New epochs use genesis `manifest_version: 2`; this runtime
+reads versions 1 and 2. Repeating the command is idempotent while the active
+epoch is one this runtime can serve.
+
+`init`, and `ledger-v3 initialize` without `--force-new-epoch`, replace an
+existing epoch for only the two reasons the routing boundary also refreshes:
+a genesis schema from before a breaking change, or a changed adapter
+capability profile. For any other invalid state, including an unknown schema
+or a ledger that fails the reader, `ledger-v3 initialize` fails with
+`event_v3_epoch_not_replaced:<reason>`, and `init` reports the reason, leaves
+the epoch in place, names the replace and recover commands, and continues with
+the rest of its work.
 
 Use `harn init --check` in automation. It exits nonzero unless the V3 control
 pair is active and internally consistent.
@@ -34,17 +44,84 @@ pair is active and internally consistent.
 harn ledger-v3 status
 ```
 
-The result identifies the control state, genesis and activation events, schema
-digest, approved producer builds, privacy epoch, and active ledger location.
-Writers accept only a build named by that control packet.
+The result identifies the control state, genesis and activation events,
+approved producer builds, privacy epoch, and active ledger location. Writers
+accept only a build named by that control packet.
+
+The `schema` field reports how this runtime judges the epoch's schemas:
+
+```json
+{
+  "schema": {
+    "runtime_schema_digest": "sha256:...",
+    "genesis_schema_digest": "sha256:...",
+    "present_schema_digests": ["sha256:...", "sha256:..."],
+    "verdict": "serve",
+    "reason": "epoch_schema_in_runtime_group"
+  }
+}
+```
+
+`present_schema_digests` lists every digest the epoch's rows carry, the
+genesis digest included, from a full read of the ledger. `verdict` is `serve`,
+`replace_breaking`, or `unknown`, as the next section describes. The field is
+`null` when no genesis manifest exists.
 
 The validating reader covers every sealed segment in `catalog.json` plus the
 active tail. Before the first rotation, an absent catalog is normal and the
 reader validates `active.ndjson` directly.
 
-## Advance to a new epoch
+## Schema changes and epochs
 
-A contract digest or approved-build change requires a new epoch:
+Harnery's committed schema lineage groups the event schema's digests into
+additive groups. Within a group, every schema accepts every document the one
+before it accepted. A breaking change starts a new group. A runtime's own
+group is the last one in its lineage.
+
+Rows of any digest in the runtime's group share one epoch. An additive change
+therefore continues in the same epoch: the first row stamped with the newer
+digest is the change, and nothing else marks it. The contract still defines
+`ledger.schema_advanced`, but nothing writes it and the reader does not track
+it.
+
+Each runtime applies one rule to the epoch it finds:
+
+| The epoch's schemas, as this runtime sees them | Verdict | What happens |
+|---|---|---|
+| Every digest present, the genesis digest included, is in the runtime's additive group | `serve` | The runtime serves the epoch and stamps its own digest on the rows it writes. |
+| Every digest is known, and the genesis digest is from before a breaking change | `replace_breaking` | The control reason is `genesis_schema_digest_incompatible`. The next hook or command archives the epoch and starts a new one, as before. |
+| Any digest present is one the runtime does not know | `unknown` | This runtime blocks itself with `epoch_schema_unknown`. It appends nothing and replaces nothing. |
+
+An `unknown` verdict usually means a newer Harnery release has written to the
+epoch. Update the runtime. The verdict blocks only the runtime that reads it;
+a runtime that knows every digest keeps working. No hook, command, rotation,
+repair, or initializer replaces such an epoch on its own. The one way to
+replace it is the approved command in the next section.
+
+The control witness (`format_version: 3`) and the append checkpoint
+(`format_version: 2`) each list the digests present in the epoch. A runtime
+checks that list against its own lineage, so it can block on an unknown digest
+without reading the whole ledger.
+
+A change to the adapter capability profiles still replaces the epoch at the
+next hook or command, and size rotation still starts a new epoch when the
+active file reaches `events.rotate_active_bytes`.
+
+### Releases from before manifest version 2
+
+A Harnery release from before this rule refuses a genesis manifest with
+`manifest_version: 2` as `genesis_manifest_version_invalid`. Its hooks,
+commands, rotation, and repair stop without replacing the epoch. Its explicit
+`init` and `ledger-v3 initialize` do archive and replace an epoch they cannot
+read; the manifest version cannot fence those.
+
+An older release also cannot serve an epoch that a newer release has written
+rows to. Rolling back to such a release after this one has written to an
+epoch costs one epoch replacement: run the older release's
+`ledger-v3 initialize --force-new-epoch` once after the rollback. Releases
+from before this rule take no `--yes`.
+
+## Replace the epoch by command
 
 ```bash
 harn ledger-v3 initialize \
@@ -53,14 +130,94 @@ harn ledger-v3 initialize \
   --force-new-epoch
 ```
 
+Without `--yes`, `--force-new-epoch` changes nothing. It prints a preview
+with `state: "dry_run"`: the current control state and reason, the genesis ID,
+the `schema` field described above, the directory it would archive, the
+manifest version and schema digest of the epoch it would create, and the exact
+command that performs it. Add `--yes` to replace the epoch:
+
+```bash
+harn ledger-v3 initialize \
+  --root <project-root> \
+  --approval-record-id <durable-approval-id> \
+  --force-new-epoch --yes
+```
+
+This is the only command that replaces an epoch with the `unknown` verdict.
 The complete current V3 directory moves intact to
 `.harnery/ledgers/v3-archives/`. Harnery then creates and activates a fresh
 epoch. It never edits archived event bytes in place.
 
-Advance only after the new build passes producer conformance, consumer replay,
-privacy, terminal-race, rotation, and run-quality boundary tests. Sessions that
-started under the archived epoch remain audit evidence and do not become part
-of the new epoch retroactively.
+Replace an epoch by command only when the running runtime should own the root
+from now on, for example after a rollback or when the epoch holds a schema no
+release will ever know. Sessions that started under the archived epoch remain
+audit evidence and do not become part of the new epoch retroactively.
+
+## Waiting rows and set-aside files
+
+Producers write each row to the queue at `.harnery/ledgers/v3/spool/` first,
+and the writer's drain appends queued rows to the ledger. The drain runs every
+queued row through the same per-row check the reader applies: producer
+sequence, clocks, attestation, causal parents, and schema digest. It appends
+a row only when the reader would accept it at that position, so a row the
+reader would reject never enters the ledger and never closes coordination for
+other sessions.
+
+A **waiting row** is a valid row the drain will not append yet. It stays in
+the queue, unchanged, and the drain tries it again on every pass. Its reason
+is the diagnostic code the reader would raise, such as
+`producer_sequence_gap` or `causal_parent_missing`, or `epoch_schema_unknown`
+for a row stamped with a digest this runtime does not know. Such a row is left
+for a runtime that knows its schema. The rows beside a waiting row are still
+appended.
+
+A **set-aside file** is a queued file or `.committed` receipt that can never be
+appended because it is unreadable, empty or over the 16 KiB row limit, an
+incomplete or non-canonical frame, malformed JSON, invalid under the contract,
+or a receipt that conflicts with the ledger. The drain renames it in place to
+`<name>.set-aside` and writes the reason and time to `<name>.set-aside.json`,
+so one bad file no longer stops the queue for every process.
+
+Nothing is deleted. Waiting rows and set-aside files keep their bytes.
+
+`writeEventV3` reports what happened to each row it writes:
+
+| Result | Meaning |
+|---|---|
+| `committed` | The row is in the active ledger. |
+| `ready` | The row is in the queue and was not drained in this call. |
+| `waiting` | The row is in the queue, and the drain will not append it yet. `reason` gives the code. |
+| `set_aside` | The row's file was renamed aside. `reason` names the failure. |
+| `epoch_replaced` | The epoch was replaced before the row could be appended. |
+
+A producer is never told `committed` because its file left the queue.
+
+A session whose rows wait has coordination changes that are applied locally
+but not yet in the ledger, so its own end-of-turn checks can fail.
+`harn agents set-task` names the waiting rows, the reason, and the first
+waiting producer sequence. There are two ways out:
+
+- Start a new session. It gets a new generation with no waiting rows.
+- Wait for the next rotation. Rotation carries every row the drain would
+  admit into the closing epoch, leaves waiting rows and set-aside files in the
+  archived queue, and re-records the session's task, claims, and lifecycle in
+  the new epoch.
+
+Harnery never discards a waiting row automatically. Producers that act on
+another session's behalf do not act on a generation that has waiting rows.
+Stale sweeps and session finalization try again on their next pass. A claim
+release on behalf of another session is skipped, so the claim stays held
+until its session releases it, the session ends, or the epoch rotates.
+
+`harn agents health` reports the queue. The text report adds a
+`ledger queue` line when anything waits or is set aside, and one finding for
+each generation and reason. `--json` carries the same data as `event_queue`:
+
+| Field | Meaning |
+|---|---|
+| `waiting_total`, `set_aside_total` | Counts across the root. |
+| `waiting[]` | One group per generation and reason: `generation_id`, `instance_id` when known, `reason`, `count`, `first_waiting_sequence` (the lowest waiting producer sequence), and `oldest_age_ms`. |
+| `set_aside[]` | One group per generation and reason: `generation_id` when known, `reason`, `count`, and `oldest_age_ms`. |
 
 ## Closed-epoch retention
 
@@ -121,8 +278,23 @@ coordination state. Disposable caches in `active/` and process attribution in
 `pid-map/` are rebuilt from live V3 observations and are not backup authority.
 
 If a durable frame makes the active authority invalid, producers and
-authority-bearing commands stop rather than inventing state. Recover it
-explicitly:
+authority-bearing commands stop rather than inventing state. Before you
+recover, tell an outdated runtime apart from a damaged ledger:
+
+| `ledger-v3 status` from the newest release you have | Cause | What to do |
+|---|---|---|
+| `active` | The epoch is intact. The runtime that blocked is older than the epoch. | Update that runtime. Do not recover. |
+| `invalid` with `epoch_schema_unknown` | The epoch holds a schema even this release does not know: a release you do not have wrote to it, or a schema that never shipped. | Update to the release that wrote it. If no release knows the schema, replace the epoch by command. Do not recover. |
+| `invalid` with `ledger_integrity_failure` | A row in the ledger fails the reader. | Recover, as below. |
+
+A release from before the schema lineage cannot make this distinction. When
+it reads an epoch a newer release has written to, it reports
+`ledger_integrity_failure` (or `genesis_manifest_version_invalid` for an
+epoch a newer release created), even though nothing is damaged. Read the
+status with the newest release first, and never run an older release's
+`recover` against an epoch a newer release can read.
+
+Recover a damaged ledger explicitly:
 
 ```bash
 harn ledger-v3 recover \
@@ -130,6 +302,9 @@ harn ledger-v3 recover \
   --approval-record-id <durable-approval-id> \
   --yes
 ```
+
+`recover` refuses every invalid state other than `ledger_integrity_failure`,
+so it never acts on an `epoch_schema_unknown` epoch.
 
 Recovery moves the complete failed directory into `v3-archives/` without
 editing it. A fresh epoch receives only a new genesis and activation. Events
@@ -144,10 +319,9 @@ receipts beside the readable current epoch. Repeating the command against the
 same new authority returns the existing receipt instead of creating another
 epoch.
 
-Use this operation only when `ledger-v3 status` reports
-`ledger_integrity_failure`. For other control damage, restore the complete V3
-epoch from a verified backup. Do not copy individual rows, edit timestamps, or
-synthesize missing lifecycle events.
+For other control damage, restore the complete V3 epoch from a verified
+backup. Do not copy individual rows, edit timestamps, or synthesize missing
+lifecycle events.
 
 ## Evidence boundary
 

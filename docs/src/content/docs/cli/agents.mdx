@@ -449,7 +449,11 @@ The layer's own diagnostics.
   age, intake-spool depth, diagnostics-spool counts by category (with a
   last-24h split), and span-count pressure against the producer-state cap. On
   an unavailable or invalid V3 control state the section reports that failure
-  explicitly instead.
+  explicitly instead. When the ledger queue holds rows the writer will not
+  append yet or files it set aside, a `ledger queue` line and one finding per
+  generation and reason name them, with the first waiting producer sequence
+  and the age; `--json` carries them as `event_queue`. See [waiting rows and
+  set-aside files](/cli/ledger-v3/#waiting-rows-and-set-aside-files).
 - **`heal-events`** surfaces PIDMAP_HEAL telemetry: how often the pid-map
   self-heal had to correct drift. Sustained high counts point at an upstream
   process-spawn bug. `--since <window>` (default `7d`), `--limit <n>` (default
