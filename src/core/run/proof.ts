@@ -10,7 +10,7 @@ import type {
   PolicyNetworkAccess,
 } from "../policy/index.ts";
 import { policyDigest } from "../policy/index.ts";
-import { stableDigest, writeImmutableJson } from "./durable-record.ts";
+import { stableDigest, writeImmutableJson } from "../storage/durable-record.ts";
 import { readWorkflowRunManifest } from "./run-state.ts";
 import type {
   AcceptanceCriterion,

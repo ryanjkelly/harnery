@@ -20,9 +20,9 @@ import { hostname } from "node:os";
 import { join, resolve } from "node:path";
 import { coordEnv } from "../../../../lib/env.ts";
 import { processMayBeAlive } from "../../../../lib/process-alive.ts";
-import { fsyncParentDirectory } from "../../../run/durable-record.ts";
-import { acquireNoClobberLease } from "../../../run/workspaces/leases.ts";
+import { fsyncParentDirectory } from "../../../storage/durable-record.ts";
 import { stateDirMode, stateFileMode } from "../../../storage/modes.ts";
+import { acquireNoClobberLease } from "../../../storage/no-clobber-lease.ts";
 import { EVENT_V3_LEDGER_RELATIVE_ROOT } from "../writer.ts";
 
 /**

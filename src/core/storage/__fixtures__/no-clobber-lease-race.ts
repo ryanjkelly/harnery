@@ -4,7 +4,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// Run by leases.test.ts in a child `bun test` process, because mock.module
+// Run by no-clobber-lease.test.ts in a child `bun test` process, because mock.module
 // replaces node:fs for the whole process.
 //
 // A contender's rename lands on `recovery` the moment the winner empties it.
@@ -19,7 +19,7 @@ mock.module("node:fs", () => ({
     plant?.(String(path));
   },
 }));
-const { acquireNoClobberLease } = await import("../leases.ts");
+const { acquireNoClobberLease } = await import("../no-clobber-lease.ts");
 
 test("a contender's claim landing on an emptied recovery directory cannot strand the winner", () => {
   const path = join(mkdtempSync(join(tmpdir(), "workspace-lease-race-")), "operation.lease");

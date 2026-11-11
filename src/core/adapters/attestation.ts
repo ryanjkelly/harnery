@@ -22,7 +22,7 @@ import {
 } from "node:fs";
 import { resolve } from "node:path";
 import { monorepoRoot } from "../agents/coord-client.ts";
-import { stableDigest } from "../run/durable-record.ts";
+import { stableDigest } from "../storage/durable-record.ts";
 import { stateDirMode, stateFileMode } from "../storage/modes.ts";
 import type { AdapterId, AdapterProfile, CapabilitySupport } from "./types.ts";
 

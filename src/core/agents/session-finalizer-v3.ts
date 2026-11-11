@@ -33,9 +33,9 @@ import {
 import { readLedgerV3 } from "../events/v3/reader.ts";
 import { assertEventV3 } from "../events/v3/validate.ts";
 import { EVENT_V3_LEDGER_RELATIVE_ROOT, writeEventV3 } from "../events/v3/writer.ts";
-import { fsyncParentDirectory } from "../run/durable-record.ts";
-import { acquireNoClobberLease } from "../run/workspaces/leases.ts";
+import { fsyncParentDirectory } from "../storage/durable-record.ts";
 import { stateDirMode, stateFileMode } from "../storage/modes.ts";
+import { acquireNoClobberLease } from "../storage/no-clobber-lease.ts";
 import { readCodexArchiveObservationsV3 } from "./codex-archive-v3.ts";
 import {
   listSessionFinalizationRequestsV3,

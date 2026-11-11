@@ -14,13 +14,13 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
-import { acquireNoClobberLease } from "../run/workspaces/leases.ts";
 import type { HarneryStorageCatalog } from "./catalog.ts";
 import {
   HARNERY_STRUCTURED_LOG_PROVIDER_ID,
   type HarneryRegisteredStorageFamily,
 } from "./contract.ts";
 import { stateDirMode, stateFileMode } from "./modes.ts";
+import { acquireNoClobberLease } from "./no-clobber-lease.ts";
 
 export const HARNERY_MAINTENANCE_TRANSACTION_SCHEMA =
   "harnery.storage-maintenance-transaction/v1" as const;

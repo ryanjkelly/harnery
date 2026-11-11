@@ -1,7 +1,7 @@
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { fsyncParentDirectory, stableDigest } from "../storage/durable-record.ts";
 import { stateDirMode, stateFileMode } from "../storage/modes.ts";
-import { fsyncParentDirectory, stableDigest } from "./durable-record.ts";
 
 // Limit for the JSON record body. The trailing newline delimiter is outside the
 // record and is not counted by readers after splitting transcript lines.

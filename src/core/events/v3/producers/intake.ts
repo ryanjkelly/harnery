@@ -14,7 +14,7 @@ import {
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { ParsedPayload } from "../../../hooks/adapter/parse.ts";
-import { fsyncParentDirectory } from "../../../run/durable-record.ts";
+import { fsyncParentDirectory } from "../../../storage/durable-record.ts";
 import { stateDirMode, stateFileMode, stateModeTooOpen } from "../../../storage/modes.ts";
 import { EVENT_ADAPTER_IDS_V3, type EventAdapterIdV3 } from "../adapter-id.ts";
 import type { EventV3WriteMode } from "../control.ts";

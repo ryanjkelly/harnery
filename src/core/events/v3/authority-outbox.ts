@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { fsyncParentDirectory } from "../../run/durable-record.ts";
+import { fsyncParentDirectory } from "../../storage/durable-record.ts";
 import { stateFileMode } from "../../storage/modes.ts";
 import { canonicalJsonV3, sha256V3 } from "./canonical.ts";
 import type { EventV3 } from "./contract.ts";

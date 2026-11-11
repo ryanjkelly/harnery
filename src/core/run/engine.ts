@@ -36,13 +36,13 @@ import {
   policyDigest,
   summarizePolicyRequest,
 } from "../policy/index.ts";
+import { stableDigest } from "../storage/durable-record.ts";
 import {
   failedWorkflowDiagnosticAdmissionObservation,
   observeWorkflowDiagnosticAdmission,
 } from "./admission.ts";
 import { assertWorkflowRunId, createWorkflowApproval } from "./approvals.ts";
 import { type BillingProbe, probeBilling } from "./billing.ts";
-import { stableDigest } from "./durable-record.ts";
 import { evidencePreflightError } from "./evidence-preflight.ts";
 import { endWorkflowChildSessionV3, startWorkflowChildSessionV3 } from "./live-session-v3.ts";
 import {

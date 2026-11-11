@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { fsyncParentDirectory } from "../../run/durable-record.ts";
+import { fsyncParentDirectory } from "../../storage/durable-record.ts";
 import { stateDirMode, stateFileMode } from "../../storage/modes.ts";
 import {
   type AuthorityTransactionV3,

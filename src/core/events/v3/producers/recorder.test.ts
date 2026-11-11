@@ -33,7 +33,7 @@ import { codexMidFlightDiagnosticContext } from "../../../hooks/adapter/behavior
 import { type ParsedPayload, parsePayload } from "../../../hooks/adapter/parse.ts";
 import { clearRuntimeTelemetryCachesForTest } from "../../../hooks/adapter/runtime-telemetry.ts";
 import { stableScopeId } from "../../../run/scope-id.ts";
-import { acquireNoClobberLease } from "../../../run/workspaces/leases.ts";
+import { acquireNoClobberLease } from "../../../storage/no-clobber-lease.ts";
 import { buildEventV3 } from "../builder.ts";
 import { canonicalJsonV3, sha256V3 } from "../canonical.ts";
 import { adapterCapabilityProfileDigestV3 } from "../capabilities.ts";

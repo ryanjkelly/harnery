@@ -15,9 +15,9 @@ import {
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
 import { processMayBeAlive } from "../../../lib/process-alive.ts";
-import { fsyncParentDirectory } from "../../run/durable-record.ts";
-import { acquireNoClobberLease } from "../../run/workspaces/leases.ts";
+import { fsyncParentDirectory } from "../../storage/durable-record.ts";
 import { stateDirMode, stateFileMode, stateModeTooOpen } from "../../storage/modes.ts";
+import { acquireNoClobberLease } from "../../storage/no-clobber-lease.ts";
 import type { FingerprintContextV3 } from "./canonical.ts";
 
 const KEY_BYTES = 32;

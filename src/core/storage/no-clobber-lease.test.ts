@@ -3,22 +3,30 @@ import {
   existsSync,
   linkSync,
   mkdirSync,
+  mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { tempRoot } from "../../../../tests/workspace-test-helpers.ts";
-import { acquireNoClobberLease, type NoClobberLeaseOwner } from "./leases.ts";
+import { acquireNoClobberLease, type NoClobberLeaseOwner } from "./no-clobber-lease.ts";
 
 const DIGEST = "a".repeat(64);
+const TEMP_BASE = realpathSync(tmpdir());
+
+function tempRoot(label: string): string {
+  return mkdtempSync(join(TEMP_BASE, `${label}-`));
+}
+
 const DEAD_PID = 2_000_000_000;
 
-describe("no-clobber workspace leases", () => {
+describe("no-clobber leases", () => {
   test("an expired foreign owner cannot be recovered from elapsed time alone", () => {
     const path = join(tempRoot("workspace-lease-foreign"), "operation.lease");
     acquireNoClobberLease({
@@ -169,7 +177,7 @@ describe("no-clobber workspace leases", () => {
       pid: DEAD_PID,
     });
     const contenderNow = now + 2_000;
-    const moduleUrl = pathToFileURL(resolve(import.meta.dir, "leases.ts")).href;
+    const moduleUrl = pathToFileURL(resolve(import.meta.dir, "no-clobber-lease.ts")).href;
     // The winner holds the lease until every other contender has finished. A
     // fixed hold let a contender whose process started late (slow on a loaded
     // Windows machine) find the lease already released and win it again.
@@ -278,7 +286,7 @@ describe("no-clobber workspace leases", () => {
   });
 
   test("a contender's claim landing on an emptied recovery directory cannot strand the winner", () => {
-    const fixture = resolve(import.meta.dir, "__fixtures__/leases-race.ts");
+    const fixture = resolve(import.meta.dir, "__fixtures__/no-clobber-lease-race.ts");
     const run = Bun.spawnSync([process.execPath, "test", fixture], {
       stdout: "pipe",
       stderr: "pipe",

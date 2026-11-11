@@ -81,9 +81,7 @@ const partitionTimings = [];
 // These suites repeatedly start workflow subprocesses. Give each lifecycle its
 // own process so a timed-out operation cannot leak into the other suite's
 // cleanup. Retain every test and its assertions.
-const workflowProcessFiles = new Set([
-  "src/core/run/engine.test.ts",
-]);
+const workflowProcessFiles = new Set(["src/core/run/engine.test.ts"]);
 
 // The complete suite has several intentionally process-heavy families. Keep
 // them separate from ordinary unit tests so the timing summary identifies the
@@ -114,6 +112,13 @@ const namedCorePartitions = [
   {
     label: "workflow test partition",
     matches: (file) => file.startsWith("src/core/run/"),
+    extraArgs: workflowTestArgs,
+  },
+  {
+    // The lease lock races real child processes over the filesystem, so it
+    // keeps the bounded allowance it had beside the run engine.
+    label: "lease lock test partition",
+    matches: (file) => file === "src/core/storage/no-clobber-lease.test.ts",
     extraArgs: workflowTestArgs,
   },
   {

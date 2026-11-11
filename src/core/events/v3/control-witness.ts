@@ -10,7 +10,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { fsyncParentDirectory } from "../../run/durable-record.ts";
+import { fsyncParentDirectory } from "../../storage/durable-record.ts";
 import { stateFileMode } from "../../storage/modes.ts";
 import { canonicalJsonV3, type FingerprintV3, fingerprintV3, sha256V3 } from "./canonical.ts";
 import type { ActivationManifestV3, CandidateGenesisManifestV3 } from "./control.ts";

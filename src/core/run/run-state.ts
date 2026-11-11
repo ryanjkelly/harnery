@@ -9,8 +9,8 @@ import {
   type PolicyNetworkAccess,
   policyDigest,
 } from "../policy/index.ts";
+import { readJsonRecord, writeImmutableJson } from "../storage/durable-record.ts";
 import { assertWorkflowRunId, readWorkflowApproval } from "./approvals.ts";
-import { readJsonRecord, writeImmutableJson } from "./durable-record.ts";
 import { normalizeWorkflowSpecialists } from "./specialists.ts";
 import type { WorkflowDiagnosticAdmissionConfig, WorkflowSpecialistProfile } from "./types.ts";
 import { WORKFLOW_DIAGNOSTIC_ADMISSION_SCHEMA_VERSION } from "./types.ts";
