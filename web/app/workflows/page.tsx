@@ -5,7 +5,6 @@ import { PageHeader } from "@/components/layout/PageHeader";
 import { PageShell } from "@/components/layout/PageShell";
 import { Tooltip } from "@/components/ui/tooltip";
 import { WorkflowStatusBadge } from "@/components/WorkflowStatusBadge";
-import { WorkspaceStateBadge } from "@/components/WorkspaceStateBadge";
 import { cn } from "@/lib/cn";
 import { coordRoot } from "@/lib/coord-reader";
 import { TONE } from "@/lib/tone";
@@ -70,7 +69,6 @@ export default function WorkflowsPage() {
               >
                 <div className="flex flex-wrap items-center gap-2">
                   <WorkflowStatusBadge status={run.status} />
-                  {run.workspace ? <WorkspaceStateBadge inspection={run.workspace} /> : null}
                   <span className="font-medium">{run.name}</span>
                   {run.workItemId && (attemptsPerItem.get(run.workItemId) ?? 0) > 1 ? (
                     <Tooltip

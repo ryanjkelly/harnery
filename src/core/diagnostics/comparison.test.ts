@@ -64,7 +64,9 @@ describe("diagnostic bundle comparison", () => {
     expect(first.observer_only).toBe(true);
   });
 
-  test("compares bounded hook-health and shadow-admission summaries", () => {
+  test("compares bounded hook-health summaries and ignores retired admission captures", () => {
+    // Bundles captured before observer admission was removed carry a
+    // workflow.diagnostic-admission source. Comparison ignores it.
     const before = bundle("artifact_before", [], {
       sources: [hookSource(10, 1, 0, 2_000), admissionSource(["normal", "elevated"])],
     });
@@ -86,17 +88,7 @@ describe("diagnostic bundle comparison", () => {
       faulted_count: 1,
       aggregates: [{ key: "codex:pre-tool-use", duration_p95_ms: 6_000 }],
     });
-    expect(result.shadow_admission.before).toMatchObject({
-      record_count: 2,
-      normal_count: 1,
-      elevated_count: 1,
-    });
-    expect(result.shadow_admission.after).toMatchObject({
-      record_count: 2,
-      critical_count: 1,
-      unknown_count: 1,
-      unavailable_count: 1,
-    });
+    expect(result).not.toHaveProperty("shadow_admission");
     expect(result.warnings).toEqual([]);
     expect(result.comparability).toBe("comparable");
   });
@@ -129,7 +121,6 @@ describe("diagnostic bundle comparison", () => {
       "machine_changed",
       "source_capability_changed",
       "hook_health_unavailable",
-      "shadow_admission_unavailable",
     ]);
     expect(result.capabilities).toEqual([
       {

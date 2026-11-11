@@ -1,11 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { AdapterSandboxProjection } from "../adapters/types.ts";
-import {
-  assertProjectionWithinWorkspace,
-  resolveGitGrantRoots,
-  resolveSandboxProjection,
-  SandboxProjectionError,
-} from "./sandbox-projection.ts";
+import { resolveSandboxProjection, SandboxProjectionError } from "./sandbox-projection.ts";
 import { buildClaudeInvocation } from "./spawn-claude.ts";
 import { buildCodexInvocation } from "./spawn-codex.ts";
 import { buildCursorInvocation } from "./spawn-cursor.ts";
@@ -130,110 +125,5 @@ describe("adapter projection rendering (ADR 0039)", () => {
   test("claude and cursor are unchanged when no policy is supplied", () => {
     expect(() => buildClaudeInvocation(base)).not.toThrow();
     expect(() => buildCursorInvocation(base)).not.toThrow();
-  });
-});
-
-describe("assertProjectionWithinWorkspace", () => {
-  const root = "/srv/ws";
-
-  test("a path inside the validated root is allowed", () => {
-    expect(() =>
-      assertProjectionWithinWorkspace("codex", root, ["/srv/ws/repo/.git"]),
-    ).not.toThrow();
-  });
-
-  test("the root itself is allowed", () => {
-    expect(() => assertProjectionWithinWorkspace("codex", root, [root])).not.toThrow();
-  });
-
-  test("a trailing slash on the validated root does not change the answer", () => {
-    expect(() => assertProjectionWithinWorkspace("codex", "/srv/ws/", [root])).not.toThrow();
-  });
-
-  test("a path outside the validated root is refused", () => {
-    let caught: SandboxProjectionError | undefined;
-    try {
-      assertProjectionWithinWorkspace("codex", root, ["/etc"]);
-    } catch (error) {
-      caught = error as SandboxProjectionError;
-    }
-    expect(caught?.reason).toBe("writable_root_escapes_workspace");
-  });
-
-  test("a sibling with a shared prefix is refused, not treated as inside", () => {
-    // The trap: naive startsWith would accept /srv/wsX as inside /srv/ws.
-    expect(() => assertProjectionWithinWorkspace("codex", root, ["/srv/wsX/.git"])).toThrow(
-      /outside the workspace root/,
-    );
-  });
-
-  test("one bad path in a set refuses the whole set", () => {
-    expect(() =>
-      assertProjectionWithinWorkspace("codex", root, ["/srv/ws/ok", "/srv/elsewhere"]),
-    ).toThrow(SandboxProjectionError);
-  });
-
-  test("an empty set is trivially contained", () => {
-    expect(() => assertProjectionWithinWorkspace("codex", root, [])).not.toThrow();
-  });
-
-  test("the Git administrative directory of a linked worktree is NOT contained", () => {
-    // Measured, not assumed: for a linked worktree both halves live under the
-    // source repository, so neither is inside the workspace root. This is the
-    // whole reason the grant exists as a named capability (ADR 0040) instead of
-    // a path a caller can pass through `writableRoots`.
-    expect(() =>
-      assertProjectionWithinWorkspace("codex", "/srv/ws/wt", ["/home/u/src/.git/worktrees/wt"]),
-    ).toThrow(/outside the workspace root/);
-    expect(() =>
-      assertProjectionWithinWorkspace("codex", "/srv/ws/wt", ["/home/u/src/.git"]),
-    ).toThrow(/outside the workspace root/);
-  });
-});
-
-describe("resolveGitGrantRoots", () => {
-  const binding = (gitdir: string, commonDir: string) =>
-    ({
-      repository: {
-        gitdir: { realpath: gitdir },
-        common_dir: { realpath: commonDir },
-      },
-    }) as unknown as Parameters<typeof resolveGitGrantRoots>[1];
-
-  test('"none" grants nothing and needs no binding', () => {
-    expect(resolveGitGrantRoots("none", undefined)).toEqual([]);
-  });
-
-  test("a linked worktree grants both halves, because a commit needs the shared one", () => {
-    expect(
-      resolveGitGrantRoots(
-        "shared-repository",
-        binding("/home/u/src/.git/worktrees/wt", "/home/u/src/.git"),
-      ),
-    ).toEqual(["/home/u/src/.git/worktrees/wt", "/home/u/src/.git"]);
-  });
-
-  test("a topology where both halves coincide grants one path, not a duplicate", () => {
-    expect(
-      resolveGitGrantRoots("shared-repository", binding("/srv/ws/repo/.git", "/srv/ws/repo/.git")),
-    ).toEqual(["/srv/ws/repo/.git"]);
-  });
-
-  test("the grant refuses when the run has no workspace at all", () => {
-    let caught: SandboxProjectionError | undefined;
-    try {
-      resolveGitGrantRoots("shared-repository", undefined);
-    } catch (error) {
-      caught = error as SandboxProjectionError;
-    }
-    expect(caught?.reason).toBe("git_grant_unavailable");
-    expect(caught?.message).toContain("no isolated workspace");
-  });
-
-  test("the grant refuses when the workspace carries no repository", () => {
-    const noRepo = {} as unknown as Parameters<typeof resolveGitGrantRoots>[1];
-    expect(() => resolveGitGrantRoots("shared-repository", noRepo)).toThrow(
-      /workspace with no repository/,
-    );
   });
 });

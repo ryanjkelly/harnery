@@ -1,5 +1,4 @@
 import {
-  Activity,
   ArrowRight,
   CircleCheck,
   CircleGauge,
@@ -18,7 +17,6 @@ import type {
   DiagnosticFindingComparison,
   DiagnosticHookHealthSummary,
   DiagnosticOptionalSourceComparison,
-  DiagnosticShadowAdmissionSummary,
 } from "../../../src/core/diagnostics/contract";
 
 export function DiagnosticsComparison({
@@ -150,20 +148,12 @@ export function DiagnosticsComparison({
         )}
       </section>
 
-      <div className="grid gap-5 xl:grid-cols-2">
-        <OptionalEvidenceCard
-          title="Completed hook health"
-          icon={<HeartPulse className="size-4 text-purple-500" aria-hidden />}
-          comparison={comparison.hook_health}
-          rows={hookMetrics}
-        />
-        <OptionalEvidenceCard
-          title="Shadow admission"
-          icon={<Activity className="size-4 text-sky-500" aria-hidden />}
-          comparison={comparison.shadow_admission}
-          rows={admissionMetrics}
-        />
-      </div>
+      <OptionalEvidenceCard
+        title="Completed hook health"
+        icon={<HeartPulse className="size-4 text-purple-500" aria-hidden />}
+        comparison={comparison.hook_health}
+        rows={hookMetrics}
+      />
 
       {comparison.capabilities.some((row) => row.change !== "unchanged") ? (
         <Card>
@@ -433,17 +423,6 @@ function hookMetrics(value: DiagnosticHookHealthSummary): readonly [string, numb
     ["Slow", value.slow_count],
     ["High memory", value.high_memory_count],
     ["Retries", value.retry_count],
-  ];
-}
-
-function admissionMetrics(value: DiagnosticShadowAdmissionSummary): readonly [string, number][] {
-  return [
-    ["Records", value.record_count],
-    ["Critical", value.critical_count],
-    ["Elevated", value.elevated_count],
-    ["Normal", value.normal_count],
-    ["Unknown", value.unknown_count],
-    ["Max wait ms", value.max_wait_ms],
   ];
 }
 

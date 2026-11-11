@@ -99,18 +99,12 @@ check "harn adapter bench makes no model calls" \
 check "harn adapter bench reports the basis of each result" \
   "$HARN adapter bench" "basis:" 1
 
-# 6. harn run --help exposes proof and workspace operations; approval is top-level
+# 6. harn run --help exposes proof and resume; approval is top-level
 check "harn --help mentions approval" "$HARN --help" "approval"
 check "harn run --help mentions proof" "$HARN run --help" "proof"
 check "harn run --help mentions resume" "$HARN run --help" "resume"
-check "harn run --help mentions integration" "$HARN run --help" "integration"
-check "harn run --help mentions cleanup" "$HARN run --help" "cleanup"
 check "harn run proof --help mentions JSON output" \
   "$HARN run proof --help" "--json"
-check "harn run integration --help exposes phased apply" \
-  "$HARN run integration --help" "apply"
-check "harn run cleanup --help requires confirmation" \
-  "$HARN run cleanup --help" "--yes"
 check "harn approval --help exposes resolution" \
   "$HARN approval --help" "approve"
 check "harn approval list starts with an empty inbox" \

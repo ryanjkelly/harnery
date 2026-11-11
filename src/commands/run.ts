@@ -1,5 +1,3 @@
-import { existsSync } from "node:fs";
-import { join, resolve } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
 import {
@@ -9,11 +7,9 @@ import {
 } from "../core/adapters/index.ts";
 import { resolveCoordRoot } from "../core/agents/coord-client.ts";
 import { resolveBinName, workflowSubscriptionOnly } from "../core/config.ts";
-import type { PolicyIsolation } from "../core/policy/index.ts";
 import { loadPolicyFile } from "../core/policy/index.ts";
 import type { WorkflowApproval, WorkflowApprovalStatus } from "../core/run/approvals.ts";
 import { WorkflowParkedError } from "../core/run/engine.ts";
-import type { WorkspaceProvider } from "../core/run/index.ts";
 
 /**
  * `workflow run <script>`: execute a workflow script — bounded, schema-gated,
@@ -28,15 +24,12 @@ import type { WorkspaceProvider } from "../core/run/index.ts";
 interface WorkflowRunOpts {
   maxAgents?: string;
   concurrency?: string;
-  observePressure?: boolean;
   cwd?: string;
   adapter?: string;
   resumeFrom?: string;
   subscriptionOnly?: boolean;
   allowApiBilling?: boolean;
   policy?: string;
-  isolation?: PolicyIsolation;
-  workspaceRoot?: string;
   approvalTo?: string;
   json?: boolean;
 }
@@ -54,26 +47,6 @@ interface WorkflowApprovalDecisionOpts {
   actor?: string;
   reason?: string;
   json?: boolean;
-}
-
-interface WorkflowIntegrationPrepareOpts {
-  policy?: string;
-  reviewer?: string;
-  reason?: string;
-  targetRoot?: string;
-  acceptUnknown?: string[];
-  approvalTo?: string;
-  json?: boolean;
-}
-
-interface WorkflowConfirmedMutationOpts {
-  yes?: boolean;
-  json?: boolean;
-}
-
-interface WorkflowReclaimOpts extends WorkflowConfirmedMutationOpts {
-  discard?: boolean;
-  force?: boolean;
 }
 
 export function registerWorkflowCommand(program: Command, emit: EmitContext): void {
@@ -100,10 +73,6 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
     )
     .option("--max-agents <n>", "Total-agent ceiling for the run (default 50)")
     .option("--concurrency <n>", "Concurrent-subagent cap (default 4)")
-    .option(
-      "--observe-pressure",
-      "Record observer-only local pressure before the first real child dispatch",
-    )
     .option("--cwd <dir>", "Working directory children spawn in (default: coord root)")
     .option(
       "--adapter <name>",
@@ -127,14 +96,6 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
       "--policy <file>",
       "Host policy JSON/JSONC applied before dispatch and external mutation",
     )
-    .option(
-      "--isolation <mode>",
-      "Host-created execution boundary: shared | worktree | sandbox | remote (default shared)",
-    )
-    .option(
-      "--workspace-root <dir>",
-      "Explicit writable parent for the built-in local Git worktree provider (requires --isolation worktree)",
-    )
     .option("--approval-to <address>", "Address durable ASK requests (default: operator)")
     .option("--json", "Emit the full RunReport as JSON")
     .action(async (script: string, opts: WorkflowRunOpts) => {
@@ -153,23 +114,6 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
         });
         process.exit(1);
       }
-      if (
-        opts.isolation &&
-        !(["shared", "worktree", "sandbox", "remote"] as const).includes(opts.isolation)
-      ) {
-        emit.error({
-          code: "bad_isolation",
-          message: `unknown isolation ${JSON.stringify(opts.isolation)} (expected: shared | worktree | sandbox | remote)`,
-        });
-        process.exit(1);
-      }
-      if (opts.workspaceRoot && opts.isolation !== "worktree") {
-        emit.error({
-          code: "bad_workspace_root",
-          message: "--workspace-root requires --isolation worktree",
-        });
-        process.exit(1);
-      }
       // Flag beats config; the two flags contradict each other by design.
       const subscriptionOnly = opts.subscriptionOnly || workflowSubscriptionOnly(coordRoot);
       if (subscriptionOnly && opts.allowApiBilling) {
@@ -182,15 +126,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
         process.exit(1);
       }
       try {
-        const { createLocalGitWorktreeProvider, runWorkflow } = await import(
-          "../core/run/index.ts"
-        );
-        const workspace = opts.workspaceRoot
-          ? {
-              provider: createLocalGitWorktreeProvider({ coordRoot }),
-              writableRoots: [resolve(opts.workspaceRoot)],
-            }
-          : undefined;
+        const { runWorkflow } = await import("../core/run/index.ts");
         const report = await runWorkflow(script, {
           coordRoot,
           spawners: registry.spawners(),
@@ -200,9 +136,6 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
           allowApiBilling: opts.allowApiBilling,
           maxAgents: opts.maxAgents ? Number.parseInt(opts.maxAgents, 10) : undefined,
           concurrency: opts.concurrency ? Number.parseInt(opts.concurrency, 10) : undefined,
-          diagnosticAdmission: opts.observePressure
-            ? { schema_version: 1, mode: "shadow" }
-            : undefined,
           cwd: opts.cwd,
           ...adapterProofInputs(
             registry.list().map((adapter) => adapter.profile),
@@ -211,8 +144,6 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
           policy: opts.policy ? loadPolicyFile(opts.policy) : undefined,
           approvalMode: "park",
           approvalAddressee: opts.approvalTo,
-          isolation: opts.isolation,
-          workspace,
           // CLI adapter subprocesses inherit the host network. A policy that
           // forbids network must therefore deny dispatch unless a future host
           // adapter creates and declares a network-disabled boundary.
@@ -281,25 +212,12 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
         process.exit(1);
       }
       try {
-        const { assertWorkflowRunResumable, createLocalGitWorktreeProvider, runWorkflow } =
-          await import("../core/run/index.ts");
+        const { assertWorkflowRunResumable, runWorkflow } = await import("../core/run/index.ts");
         const { manifest } = assertWorkflowRunResumable(coordRoot, runId);
-        const binding = manifest.execution.workspace_binding;
-        if (binding && binding.provider.id !== "local-git-worktree") {
-          throw new Error(
-            `workflow run ${runId} requires unavailable workspace provider ${binding.provider.id}`,
-          );
-        }
         const report = await runWorkflow(manifest.script.path, {
           coordRoot,
           spawners: registry.spawners(),
           resumeRunId: runId,
-          workspace: binding
-            ? {
-                provider: createLocalGitWorktreeProvider({ coordRoot }),
-                writableRoots: [binding.writable_root.configured],
-              }
-            : undefined,
           ...adapterProofInputs(
             registry.list().map((adapter) => adapter.profile),
             { versionProbe: probeBinaryVersion },
@@ -344,351 +262,6 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
         emit.error({
           code: "workflow_resume_failed",
           message: `${(err as Error).message}${proofPath ? `\nproof: ${proofPath}` : ""}`,
-        });
-        process.exit(1);
-      }
-    });
-
-  workflow
-    .command("workspace <run-id>")
-    .description("Show validated allocation, verification, integration, and cleanup state.")
-    .option("--json", "Emit the validated workspace status as JSON")
-    .action(async (runId: string, opts: { json?: boolean }) => {
-      const coordRoot = resolveCoordRoot();
-      if (!coordRoot) {
-        emit.error({
-          code: "no_coord_root",
-          message: "no .harnery/ coordination root found; run `init` first",
-        });
-        process.exit(1);
-      }
-      const { inspectWorkflowWorkspace, renderWorkflowWorkspaceStatus } = await import(
-        "../core/run/index.ts"
-      );
-      const inspection = inspectWorkflowWorkspace(coordRoot, runId);
-      if (!inspection.ok) {
-        emit.error({ code: "workflow_workspace_invalid", message: inspection.error });
-        process.exit(1);
-      }
-      if (opts.json) {
-        emit.config({ format: "json" });
-        emit.data(inspection.value);
-        return;
-      }
-      emit.text(renderWorkflowWorkspaceStatus(inspection.value));
-    });
-
-  workflow
-    .command("workspaces")
-    .description("List validated isolated and shared-compatibility workspace decisions.")
-    .option("--json", "Emit workspace inspections as JSON")
-    .action(async (opts: { json?: boolean }) => {
-      const coordRoot = resolveCoordRoot();
-      if (!coordRoot) {
-        emit.error({
-          code: "no_coord_root",
-          message: "no .harnery/ coordination root found; run `init` first",
-        });
-        process.exit(1);
-      }
-      const { listWorkflowWorkspaceInspections } = await import("../core/run/index.ts");
-      const inspections = listWorkflowWorkspaceInspections(coordRoot).filter(
-        (inspection) => !inspection.ok || inspection.value.selection !== "shared",
-      );
-      if (opts.json) {
-        emit.config({ format: "json" });
-        emit.data(inspections);
-        return;
-      }
-      if (inspections.length === 0) {
-        emit.text("no isolated or shared-compatibility workspace runs\n");
-        return;
-      }
-      emit.text(
-        `${inspections
-          .map((inspection) =>
-            inspection.ok
-              ? [
-                  inspection.value.run_id,
-                  inspection.value.selection,
-                  inspection.value.lifecycle.state,
-                  `verify=${inspection.value.verification.status}`,
-                  `integration=${inspection.value.integration.state}`,
-                  `cleanup=${inspection.value.cleanup.state}`,
-                ].join("\t")
-              : `${inspection.run_id}\tinvalid\t${inspection.error}`,
-          )
-          .join("\n")}\n`,
-      );
-    });
-
-  const integration = workflow
-    .command("integration")
-    .description("Prepare and apply proof-gated isolated-workspace integration.");
-
-  integration
-    .command("prepare <run-id>")
-    .description("Preview integration and write exact review and policy authority.")
-    .option("--policy <file>", "Current host policy JSON/JSONC for the Git mutation")
-    .option("--reviewer <name>", "Who reviewed the proof and diff (required)")
-    .option("--reason <text>", "Reason recorded with the standalone review")
-    .option("--target-root <dir>", "Explicit target checkout (default: frozen source checkout)")
-    .option(
-      "--accept-unknown <code>",
-      "Accept one verification unknown by code (repeatable)",
-      collectOption,
-      [],
-    )
-    .option("--approval-to <address>", "Address a durable policy ASK request")
-    .option("--json", "Emit the durable integration plan as JSON")
-    .action(async (runId: string, opts: WorkflowIntegrationPrepareOpts) => {
-      const coordRoot = resolveCoordRoot();
-      if (!coordRoot) {
-        emit.error({
-          code: "no_coord_root",
-          message: "no .harnery/ coordination root found; run `init` first",
-        });
-        process.exit(1);
-      }
-      if (!opts.policy) {
-        emit.error({
-          code: "integration_policy_required",
-          message: "integration prepare requires --policy <file>",
-        });
-        process.exit(1);
-      }
-      if (!opts.reviewer) {
-        emit.error({
-          code: "integration_reviewer_required",
-          message: "integration prepare requires --reviewer <name>",
-        });
-        process.exit(1);
-      }
-      try {
-        const provider = await builtInProviderForRun(coordRoot, runId);
-        const { IntegrationPrepareParkedError, prepareIntegration } = await import(
-          "../core/run/index.ts"
-        );
-        try {
-          const plan = await prepareIntegration({
-            coordRoot,
-            runId,
-            provider,
-            policy: loadPolicyFile(opts.policy),
-            targetRoot: opts.targetRoot,
-            review: { actor: opts.reviewer, reason: opts.reason },
-            acceptedUnknowns: opts.acceptUnknown,
-            approvalAddressee: opts.approvalTo,
-          });
-          if (opts.json) {
-            emit.config({ format: "json" });
-            emit.data(plan);
-            return;
-          }
-          emit.text(
-            `integration plan ${plan.plan_id} authorized\n` +
-              `source: ${plan.provider_preview.source_commit}\n` +
-              `target: ${plan.provider_preview.target_ref} at ${plan.provider_preview.target_commit}\n` +
-              `changes: ${plan.provider_preview.changed_paths.length}\n` +
-              `apply: ${resolveBinName()} run integration apply ${runId} --yes\n`,
-          );
-        } catch (error) {
-          if (error instanceof IntegrationPrepareParkedError) {
-            if (opts.json) {
-              emit.config({ format: "json" });
-              emit.data({
-                status: "parked",
-                runId: error.runId,
-                planId: error.planId,
-                approvalId: error.approvalId,
-              });
-            } else {
-              emit.text(
-                `integration preparation parked\n` +
-                  `run: ${error.runId}\n` +
-                  `plan: ${error.planId}\n` +
-                  `approval: ${error.approvalId}\n` +
-                  `approve: ${resolveBinName()} approval approve ${error.approvalId}\n`,
-              );
-            }
-            return;
-          }
-          throw error;
-        }
-      } catch (error) {
-        emit.error({
-          code: "workflow_integration_prepare_failed",
-          message: error instanceof Error ? error.message : String(error),
-        });
-        process.exit(1);
-      }
-    });
-
-  integration
-    .command("apply <run-id>")
-    .description("Apply an authorized durable integration plan.")
-    .option("--yes", "Confirm the target-branch mutation")
-    .option("--json", "Emit the durable integration receipt as JSON")
-    .action(async (runId: string, opts: WorkflowConfirmedMutationOpts) => {
-      const coordRoot = resolveCoordRoot();
-      if (!coordRoot) {
-        emit.error({
-          code: "no_coord_root",
-          message: "no .harnery/ coordination root found; run `init` first",
-        });
-        process.exit(1);
-      }
-      if (!opts.yes) {
-        emit.error({
-          code: "integration_confirmation_required",
-          message: "integration apply changes the target branch; pass --yes to confirm",
-        });
-        process.exit(1);
-      }
-      try {
-        const provider = await builtInProviderForRun(coordRoot, runId);
-        const { applyIntegration } = await import("../core/run/index.ts");
-        const receipt = await applyIntegration({ coordRoot, runId, provider });
-        if (opts.json) {
-          emit.config({ format: "json" });
-          emit.data(receipt);
-          return;
-        }
-        emit.text(
-          `integration ${receipt.status}: ${receipt.target_ref} at ${receipt.target_commit}\n` +
-            `receipt: ${receipt.receipt_id}\n` +
-            `cleanup: ${resolveBinName()} run cleanup ${runId} --yes\n`,
-        );
-      } catch (error) {
-        emit.error({
-          code: "workflow_integration_apply_failed",
-          message: error instanceof Error ? error.message : String(error),
-        });
-        process.exit(1);
-      }
-    });
-
-  workflow
-    .command("cleanup <run-id>")
-    .description("Conservatively release a provider-owned isolated workspace.")
-    .option("--yes", "Confirm the worktree and provider-branch removal attempt")
-    .option("--json", "Emit the cleanup attempt or receipt as JSON")
-    .action(async (runId: string, opts: WorkflowConfirmedMutationOpts) => {
-      const coordRoot = resolveCoordRoot();
-      if (!coordRoot) {
-        emit.error({
-          code: "no_coord_root",
-          message: "no .harnery/ coordination root found; run `init` first",
-        });
-        process.exit(1);
-      }
-      if (!opts.yes) {
-        emit.error({
-          code: "cleanup_confirmation_required",
-          message: "workspace cleanup may remove a worktree and branch; pass --yes to confirm",
-        });
-        process.exit(1);
-      }
-      try {
-        const provider = await builtInProviderForRun(coordRoot, runId);
-        const { cleanupWorkspace } = await import("../core/run/index.ts");
-        const result = await cleanupWorkspace({ coordRoot, runId, provider });
-        if (opts.json) {
-          emit.config({ format: "json" });
-          emit.data(result);
-          return;
-        }
-        const receipt =
-          "receipt_id" in result && typeof result.receipt_id === "string"
-            ? `\nreceipt: ${result.receipt_id}`
-            : "";
-        const reason =
-          "reason" in result && typeof result.reason === "string"
-            ? `\nreason: ${result.reason}`
-            : "";
-        emit.text(`workspace cleanup ${result.status}: ${result.binding_id}${receipt}${reason}\n`);
-      } catch (error) {
-        emit.error({
-          code: "workflow_cleanup_failed",
-          message: error instanceof Error ? error.message : String(error),
-        });
-        process.exit(1);
-      }
-    });
-
-  workflow
-    .command("reclaim <run-id>")
-    .description(
-      "Preview reclaim of an inactive owned workspace, or confirm salvage or discard and release.",
-    )
-    .option("--yes", "Confirm that this commits or discards uncommitted work, then releases")
-    .option("--discard", "Throw the uncommitted work away instead of salvaging it")
-    .option(
-      "--force",
-      "With --yes, admit missing or corrupt liveness evidence (active evidence still refuses) and record it",
-    )
-    .option("--json", "Emit the reclaim preview or confirmed result as JSON")
-    .action(async (runId: string, opts: WorkflowReclaimOpts) => {
-      const coordRoot = resolveCoordRoot();
-      if (!coordRoot) {
-        emit.error({
-          code: "no_coord_root",
-          message: "no .harnery/ coordination root found; run `init` first",
-        });
-        process.exit(1);
-      }
-      try {
-        const { createLocalGitWorktreeProvider, readWorkflowRunManifest } = await import(
-          "../core/run/index.ts"
-        );
-        const binding = readWorkflowRunManifest(coordRoot, runId).execution.workspace_binding;
-        if (binding?.provider.id !== "local-git-worktree") {
-          emit.error({
-            code: "workflow_reclaim_unavailable",
-            message: `run ${runId} has no provider-owned Git workspace to reclaim`,
-          });
-          process.exit(1);
-        }
-        const provider = createLocalGitWorktreeProvider({ coordRoot });
-        const result = await provider.reclaim(binding, {
-          mode: opts.discard ? "discard" : "salvage",
-          yes: opts.yes,
-          force: opts.force,
-        });
-        if (opts.json) {
-          emit.config({ format: "json" });
-          emit.data(result);
-          return;
-        }
-        if (result.action === "preview") {
-          const holders = result.lease_holder.map(
-            (holder) =>
-              `${holder.scope}: ${holder.owner_id ?? "unknown"}${holder.pid ? ` (pid ${holder.pid})` : ""}${holder.detail ? `; ${holder.detail}` : ""}`,
-          );
-          emit.text(
-            `reclaim preview: ${result.run_id}\n` +
-              `mode: ${result.mode}\nliveness: ${result.liveness}\nownership: ${result.ownership}\n` +
-              `lease holder: ${holders.length > 0 ? holders.join(", ") : "none observed"}\n` +
-              `dirty paths: ${result.dirty_paths === null ? "unknown" : result.dirty_paths.length > 0 ? result.dirty_paths.join(", ") : "none"}\n` +
-              (result.ownership_detail ? `ownership detail: ${result.ownership_detail}\n` : "") +
-              `Pass --yes to confirm ${result.mode} and release after all checks pass.\n` +
-              (result.liveness === "unknown"
-                ? "Liveness is unknown; add --force with --yes only if the run is known to be stopped.\n"
-                : ""),
-          );
-          return;
-        }
-        emit.text(
-          `reclaim ${result.preparation.action}: ${result.preparation.detail}\n` +
-            `workspace cleanup ${result.cleanup.status}: ${result.cleanup.binding_id}\n`,
-        );
-      } catch (error) {
-        emit.error({
-          code:
-            error instanceof Error && "code" in error && typeof error.code === "string"
-              ? error.code
-              : "workflow_reclaim_failed",
-          message: error instanceof Error ? error.message : String(error),
         });
         process.exit(1);
       }
@@ -795,7 +368,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
             emit.text(
               `${renderWorkflowApproval(resolved.approval)}` +
                 `${resolved.applied ? "decision recorded" : "decision already recorded"}\n` +
-                approvalNextActionHint(coordRoot, resolved.approval),
+                approvalNextActionHint(resolved.approval),
             );
           }
         } catch (err) {
@@ -839,43 +412,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
     });
 }
 
-async function builtInProviderForRun(coordRoot: string, runId: string): Promise<WorkspaceProvider> {
-  const { createLocalGitWorktreeProvider, readWorkflowRunManifest } = await import(
-    "../core/run/index.ts"
-  );
-  const manifest = readWorkflowRunManifest(coordRoot, runId);
-  const binding = manifest.execution.workspace_binding;
-  if (!binding) {
-    throw new Error(`workflow run ${runId} has no isolated workspace binding`);
-  }
-  if (binding.provider.id !== "local-git-worktree") {
-    throw new Error(
-      `workflow run ${runId} requires unavailable workspace provider ${binding.provider.id}`,
-    );
-  }
-  return createLocalGitWorktreeProvider({ coordRoot });
-}
-
-function collectOption(value: string, previous: string[]): string[] {
-  return [...previous, value];
-}
-
-/** Next operator command after resolving an approval. Mid-run parks resume the
- * workflow; integration prepare parks after the run is already terminal, so
- * the durable plan is authorized by re-running prepare (resume would fail). */
-function approvalNextActionHint(coordRoot: string, approval: WorkflowApproval): string {
-  const bin = resolveBinName();
-  const runId = approval.request.run_id;
-  const integrationPlanPath = join(
-    coordRoot,
-    ".harnery",
-    "workflows",
-    runId,
-    "integration",
-    "plan.json",
-  );
-  if (existsSync(integrationPlanPath)) {
-    return `prepare: ${bin} run integration prepare ${runId}\n`;
-  }
-  return `resume: ${bin} run resume ${runId}\n`;
+/** Next operator command after resolving an approval: a parked run resumes. */
+function approvalNextActionHint(approval: WorkflowApproval): string {
+  return `resume: ${resolveBinName()} run resume ${approval.request.run_id}\n`;
 }

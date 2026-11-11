@@ -7,7 +7,7 @@ import {
   endWorkflowChildSessionV3,
   startWorkflowChildSessionV3,
 } from "../../src/core/run/live-session-v3";
-import { pressureAssessmentFixture } from "../../tests/helpers/resource-status";
+import { writeLegacyIsolatedRun } from "../../src/core/run/__fixtures__/legacy-isolated-run";
 import {
   readWorkflowChildSessions,
   readWorkflowChildSessionsFromCache,
@@ -59,7 +59,6 @@ describe("workflow proof reader", () => {
     expect(run?.proof?.run.objective).toBe("Show proof in the dashboard");
     expect(run?.proof?.acceptance.summary.satisfied).toBe(1);
     expect(run?.proof?.policy?.decisions[0]?.verdict).toBe("allow");
-    expect(run?.proof?.diagnostic_admission?.observation?.advice.assessment.state).toBe("elevated");
   });
 
   test("uses total retry cost instead of only the final attempt cost", () => {
@@ -198,23 +197,11 @@ describe("workflow proof reader", () => {
     ]);
   });
 
-  test("attaches the validated workspace projection and preserves invalid authority", () => {
-    writeSharedManifest();
-    writeFileSync(join(runDir, "proof.json"), JSON.stringify(sampleProof()), "utf8");
-    expect(readWorkflowRun(root, "wf-reader")?.workspace).toMatchObject({
-      ok: true,
-      value: {
-        selection: "shared",
-        requested_isolation: "shared",
-        effective_isolation: "shared",
-      },
-    });
-
-    writeFileSync(join(runDir, "proof.json"), "{bad", "utf8");
-    expect(readWorkflowRun(root, "wf-reader")?.workspace).toMatchObject({
-      ok: false,
-      run_id: "wf-reader",
-    });
+  test("loads a run recorded with the removed isolated workspace and admission fields", () => {
+    const runId = writeLegacyIsolatedRun(root);
+    const run = readWorkflowRun(root, runId);
+    expect(run?.proof?.run).toMatchObject({ id: runId, name: "legacy-isolated" });
+    expect(run).not.toHaveProperty("workspace");
   });
 
   test("keeps repository drift unknown when a saved proof lacks observations", () => {
@@ -401,7 +388,6 @@ function writeSharedManifest(): void {
         allow_api_billing: false,
         approval_mode: "deny",
         approval_addressee: "operator",
-        isolation: "shared",
         network_access: "unknown",
       },
     },
@@ -434,41 +420,11 @@ function sampleProof(): WorkflowProof {
     },
     agents: [],
     evidence: [],
-    diagnostic_admission: {
-      schema_version: 1,
-      mode: "shadow",
-      trigger: "before-first-dispatch",
-      state: "observed",
-      action: "none",
-      observation: {
-        requested_at: "2026-07-21T12:00:00.100Z",
-        observed_at: "2026-07-21T12:00:00.150Z",
-        wait_ms: 50,
-        service_state: "running",
-        freshness: "fresh",
-        sampled_at: "2026-07-21T12:00:00.150Z",
-        advice: {
-          schema_version: 2,
-          evaluated_at: "2026-07-21T12:00:00.150Z",
-          observer_only: true,
-          assessment: pressureAssessmentFixture({
-            state: "elevated",
-            recommended_action: "limit-heavy-work",
-            observed_at: "2026-07-21T12:00:00.150Z",
-            summary: "Memory stalls are rising, so limit new heavy work.",
-          }),
-          prior_hysteresis: null,
-          source_capability: { source_kind: "supervisor.pressure", state: "supported" },
-          active_finding_count: 1,
-          summary: "Memory stalls are rising, so limit new heavy work.",
-        },
-      },
-    },
     policy: {
       schema_version: 1,
       name: "dashboard policy",
       sha256: "b".repeat(64),
-      isolation: "worktree",
+      isolation: "shared",
       network_access: "enabled",
       config: {
         schema_version: 1,
@@ -491,7 +447,7 @@ function sampleProof(): WorkflowProof {
           request: {
             phase: "dispatch",
             action: "spawn agent",
-            isolation: "worktree",
+            isolation: "shared",
             network_access: "enabled",
           },
         },

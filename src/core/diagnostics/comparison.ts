@@ -13,13 +13,11 @@ import {
   type DiagnosticHookHealthSummary,
   type DiagnosticOptionalSourceComparison,
   type DiagnosticPressure,
-  type DiagnosticShadowAdmissionSummary,
   type ValidatedDiagnosticBundle,
 } from "./contract.ts";
 import { canonicalJson, sha256 } from "./replay.ts";
 
 const HOOK_SOURCE = "supervisor.hook-health";
-const ADMISSION_SOURCE = "workflow.diagnostic-admission";
 
 export function compareDiagnosticBundles(
   repoRoot: string,
@@ -87,19 +85,6 @@ export function compareValidatedDiagnosticBundles(
         "Completed-hook comparison is partial because one or both bundles lack hook-health evidence.",
     });
   }
-  const shadowAdmission = optionalSourceComparison(
-    before,
-    after,
-    ADMISSION_SOURCE,
-    shadowAdmissionSummary,
-  );
-  if (!shadowAdmission.before || !shadowAdmission.after) {
-    warnings.push({
-      code: "shadow_admission_unavailable",
-      summary:
-        "Shadow-admission comparison is partial because one or both bundles lack admission evidence.",
-    });
-  }
 
   const rows = compareFindings(beforeIndex.rows, afterIndex.rows);
   const base = {
@@ -129,7 +114,6 @@ export function compareValidatedDiagnosticBundles(
     },
     capabilities,
     hook_health: hookHealth,
-    shadow_admission: shadowAdmission,
   };
   return {
     ...base,
@@ -466,42 +450,6 @@ function hookHealthSummary(value: unknown): DiagnosticHookHealthSummary | undefi
     ...parsedSummary,
     aggregates: parsedAggregates.sort((left, right) => left.key.localeCompare(right.key)),
   };
-}
-
-function shadowAdmissionSummary(value: unknown): DiagnosticShadowAdmissionSummary | undefined {
-  const record = object(value);
-  const rows = Array.isArray(record?.records) ? record.records : undefined;
-  if (!record || !rows) return undefined;
-  const summary: DiagnosticShadowAdmissionSummary = {
-    record_count: rows.length,
-    observed_count: 0,
-    not_needed_count: 0,
-    unavailable_count: 0,
-    normal_count: 0,
-    elevated_count: 0,
-    critical_count: 0,
-    unknown_count: 0,
-    max_wait_ms: 0,
-  };
-  for (const value of rows) {
-    const row = object(value);
-    if (!row || (row.state !== "observed" && row.state !== "not-needed")) return undefined;
-    if (row.state === "not-needed") {
-      summary.not_needed_count += 1;
-      continue;
-    }
-    summary.observed_count += 1;
-    const pressure = row.pressure;
-    if (pressure === "normal") summary.normal_count += 1;
-    else if (pressure === "elevated") summary.elevated_count += 1;
-    else if (pressure === "critical") summary.critical_count += 1;
-    else summary.unknown_count += 1;
-    if (row.freshness === "unavailable") summary.unavailable_count += 1;
-    if (typeof row.wait_ms === "number" && Number.isSafeInteger(row.wait_ms) && row.wait_ms >= 0) {
-      summary.max_wait_ms = Math.max(summary.max_wait_ms, row.wait_ms);
-    } else return undefined;
-  }
-  return summary;
 }
 
 function integerFields<const Keys extends readonly string[]>(

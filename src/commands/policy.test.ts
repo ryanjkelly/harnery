@@ -16,13 +16,13 @@ describe("policy command", () => {
     const policy = normalizePolicy({
       name: "safe run",
       max_cost_usd: 2,
-      allowed_isolation: ["sandbox"],
+      allowed_isolation: ["shared"],
       network: "ask",
     });
     const output = renderPolicy(policy, policyDigest(policy));
     expect(output).toContain("safe run (schema 1)");
     expect(output).toContain("cost ceiling: $2.0000");
     expect(output).toContain("network: ask");
-    expect(output).toContain("isolation: sandbox");
+    expect(output).toContain("isolation: shared");
   });
 });

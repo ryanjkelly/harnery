@@ -5,39 +5,32 @@ import type { RepoSnapshot } from "../context/index.ts";
 import {
   type NormalizedPolicy,
   normalizePolicy,
-  type PolicyIsolation,
   type PolicyNetworkAccess,
   policyDigest,
 } from "../policy/index.ts";
-import { readJsonRecord, writeImmutableJson } from "../storage/durable-record.ts";
+import { writeImmutableJson } from "../storage/durable-record.ts";
 import { assertWorkflowRunId, readWorkflowApproval } from "./approvals.ts";
 import { normalizeWorkflowSpecialists } from "./specialists.ts";
-import type { WorkflowDiagnosticAdmissionConfig, WorkflowSpecialistProfile } from "./types.ts";
-import { WORKFLOW_DIAGNOSTIC_ADMISSION_SCHEMA_VERSION } from "./types.ts";
-import type {
-  WorkspaceAllocationRequest,
-  WorkspaceBinding,
-  WorkspaceCompatibilityExecutionEvidence,
-} from "./workspaces/index.ts";
-import {
-  assertWorkspaceManifestAuthority,
-  isWorkspaceBinding,
-  isWorkspaceCompatibilityExecutionEvidence,
-} from "./workspaces/validate.ts";
+import type { WorkflowSpecialistProfile } from "./types.ts";
 
 export const WORKFLOW_RUN_MANIFEST_SCHEMA_VERSION = 2 as const;
 
 const MANIFEST_LIMIT_BYTES = 256 * 1024;
 
+/**
+ * The frozen inputs of one run, written once before the first dispatch and read
+ * back only to resume a parked run.
+ *
+ * Manifests written by earlier versions may also carry `work_item_id`,
+ * `attempt_context`, and, under `execution`, `isolation`, `diagnostic_admission`,
+ * `workspace_binding` and `workspace_fallback`. Those features are gone
+ * (ADR 0238, ADR 0244). The reader ignores the fields, so such a manifest still
+ * loads as history; a run that executed in an isolated workspace cannot be
+ * resumed (see `assertWorkflowRunResumable`).
+ */
 export interface WorkflowRunManifest {
   schema_version: typeof WORKFLOW_RUN_MANIFEST_SCHEMA_VERSION;
   run_id: string;
-  /** Historical: set only by runs that durable work items started. New runs
-   * never write it; it stays readable so those runs' workspace bindings, whose
-   * owner names the item and attempt, still validate. */
-  work_item_id?: string;
-  /** Historical companion to `work_item_id`; only `number` is read. */
-  attempt_context?: { number: number };
   name: string;
   started_at: string;
   script: { path: string; sha256: string };
@@ -47,17 +40,13 @@ export interface WorkflowRunManifest {
     default_adapter: string;
     max_agents: number;
     concurrency: number;
-    diagnostic_admission?: WorkflowDiagnosticAdmissionConfig;
     subscription_only: boolean;
     allow_api_billing: boolean;
     approval_mode: "deny" | "park";
     approval_addressee: string;
-    isolation: PolicyIsolation;
     network_access: PolicyNetworkAccess;
     policy?: NormalizedPolicy;
     specialists?: Record<string, WorkflowSpecialistProfile>;
-    workspace_binding?: WorkspaceBinding;
-    workspace_fallback?: WorkspaceCompatibilityExecutionEvidence;
   };
 }
 
@@ -72,10 +61,6 @@ export function workflowScriptDigest(scriptPath: string): string {
 
 export function writeWorkflowRunManifest(input: WriteWorkflowRunManifestInput): string {
   assertWorkflowRunId(input.manifest.run_id);
-  assertWorkspaceManifestAuthority(
-    input.manifest,
-    readManifestWorkspaceRequest(input.coordRoot, input.manifest.run_id),
-  );
   const path = workflowRunManifestPath(input.coordRoot, input.manifest.run_id);
   if (existsSync(path))
     throw new Error(`workflow run ${input.manifest.run_id} already has a manifest`);
@@ -105,12 +90,6 @@ export function readWorkflowRunManifest(coordRoot: string, runId: string): Workf
   if (
     manifest.schema_version !== WORKFLOW_RUN_MANIFEST_SCHEMA_VERSION ||
     manifest.run_id !== runId ||
-    (manifest.work_item_id !== undefined &&
-      !/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(manifest.work_item_id)) ||
-    (manifest.attempt_context !== undefined &&
-      (!manifest.work_item_id ||
-        !Number.isSafeInteger(manifest.attempt_context.number) ||
-        manifest.attempt_context.number < 1)) ||
     typeof manifest.name !== "string" ||
     manifest.name.length === 0 ||
     manifest.name.length > 200 ||
@@ -130,7 +109,6 @@ export function readWorkflowRunManifest(coordRoot: string, runId: string): Workf
       observation_detail: "No repository observation was recorded.",
     };
   }
-  assertWorkspaceManifestAuthority(manifest, readManifestWorkspaceRequest(coordRoot, runId));
   return manifest;
 }
 
@@ -139,6 +117,12 @@ export function assertWorkflowRunResumable(
   runId: string,
 ): { manifest: WorkflowRunManifest; approvalId: string } {
   const manifest = readWorkflowRunManifest(coordRoot, runId);
+  const isolation = executedOutsideSharedCheckout(manifest);
+  if (isolation) {
+    throw new Error(
+      `workflow run ${runId} ran with ${isolation} isolation, which this version no longer supports; start a new run instead`,
+    );
+  }
   const transcriptPath = join(coordRoot, ".harnery", "workflows", runId, "transcript.jsonl");
   if (!existsSync(transcriptPath)) throw new Error(`workflow run ${runId} has no transcript`);
   let approvalId: string | undefined;
@@ -191,51 +175,32 @@ function validExecution(value: WorkflowRunManifest["execution"]): boolean {
     value.default_adapter.length > 0 &&
     positiveSafeInteger(value.max_agents) &&
     positiveSafeInteger(value.concurrency) &&
-    validDiagnosticAdmission(value.diagnostic_admission) &&
     typeof value.subscription_only === "boolean" &&
     typeof value.allow_api_billing === "boolean" &&
     (value.approval_mode === "deny" || value.approval_mode === "park") &&
     typeof value.approval_addressee === "string" &&
     value.approval_addressee.length > 0 &&
     value.approval_addressee.length <= 200 &&
-    ["shared", "worktree", "sandbox", "remote"].includes(value.isolation) &&
     ["enabled", "disabled", "unknown"].includes(value.network_access) &&
     validSpecialists(value.specialists) &&
-    validFrozenPolicy(value.policy, value.workspace_binding?.integration_root ?? value.cwd) &&
-    validWorkspaceBinding(value.workspace_binding) &&
-    validWorkspaceFallback(value.workspace_fallback) &&
-    !(value.workspace_binding && value.workspace_fallback) &&
-    (value.workspace_fallback === undefined ||
-      value.workspace_fallback.requested_isolation === value.isolation)
+    validFrozenPolicy(value.policy, value.cwd)
   );
 }
 
-function validDiagnosticAdmission(value: WorkflowDiagnosticAdmissionConfig | undefined): boolean {
-  return (
-    value === undefined ||
-    (value.schema_version === WORKFLOW_DIAGNOSTIC_ADMISSION_SCHEMA_VERSION &&
-      value.mode === "shadow")
-  );
-}
-
-function readManifestWorkspaceRequest(
-  coordRoot: string,
-  runId: string,
-): WorkspaceAllocationRequest | undefined {
-  const path = join(coordRoot, ".harnery", "workflows", runId, "workspace-request.json");
-  return existsSync(path)
-    ? readJsonRecord<WorkspaceAllocationRequest>(path, "workspace request")
-    : undefined;
-}
-
-function validWorkspaceBinding(binding: WorkspaceBinding | undefined): boolean {
-  return binding === undefined || isWorkspaceBinding(binding);
-}
-
-function validWorkspaceFallback(
-  fallback: WorkspaceCompatibilityExecutionEvidence | undefined,
-): boolean {
-  return fallback === undefined || isWorkspaceCompatibilityExecutionEvidence(fallback);
+/**
+ * Names the isolation of a manifest written before isolated workspaces were
+ * removed (ADR 0244), or returns undefined for a run that used the shared
+ * checkout. Such a run's workspace no longer has a provider to reattach it.
+ */
+function executedOutsideSharedCheckout(manifest: WorkflowRunManifest): string | undefined {
+  const execution = manifest.execution as WorkflowRunManifest["execution"] & {
+    isolation?: unknown;
+    workspace_binding?: unknown;
+  };
+  if (execution.isolation !== undefined && execution.isolation !== "shared") {
+    return String(execution.isolation);
+  }
+  return execution.workspace_binding === undefined ? undefined : "worktree";
 }
 
 function validSpecialists(

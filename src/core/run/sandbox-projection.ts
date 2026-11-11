@@ -2,11 +2,8 @@
  * Project the host's filesystem policy into a adapter's own vendor sandbox
  * (ADR 0039).
  *
- * Harnery decides where a workflow child may write. Until this existed it never
- * told the child, so a child working in a provider-owned Git worktree could
- * edit files and could not commit: the vendor excludes a repository's
- * administrative directory from its writable set by policy, and Harnery had no
- * way to name it as an exception.
+ * Harnery decides where a workflow child may write and tells the child's own
+ * vendor sandbox, instead of trusting each adapter's defaults.
  *
  * The one rule that matters here is that a projection an adapter cannot
  * represent is refused before launch. Passing a policy that gets silently
@@ -14,11 +11,9 @@
  * not, which is worse than refusing and worse than never offering the feature.
  */
 
-import { sep } from "node:path";
 import { builtinAdapterProfile } from "../adapters/profiles.ts";
 import type { AdapterSandboxProjection } from "../adapters/types.ts";
-import type { GitAdministrativeGrant, SpawnFilesystemPolicy, SpawnRequest } from "./types.ts";
-import type { WorkspaceBinding } from "./workspaces/types.ts";
+import type { SpawnFilesystemPolicy, SpawnRequest } from "./types.ts";
 
 export class SandboxProjectionError extends Error {
   readonly adapter: string;
@@ -26,8 +21,6 @@ export class SandboxProjectionError extends Error {
     | "mode_unrepresentable"
     | "writable_roots_unrepresentable"
     | "no_projection"
-    | "writable_root_escapes_workspace"
-    | "git_grant_unavailable"
     | "full_access_unrepresentable"
     | "full_access_conflicts_with_policy";
 
@@ -89,76 +82,6 @@ export function resolveSandboxProjection(
     }
   }
   return { nativeMode, writableRoots };
-}
-
-/** True when `candidate` is `root` or lies beneath it, comparing whole path
- * segments so `/a/bc` is not treated as inside `/a/b`. */
-function isWithin(root: string, candidate: string): boolean {
-  // Windows paths use `\` as a segment boundary too; elsewhere it is a filename
-  // character.
-  const windows = sep === "\\";
-  const normalizedRoot =
-    root.endsWith("/") || (windows && root.endsWith("\\")) ? root.slice(0, -1) : root;
-  return (
-    candidate === normalizedRoot ||
-    candidate.startsWith(`${normalizedRoot}/`) ||
-    (windows && candidate.startsWith(`${normalizedRoot}\\`))
-  );
-}
-
-/**
- * Refuse a projection that would grant write access outside the root the
- * workspace provider already validated (ADR 0039).
- *
- * The renderer alone cannot do this: it never sees the binding. Granting a path
- * the provider never sanctioned would let a projection quietly widen the blast
- * radius of a run that the workspace lifecycle believes it has contained.
- */
-export function assertProjectionWithinWorkspace(
-  adapter: string,
-  allowedRootRealpath: string,
-  writableRoots: readonly string[],
-): void {
-  for (const root of writableRoots) {
-    if (!isWithin(allowedRootRealpath, root)) {
-      throw new SandboxProjectionError(
-        adapter,
-        "writable_root_escapes_workspace",
-        `writable root ${JSON.stringify(root)} is outside the workspace root ${JSON.stringify(allowedRootRealpath)} the provider validated`,
-      );
-    }
-  }
-}
-
-/**
- * Resolve a named Git administrative grant into concrete writable roots
- * (ADR 0040).
- *
- * These are the only paths a run may write outside its workspace, and the
- * caller never names them: they come from the binding the provider verified.
- * A caller-supplied path is checked by `assertProjectionWithinWorkspace` and can
- * never reach here, so asking for the grant is the whole of the widening.
- *
- * In a linked worktree both halves of the administrative directory live under
- * the source repository, and a commit needs the shared half regardless, so the
- * grant returns both rather than pretending the private half is useful alone.
- */
-export function resolveGitGrantRoots(
-  grant: GitAdministrativeGrant,
-  binding: WorkspaceBinding | undefined,
-): readonly string[] {
-  if (grant === "none") return [];
-  const repository = binding?.repository;
-  if (!repository) {
-    throw new SandboxProjectionError(
-      "workflow",
-      "git_grant_unavailable",
-      `gitWrite "${grant}" needs a Git repository binding; this run has ${binding ? "a workspace with no repository" : "no isolated workspace"}`,
-    );
-  }
-  // Deduplicated: a full-clone topology reports the same path for both, and a
-  // repeated writable root is noise in the rendered argv and in proof.
-  return [...new Set([repository.gitdir.realpath, repository.common_dir.realpath])];
 }
 
 /**

@@ -17,7 +17,7 @@ const baseRequest = {
   path: "/workspace/repo",
   adapter: "codex",
   model: "gpt-5",
-  isolation: "worktree" as const,
+  isolation: "shared" as const,
   network_access: "disabled" as const,
   current_cost_usd: 0.25,
   projected_cost_usd: 0.1,
@@ -48,7 +48,6 @@ describe("host policy", () => {
       allowed_adapters: ["claude-code"],
       allowed_models: ["claude-sonnet"],
       allowed_paths: ["/workspace/safe"],
-      allowed_isolation: ["sandbox"],
       network: "ask",
     });
     const result = evaluatePolicy(policy, { ...baseRequest, network_access: "enabled" });
@@ -57,9 +56,19 @@ describe("host policy", () => {
       "adapter_not_allowed",
       "model_not_allowed",
       "path_not_allowed",
-      "isolation_not_allowed",
       "network_restricted",
     ]);
+  });
+
+  test("accepts only the shared isolation mode", () => {
+    const policy = normalizePolicy({ allowed_isolation: ["shared"], network: "allow" });
+    expect(policy.allowed_isolation).toEqual(["shared"]);
+    expect(evaluatePolicy(policy, baseRequest).verdict).toBe("allow");
+    for (const removed of ["worktree", "sandbox", "remote"]) {
+      expect(() => normalizePolicy({ allowed_isolation: [removed as "shared"] })).toThrow(
+        "allowed_isolation",
+      );
+    }
   });
 
   test("allowed path containment rejects prefix lookalikes", () => {

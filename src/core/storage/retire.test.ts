@@ -84,7 +84,7 @@ function code(action: () => unknown): string {
 }
 
 describe("storage retire", () => {
-  test("lists the five retired roots with existence and counts, read-only", () => {
+  test("lists the retired roots with existence and counts, read-only", () => {
     const root = workspace();
     const dir = seedRetired(root, "councils");
     const before = snapshot(dir);
@@ -95,8 +95,12 @@ describe("storage retire", () => {
       "governor-service",
       "councils",
       "mailbox",
+      "workspaces",
     ]);
-    expect(report.roots.every((entry) => entry.retired_by === "ADR 0238")).toBeTrue();
+    expect(report.roots.map((entry) => entry.retired_by)).toEqual([
+      ...Array(5).fill("ADR 0238"),
+      "ADR 0244",
+    ]);
     expect(report.roots.find((entry) => entry.name === "councils")).toMatchObject({
       state: "present",
       files: 2,

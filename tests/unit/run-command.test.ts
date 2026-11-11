@@ -44,7 +44,6 @@ beforeEach(() => {
         allow_api_billing: false,
         approval_mode: "deny",
         approval_addressee: "operator",
-        isolation: "shared",
         network_access: "unknown",
       },
     },
@@ -100,24 +99,22 @@ describe("workflow proof command", () => {
     });
   });
 
-  test("freezes observer-only pressure mode from --observe-pressure", async () => {
-    const script = join(root, "observe.mjs");
-    writeFileSync(script, 'export default () => "no dispatch";\n', "utf8");
-    let captured: unknown;
-    await runCommand(["run", script, "--observe-pressure", "--json"], {
-      text: () => {},
-      data: (value) => {
-        captured = value;
-      },
-      config: () => {},
-      error: (error) => {
-        throw new Error(error.message);
-      },
-    });
-
-    expect(
-      (captured as { diagnosticAdmission?: { state: string; action: string } }).diagnosticAdmission,
-    ).toEqual(expect.objectContaining({ state: "not-needed", action: "none" }));
+  test("offers no workspace, integration or admission commands and flags", () => {
+    const program = new Command();
+    registerWorkflowCommand(program, {} as never);
+    const run = program.commands.find((command) => command.name() === "run");
+    expect(run?.commands.map((command) => command.name()).sort()).toEqual([
+      "proof",
+      "resume",
+      "script",
+    ]);
+    const script = run?.commands.find((command) => command.name() === "script");
+    const flags = script?.options.map((option) => option.long) ?? [];
+    expect(flags).toContain("--policy");
+    expect(flags).toContain("--approval-to");
+    for (const removed of ["--isolation", "--workspace-root", "--observe-pressure"]) {
+      expect(flags).not.toContain(removed);
+    }
   });
 
   test("renders the human proof summary", async () => {

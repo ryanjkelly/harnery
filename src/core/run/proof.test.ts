@@ -490,14 +490,12 @@ describe("sandbox projection evidence (ADR 0039)", () => {
       transcriptPath: transcriptFile(),
       sandboxProjection: {
         mode: "workspace-write",
-        writable_roots: ["/srv/ws/repo/.git"],
-        git_grant: "shared-repository",
+        writable_roots: [],
       },
     });
     expect(proof.sandbox_projection).toEqual({
       mode: "workspace-write",
-      writable_roots: ["/srv/ws/repo/.git"],
-      git_grant: "shared-repository",
+      writable_roots: [],
     });
   });
 

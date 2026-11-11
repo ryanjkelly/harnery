@@ -247,18 +247,6 @@ export interface DiagnosticHookHealthSummary {
   aggregates: readonly DiagnosticHookAggregateSummary[];
 }
 
-export interface DiagnosticShadowAdmissionSummary {
-  record_count: number;
-  observed_count: number;
-  not_needed_count: number;
-  unavailable_count: number;
-  normal_count: number;
-  elevated_count: number;
-  critical_count: number;
-  unknown_count: number;
-  max_wait_ms: number;
-}
-
 export interface DiagnosticOptionalSourceComparison<T> {
   before_capability: SupervisorCapability;
   after_capability: SupervisorCapability;
@@ -274,8 +262,7 @@ export interface DiagnosticComparisonWarning {
     | "capture_order_reversed"
     | "duplicate_fingerprint"
     | "source_capability_changed"
-    | "hook_health_unavailable"
-    | "shadow_admission_unavailable";
+    | "hook_health_unavailable";
   summary: string;
 }
 
@@ -303,6 +290,5 @@ export interface DiagnosticBundleComparison {
   };
   capabilities: readonly DiagnosticCapabilityComparison[];
   hook_health: DiagnosticOptionalSourceComparison<DiagnosticHookHealthSummary>;
-  shadow_admission: DiagnosticOptionalSourceComparison<DiagnosticShadowAdmissionSummary>;
   comparison_digest: string;
 }

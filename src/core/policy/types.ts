@@ -2,7 +2,10 @@ export const POLICY_SCHEMA_VERSION = 1 as const;
 
 export type PolicyVerdict = "allow" | "ask" | "deny";
 export type PolicyPhase = "dispatch" | "external_mutation";
-export type PolicyIsolation = "shared" | "worktree" | "sandbox" | "remote";
+/** The execution boundary a request runs in. Runs execute in the shared
+ * checkout, so `shared` is the only value (ADR 0244 removed the isolated
+ * workspace provider that produced the others). */
+export type PolicyIsolation = "shared";
 export type PolicyNetworkAccess = "enabled" | "disabled" | "unknown";
 
 /** Host-owned policy document. Workflow metadata cannot supply this value. */

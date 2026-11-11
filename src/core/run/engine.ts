@@ -36,11 +36,6 @@ import {
   policyDigest,
   summarizePolicyRequest,
 } from "../policy/index.ts";
-import { stableDigest } from "../storage/durable-record.ts";
-import {
-  failedWorkflowDiagnosticAdmissionObservation,
-  observeWorkflowDiagnosticAdmission,
-} from "./admission.ts";
 import { assertWorkflowRunId, createWorkflowApproval } from "./approvals.ts";
 import { type BillingProbe, probeBilling } from "./billing.ts";
 import { evidencePreflightError } from "./evidence-preflight.ts";
@@ -60,7 +55,6 @@ import {
   workflowScriptDigest,
   writeWorkflowRunManifest,
 } from "./run-state.ts";
-import { assertProjectionWithinWorkspace, resolveGitGrantRoots } from "./sandbox-projection.ts";
 import { normalizeWorkflowSpecialists, resolveSpecialistAssignment } from "./specialists.ts";
 import { appendWorkflowTranscriptEvent } from "./transcript.ts";
 import type {
@@ -68,7 +62,6 @@ import type {
   AgentOpts,
   BlockedInput,
   EngineOpts,
-  GitAdministrativeGrant,
   ParentAccessEvidence,
   RunReport,
   SpawnFilesystemPolicy,
@@ -76,45 +69,28 @@ import type {
   StageSchema,
   WorkflowAgentProof,
   WorkflowContext,
-  WorkflowDiagnosticAdmissionConfig,
-  WorkflowDiagnosticAdmissionObservation,
-  WorkflowDiagnosticAdmissionProof,
   WorkflowEvidenceRecord,
   WorkflowModule,
   WorkflowProof,
   WorkflowSandboxProjectionEvidence,
 } from "./types.ts";
-import { WORKFLOW_DIAGNOSTIC_ADMISSION_SCHEMA_VERSION } from "./types.ts";
 import { parseStageOutput, validateAgainstSchema } from "./validate.ts";
 import {
   decideWorkerAccess,
   detectParentAccess,
   parseWorkerFullAccessPolicy,
 } from "./worker-access.ts";
-import {
-  attestTerminal,
-  attestWorkspaceFailure,
-  resolveWorkspaceBinding,
-} from "./workspaces/execution.ts";
-import type {
-  WorkspaceAttestation,
-  WorkspaceBinding,
-  WorkspaceCompatibilityExecutionEvidence,
-} from "./workspaces/types.ts";
-import { isWorkspaceAttestation } from "./workspaces/validate.ts";
 
-/** Proof record of the filesystem projection a run applied (ADR 0039/0040).
+/** Proof record of the filesystem projection a run applied (ADR 0039).
  * Absent when no policy was in force, which reads as "no projection applied"
  * rather than "an empty one". */
 function sandboxProjectionEvidence(
   policy: SpawnFilesystemPolicy | undefined,
-  gitWrite: GitAdministrativeGrant,
 ): WorkflowSandboxProjectionEvidence | undefined {
   if (!policy) return undefined;
   return {
     mode: policy.mode,
     writable_roots: [...(policy.writableRoots ?? [])],
-    git_grant: gitWrite,
   };
 }
 
@@ -238,22 +214,17 @@ async function executeWorkflow(
   resumeState: ReturnType<typeof assertWorkflowRunResumable> | undefined,
 ): Promise<RunReport> {
   const frozen = resumeState?.manifest.execution;
-  const isolation = frozen?.isolation ?? opts.isolation ?? "shared";
-  // Before anything is spawned, and before either import path below: an evidence
-  // kind the proof will reject is fatal at the END of a workflow, which is the
-  // most expensive place to learn it. Reading the file is the cheapest moment.
+  // Before anything is spawned: an evidence kind the proof will reject is fatal
+  // at the END of a workflow, which is the most expensive place to learn it.
+  // Reading the file is the cheapest moment.
   assertEvidenceKindsAreUsable(scriptPath, absScript);
-  let sharedWorkflow: WorkflowModule["default"] | undefined;
-  let sharedMeta: ReturnType<typeof normalizeWorkflowMeta> | undefined;
-  if (isolation === "shared") {
-    const mod = (await import(pathToFileURL(absScript).href)) as WorkflowModule;
-    if (typeof mod.default !== "function") {
-      throw new Error(`${scriptPath}: workflow script must \`export default async (ctx) => …\``);
-    }
-    const fallbackName = scriptPath.replace(/^.*\//, "").replace(/\.[cm]?js$/, "");
-    sharedWorkflow = mod.default;
-    sharedMeta = normalizeWorkflowMeta(mod.meta, fallbackName);
+  const mod = (await import(pathToFileURL(absScript).href)) as WorkflowModule;
+  if (typeof mod.default !== "function") {
+    throw new Error(`${scriptPath}: workflow script must \`export default async (ctx) => …\``);
   }
+  const fallbackName = scriptPath.replace(/^.*\//, "").replace(/\.[cm]?js$/, "");
+  const workflow = mod.default;
+  const meta = normalizeWorkflowMeta(mod.meta, fallbackName);
 
   const runId =
     opts.resumeRunId ??
@@ -281,145 +252,21 @@ async function executeWorkflow(
   const approvalAddressee = frozen?.approval_addressee ?? opts.approvalAddressee ?? "operator";
   const subscriptionOnly = frozen?.subscription_only ?? Boolean(opts.subscriptionOnly);
   const allowApiBilling = frozen?.allow_api_billing ?? Boolean(opts.allowApiBilling);
-  const diagnosticAdmissionConfig = frozen?.diagnostic_admission
-    ? normalizeDiagnosticAdmissionConfig(frozen.diagnostic_admission)
-    : resumeState
-      ? undefined
-      : normalizeDiagnosticAdmissionConfig(opts.diagnosticAdmission);
   const startedAt = resumeState?.manifest.started_at ?? new Date().toISOString();
   const t0 = resumeState ? Date.parse(startedAt) : Date.now();
   const scriptSha256 = resumeState?.manifest.script.sha256 ?? workflowScriptDigest(absScript);
-  const fallbackName = scriptPath.replace(/^.*\//, "").replace(/\.[cm]?js$/, "");
-  const fallbackMeta = normalizeWorkflowMeta(undefined, fallbackName);
-  const workspaceProvider = isolation === "shared" ? undefined : opts.workspace?.provider;
-  let workspaceBinding: WorkspaceBinding | undefined;
-  let workspaceFallback: WorkspaceCompatibilityExecutionEvidence | undefined =
-    resumeState?.manifest.execution.workspace_fallback;
-  try {
-    workspaceBinding = await resolveWorkspaceBinding({
-      opts,
-      resumeState,
-      runId,
-      cwd,
-      isolation,
-      absScript,
-      scriptSha256,
-      provider: workspaceProvider,
-      policy,
-      onUnsupportedFallback: (evidence) => {
-        workspaceFallback = evidence;
-      },
-    });
-  } catch (error) {
-    const frozenBinding = resumeState?.manifest.execution.workspace_binding;
-    if (!resumeState || !frozenBinding) throw error;
-    const failure = error instanceof Error ? error : new Error(String(error));
-    const endedAt = new Date().toISOString();
-    const durationMs = Date.now() - t0;
-    const failedAttestation = await attestWorkspaceFailure(workspaceProvider, frozenBinding, error);
-    appendWorkflowTranscriptEvent(opts.coordRoot, runId, "run.resume", {
-      approval_id: resumeState.approvalId,
-      script: absScript,
-      resumed_at: new Date().toISOString(),
-    });
-    appendWorkflowTranscriptEvent(opts.coordRoot, runId, "workspace.reattach.failed", {
-      binding_id: frozenBinding.binding_id,
-      provider_id: frozenBinding.provider.id,
-      status: failedAttestation.status,
-      reason: failure.message,
-      attestation_sha256: stableDigest(failedAttestation),
-    });
-    appendWorkflowTranscriptEvent(opts.coordRoot, runId, "run.end", {
-      ok: false,
-      error: failure.message,
-      agents: 0,
-      cached: 0,
-      cost_usd: 0,
-      duration_ms: durationMs,
-    });
-    try {
-      const proof = buildWorkflowProof({
-        runId,
-        meta: fallbackMeta,
-        status: "failed",
-        startedAt,
-        endedAt,
-        durationMs,
-        transcriptPath,
-        before: resumeState.manifest.repository_before,
-        after: {
-          cwd: frozenBinding.active_root,
-          observation: "unavailable",
-          observation_detail:
-            "Workspace reattachment failed; no trusted after-run snapshot was observed.",
-          dirty_paths: [],
-        },
-        agents: [],
-        evidence: [],
-        diagnosticAdmission: initialDiagnosticAdmissionProof(diagnosticAdmissionConfig),
-        adapterEvidence: opts.adapterEvidence,
-        adapterAttestations: opts.adapterAttestations,
-        sandboxProjection: sandboxProjectionEvidence(
-          opts.filesystemPolicy,
-          opts.gitWrite ?? "none",
-        ),
-        policy: policy
-          ? {
-              config: policy,
-              decisions: [],
-              isolation,
-              networkAccess,
-            }
-          : undefined,
-        workspaceBinding: frozenBinding,
-        workspaceAttestation: failedAttestation,
-        error: failure.message,
-      });
-      writeWorkflowProof(proofPath, proof);
-    } catch (proofError) {
-      throw new WorkflowRunError(
-        `${failure.message}; recovery proof packet write also failed: ${(proofError as Error).message}`,
-        runId,
-        proofPath,
-        failure,
-      );
-    }
-    throw new WorkflowRunError(failure.message, runId, proofPath, failure);
-  }
-  const effectiveIsolation = workspaceFallback?.effective_isolation ?? isolation;
-  const executionCwd = workspaceBinding?.active_root ?? cwd;
-  // Validate the projection once, before any child launches, so a policy that
-  // would reach outside the provider's validated root fails the run rather than
-  // silently widening one child's write access (ADR 0039).
-  const requestedPolicy = opts.filesystemPolicy;
-  if (requestedPolicy?.writableRoots?.length) {
-    if (!workspaceBinding) {
-      throw new Error(
-        "a filesystem policy with writable roots requires an isolated workspace; none is bound to this run",
-      );
-    }
-    assertProjectionWithinWorkspace(
-      "workflow",
-      workspaceBinding.writable_root.realpath,
-      requestedPolicy.writableRoots,
-    );
-  }
-  // The Git grant is resolved after containment on purpose: caller-supplied
-  // roots must stay inside the workspace, while these come from the verified
-  // binding and are the one sanctioned way out of it (ADR 0040).
-  const gitWrite = opts.gitWrite ?? "none";
-  const gitGrantRoots = resolveGitGrantRoots(gitWrite, workspaceBinding);
-  if (gitGrantRoots.length > 0 && !requestedPolicy) {
+  const executionCwd = cwd;
+  // A filesystem policy is projected into each adapter's own sandbox
+  // (ADR 0039). Explicit writable roots need a root that something has already
+  // validated, and the run engine has no isolated workspace to provide one, so
+  // a policy that names them is refused before any child launches rather than
+  // silently widening a child's write access.
+  const filesystemPolicy: SpawnFilesystemPolicy | undefined = opts.filesystemPolicy;
+  if (filesystemPolicy?.writableRoots?.length) {
     throw new Error(
-      `gitWrite "${gitWrite}" has no effect without a filesystem policy to carry it; set filesystemPolicy or drop the grant`,
+      "a filesystem policy with writable roots is not supported: runs execute in the shared checkout, which has no validated root to contain them",
     );
   }
-  const filesystemPolicy: SpawnFilesystemPolicy | undefined = requestedPolicy
-    ? {
-        ...requestedPolicy,
-        writableRoots: [...(requestedPolicy.writableRoots ?? []), ...gitGrantRoots],
-      }
-    : undefined;
   // Worker full access (ADR 0192) is decided per launch. The host policy is
   // read once per run; the parent probe runs at most once, and only when a
   // launch has already cleared every cheaper condition.
@@ -434,7 +281,7 @@ async function executeWorkflow(
       manifest: {
         schema_version: WORKFLOW_RUN_MANIFEST_SCHEMA_VERSION,
         run_id: runId,
-        name: sharedMeta?.name ?? fallbackMeta.name,
+        name: meta.name,
         started_at: startedAt,
         script: { path: absScript, sha256: scriptSha256 },
         repository_before: executionRepoBefore,
@@ -443,85 +290,19 @@ async function executeWorkflow(
           default_adapter: defaultAdapter,
           max_agents: maxAgents,
           concurrency,
-          diagnostic_admission: diagnosticAdmissionConfig,
           subscription_only: subscriptionOnly,
           allow_api_billing: allowApiBilling,
           approval_mode: approvalMode,
           approval_addressee: approvalAddressee,
-          isolation,
           network_access: networkAccess,
           policy: policy ? (policy as NormalizedPolicy) : undefined,
           specialists,
-          workspace_binding: workspaceBinding,
-          workspace_fallback: workspaceFallback,
         },
       },
     });
   }
 
-  let workflow = sharedWorkflow;
-  let meta = sharedMeta ?? fallbackMeta;
-  let initializationError: Error | undefined;
-  let initializationAttestation: WorkspaceAttestation | undefined;
-  if (isolation !== "shared") {
-    try {
-      const mod = (await import(pathToFileURL(absScript).href)) as WorkflowModule;
-      if (typeof mod.default !== "function") {
-        throw new Error(`${scriptPath}: workflow script must \`export default async (ctx) => …\``);
-      }
-      workflow = mod.default;
-      meta = normalizeWorkflowMeta(mod.meta, fallbackName);
-    } catch (error) {
-      initializationError = error instanceof Error ? error : new Error(String(error));
-    }
-  }
-  if (workspaceBinding && workspaceProvider) {
-    try {
-      const postImport = await workspaceProvider.reattach(workspaceBinding);
-      if (!isWorkspaceAttestation(postImport, workspaceBinding) || postImport.status !== "ok") {
-        initializationAttestation = isWorkspaceAttestation(postImport, workspaceBinding)
-          ? postImport
-          : undefined;
-        throw new Error("workspace authority changed during workflow module initialization");
-      }
-      appendWorkflowTranscriptEvent(
-        opts.coordRoot,
-        runId,
-        "workspace.reattach.module_initialized",
-        {
-          binding_id: workspaceBinding.binding_id,
-          provider_id: workspaceBinding.provider.id,
-          attestation_sha256: stableDigest(postImport),
-        },
-      );
-    } catch (error) {
-      const reattachmentError = error instanceof Error ? error : new Error(String(error));
-      initializationAttestation ??= await attestWorkspaceFailure(
-        workspaceProvider,
-        workspaceBinding,
-        error,
-      );
-      initializationError = initializationError
-        ? new Error(`${initializationError.message}; ${reattachmentError.message}`, {
-            cause: reattachmentError,
-          })
-        : reattachmentError;
-      appendWorkflowTranscriptEvent(
-        opts.coordRoot,
-        runId,
-        "workspace.reattach.module_initialization_failed",
-        {
-          binding_id: workspaceBinding.binding_id,
-          provider_id: workspaceBinding.provider.id,
-          status: initializationAttestation.status,
-          reason: reattachmentError.message,
-          attestation_sha256: stableDigest(initializationAttestation),
-        },
-      );
-    }
-  }
   const name = meta.name;
-  let observedWorkspaceAttestation = initializationAttestation;
 
   // Per-child fixed context overhead: children spawn in `cwd` and load its
   // repo-instructions file into their system prompt, cache-writing it once
@@ -558,8 +339,6 @@ async function executeWorkflow(
     history?.policyDecisions.map((decision) => [decision.id, decision]),
   );
   const acceptanceIds = new Set(meta.acceptance.map((criterion) => criterion.id));
-  let diagnosticAdmission = initialDiagnosticAdmissionProof(diagnosticAdmissionConfig);
-  let diagnosticAdmissionPromise: Promise<void> | undefined;
 
   const transcript = (event: string, data: Record<string, unknown>): void => {
     appendWorkflowTranscriptEvent(opts.coordRoot, runId, event, { stage: currentStage, ...data });
@@ -578,46 +357,6 @@ async function executeWorkflow(
       result_digest: digestResult(result, resultKind),
       result,
     });
-  };
-
-  const ensureDiagnosticAdmissionObserved = async (): Promise<void> => {
-    if (!diagnosticAdmissionConfig) return;
-    diagnosticAdmissionPromise ??= (async () => {
-      const requestedAt = new Date();
-      let observation: WorkflowDiagnosticAdmissionObservation;
-      try {
-        observation = await (
-          opts.observeDiagnosticAdmission ??
-          ((coordRoot, observationRunId) =>
-            observeWorkflowDiagnosticAdmission({
-              coordRoot,
-              runId: observationRunId,
-            }))
-        )(opts.coordRoot, runId);
-      } catch (error) {
-        observation = failedWorkflowDiagnosticAdmissionObservation(error, requestedAt);
-      }
-      diagnosticAdmission = {
-        schema_version: WORKFLOW_DIAGNOSTIC_ADMISSION_SCHEMA_VERSION,
-        mode: "shadow",
-        trigger: "before-first-dispatch",
-        state: "observed",
-        action: "none",
-        observation,
-      };
-      transcript("diagnostic.admission", {
-        schema_version: diagnosticAdmission.schema_version,
-        mode: diagnosticAdmission.mode,
-        trigger: diagnosticAdmission.trigger,
-        action: diagnosticAdmission.action,
-        observation,
-      });
-      log(
-        `[admission] shadow pressure=${observation.advice.assessment.state} ` +
-          `action=${observation.advice.assessment.recommended_action}; dispatch unchanged`,
-      );
-    })();
-    await diagnosticAdmissionPromise;
   };
 
   // Bounded concurrency gate shared by every spawn in the run — direct
@@ -845,7 +584,7 @@ async function executeWorkflow(
         max_turns: agentOpts.maxTurns ?? DEFAULT_MAX_TURNS,
         timeout_ms: agentOpts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
         prompt_bytes: Buffer.byteLength(dispatchPrompt),
-        isolation: effectiveIsolation,
+        isolation: "shared",
         network_access: networkAccess,
         current_cost_usd: round4(costUsd + reservedCostUsd),
         projected_cost_usd: null,
@@ -998,7 +737,6 @@ async function executeWorkflow(
     };
     await acquire();
     try {
-      await ensureDiagnosticAdmissionObserved();
       transcript("agent.start", {
         id,
         label,
@@ -1197,7 +935,7 @@ async function executeWorkflow(
       phase: "external_mutation",
       action: input.action,
       path: input.path ? resolve(executionCwd, input.path) : undefined,
-      isolation: effectiveIsolation,
+      isolation: "shared",
       network_access: network,
       service: input.service,
       target: input.target,
@@ -1241,30 +979,14 @@ async function executeWorkflow(
         concurrency,
         specialists: Object.keys(specialists),
         policy: policy ? { name: policy.name, sha256: policyDigest(policy) } : null,
-        isolation: effectiveIsolation,
+        isolation: "shared",
         network_access: networkAccess,
-        workspace_binding: workspaceBinding
-          ? { binding_id: workspaceBinding.binding_id, provider_id: workspaceBinding.provider.id }
-          : null,
       });
     }
-    if (initializationError) throw initializationError;
-    if (!workflow) throw new Error("workflow module initialization did not produce an executable");
     const result = await workflow(ctx);
     if (terminalRecordingError) throw terminalRecordingError;
     const endedAt = new Date().toISOString();
     const durationMs = Date.now() - t0;
-    const workspaceAttestation = workspaceBinding
-      ? await attestTerminal(workspaceProvider, workspaceBinding)
-      : undefined;
-    observedWorkspaceAttestation = workspaceAttestation;
-    if (workspaceAttestation && workspaceAttestation.status !== "ok") {
-      throw new Error(
-        `terminal workspace attestation ${workspaceAttestation.status}: ${
-          workspaceAttestation.provider_drift.join("; ") || "provider could not prove the workspace"
-        }`,
-      );
-    }
     transcript("run.end", {
       ok: true,
       agents: agentsSpawned,
@@ -1286,21 +1008,17 @@ async function executeWorkflow(
         after: snapshotRepo(executionCwd),
         agents: Array.from(agentProofs.values()),
         evidence: evidenceRecords,
-        diagnosticAdmission,
         adapterEvidence: opts.adapterEvidence,
         adapterAttestations: opts.adapterAttestations,
-        sandboxProjection: sandboxProjectionEvidence(filesystemPolicy, gitWrite),
+        sandboxProjection: sandboxProjectionEvidence(filesystemPolicy),
         policy: policy
           ? {
               config: policy,
               decisions: Array.from(policyDecisions.values()),
-              isolation: effectiveIsolation,
+              isolation: "shared",
               networkAccess,
             }
           : undefined,
-        workspaceBinding,
-        workspaceAttestation,
-        workspaceFallback,
         result,
       });
       writeWorkflowProof(proofPath, proof);
@@ -1329,8 +1047,6 @@ async function executeWorkflow(
         mode: subscriptionOnly ? "subscription" : p.mode,
       })),
       policy: proof.policy?.summary,
-      diagnosticAdmission,
-      workspaceBinding,
     };
     return report;
   } catch (err) {
@@ -1349,10 +1065,6 @@ async function executeWorkflow(
       duration_ms: durationMs,
     });
     try {
-      const workspaceAttestation = workspaceBinding
-        ? (observedWorkspaceAttestation ??
-          (await attestTerminal(workspaceProvider, workspaceBinding)))
-        : undefined;
       const proof = buildWorkflowProof({
         runId,
         meta,
@@ -1365,21 +1077,17 @@ async function executeWorkflow(
         after: snapshotRepo(executionCwd),
         agents: Array.from(agentProofs.values()),
         evidence: evidenceRecords,
-        diagnosticAdmission,
         adapterEvidence: opts.adapterEvidence,
         adapterAttestations: opts.adapterAttestations,
-        sandboxProjection: sandboxProjectionEvidence(filesystemPolicy, gitWrite),
+        sandboxProjection: sandboxProjectionEvidence(filesystemPolicy),
         policy: policy
           ? {
               config: policy,
               decisions: Array.from(policyDecisions.values()),
-              isolation: effectiveIsolation,
+              isolation: "shared",
               networkAccess,
             }
           : undefined,
-        workspaceBinding,
-        workspaceAttestation,
-        workspaceFallback,
         error: (err as Error).message,
         // A deliberate stop-on-human, not a work failure. Overrides whatever the
         // agents' own classes would have derived: the script's determination is
@@ -1551,36 +1259,6 @@ function loadRunHistory(path: string): {
 
 function round4(n: number): number {
   return Math.round(n * 10_000) / 10_000;
-}
-
-function normalizeDiagnosticAdmissionConfig(
-  value: WorkflowDiagnosticAdmissionConfig | undefined,
-): WorkflowDiagnosticAdmissionConfig | undefined {
-  if (value === undefined) return undefined;
-  if (
-    value.schema_version !== WORKFLOW_DIAGNOSTIC_ADMISSION_SCHEMA_VERSION ||
-    value.mode !== "shadow"
-  ) {
-    throw new Error("diagnosticAdmission must use schema_version 1 and mode shadow");
-  }
-  return {
-    schema_version: WORKFLOW_DIAGNOSTIC_ADMISSION_SCHEMA_VERSION,
-    mode: "shadow",
-  };
-}
-
-function initialDiagnosticAdmissionProof(
-  config: WorkflowDiagnosticAdmissionConfig | undefined,
-): WorkflowDiagnosticAdmissionProof | undefined {
-  if (!config) return undefined;
-  return {
-    schema_version: WORKFLOW_DIAGNOSTIC_ADMISSION_SCHEMA_VERSION,
-    mode: "shadow",
-    trigger: "before-first-dispatch",
-    state: "not-needed",
-    action: "none",
-    reason_code: "no-dispatch",
-  };
 }
 
 function assertAgentCapacity(agentsSpawned: number, maxAgents: number): void {

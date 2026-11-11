@@ -1,0 +1,325 @@
+{
+  "schema_version": 2,
+  "run": {
+    "id": "wf-2026-11-10T01-51-30-282Z-b78d36",
+    "name": "legacy-isolated",
+    "status": "succeeded",
+    "started_at": "2026-11-10T01:51:30.283Z",
+    "ended_at": "2026-11-10T01:51:30.544Z",
+    "duration_ms": 261,
+    "result": {
+      "kind": "json",
+      "sha256": "cc7b739d90b4ca23996c454472ab0d2e624ade220ee8d5ec5ee371275b293849",
+      "bytes": 40
+    }
+  },
+  "acceptance": {
+    "criteria": [],
+    "summary": {
+      "satisfied": 0,
+      "unsatisfied": 0,
+      "unknown": 0,
+      "total": 0
+    }
+  },
+  "agents": [],
+  "evidence": [],
+  "diagnostic_admission": {
+    "schema_version": 1,
+    "mode": "shadow",
+    "trigger": "before-first-dispatch",
+    "state": "observed",
+    "action": "none",
+    "observation": {
+      "requested_at": "2026-08-31T13:01:02.453Z",
+      "observed_at": "2026-08-31T13:01:02.558Z",
+      "wait_ms": 105,
+      "service_state": "started",
+      "freshness": "fresh",
+      "sampled_at": "2026-08-31T13:01:02.527Z",
+      "advice": {
+        "schema_version": 1,
+        "evaluated_at": "2026-08-31T13:01:02.558Z",
+        "pressure": "critical",
+        "fan_out_recommendation": "avoid-new-fan-out",
+        "observer_only": true,
+        "summary": "Critical local pressure is active. Avoid starting additional agent work until the findings change.",
+        "source_capability": {
+          "source_kind": "supervisor.findings",
+          "state": "supported"
+        },
+        "active_finding_count": 4,
+        "contributing_finding_count": 4,
+        "omitted_contributing_finding_count": 0,
+        "contributing_findings": [
+          {
+            "finding_id": "find_191755b35af4098c87d8b4e1",
+            "finding_kind": "group.memory-pressure",
+            "severity": "critical",
+            "summary": "Unattributed processes uses 6888960000 resident bytes.",
+            "scope_kind": "unattributed",
+            "scope_id": "unattributed",
+            "occurrence_count": 1
+          },
+          {
+            "finding_id": "find_636ee0a16e65f87f415be825",
+            "finding_kind": "process.memory-pressure",
+            "severity": "critical",
+            "summary": "Process 1754869 uses 1256411136 resident bytes.",
+            "scope_kind": "process",
+            "scope_id": "1754869:10015295",
+            "occurrence_count": 1
+          },
+          {
+            "finding_id": "find_6f30c70d7b12c93178fd356c",
+            "finding_kind": "service.stale",
+            "severity": "warning",
+            "summary": "semantic-reader was recorded running, but its process is no longer present.",
+            "scope_kind": "service",
+            "scope_id": "semantic-reader",
+            "occurrence_count": 1
+          },
+          {
+            "finding_id": "find_eda29a1003b36f29cfbdaacf",
+            "finding_kind": "machine.swap-pressure",
+            "severity": "warning",
+            "summary": "Machine swap is 85.8% used.",
+            "scope_kind": "machine",
+            "scope_id": "local",
+            "occurrence_count": 1
+          }
+        ],
+        "reasons": [
+          {
+            "code": "critical_findings_active",
+            "summary": "2 active critical findings require attention.",
+            "finding_ids": ["find_191755b35af4098c87d8b4e1", "find_636ee0a16e65f87f415be825"]
+          },
+          {
+            "code": "warning_findings_active",
+            "summary": "2 active warning findings indicate elevated pressure.",
+            "finding_ids": ["find_6f30c70d7b12c93178fd356c", "find_eda29a1003b36f29cfbdaacf"]
+          }
+        ]
+      }
+    }
+  },
+  "execution": {
+    "schema_version": 1,
+    "binding": {
+      "schema_version": 1,
+      "binding_id": "ws-f95d239bf2230a77855989b6",
+      "workspace_id": "local-5ab68031e4552019f9bad07f",
+      "run_id": "wf-2026-11-10T01-51-30-282Z-b78d36",
+      "owner": {
+        "kind": "standalone",
+        "work_item_id": null,
+        "attempt": null
+      },
+      "provider": {
+        "id": "local-git-worktree",
+        "version": "1",
+        "capability_digest": "cfefbef3b10f8e19c66e1ed57ee9e865158d76365d281e41b10710e674ffab84"
+      },
+      "isolation": "worktree",
+      "network_access": "enabled",
+      "workspace_root": "__ROOT__/.harnery-workspaces/ws-f95d239bf2230a77855989b6",
+      "workspace_root_identity": {
+        "platform": "linux",
+        "device": "2096",
+        "inode": "559006"
+      },
+      "active_root": "__ROOT__/.harnery-workspaces/ws-f95d239bf2230a77855989b6",
+      "active_root_identity": {
+        "platform": "linux",
+        "device": "2096",
+        "inode": "559006"
+      },
+      "integration_root": "__ROOT__/fixture",
+      "writable_root": {
+        "configured": "__ROOT__",
+        "realpath": "__ROOT__",
+        "identity": {
+          "platform": "linux",
+          "device": "2096",
+          "inode": "294234"
+        }
+      },
+      "repository": {
+        "source_root": {
+          "configured": "__ROOT__/fixture",
+          "realpath": "__ROOT__/fixture",
+          "identity": {
+            "platform": "linux",
+            "device": "2096",
+            "inode": "558834"
+          }
+        },
+        "common_dir": {
+          "realpath": "__ROOT__/fixture/.git",
+          "identity": {
+            "platform": "linux",
+            "device": "2096",
+            "inode": "558842"
+          }
+        },
+        "base_commit": "c2bb202c6f762d87599ace07d95fdec8969dd5ef",
+        "target_commit": "c2bb202c6f762d87599ace07d95fdec8969dd5ef",
+        "target_ref": "refs/heads/master",
+        "workspace_ref": "refs/heads/harnery/workspace/ws-f95d239bf2230a77855989b6",
+        "workspace_branch": "harnery/workspace/ws-f95d239bf2230a77855989b6",
+        "gitdir": {
+          "realpath": "__ROOT__/fixture/.git/worktrees/10",
+          "identity": {
+            "platform": "linux",
+            "device": "2096",
+            "inode": "559009"
+          }
+        },
+        "branch_created_by_provider": true
+      },
+      "generation": 1,
+      "recovery_token": "ee9c4687ba44b6e8216c23e5f4e22109d880b3b6b31f19ecdd9b5c240526101d",
+      "request_sha256": "8ad4a7f21c00fdb0770455e1190485c353a32dc22ad256fc53e3a129d23fda74",
+      "created_at": "2026-11-10T01:51:30.315Z"
+    },
+    "terminal_attestation": {
+      "schema_version": 1,
+      "binding_id": "ws-f95d239bf2230a77855989b6",
+      "workspace_id": "local-5ab68031e4552019f9bad07f",
+      "run_id": "wf-2026-11-10T01-51-30-282Z-b78d36",
+      "owner": {
+        "kind": "standalone",
+        "work_item_id": null,
+        "attempt": null
+      },
+      "provider": {
+        "id": "local-git-worktree",
+        "version": "1",
+        "capability_digest": "cfefbef3b10f8e19c66e1ed57ee9e865158d76365d281e41b10710e674ffab84"
+      },
+      "recorded_at": "2026-11-10T01:51:30.559Z",
+      "containment": {
+        "writable_root": true,
+        "workspace_root": true,
+        "active_root": true,
+        "integration_root": true
+      },
+      "filesystem": {
+        "root_identity_match": true,
+        "workspace_identity": {
+          "platform": "linux",
+          "device": "2096",
+          "inode": "559006"
+        },
+        "active_identity": {
+          "platform": "linux",
+          "device": "2096",
+          "inode": "559006"
+        }
+      },
+      "provider_drift": [],
+      "workspace_exists": true,
+      "repository": {
+        "source_root": {
+          "configured": "__ROOT__/fixture",
+          "realpath": "__ROOT__/fixture",
+          "identity": {
+            "platform": "linux",
+            "device": "2096",
+            "inode": "558834"
+          }
+        },
+        "common_dir": {
+          "realpath": "__ROOT__/fixture/.git",
+          "identity": {
+            "platform": "linux",
+            "device": "2096",
+            "inode": "558842"
+          }
+        },
+        "active_gitdir": {
+          "realpath": "__ROOT__/fixture/.git/worktrees/10",
+          "identity": {
+            "platform": "linux",
+            "device": "2096",
+            "inode": "559009"
+          }
+        },
+        "worktree_registered": true,
+        "current_ref": "refs/heads/harnery/workspace/ws-f95d239bf2230a77855989b6",
+        "workspace_ref_oid": "c2bb202c6f762d87599ace07d95fdec8969dd5ef",
+        "target_ref_oid": "c2bb202c6f762d87599ace07d95fdec8969dd5ef",
+        "head_commit": "c2bb202c6f762d87599ace07d95fdec8969dd5ef",
+        "base_is_ancestor": true,
+        "target_is_ancestor": true,
+        "dirty_paths": [],
+        "conflicts": [],
+        "operation_in_progress": []
+      },
+      "resource_state": "active",
+      "unsupported": [],
+      "unknowns": [
+        {
+          "code": "network_not_attested",
+          "message": "the local Git provider does not attest network enforcement"
+        }
+      ],
+      "status": "ok"
+    },
+    "terminal_lifecycle_state": "completed_unintegrated",
+    "drift": [],
+    "unsupported": [],
+    "unknowns": [
+      {
+        "code": "network_not_attested",
+        "message": "the local Git provider does not attest network enforcement"
+      }
+    ],
+    "receipts": {
+      "request": "workspace-request.json",
+      "cancellation_outcome": "cancellation/outcome.json",
+      "integration_plan": "integration/plan.json",
+      "integration_authorization": "integration/authorization.json",
+      "integration_apply": "integration/receipt.json",
+      "cleanup_intent": "cleanup/intent.json",
+      "cleanup_receipt": "cleanup/receipt.json"
+    }
+  },
+  "repository": {
+    "source": "engine",
+    "before": {
+      "cwd": "__ROOT__/.harnery-workspaces/ws-f95d239bf2230a77855989b6",
+      "observation": "ok",
+      "root": "__ROOT__/.harnery-workspaces/ws-f95d239bf2230a77855989b6",
+      "branch": "harnery/workspace/ws-f95d239bf2230a77855989b6",
+      "head": "c2bb202c6f762d87599ace07d95fdec8969dd5ef",
+      "dirty_paths": []
+    },
+    "after": {
+      "cwd": "__ROOT__/.harnery-workspaces/ws-f95d239bf2230a77855989b6",
+      "observation": "ok",
+      "root": "__ROOT__/.harnery-workspaces/ws-f95d239bf2230a77855989b6",
+      "branch": "harnery/workspace/ws-f95d239bf2230a77855989b6",
+      "head": "c2bb202c6f762d87599ace07d95fdec8969dd5ef",
+      "dirty_paths": []
+    },
+    "drift": {
+      "branch_changed": false,
+      "head_changed": false,
+      "dirty_paths_added": [],
+      "dirty_paths_cleared": [],
+      "dirty_paths_retained": [],
+      "incomplete": false
+    }
+  },
+  "adapters": [],
+  "unknowns": [],
+  "integrity": {
+    "transcript": {
+      "path": "transcript.jsonl",
+      "sha256": "23b48b7d921c12054adcb1853f64fc6836454fcdd75ad2275773aaa7336192fa",
+      "bytes": 1724
+    }
+  }
+}

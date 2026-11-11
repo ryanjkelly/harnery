@@ -28,6 +28,7 @@ export const HARNERY_RETIRED_ROOTS: readonly HarneryRetiredRoot[] = Object.freez
   { name: "governor-service", feature: "the governor service", retired_by: "ADR 0238" },
   { name: "councils", feature: "councils", retired_by: "ADR 0238" },
   { name: "mailbox", feature: "the council and governor mailbox", retired_by: "ADR 0238" },
+  { name: "workspaces", feature: "isolated run workspaces", retired_by: "ADR 0244" },
 ]);
 
 /** The same inspection bound `rm` applies without artifact ownership. */

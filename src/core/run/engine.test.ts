@@ -12,27 +12,16 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { removeDir } from "../../../tests/helpers/remove-dir.ts";
-import {
-  hysteresisFixture,
-  pressureAssessmentFixture,
-} from "../../../tests/helpers/resource-status.ts";
 import { recordLiveLifecycleChangeV3 } from "../agents/live-authority-v3.ts";
 import { evaluateStopHook } from "../agents/rules/stop-hook.ts";
 import * as heartbeatWriter from "../agents/state/heartbeat-writer.ts";
-import { buildDiagnosticAdvice } from "../diagnostics/advice.ts";
 import { projectCoordinationViewV3 } from "../events/v3/coordination-view.ts";
 import { liveInstanceIdV3 } from "../events/v3/live-routing.ts";
 import { readLedgerV3 } from "../events/v3/reader.ts";
 import { runWorkflow } from "./engine.ts";
 import * as childSessions from "./live-session-v3.ts";
 import { WORKFLOW_TRANSCRIPT_EVENT_BYTES } from "./transcript.ts";
-import type {
-  Spawner,
-  SpawnRequest,
-  SpawnResult,
-  WorkflowDiagnosticAdmissionObservation,
-  WorkflowProof,
-} from "./types.ts";
+import type { Spawner, SpawnRequest, SpawnResult, WorkflowProof } from "./types.ts";
 import { parseStageOutput, validateAgainstSchema } from "./validate.ts";
 
 let root: string;
@@ -80,20 +69,19 @@ const quiet = {
 };
 
 describe("runWorkflow", () => {
-  test("a Git write grant on a run with no isolated workspace fails the run (ADR 0040)", async () => {
-    // Proves the engine actually consults the grant resolver, which the
-    // resolver's own unit tests cannot show. The grant reaches outside the
-    // workspace, so a run with no workspace has nothing to resolve it from and
-    // must fail rather than proceed without the capability it asked for.
+  test("a filesystem policy with writable roots is refused before any child launches", async () => {
+    // Runs execute in the shared checkout, which has no validated root to
+    // contain explicit writable roots, so the engine refuses the projection
+    // rather than silently widening a child's write access (ADR 0039).
     const script = writeScript(`export default async () => "unreachable";`);
     await expect(
       runWorkflow(script, {
         coordRoot: root,
         spawners: {},
-        gitWrite: "shared-repository",
+        filesystemPolicy: { mode: "workspace-write", writableRoots: [root] },
         ...quiet,
       }),
-    ).rejects.toThrow(/no isolated workspace/);
+    ).rejects.toThrow(/writable roots is not supported/);
   });
 
   test("gives a standalone script no work context", async () => {
@@ -770,83 +758,6 @@ describe("runWorkflow", () => {
     }
   });
 
-  test("records critical shadow advice before dispatch without changing dispatch", async () => {
-    const script = writeScript(`export default ({ agent }) => agent("do the work")`);
-    let observerFinished = false;
-    let spawnCalls = 0;
-    const report = await runWorkflow(script, {
-      coordRoot: root,
-      spawners: {
-        "claude-code": async () => {
-          expect(observerFinished).toBe(true);
-          spawnCalls++;
-          return okSpawn("done");
-        },
-      },
-      diagnosticAdmission: { schema_version: 1, mode: "shadow" },
-      observeDiagnosticAdmission: async () => {
-        observerFinished = true;
-        return criticalObservation();
-      },
-      ...quiet,
-    });
-
-    expect(spawnCalls).toBe(1);
-    expect(report.diagnosticAdmission?.action).toBe("none");
-    expect(report.diagnosticAdmission?.observation?.advice.assessment.state).toBe("critical");
-    expect(report.diagnosticAdmission?.observation?.advice.assessment.observer_only).toBe(true);
-    expect(report.diagnosticAdmission?.observation?.advice.prior_hysteresis?.state).toBe(
-      "elevated",
-    );
-    const proof = JSON.parse(readFileSync(report.proofPath, "utf8")) as WorkflowProof;
-    expect(proof.diagnostic_admission).toEqual(report.diagnosticAdmission);
-    const manifest = JSON.parse(
-      readFileSync(join(root, ".harnery", "workflows", report.runId, "run.json"), "utf8"),
-    );
-    expect(manifest.schema_version).toBe(2);
-    expect(manifest.execution.diagnostic_admission).toEqual({
-      schema_version: 1,
-      mode: "shadow",
-    });
-    const events = readTranscript();
-    expect(events.findIndex((event) => event.event === "diagnostic.admission")).toBeLessThan(
-      events.findIndex((event) => event.event === "agent.start"),
-    );
-  });
-
-  test("does not observe pressure when every agent call is satisfied from cache", async () => {
-    const script = writeScript(`export default ({ agent }) => agent("stable work")`);
-    const first = await runWorkflow(script, {
-      coordRoot: root,
-      spawners: { "claude-code": async () => okSpawn("cached") },
-      ...quiet,
-    });
-    let observations = 0;
-    const second = await runWorkflow(script, {
-      coordRoot: root,
-      spawners: { "claude-code": async () => okSpawn("must not spawn") },
-      resumeFrom: first.runId,
-      diagnosticAdmission: { schema_version: 1, mode: "shadow" },
-      observeDiagnosticAdmission: async () => {
-        observations++;
-        return criticalObservation();
-      },
-      ...quiet,
-    });
-
-    expect(second.agentsSpawned).toBe(0);
-    expect(second.agentsCached).toBe(1);
-    expect(observations).toBe(0);
-    expect(second.diagnosticAdmission).toEqual({
-      schema_version: 1,
-      mode: "shadow",
-      trigger: "before-first-dispatch",
-      state: "not-needed",
-      action: "none",
-      reason_code: "no-dispatch",
-    });
-  });
-
   function readTranscript(): Array<Record<string, unknown> & { event: string }> {
     const dir = join(root, ".harnery", "workflows");
     expect(existsSync(dir)).toBe(true);
@@ -857,31 +768,6 @@ describe("runWorkflow", () => {
       .map((l) => JSON.parse(l));
   }
 });
-
-function criticalObservation(): WorkflowDiagnosticAdmissionObservation {
-  const evaluatedAt = "2026-08-31T12:00:00.050Z";
-  return {
-    requested_at: "2026-08-31T12:00:00.000Z",
-    observed_at: evaluatedAt,
-    wait_ms: 50,
-    service_state: "running",
-    freshness: "fresh",
-    sampled_at: evaluatedAt,
-    advice: buildDiagnosticAdvice({
-      assessment: pressureAssessmentFixture({
-        state: "critical",
-        limiting_resource: "memory",
-        recommended_action: "avoid-new-heavy-work",
-        observed_at: evaluatedAt,
-        summary: "Memory is contended, so do not start new heavy work.",
-      }),
-      priorHysteresis: hysteresisFixture({ state: "elevated" }),
-      sourceCapability: { source_kind: "supervisor.pressure", state: "supported" },
-      activeFindingCount: 1,
-      evaluatedAt,
-    }),
-  };
-}
 
 describe("parseCursorOutput", () => {
   test("json envelope, error envelope, and non-json fallback", async () => {

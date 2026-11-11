@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { type RepoSnapshot, repoComparisonProblems } from "../context/observation.ts";
-import { DIAGNOSTIC_ADVICE_SCHEMA_VERSION } from "../diagnostics/contract.ts";
 import type {
   NormalizedPolicy,
   PolicyDecision,
@@ -10,8 +9,7 @@ import type {
   PolicyNetworkAccess,
 } from "../policy/index.ts";
 import { policyDigest } from "../policy/index.ts";
-import { stableDigest, writeImmutableJson } from "../storage/durable-record.ts";
-import { readWorkflowRunManifest } from "./run-state.ts";
+import { writeImmutableJson } from "../storage/durable-record.ts";
 import type {
   AcceptanceCriterion,
   AcceptanceResult,
@@ -23,7 +21,6 @@ import type {
   RunFailureClass,
   SpawnFailureClass,
   WorkflowAgentProof,
-  WorkflowDiagnosticAdmissionProof,
   WorkflowEvidenceInput,
   WorkflowEvidenceRecord,
   WorkflowMeta,
@@ -34,23 +31,7 @@ import type {
   WorkflowRepoSnapshot,
   WorkflowSandboxProjectionEvidence,
 } from "./types.ts";
-import {
-  EVIDENCE_KINDS,
-  WORKFLOW_DIAGNOSTIC_ADMISSION_SCHEMA_VERSION,
-  WORKFLOW_PROOF_SCHEMA_VERSION,
-} from "./types.ts";
-import type {
-  WorkspaceAttestation,
-  WorkspaceBinding,
-  WorkspaceCompatibilityExecutionEvidence,
-  WorkspaceExecutionEvidence,
-} from "./workspaces/index.ts";
-import {
-  isWorkspaceBoundExecutionEvidence,
-  isWorkspaceCompatibilityExecutionEvidence,
-  isWorkspaceExecutionEvidence,
-  workspaceProofLifecycle,
-} from "./workspaces/validate.ts";
+import { EVIDENCE_KINDS, WORKFLOW_PROOF_SCHEMA_VERSION } from "./types.ts";
 
 const MAX_ACCEPTANCE_CRITERIA = 50;
 const MAX_EVIDENCE_RECORDS = 200;
@@ -83,7 +64,6 @@ export interface BuildWorkflowProofInput {
   after: RepoSnapshot;
   agents: WorkflowAgentProof[];
   evidence: WorkflowEvidenceRecord[];
-  diagnosticAdmission?: WorkflowDiagnosticAdmissionProof;
   adapterEvidence?: Readonly<Record<string, AdapterEvidenceCapability | undefined>>;
   /** Filesystem policy actually projected into children (ADR 0039). */
   sandboxProjection?: WorkflowSandboxProjectionEvidence;
@@ -99,9 +79,6 @@ export interface BuildWorkflowProofInput {
   /** Set when the script called ctx.blocked(): the run stopped because a human
    * must rule. Forces run class "decision" regardless of the agents' classes. */
   blocked?: { reason: string; decisionId?: string };
-  workspaceBinding?: WorkspaceBinding;
-  workspaceAttestation?: WorkspaceAttestation;
-  workspaceFallback?: WorkspaceCompatibilityExecutionEvidence;
   result?: unknown;
   error?: string;
 }
@@ -296,11 +273,6 @@ export function buildWorkflowProof(input: BuildWorkflowProofInput): WorkflowProo
     agents,
     evidence: input.evidence,
     policy: input.policy ? buildPolicyProof(input.policy) : undefined,
-    ...(input.diagnosticAdmission ? { diagnostic_admission: input.diagnosticAdmission } : {}),
-    execution:
-      input.workspaceBinding && input.workspaceAttestation
-        ? buildExecutionEvidence(input.status, input.workspaceBinding, input.workspaceAttestation)
-        : input.workspaceFallback,
     repository,
     ...(input.sandboxProjection ? { sandbox_projection: input.sandboxProjection } : {}),
     adapters,
@@ -354,6 +326,14 @@ export function writeWorkflowProof(path: string, proof: WorkflowProof): void {
   writeImmutableJson(path, proof);
 }
 
+/**
+ * Read a stored proof packet as run history.
+ *
+ * Packets written before ADR 0244 may carry `execution` (isolated-workspace
+ * evidence) and `diagnostic_admission` (observer admission). Those features
+ * are gone; the reader neither validates nor interprets the fields, so such a
+ * packet still loads.
+ */
 export function readWorkflowProof(coordRoot: string, runId: string): WorkflowProof {
   if (!RUN_ID.test(runId)) throw new Error(`invalid workflow run id ${JSON.stringify(runId)}`);
   const path = join(coordRoot, ".harnery", "workflows", runId, "proof.json");
@@ -374,10 +354,7 @@ export function readWorkflowProof(coordRoot: string, runId: string): WorkflowPro
     (proof.run.class !== undefined &&
       proof.run.class !== "environment" &&
       proof.run.class !== "upstream" &&
-      proof.run.class !== "decision") ||
-    !validDiagnosticAdmissionProof(proof.diagnostic_admission) ||
-    (proof.execution !== undefined &&
-      !isWorkspaceExecutionEvidence(proof.execution, runId, proof.run.status))
+      proof.run.class !== "decision")
   ) {
     throw new Error(`workflow proof at ${path} has an unsupported or mismatched schema`);
   }
@@ -390,85 +367,7 @@ export function readWorkflowProof(coordRoot: string, runId: string): WorkflowPro
       message: proof.repository.drift.note!,
     });
   }
-  const manifestPath = join(coordRoot, ".harnery", "workflows", runId, "run.json");
-  if (proof.execution === undefined && !existsSync(manifestPath)) return proof;
-  const manifest = readWorkflowRunManifest(coordRoot, runId);
-  const manifestBinding = manifest.execution.workspace_binding;
-  const manifestFallback = manifest.execution.workspace_fallback;
-  const proofExecution = proof.execution;
-  const executionMatches =
-    manifestBinding !== undefined
-      ? isWorkspaceBoundExecutionEvidence(proofExecution, runId) &&
-        stableDigest(proofExecution.binding) === stableDigest(manifestBinding)
-      : manifestFallback !== undefined
-        ? isWorkspaceCompatibilityExecutionEvidence(proofExecution, runId) &&
-          stableDigest(proofExecution) === stableDigest(manifestFallback)
-        : proofExecution === undefined;
-  if (!executionMatches) {
-    throw new Error(`workflow proof at ${path} does not match the frozen execution manifest`);
-  }
   return proof;
-}
-
-function validDiagnosticAdmissionProof(
-  value: WorkflowDiagnosticAdmissionProof | undefined,
-): boolean {
-  if (value === undefined) return true;
-  if (
-    value.schema_version !== WORKFLOW_DIAGNOSTIC_ADMISSION_SCHEMA_VERSION ||
-    value.mode !== "shadow" ||
-    value.trigger !== "before-first-dispatch" ||
-    value.action !== "none" ||
-    (value.state !== "not-needed" && value.state !== "observed")
-  ) {
-    return false;
-  }
-  if (value.state === "not-needed") {
-    return value.reason_code === "no-dispatch" && value.observation === undefined;
-  }
-  const observation = value.observation;
-  return (
-    value.reason_code === undefined &&
-    observation !== undefined &&
-    validTimestamp(observation.requested_at) &&
-    validTimestamp(observation.observed_at) &&
-    Number.isSafeInteger(observation.wait_ms) &&
-    observation.wait_ms >= 0 &&
-    ["running", "started", "unavailable"].includes(observation.service_state) &&
-    ["fresh", "unavailable"].includes(observation.freshness) &&
-    (observation.sampled_at === undefined || validTimestamp(observation.sampled_at)) &&
-    observation.advice?.schema_version === DIAGNOSTIC_ADVICE_SCHEMA_VERSION &&
-    observation.advice.observer_only === true
-  );
-}
-
-function validTimestamp(value: unknown): value is string {
-  return typeof value === "string" && value.length > 0 && Number.isFinite(Date.parse(value));
-}
-
-function buildExecutionEvidence(
-  workflowStatus: "succeeded" | "failed",
-  binding: WorkspaceBinding,
-  terminalAttestation: WorkspaceAttestation,
-): WorkspaceExecutionEvidence {
-  return {
-    schema_version: 1,
-    binding,
-    terminal_attestation: terminalAttestation,
-    terminal_lifecycle_state: workspaceProofLifecycle(workflowStatus, terminalAttestation),
-    drift: [...terminalAttestation.provider_drift],
-    unsupported: [...terminalAttestation.unsupported],
-    unknowns: [...terminalAttestation.unknowns],
-    receipts: {
-      request: "workspace-request.json",
-      cancellation_outcome: "cancellation/outcome.json",
-      integration_plan: "integration/plan.json",
-      integration_authorization: "integration/authorization.json",
-      integration_apply: "integration/receipt.json",
-      cleanup_intent: "cleanup/intent.json",
-      cleanup_receipt: "cleanup/receipt.json",
-    },
-  };
 }
 
 export function renderWorkflowProof(proof: WorkflowProof): string {
@@ -492,15 +391,6 @@ export function renderWorkflowProof(proof: WorkflowProof): string {
     lines.push(
       `policy: ${proof.policy.name}; ${proof.policy.summary.allowed} allowed, ` +
         `${proof.policy.summary.denied} denied, ${proof.policy.summary.asked} asked`,
-    );
-  }
-  if (proof.diagnostic_admission) {
-    const observation = proof.diagnostic_admission.observation;
-    lines.push(
-      observation
-        ? `admission: shadow ${observation.advice.assessment.state}; ` +
-            `${observation.advice.assessment.recommended_action}; action none`
-        : "admission: shadow not needed; no real child dispatch",
     );
   }
   const problems = repoProblems(proof.repository);

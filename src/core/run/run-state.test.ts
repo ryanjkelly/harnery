@@ -58,7 +58,6 @@ describe("workflow run state", () => {
         allow_api_billing: false,
         approval_mode: "deny",
         approval_addressee: "operator",
-        isolation: "shared",
         network_access: "unknown",
       },
     };
@@ -240,7 +239,6 @@ describe("workflow run state", () => {
           allow_api_billing: false,
           approval_mode: "park",
           approval_addressee: "operator",
-          isolation: "shared",
           network_access: "enabled",
         },
       },
@@ -251,36 +249,14 @@ describe("workflow run state", () => {
     expect(() => readWorkflowRunManifest(root, "wf-fixture")).toThrow(/mismatched schema/);
   });
 
-  test("reads the historical work item fields and rejects an orphaned attempt", () => {
-    const path = writeWorkflowRunManifest({
-      coordRoot: root,
-      manifest: {
-        schema_version: 2,
-        run_id: "wf-work-context",
-        work_item_id: "work-a",
-        attempt_context: { number: 1 },
-        name: "fixture",
-        started_at: "2026-07-23T05:00:00.000Z",
-        script: { path: join(root, "workflow.mjs"), sha256: "a".repeat(64) },
-        repository_before: { cwd: root, observation: "ok", dirty_paths: [] },
-        execution: {
-          cwd: root,
-          default_adapter: "codex",
-          max_agents: 1,
-          concurrency: 1,
-          subscription_only: true,
-          allow_api_billing: false,
-          approval_mode: "deny",
-          approval_addressee: "operator",
-          isolation: "shared",
-          network_access: "unknown",
-        },
-      },
-    });
-    expect(readWorkflowRunManifest(root, "wf-work-context").attempt_context?.number).toBe(1);
+  test("ignores the historical work item and isolation fields", () => {
+    const path = writeWorkflowRunManifest({ coordRoot: root, manifest: fixtureManifest() });
     const persisted = JSON.parse(readFileSync(path, "utf8"));
-    delete persisted.work_item_id;
+    persisted.work_item_id = "work-a";
+    persisted.attempt_context = { number: 1 };
+    persisted.execution.isolation = "shared";
+    persisted.execution.diagnostic_admission = { schema_version: 1, mode: "shadow" };
     writeFileSync(path, `${JSON.stringify(persisted)}\n`, "utf8");
-    expect(() => readWorkflowRunManifest(root, "wf-work-context")).toThrow(/mismatched schema/);
+    expect(readWorkflowRunManifest(root, persisted.run_id).name).toBe(persisted.name);
   });
 });

@@ -25,7 +25,6 @@ import {
   resolveArtifactRef,
 } from "../artifacts/index.ts";
 import { currentHarneryRuntimeBuild } from "../events/v3/runtime-build.ts";
-import { readWorkflowProof } from "../run/proof.ts";
 import { writePrivateJsonAtomic } from "../storage/atomic-json.ts";
 import { stateDirMode } from "../storage/modes.ts";
 import {
@@ -64,7 +63,6 @@ import { type SanitizationStats, sanitizeDiagnosticValue } from "./sanitize.ts";
 
 const SOURCE_FILE_LIMIT_BYTES = 1_500_000;
 const DEFAULT_WINDOW_MS = 15 * 60 * 1_000;
-const SHADOW_ADMISSION_CAPTURE_LIMIT = 20;
 const PAYLOAD_FILES = DIAGNOSTIC_BUNDLE_FILES.filter(
   (path): path is Exclude<(typeof DIAGNOSTIC_BUNDLE_FILES)[number], "diagnostic-manifest.json"> =>
     path !== "diagnostic-manifest.json",
@@ -132,12 +130,9 @@ export function captureDiagnosticBundle(
   assertValidDate(now, "now");
   const capturedAt = now.toISOString();
   const aggregateStats: SanitizationStats = { sanitized_value_count: 0, omitted_value_count: 0 };
-  const sources = [
-    ...SOURCE_SPECS.map(([sourceKind, relativePath]) =>
-      readCapturedSource(repoRoot, sourceKind, relativePath),
-    ),
-    readShadowAdmissionSource(repoRoot, capturedAt),
-  ];
+  const sources = SOURCE_SPECS.map(([sourceKind, relativePath]) =>
+    readCapturedSource(repoRoot, sourceKind, relativePath),
+  );
   const selection = diagnosticSelection(input, sources, now);
   const rawObservations: DiagnosticObservations = {
     schema_version: DIAGNOSTIC_INPUT_SCHEMA_VERSION,
@@ -485,85 +480,6 @@ function readCapturedSource(
       schema_version: numeric(record?.schema_version),
       observed_at: timestamp(record),
       value,
-    };
-  } catch (error) {
-    return {
-      source_kind: sourceKind,
-      capability: "error",
-      reason_code: error instanceof Error ? error.message : String(error),
-    };
-  }
-}
-
-function readShadowAdmissionSource(repoRoot: string, capturedAt: string): DiagnosticCapturedSource {
-  const sourceKind = "workflow.diagnostic-admission";
-  const workflowsRoot = join(repoRoot, ".harnery", "workflows");
-  if (!existsSync(workflowsRoot)) {
-    return { source_kind: sourceKind, capability: "unsupported", reason_code: "source_missing" };
-  }
-  try {
-    const rootStat = lstatSync(workflowsRoot);
-    if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
-      throw new Error("workflow_root_is_not_regular_directory");
-    }
-    const candidates = readdirSync(workflowsRoot, { withFileTypes: true })
-      .filter(
-        (entry) => entry.isDirectory() && /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(entry.name),
-      )
-      .map((entry) => entry.name)
-      .sort((left, right) => right.localeCompare(left));
-    const records: Record<string, unknown>[] = [];
-    let invalidCount = 0;
-    const scanLimit = SHADOW_ADMISSION_CAPTURE_LIMIT * 2;
-    for (const runId of candidates.slice(0, scanLimit)) {
-      try {
-        const proof = readWorkflowProof(repoRoot, runId);
-        const admission = proof.diagnostic_admission;
-        if (!admission) continue;
-        records.push({
-          run_id: proof.run.id,
-          ended_at: proof.run.ended_at,
-          state: admission.state,
-          action: admission.action,
-          ...(admission.reason_code ? { reason_code: admission.reason_code } : {}),
-          ...(admission.observation
-            ? {
-                pressure: admission.observation.advice.assessment.state,
-                recommended_action: admission.observation.advice.assessment.recommended_action,
-                scope: admission.observation.advice.assessment.scope,
-                limiting_resource: admission.observation.advice.assessment.limiting_resource,
-                freshness: admission.observation.freshness,
-                service_state: admission.observation.service_state,
-                wait_ms: admission.observation.wait_ms,
-              }
-            : {}),
-        });
-        if (records.length >= SHADOW_ADMISSION_CAPTURE_LIMIT) break;
-      } catch {
-        invalidCount += 1;
-      }
-    }
-    const omittedCount = Math.max(0, candidates.length - Math.min(candidates.length, scanLimit));
-    const projection = {
-      schema_version: 1,
-      captured_at: capturedAt,
-      max_records: SHADOW_ADMISSION_CAPTURE_LIMIT,
-      examined_run_count: Math.min(candidates.length, scanLimit),
-      omitted_run_count: omittedCount,
-      invalid_run_count: invalidCount,
-      records,
-    };
-    return {
-      source_kind: sourceKind,
-      capability: omittedCount > 0 || invalidCount > 0 ? "partial" : "supported",
-      schema_version: 1,
-      observed_at: records[0]?.ended_at as string | undefined,
-      value: projection,
-      ...(omittedCount > 0
-        ? { reason_code: "bounded_workflow_window_truncated" }
-        : invalidCount > 0
-          ? { reason_code: "invalid_workflow_proofs_ignored" }
-          : {}),
     };
   } catch (error) {
     return {

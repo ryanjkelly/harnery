@@ -109,23 +109,12 @@ try {
   }
   log("workflow approvals CLI OK");
 
-  log("checking workflow workspace CLI boots ...");
-  const workspacesOut = run(["run", "workspaces"]);
-  if (!/no isolated or shared-compatibility workspace runs/.test(workspacesOut)) {
-    fail("workflow workspaces did not render an empty validated list");
+  log("checking run CLI exposes resume and proof ...");
+  const runHelp = run(["run", "--help"]);
+  if (!/resume/.test(runHelp) || !/proof/.test(runHelp)) {
+    fail("run help did not expose resume and proof");
   }
-  log("workflow workspace CLI OK");
-
-  log("checking phased workflow mutation CLI boots ...");
-  const integrationHelp = run(["run", "integration", "--help"]);
-  const cleanupHelp = run(["run", "cleanup", "--help"]);
-  if (!/prepare/.test(integrationHelp) || !/apply/.test(integrationHelp)) {
-    fail("workflow integration help did not expose prepare and apply");
-  }
-  if (!/--yes/.test(cleanupHelp)) {
-    fail("workflow cleanup help did not expose explicit confirmation");
-  }
-  log("phased workflow mutation CLI OK");
+  log("run CLI OK");
 
   // outline on PHP: works without the `typescript` dep.
   log("checking `outline` on a PHP file ...");

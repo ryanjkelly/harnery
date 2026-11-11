@@ -8,7 +8,6 @@
  */
 
 import type { ClaudeMcpMode } from "../../lib/headless/index.ts";
-import type { DiagnosticAdvice } from "../diagnostics/contract.ts";
 import type {
   DispatchCostEstimator,
   ExternalMutationRequest,
@@ -20,14 +19,8 @@ import type {
   PolicySpec,
 } from "../policy/index.ts";
 import type { BillingMode, BillingProber } from "./billing.ts";
-import type {
-  WorkspaceBinding,
-  WorkspaceExecutionEvidence,
-  WorkspaceProvider,
-} from "./workspaces/index.ts";
 
 export const WORKFLOW_PROOF_SCHEMA_VERSION = 2 as const;
-export const WORKFLOW_DIAGNOSTIC_ADMISSION_SCHEMA_VERSION = 1 as const;
 
 /** The evidence vocabulary, as a value so the runtime validator and the
  * pre-flight source scan cannot drift from the type or from each other. */
@@ -46,31 +39,6 @@ export type EvidenceSource = "workflow" | "engine";
 export type AcceptanceStatus = "satisfied" | "unsatisfied" | "unknown";
 export type WorkflowRunStatus = "succeeded" | "failed";
 export type WorkflowApprovalMode = "deny" | "park";
-
-export interface WorkflowDiagnosticAdmissionConfig {
-  schema_version: typeof WORKFLOW_DIAGNOSTIC_ADMISSION_SCHEMA_VERSION;
-  mode: "shadow";
-}
-
-export interface WorkflowDiagnosticAdmissionObservation {
-  requested_at: string;
-  observed_at: string;
-  wait_ms: number;
-  service_state: "running" | "started" | "unavailable";
-  freshness: "fresh" | "unavailable";
-  sampled_at?: string;
-  advice: DiagnosticAdvice;
-}
-
-export interface WorkflowDiagnosticAdmissionProof {
-  schema_version: typeof WORKFLOW_DIAGNOSTIC_ADMISSION_SCHEMA_VERSION;
-  mode: "shadow";
-  trigger: "before-first-dispatch";
-  state: "not-needed" | "observed";
-  action: "none";
-  reason_code?: "no-dispatch";
-  observation?: WorkflowDiagnosticAdmissionObservation;
-}
 
 export interface AcceptanceCriterion {
   /** Stable identifier referenced by evidence, for example `tests-pass`. */
@@ -203,8 +171,6 @@ export interface AdapterEvidenceCoverage {
 export interface WorkflowSandboxProjectionEvidence {
   mode: SpawnFilesystemPolicy["mode"];
   writable_roots: string[];
-  /** Which Git administrative grant the run asked for (ADR 0040). */
-  git_grant: GitAdministrativeGrant;
 }
 
 export interface WorkflowProofUnknown {
@@ -250,10 +216,6 @@ export interface WorkflowProof {
   agents: WorkflowAgentProof[];
   evidence: WorkflowEvidenceRecord[];
   policy?: WorkflowPolicyProof;
-  /** Observer-only local pressure recorded before the first real child dispatch. */
-  diagnostic_admission?: WorkflowDiagnosticAdmissionProof;
-  /** Immutable terminal provider evidence for isolated execution. */
-  execution?: WorkspaceExecutionEvidence;
   repository: WorkflowRepoEvidence;
   /** Filesystem policy projected into every child's vendor sandbox (ADR 0039).
    * Absent means no projection was applied, which is the default. Present means
@@ -487,18 +449,6 @@ export interface WorkerAccessDecision {
   detail: string;
 }
 
-/**
- * Whether a run may write the Git administrative directory (ADR 0040).
- *
- * There is no middle setting, and the reason is a property of Git rather than a
- * design choice. A linked worktree has a private administrative directory and a
- * shared one, but object writes and branch refs live in the shared half, so even
- * `git add` fails without it. A grant that enables a commit is therefore always
- * a grant on the repository every worktree shares, including the operator's own
- * checkout. That is why it has to be asked for by name.
- */
-export type GitAdministrativeGrant = "none" | "shared-repository";
-
 /** What the host has decided a sandboxed child may write. There is no
  * `full-access` mode here: removing the sandbox is a separate, per-launch
  * decision carried by `SpawnRequest.access` (ADR 0192), because it depends on
@@ -588,13 +538,6 @@ export interface EngineOpts {
   maxAgents?: number;
   /** Concurrent-subagent cap for parallel() (default 4). */
   concurrency?: number;
-  /** Opt-in observer-only pressure sample before the first real child dispatch. */
-  diagnosticAdmission?: WorkflowDiagnosticAdmissionConfig;
-  /** Admission observer override for tests. */
-  observeDiagnosticAdmission?: (
-    coordRoot: string,
-    runId: string,
-  ) => Promise<WorkflowDiagnosticAdmissionObservation>;
   /** Working directory children spawn in (default: coordRoot). */
   cwd?: string;
   /** Progress sink (default: process.stderr). */
@@ -621,21 +564,10 @@ export interface EngineOpts {
    * the host and injected, so the engine performs no capability lookups. */
   adapterAttestations?: Readonly<Record<AdapterName, AdapterAttestationCitation | undefined>>;
   /** Filesystem policy projected into every child's own vendor sandbox
-   * (ADR 0039). Validated against the workspace binding before the first spawn,
-   * and recorded in proof. Absent leaves every adapter invocation unchanged. */
+   * (ADR 0039) and recorded in proof. Runs execute in the shared checkout, so
+   * explicit `writableRoots` are refused before the first spawn. Absent leaves
+   * every adapter invocation unchanged. */
   filesystemPolicy?: SpawnFilesystemPolicy;
-  /**
-   * Whether children may write the repository's administrative directory
-   * (ADR 0040). Defaults to `"none"`.
-   *
-   * The caller asks for the grant by name and never supplies the path: the
-   * engine resolves it from the workspace binding the provider already
-   * verified. That asymmetry is deliberate. `filesystemPolicy.writableRoots` is
-   * caller-supplied and must stay inside the workspace, so a caller cannot use
-   * it to reach the source repository; this grant can, which is exactly why it
-   * is a named capability rather than another path.
-   */
-  gitWrite?: GitAdministrativeGrant;
   /** Immutable host policy. Workflow scripts and model prompts cannot replace it. */
   policy?: PolicySpec | NormalizedPolicy;
   /** Host callback for ASK. Missing, invalid, throwing, or timed-out resolution denies. */
@@ -648,15 +580,8 @@ export interface EngineOpts {
   approvalMode?: WorkflowApprovalMode;
   /** Bounded address recorded on newly parked approval requests. */
   approvalAddressee?: string;
-  /** Execution boundary created by the host (default shared). */
-  isolation?: PolicyIsolation;
   /** Network state of spawned adapter subprocesses (default unknown). */
   networkAccess?: PolicyNetworkAccess;
-  /** Explicit provider and host-owned roots. Omit for shared or declaration-only execution. */
-  workspace?: {
-    provider: WorkspaceProvider;
-    writableRoots: readonly string[];
-  };
 }
 
 export interface RunReport {
@@ -680,8 +605,4 @@ export interface RunReport {
   billing: Array<{ adapter: AdapterName; mode: BillingMode }>;
   /** Policy verdict totals when the host supplied a policy. */
   policy?: WorkflowPolicyProof["summary"];
-  /** Observer-only pressure sample. Never changes dispatch in shadow mode. */
-  diagnosticAdmission?: WorkflowDiagnosticAdmissionProof;
-  /** Isolated workspace binding when this run requested a provider capability. */
-  workspaceBinding?: WorkspaceBinding;
 }

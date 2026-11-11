@@ -1,10 +1,6 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { WorkflowProof } from "harnery/core/run";
-import {
-  inspectWorkflowWorkspace,
-  type WorkflowWorkspaceInspection,
-} from "harnery/core/run/workspaces/inspect";
 import { readLiveCoordinationRows } from "../../src/core/agents/state/live-coordination-view";
 import { readWorkflowProof } from "../../src/core/run/proof";
 import { stableScopeId } from "../../src/core/run/scope-id";
@@ -50,8 +46,6 @@ export interface WorkflowRunSummary {
   billing: string[];
   /** Terminal proof packet, absent for live and pre-proof runs. */
   proof?: WorkflowProof;
-  /** Validated workspace projection, including an explicit error on bad authority. */
-  workspace?: WorkflowWorkspaceInspection;
   /** Transcript mtime — the liveness signal for status=running vs stale. */
   lastActivityAt: string;
   /** Durable work item this run is an attempt at, from `run.json`. Absent for a
@@ -269,7 +263,6 @@ export function readWorkflowRun(
   let costUsd = 0;
   const billing: string[] = [];
   const proof = readProof(root, runId);
-  const workspace = readWorkspaceInspection(root, runId);
   const manifest = readRunManifestFacts(root, runId);
 
   for (const line of readFileSync(transcriptPath, "utf8").split("\n")) {
@@ -385,7 +378,6 @@ export function readWorkflowRun(
     costUsd: Math.round(costUsd * 10_000) / 10_000,
     billing,
     proof,
-    workspace,
     lastActivityAt: mtimeIso,
     workItemId: manifest.workItemId,
     attempt: manifest.attempt,
@@ -497,12 +489,4 @@ export function resolveRunCoordRoot(localRoot: string, runId: string): RunCoordR
     dir = parent;
   }
   return { root: localRoot, foreign: false, recordedCwd: cwd, fallback: "no-coord-root" };
-}
-
-function readWorkspaceInspection(
-  root: string,
-  runId: string,
-): WorkflowWorkspaceInspection | undefined {
-  const path = join(root, ".harnery", "workflows", runId, "run.json");
-  return existsSync(path) ? inspectWorkflowWorkspace(root, runId) : undefined;
 }

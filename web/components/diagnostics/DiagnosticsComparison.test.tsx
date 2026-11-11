@@ -16,7 +16,7 @@ describe("DiagnosticsComparison", () => {
     expect(html).toContain('data-comparison-impact="regression"');
     expect(html).toContain("Memory pressure opened.");
     expect(html).toContain("Completed hook health");
-    expect(html).toContain("Shadow admission");
+    expect(html).not.toContain("Shadow admission");
     expect(html).toContain("threshold_digest_changed");
     expect(html).toContain("harn diagnostics compare artifact_before artifact_after");
     expect(html).toContain("motion-reduce:transition-none");
@@ -166,38 +166,6 @@ function fixtureComparison(): DiagnosticBundleComparison {
         high_memory_count: 0,
         retry_count: 1,
         aggregates: [],
-      },
-    },
-    shadow_admission: {
-      before_capability: {
-        source_kind: "workflow.diagnostic-admission",
-        state: "supported",
-      },
-      after_capability: {
-        source_kind: "workflow.diagnostic-admission",
-        state: "supported",
-      },
-      before: {
-        record_count: 1,
-        observed_count: 1,
-        not_needed_count: 0,
-        unavailable_count: 0,
-        normal_count: 0,
-        elevated_count: 1,
-        critical_count: 0,
-        unknown_count: 0,
-        max_wait_ms: 20,
-      },
-      after: {
-        record_count: 1,
-        observed_count: 1,
-        not_needed_count: 0,
-        unavailable_count: 0,
-        normal_count: 0,
-        elevated_count: 0,
-        critical_count: 1,
-        unknown_count: 0,
-        max_wait_ms: 30,
       },
     },
     comparison_digest: "digest-comparison",

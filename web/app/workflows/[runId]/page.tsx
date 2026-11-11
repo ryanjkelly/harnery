@@ -7,7 +7,6 @@ import { PageShell } from "@/components/layout/PageShell";
 import { SectionHeader } from "@/components/layout/Section";
 import { Tooltip } from "@/components/ui/tooltip";
 import { WorkflowStatusBadge } from "@/components/WorkflowStatusBadge";
-import { WorkspaceStateBadge } from "@/components/WorkspaceStateBadge";
 import { AgentElapsed } from "@/components/workflow/AgentElapsed";
 import { WorkflowActivityLog } from "@/components/workflow/WorkflowActivityLog";
 import { buildAgentSummaryMap, buildEndedAgentSummaries } from "@/lib/agent-summary";
@@ -190,7 +189,7 @@ export default async function WorkflowRunPage({ params }: PageProps) {
    * document scroll.
    *
    * `/live` and `/events` can use a `fixed inset-0` shell because a log is the
-   * whole page there. Here the run also has to show the workspace and proof
+   * whole page there. Here the run also has to show the proof
    * cards, which that shell would fight, so the log gets a bounded height
    * instead. `overscroll-contain` on the table's own scroller is what keeps the
    * two surfaces from chaining: without it, reaching the end of the log starts
@@ -273,7 +272,6 @@ export default async function WorkflowRunPage({ params }: PageProps) {
         meta={
           <>
             <WorkflowStatusBadge status={run.status} />
-            {run.workspace ? <WorkspaceStateBadge inspection={run.workspace} /> : null}
           </>
         }
         description={
@@ -328,123 +326,10 @@ export default async function WorkflowRunPage({ params }: PageProps) {
         </section>
       ) : null}
 
-      {/* Where the run is, then what it is doing. Both above the workspace and
-            proof cards, which matter most once the run is over. */}
+      {/* Where the run is, then what it is doing. Both above the proof card,
+            which matters most once the run is over. */}
       {stageTree}
       {activitySection}
-
-      {run.workspace ? (
-        !run.workspace.ok ? (
-          <section className={cn("mb-8 rounded-lg border p-4", TONE.danger.surface)}>
-            <SectionHeader className="mb-0" title="Workspace evidence is invalid" />
-            <p className="mt-1 break-all text-sm text-muted-foreground">{run.workspace.error}</p>
-          </section>
-        ) : (
-          <section className="mb-8 rounded-lg border border-border bg-card p-4">
-            <SectionHeader
-              className="mb-4"
-              title={
-                <Tooltip content="Which checkout the run's agents edited. A shared workspace means they worked directly in this repo; an isolated one means they worked in a separate checkout that has to be integrated before the changes land here.">
-                  <span className="cursor-help">Workspace</span>
-                </Tooltip>
-              }
-              actions={<WorkspaceStateBadge inspection={run.workspace} />}
-            />
-            <dl className="grid gap-3 text-sm sm:grid-cols-2">
-              <div>
-                <Tooltip content="What the run asked for versus what it got. These differ when isolation was requested but could not be honoured, in which case the run fell back to the shared checkout and says so below.">
-                  <dt className="cursor-help text-xs uppercase tracking-wide text-muted-foreground">
-                    Allocation
-                  </dt>
-                </Tooltip>
-                <dd className="mt-1">
-                  {run.workspace.value.requested_isolation} requested ·{" "}
-                  {run.workspace.value.effective_isolation} effective
-                </dd>
-                {run.workspace.value.provider ? (
-                  <Tooltip content="The workspace provider that allocated the checkout, and its version.">
-                    <dd className="mt-1 cursor-help font-mono text-xs text-muted-foreground">
-                      {run.workspace.value.provider.id}@{run.workspace.value.provider.version}
-                    </dd>
-                  </Tooltip>
-                ) : null}
-              </div>
-              <div>
-                <Tooltip content="Whether the workspace was still what the run claimed it was when it finished. `drift` counts things that changed underneath it; `unknown` counts things the check could not determine either way, which is reported rather than assumed benign.">
-                  <dt className="cursor-help text-xs uppercase tracking-wide text-muted-foreground">
-                    Verification
-                  </dt>
-                </Tooltip>
-                <dd className="mt-1">{run.workspace.value.verification.status}</dd>
-                <dd className="mt-1 text-xs text-muted-foreground">
-                  {run.workspace.value.verification.drift.length} drift ·{" "}
-                  {run.workspace.value.verification.unknowns.length} unknown
-                </dd>
-              </div>
-              <div>
-                <Tooltip content="Whether work done in an isolated workspace has been brought back into this checkout yet. `none` means there was nothing to integrate, which is the normal reading for a shared-workspace run.">
-                  <dt className="cursor-help text-xs uppercase tracking-wide text-muted-foreground">
-                    Integration
-                  </dt>
-                </Tooltip>
-                <dd className="mt-1">{run.workspace.value.integration.state}</dd>
-                <dd className="mt-1 text-xs text-muted-foreground">
-                  {run.workspace.value.integration.changed_paths.length} changed path
-                  {run.workspace.value.integration.changed_paths.length === 1 ? "" : "s"}
-                </dd>
-              </div>
-              <div>
-                <Tooltip content="Whether the isolated checkout has been released. Cleanup is deliberately conservative: a workspace with uncommitted changes is preserved rather than deleted, so nothing is thrown away silently.">
-                  <dt className="cursor-help text-xs uppercase tracking-wide text-muted-foreground">
-                    Cleanup
-                  </dt>
-                </Tooltip>
-                <dd className="mt-1">{run.workspace.value.cleanup.state.replaceAll("_", " ")}</dd>
-                <dd className="mt-1 text-xs text-muted-foreground">
-                  {run.workspace.value.cleanup.attempts} attempt
-                  {run.workspace.value.cleanup.attempts === 1 ? "" : "s"}
-                </dd>
-              </div>
-            </dl>
-            {run.workspace.value.compatibility ? (
-              <p
-                className={cn(
-                  "mt-4 rounded-md border px-3 py-2 text-xs",
-                  TONE.warn.surface,
-                  "text-muted-foreground",
-                )}
-              >
-                Compatibility selection: {run.workspace.value.compatibility.reason}. The run used
-                the shared checkout.
-              </p>
-            ) : null}
-            {run.workspace.value.allocation ? (
-              <div className="mt-4 space-y-1 border-t border-border pt-3 font-mono text-xs text-muted-foreground">
-                <p className="break-all">binding {run.workspace.value.allocation.binding_id}</p>
-                <p className="break-all">
-                  workspace {run.workspace.value.allocation.workspace_root}
-                </p>
-                <p className="break-all">active {run.workspace.value.allocation.active_root}</p>
-              </div>
-            ) : null}
-            {run.workspace.value.repository.dirty_paths.length > 0 ||
-            run.workspace.value.repository.conflicts.length > 0 ||
-            run.workspace.value.repository.operations_in_progress.length > 0 ? (
-              <div
-                className={cn(
-                  "mt-4 rounded-md border px-3 py-2 text-xs",
-                  TONE.warn.surface,
-                  "text-muted-foreground",
-                )}
-              >
-                {run.workspace.value.repository.dirty_paths.length} dirty path ·{" "}
-                {run.workspace.value.repository.conflicts.length} conflict ·{" "}
-                {run.workspace.value.repository.operations_in_progress.length} Git operation
-              </div>
-            ) : null}
-          </section>
-        )
-      ) : null}
 
       {run.proof ? (
         <section className="mb-8 rounded-lg border border-border bg-card p-4">
@@ -503,31 +388,6 @@ export default async function WorkflowRunPage({ params }: PageProps) {
                   </ul>
                 </details>
               ) : null}
-            </div>
-          ) : null}
-          {run.proof.diagnostic_admission ? (
-            <div className="mb-4 rounded-md border border-border px-3 py-2 text-sm">
-              <div className="flex flex-wrap items-center gap-2">
-                <Tooltip content="Observer-only local pressure sampled before the first real child dispatch. Shadow mode records advice but never changes dispatch.">
-                  <span className="cursor-help font-medium">Shadow admission</span>
-                </Tooltip>
-                <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-                  {run.proof.diagnostic_admission.observation?.advice.assessment.state ??
-                    "not needed"}
-                </span>
-                <span className="text-xs text-muted-foreground">action none</span>
-              </div>
-              {run.proof.diagnostic_admission.observation ? (
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {run.proof.diagnostic_admission.observation.advice.summary} Freshness:{" "}
-                  {run.proof.diagnostic_admission.observation.freshness}; waited{" "}
-                  {run.proof.diagnostic_admission.observation.wait_ms} ms.
-                </p>
-              ) : (
-                <p className="mt-1 text-xs text-muted-foreground">
-                  No real child dispatch needed an observation.
-                </p>
-              )}
             </div>
           ) : null}
           {run.proof.acceptance.criteria.length > 0 ? (

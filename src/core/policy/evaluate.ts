@@ -13,7 +13,7 @@ import type {
 import { POLICY_SCHEMA_VERSION } from "./types.ts";
 
 const VERDICTS = ["allow", "ask", "deny"] as const;
-const ISOLATIONS = ["shared", "worktree", "sandbox", "remote"] as const;
+const ISOLATIONS = ["shared"] as const;
 const MAX_NAME = 200;
 const MAX_FIELD = 500;
 const MAX_LIST = 100;
