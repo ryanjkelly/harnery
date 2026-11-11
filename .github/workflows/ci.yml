@@ -67,6 +67,13 @@ jobs:
         run: bun run check:local integration
         if: github.event.pull_request.head.repo.full_name == github.repository || github.event_name == 'push'
 
+      # Published release against this candidate's packed build, both ways.
+      # Its own step, after the unit suite, so a registry outage cannot fail
+      # unrelated tests. The script packs and installs both builds itself.
+      - name: Event ledger upgrade rehearsal
+        run: bun scripts/rehearse-event-v3-upgrade.ts
+        timeout-minutes: 10
+
   windows:
     name: Unit tests on Windows
     runs-on: windows-latest
@@ -106,6 +113,11 @@ jobs:
       # --keep-going reports every failing partition in one run.
       - name: Unit tests
         run: bun scripts/test.mjs --keep-going
+
+      # Same rehearsal as the Linux job, on Windows paths and process spawning.
+      - name: Event ledger upgrade rehearsal
+        run: bun scripts/rehearse-event-v3-upgrade.ts
+        timeout-minutes: 15
 
   smoke:
     name: Published-package smoke test (Node ${{ matrix.node }})
