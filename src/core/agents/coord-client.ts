@@ -119,9 +119,9 @@ export function resolveCoordRoot(start: string = process.cwd()): string | null {
     if (rootKnowsSession(candidate)) return candidate;
   }
 
-  // Only reached when no enclosing root knows this session: a submodule
-  // worktree (`harn worktree add-submodule`) has no ancestor relationship with
-  // the superproject that registered the session, so ask git for it.
+  // Only reached when no enclosing root knows this session: a linked worktree
+  // of a submodule has no ancestor relationship with the superproject that
+  // registered the session, so ask git for it.
   const gitRoots = gitCoordRoots(start).filter((r) => !ancestors.includes(r));
   for (const candidate of gitRoots) {
     if (rootKnowsSession(candidate)) return candidate;
