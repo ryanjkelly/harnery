@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
+import { failingLockFileSeam } from "../../../tests/helpers/lock-file-seam.ts";
 import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import type { CodeChangeWatch, CodeIdentityRecord } from "../code-identity.ts";
 import type { readLedgerV3Since } from "../events/v3/index.ts";
@@ -161,6 +162,35 @@ describe("semantic service", () => {
     const releaseRecovered = acquireSemanticServiceLease(root);
     releaseRecovered();
     expect(() => readFileSync(paths.lease, "utf8")).toThrow();
+  });
+
+  test("Windows EPERM on the lease checks the owner and stays bounded when the file is gone", () => {
+    const root = fixture();
+    const release = acquireSemanticServiceLease(root);
+    const live = failingLockFileSeam("EPERM", "win32");
+    expect(() => acquireSemanticServiceLease(root, live)).toThrow(
+      "semantic service is already running",
+    );
+    expect(live.calls).toBe(1);
+    release();
+
+    const once = failingLockFileSeam("EPERM", "win32", 1);
+    const releaseOnce = acquireSemanticServiceLease(root, once);
+    expect(once.calls).toBe(2);
+    releaseOnce();
+
+    const always = failingLockFileSeam("EPERM", "win32");
+    expect(() => acquireSemanticServiceLease(root, always)).toThrow(
+      "semantic service lease raced with another process",
+    );
+    expect(always.calls).toBe(2);
+  });
+
+  test("EPERM on the lease still throws on Linux", () => {
+    const root = fixture();
+    const seam = failingLockFileSeam("EPERM", "linux");
+    expect(() => acquireSemanticServiceLease(root, seam)).toThrow(/EPERM/);
+    expect(seam.calls).toBe(1);
   });
 
   test("keeps an operator pause until the next explicit daemon start", async () => {

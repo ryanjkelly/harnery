@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { failingLockFileSeam } from "../../../tests/helpers/lock-file-seam.ts";
 import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import {
   acquireEvaluationLock,
@@ -25,6 +26,29 @@ describe("run-quality storage", () => {
     expect(evaluationLockOwned(project, first.nonce)).toBe(true);
     releaseEvaluationLock(project, first.nonce);
     expect(existsSync(join(project, ".harnery", "guard", "evaluate.lock"))).toBe(false);
+  });
+
+  test("Windows EPERM on the lock file reports busy, including when the file is gone", () => {
+    const project = root();
+    const now = new Date("2026-08-15T00:00:00Z");
+    const held = acquireEvaluationLock(project, now, 60)!;
+    const live = failingLockFileSeam("EPERM", "win32");
+    expect(acquireEvaluationLock(project, now, 60, live)).toBeNull();
+    expect(live.calls).toBe(1);
+    expect(evaluationLockOwned(project, held.nonce)).toBe(true);
+    releaseEvaluationLock(project, held.nonce);
+
+    const missing = failingLockFileSeam("EPERM", "win32");
+    expect(acquireEvaluationLock(project, now, 60, missing)).toBeNull();
+    expect(missing.calls).toBe(1);
+  });
+
+  test("EPERM on the lock file still throws on Linux", () => {
+    const project = root();
+    const seam = failingLockFileSeam("EPERM", "linux");
+    expect(() =>
+      acquireEvaluationLock(project, new Date("2026-08-15T00:00:00Z"), 60, seam),
+    ).toThrow(/EPERM/);
   });
 
   test("steals a crashed or stale holder", () => {

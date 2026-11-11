@@ -19,6 +19,11 @@ import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { coordEnv } from "../../lib/env.ts";
+import {
+  isHeldFileLockError,
+  isHeldFileLockFailure,
+  type LockFileSeam,
+} from "../../lib/held-lock.ts";
 import { processAlive } from "../../lib/process-alive.ts";
 import {
   type CodeChangeWatch,
@@ -637,7 +642,10 @@ export async function runSemanticServiceDaemon(
   return status;
 }
 
-export function acquireSemanticServiceLease(coordRootRaw: string): () => void {
+export function acquireSemanticServiceLease(
+  coordRootRaw: string,
+  seam: LockFileSeam = semanticLeaseFileSeam,
+): () => void {
   const path = semanticPaths(coordRootRaw).lease;
   mkdirSync(dirname(path), { recursive: true, mode: stateDirMode() });
   const owner: SemanticServiceLease = {
@@ -648,15 +656,10 @@ export function acquireSemanticServiceLease(coordRootRaw: string): () => void {
   };
   const acquire = (): boolean => {
     try {
-      const fd = openSync(path, "wx", stateFileMode());
-      try {
-        writeFileSync(fd, `${JSON.stringify(owner)}\n`, "utf8");
-      } finally {
-        closeSync(fd);
-      }
+      seam.createExclusive(path, `${JSON.stringify(owner)}\n`, stateFileMode());
       return true;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if (!isHeldFileLockFailure(error, seam)) throw error;
       return false;
     }
   };
@@ -665,7 +668,13 @@ export function acquireSemanticServiceLease(coordRootRaw: string): () => void {
     if (existing && leaseOwnerIsLive(existing)) {
       throw new Error(`semantic service is already running under pid ${existing.pid}`);
     }
-    unlinkSync(path);
+    try {
+      unlinkSync(path);
+    } catch (error) {
+      // The holder finished deleting the lease first, or Windows is still deleting it.
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && !isHeldFileLockError(code, seam.platform)) throw error;
+    }
     if (!acquire()) throw new Error("semantic service lease raced with another process");
   }
   return () => {
@@ -677,6 +686,19 @@ export function acquireSemanticServiceLease(coordRootRaw: string): () => void {
     }
   };
 }
+
+/** The lease file create: a failed write closes the file and leaves it in place. */
+const semanticLeaseFileSeam: LockFileSeam = {
+  createExclusive: (path, contents, mode) => {
+    const fd = openSync(path, "wx", mode);
+    try {
+      writeFileSync(fd, contents, "utf8");
+    } finally {
+      closeSync(fd);
+    }
+  },
+  platform: process.platform,
+};
 
 interface SemanticHarnessPassMetrics {
   evidence_count: number;

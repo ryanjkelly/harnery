@@ -12,6 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { isHeldFileLockFailure, type LockFileSeam } from "../../lib/held-lock.ts";
 import { processAlive } from "../../lib/process-alive.ts";
 import { stateFileMode } from "../storage/modes.ts";
 import type { RunQualitySnapshot } from "./types.ts";
@@ -79,6 +80,7 @@ export function acquireEvaluationLock(
   coordRoot: string,
   now: Date,
   staleSeconds: number,
+  seam: LockFileSeam = evaluationLockFileSeam,
 ): EvaluationLock | null {
   const path = join(guardDir(coordRoot), "evaluate.lock");
   mkdirSync(dirname(path), { recursive: true });
@@ -87,7 +89,7 @@ export function acquireEvaluationLock(
     acquired_at: now.toISOString(),
     nonce: randomUUID(),
   };
-  if (createExclusive(path, lock)) return lock;
+  if (createExclusive(path, lock, seam)) return lock;
   const existing = readBoundedJson<EvaluationLock>(path, 16 * 1024);
   const age = existing
     ? now.getTime() - Date.parse(existing.acquired_at)
@@ -98,7 +100,7 @@ export function acquireEvaluationLock(
   } catch {
     return null;
   }
-  return createExclusive(path, lock) ? lock : null;
+  return createExclusive(path, lock, seam) ? lock : null;
 }
 
 export function evaluationLockOwned(coordRoot: string, nonce: string): boolean {
@@ -154,17 +156,26 @@ export function writeAtomicJson(
   }
 }
 
-function createExclusive(path: string, value: EvaluationLock): boolean {
-  let fd: number | undefined;
+/** The lock file create: a failed write closes the file and leaves it in place. */
+const evaluationLockFileSeam: LockFileSeam = {
+  createExclusive: (path, contents, mode) => {
+    const fd = openSync(path, "wx", mode);
+    try {
+      writeFileSync(fd, contents, "utf8");
+    } finally {
+      closeSync(fd);
+    }
+  },
+  platform: process.platform,
+};
+
+function createExclusive(path: string, value: EvaluationLock, seam: LockFileSeam): boolean {
   try {
-    fd = openSync(path, "wx", stateFileMode());
-    writeFileSync(fd, `${JSON.stringify(value)}\n`, "utf8");
+    seam.createExclusive(path, `${JSON.stringify(value)}\n`, stateFileMode());
     return true;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    if (!isHeldFileLockFailure(error, seam)) throw error;
     return false;
-  } finally {
-    if (fd !== undefined) closeSync(fd);
   }
 }
 

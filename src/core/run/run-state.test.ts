@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
+import { failingLockFileSeam } from "../../../tests/helpers/lock-file-seam.ts";
 import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import { processStartToken } from "../agents/state/proc-start.ts";
 import { acquireWorkflowResumeLease } from "./resume-lock.ts";
@@ -107,6 +108,25 @@ describe("workflow run state", () => {
     release();
     const releaseAgain = acquireWorkflowResumeLease(root, "wf-fixture");
     releaseAgain();
+  });
+
+  test("Windows EPERM on the resume lock retries once, then reports it held", () => {
+    const once = failingLockFileSeam("EPERM", "win32", 1);
+    const release = acquireWorkflowResumeLease(root, "wf-win-once", once);
+    expect(once.calls).toBe(2);
+    release();
+
+    const always = failingLockFileSeam("EPERM", "win32");
+    expect(() => acquireWorkflowResumeLease(root, "wf-win-gone", always)).toThrow(
+      /resume lease is already held; its owner could not be read/,
+    );
+    expect(always.calls).toBe(2);
+  });
+
+  test("EPERM on the resume lock still throws on Linux", () => {
+    const seam = failingLockFileSeam("EPERM", "linux");
+    expect(() => acquireWorkflowResumeLease(root, "wf-linux-eperm", seam)).toThrow(/EPERM/);
+    expect(seam.calls).toBe(1);
   });
 
   test("release preserves a replacement inode even with identical owner bytes", () => {

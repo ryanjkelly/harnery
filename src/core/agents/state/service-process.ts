@@ -15,6 +15,7 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { dirname } from "node:path";
+import { isHeldFileLockFailure, type LockFileSeam } from "../../../lib/held-lock.ts";
 import { writePrivateJsonAtomic } from "../../storage/atomic-json.ts";
 import { stateDirMode, stateFileMode } from "../../storage/modes.ts";
 import {
@@ -133,6 +134,7 @@ export function acquireServiceLease(
   path: string,
   refuse: (pid: number | undefined, liveness: ServiceLiveness) => Error,
   fields: Record<string, unknown> = {},
+  seam: LockFileSeam = serviceLeaseFileSeam,
 ): { nonce: string; release: () => void } {
   mkdirSync(dirname(path), { recursive: true, mode: stateDirMode() });
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -146,12 +148,7 @@ export function acquireServiceLease(
       created_at: new Date().toISOString(),
     };
     try {
-      const fd = openSync(path, "wx", stateFileMode());
-      try {
-        writeFileSync(fd, `${JSON.stringify(lease)}\n`, "utf8");
-      } finally {
-        closeSync(fd);
-      }
+      seam.createExclusive(path, `${JSON.stringify(lease)}\n`, stateFileMode());
       return {
         nonce: lease.nonce,
         release: () => {
@@ -164,7 +161,7 @@ export function acquireServiceLease(
         },
       };
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if (!isHeldFileLockFailure(error, seam)) throw error;
       const owner = serviceLeaseOwner(path);
       if (owner.liveness !== "stopped") throw refuse(owner.lease?.pid, owner.liveness);
       try {
@@ -176,6 +173,19 @@ export function acquireServiceLease(
   }
   throw new Error(`could not acquire the singleton lease at ${path}`);
 }
+
+/** The lease file create: a failed write closes the file and leaves it in place. */
+const serviceLeaseFileSeam: LockFileSeam = {
+  createExclusive: (path, contents, mode) => {
+    const fd = openSync(path, "wx", mode);
+    try {
+      writeFileSync(fd, contents, "utf8");
+    } finally {
+      closeSync(fd);
+    }
+  },
+  platform: process.platform,
+};
 
 export interface ServiceStopFields {
   signal_sent: boolean;

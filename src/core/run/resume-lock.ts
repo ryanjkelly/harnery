@@ -15,6 +15,7 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
+import { isHeldFileLockFailure, type LockFileSeam } from "../../lib/held-lock.ts";
 import { processStartToken, verifyProcessGeneration } from "../agents/state/proc-start.ts";
 import { stateFileMode } from "../storage/modes.ts";
 import { assertWorkflowRunId } from "./approvals.ts";
@@ -31,7 +32,11 @@ export interface WorkflowResumeLockOwner {
 /** Acquire the exclusive lease shared by resume and reclaim. A lock whose
  * same-host owner has exited, or whose PID now names a different process, is
  * retired automatically. Every other existing lock refuses. */
-export function acquireWorkflowResumeLease(coordRoot: string, runId: string): () => void {
+export function acquireWorkflowResumeLease(
+  coordRoot: string,
+  runId: string,
+  seam: LockFileSeam = resumeLockFileSeam,
+): () => void {
   const path = workflowResumeLockPath(coordRoot, runId);
   const owner = {
     owner_id: randomUUID(),
@@ -45,17 +50,12 @@ export function acquireWorkflowResumeLease(coordRoot: string, runId: string): ()
 
   const acquire = (): { device: number; inode: number } | false => {
     try {
-      const fd = openSync(path, "wx", stateFileMode());
-      try {
-        writeFileSync(fd, ownerBytes, "utf8");
-      } finally {
-        closeSync(fd);
-      }
+      seam.createExclusive(path, ownerBytes, stateFileMode());
       chmodSync(path, stateFileMode());
       const identity = lstatSync(path);
       return { device: identity.dev, inode: identity.ino };
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if (!isHeldFileLockFailure(error, seam)) throw error;
       return false;
     }
   };
@@ -86,6 +86,19 @@ export function acquireWorkflowResumeLease(coordRoot: string, runId: string): ()
     }
   };
 }
+
+/** The lock file create: a failed write closes the file and leaves it in place. */
+const resumeLockFileSeam: LockFileSeam = {
+  createExclusive: (path, contents, mode) => {
+    const fd = openSync(path, "wx", mode);
+    try {
+      writeFileSync(fd, contents, "utf8");
+    } finally {
+      closeSync(fd);
+    }
+  },
+  platform: process.platform,
+};
 
 export function workflowResumeLockPath(coordRoot: string, runId: string): string {
   assertWorkflowRunId(runId);
