@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { canonicalJsonV3 } from "./canonical.ts";
 import { EventV3Schema } from "./contract.ts";
-import { EVENT_V3_SCHEMA_DIGEST } from "./generated.ts";
+import { EVENT_V3_SCHEMA_DIGEST, EVENT_V3_SCHEMA_LINEAGE } from "./generated.ts";
 
 describe("generated event ledger V3 contract", () => {
   test("keeps the checked-in JSON Schema and digest synchronized", () => {
@@ -15,5 +15,24 @@ describe("generated event ledger V3 contract", () => {
       .update(canonicalJsonV3(EventV3Schema))
       .digest("hex")}`;
     expect(EVENT_V3_SCHEMA_DIGEST as string).toBe(digest);
+  });
+
+  test("ends the schema lineage at the runtime digest", () => {
+    const lastGroup = EVENT_V3_SCHEMA_LINEAGE.groups.at(-1);
+    expect(lastGroup?.at(-1) as string | undefined).toBe(EVENT_V3_SCHEMA_DIGEST);
+  });
+
+  test("lists every lineage digest once, in non-empty groups", () => {
+    const digests: string[] = EVENT_V3_SCHEMA_LINEAGE.groups.flat();
+    expect(EVENT_V3_SCHEMA_LINEAGE.groups.every((group) => group.length > 0)).toBe(true);
+    expect(new Set(digests).size).toBe(digests.length);
+  });
+
+  test("keeps the generated lineage equal to the committed lineage file", () => {
+    const lineagePath = resolve(import.meta.dir, "../../../../schemas/event-v3-lineage.json");
+    const lineage = JSON.parse(readFileSync(lineagePath, "utf8"));
+    expect(lineage.format).toBe("harnery-event-v3-schema-lineage");
+    expect(lineage.format_version).toBe(1);
+    expect(lineage.groups).toEqual(EVENT_V3_SCHEMA_LINEAGE.groups);
   });
 });
