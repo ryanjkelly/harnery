@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { failingReplaceSeam } from "../../../tests/helpers/replace-file-seam.ts";
 import { CookieJar } from "../cookies/index.ts";
 import { PaceGate, pacePolicyFromEnv } from "../pace/index.ts";
 import { Browser } from "./client.ts";
@@ -108,6 +109,43 @@ test("a cookie guard that never throws leaves the session and the jar alone", as
     expect(browser.cookieGuardFault).toBeUndefined();
     expect(phases).toContain("close");
     expect(jar.list().some((c) => c.name === "identity" && c.value === "original")).toBe(true);
+  } finally {
+    await browser.close();
+    await new Promise((resolve) => server.close(resolve));
+    await removeDir(dir);
+  }
+}, 60_000);
+
+test("a cookie save that fails at close is kept for the caller, and close still completes", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "harnery-cookie-save-fault-"));
+  const server = createServer((_req, res) => {
+    res.setHeader("set-cookie", "identity=original; Path=/");
+    res.end("ok");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("No fixture port");
+  // Every replace of the store file fails, as a locked file would after the retry window.
+  const jar = new CookieJar({
+    path: join(dir, "cookies.json"),
+    replaceSeam: failingReplaceSeam("EPERM", "linux"),
+  });
+  const browser = new Browser({
+    profileDir: join(dir, "profile"),
+    jar,
+    pace: new PaceGate({
+      ...pacePolicyFromEnv({}),
+      enabled: false,
+      ledgerPath: join(dir, "pace.json"),
+    }),
+  });
+  try {
+    await browser.open();
+    expect(browser.cookieSaveFault).toBeUndefined();
+    await browser.navigate(`http://127.0.0.1:${address.port}/`);
+    await browser.close();
+    expect((browser.cookieSaveFault as NodeJS.ErrnoException).code).toBe("EPERM");
+    expect(jar.list().some((c) => c.name === "identity")).toBe(false);
   } finally {
     await browser.close();
     await new Promise((resolve) => server.close(resolve));

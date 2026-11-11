@@ -2073,6 +2073,16 @@ export class Browser {
 
   private cookieFault: unknown;
 
+  /**
+   * The error from saving the live cookies to the jar at close, when that
+   * save failed. Close still completes; the caller reports the lost save.
+   */
+  get cookieSaveFault(): unknown {
+    return this.cookieSaveError;
+  }
+
+  private cookieSaveError: unknown;
+
   /** Run the cookie guard; on a throw, record it, tear the context down, and rethrow. */
   private async guardCookies(phase: CookieGuardPhase, url: string | null): Promise<void> {
     const guard = this.opts.cookieGuard;
@@ -2113,8 +2123,10 @@ export class Browser {
       try {
         const live = await this.context.cookies();
         this.opts.jar.merge(live.map(toJarCookie));
-      } catch {
-        // Cookie persist is best-effort; never block close on it.
+      } catch (error) {
+        // Never block close on the cookie save, but keep the error: a save
+        // that fails silently loses the session's cookies with no trace.
+        this.cookieSaveError = error;
       }
     }
     await this.context.close().catch(() => {});

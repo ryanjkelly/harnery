@@ -1900,6 +1900,13 @@ async function runBrowse(
     process.removeListener("SIGTERM", handleSigterm);
     await controlServer?.cleanup();
     await browser.close();
+    if (browser.cookieSaveFault) {
+      const fault = browser.cookieSaveFault;
+      emit.log(
+        `cookies from this session were not saved to the shared store: ${fault instanceof Error ? fault.message : String(fault)}`,
+        "warn",
+      );
+    }
     if (receivedSignal) process.exitCode = receivedSignal === "SIGINT" ? 130 : 143;
   }
   if (browser.cookieGuardFault) throw browser.cookieGuardFault;
