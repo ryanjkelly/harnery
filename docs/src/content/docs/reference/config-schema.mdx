@@ -23,7 +23,7 @@ Settings resolve from these sources, lowest precedence first (later wins):
 2. `<project>/.harnery/config.jsonc`: the project settings file, which overrides the user-global file **field by field** (a project that sets only `web.port` keeps a user-global `web.bind`)
 3. CLI flags + environment variables: per-invocation overrides (see each field's env note)
 
-The config reader (`src/core/config.ts`) merges the two files and owns `binName`, `timeZone`, `hooksSetupHint`, `hooks`, `agents`, `instructions`, `tools`, `doctor`, `workflow`, `skills`, `presence`, `coord`, `logs`, `storage`, `artifacts`, `backup`, and `sync`; the web layer reads `files`. Nine values are project-only. The `binName` **pin** that `harn init` guards against re-stamping ignores the user file. So do `agents.finalizationRoots`, `agents.gitSyncCommand`, `instructions.promptReminder`, `hooks.promptContext`, `hooks.codexWindowsBridge`, `hooks.portableCommands`, `doctor.environmentFindings`, and `storage.sharing`. A global setting cannot grant filesystem authority, execute a project extension, or carry one project's wording into another. A user-global `binName` is a display fallback, never a project pin.
+The config reader (`src/core/config.ts`) merges the two files and owns `binName`, `timeZone`, `hooksSetupHint`, `hooks`, `agents`, `instructions`, `tools`, `doctor`, `workflow`, `skills`, `presence`, `coord`, `logs`, `storage`, `artifacts`, and `backup`; the web layer reads `files`. Nine values are project-only. The `binName` **pin** that `harn init` guards against re-stamping ignores the user file. So do `agents.finalizationRoots`, `agents.gitSyncCommand`, `instructions.promptReminder`, `hooks.promptContext`, `hooks.codexWindowsBridge`, `hooks.portableCommands`, `doctor.environmentFindings`, and `storage.sharing`. A global setting cannot grant filesystem authority, execute a project extension, or carry one project's wording into another. A user-global `binName` is a display fallback, never a project pin.
 
 ## Top-level fields
 
@@ -50,7 +50,6 @@ The config reader (`src/core/config.ts`) merges the two files and owns `binName`
 | `computer`     | object  | see below        | Opt-in desktop control and its approval mode (`computer.mode`) |
 | `autoUpdate`   | object  | see below        | Activity-fired project self-update (`autoUpdate.enabled`) |
 | `backup`       | object  | see below        | restic-backed snapshots |
-| `sync`         | object  | see below        | rclone-backed cross-machine sync |
 
 ### `binName`
 
@@ -541,17 +540,6 @@ step entries and watch paths are dropped one by one. See
 
 Env overrides: `HARNERY_RESTIC_REPO`, `HARNERY_RESTIC_PASSWORD_FILE`.
 
-## `sync`
-
-| Field    | Type   | Default     | Description |
-| -------- | ------ | ----------- | ----------- |
-| `remote` | string | none        | rclone remote name (e.g. `gdrive`) |
-| `prefix` | string | `harnery`   | Subpath under the remote root |
-
-Env overrides: `HARNERY_SYNC_REMOTE`, `HARNERY_SYNC_PREFIX`.
-
-Sync subset is fixed: `identities/` and `journal/archived/`. Heartbeats and event logs are intentionally machine-local and won't sync.
-
 ## `files`
 
 Web file-viewer path-serving policy (the universal file viewer in `harn web`). The shipped secret denylist is a non-removable floor baked into code; these knobs are **additive only**: they extend the floor, never shrink it.
@@ -578,13 +566,10 @@ vars and CLI flags override other config values per invocation:
 | `artifacts` | `max_held_bytes` | `HARNERY_ARTIFACT_MAX_HELD_BYTES` | — |
 | `artifacts` | `min_free_bytes` | `HARNERY_ARTIFACT_MIN_FREE_BYTES` | `artifacts create --allow-low-disk` |
 | `backup` | `repo`, `password_file`, `keep_*` | `HARNERY_RESTIC_REPO`, `HARNERY_RESTIC_PASSWORD_FILE` | `--keep-*` flags override the prune policy per run |
-| `sync` | `remote`, `prefix` | `HARNERY_SYNC_REMOTE`, `HARNERY_SYNC_PREFIX` | `~/.config/harnery/sync.json` (written by `harn sync init`) is a lower-precedence fallback than the `sync` config section |
 | `files` | `deny_globs`, `allow_overrides` | (none) | read by the web layer, not the core reader |
 | `agents` | `requireGitFinalization`, `finalizationRoots` | `HARNERY_AGENTS_REQUIRE_GIT_FINALIZATION` | `finalizationRoots` is project-only and has no env override |
 | `computer` | `mode`, `enabled`, `driver`, `grant_minutes`, `idle_seconds`, `wait_seconds`, `sign_in` | (none) | project file only; a personal mode and sign-in choice in `computer.json` apply where the project allows them; `computer call --wait` overrides `wait_seconds` |
 | `autoUpdate` | `enabled`, `steps`, `dailySteps`, `watch`, `checkMinutes`, `timeoutMinutes`, `cleanup` | `HARNERY_AUTOUPDATE_CHILD=1` skips the tick | project file only |
-
-Full precedence for a `sync` remote, highest first: `HARNERY_SYNC_REMOTE` env → project `sync.remote` → user-global `sync.remote` → `~/.config/harnery/sync.json`.
 
 ## Example config
 
@@ -616,11 +601,6 @@ Full precedence for a `sync` remote, highest first: `HARNERY_SYNC_REMOTE` env �
 
   "presence": {
     "relay": "wss://relay.harnery.com"
-  },
-
-  "sync": {
-    "remote": "gdrive",
-    "prefix": "harnery/my-monorepo"
   }
 }
 ```

@@ -91,7 +91,6 @@ scope, and `environmentFindings` echoes the setting in effect.
 | `codex:hook runs` | optional | Warns about Codex hook runs from the last 24 hours that started but never finished. Codex kills a hook at its `timeout` and the tool proceeds without that hook's checks |
 | `workflow:claude-code` / `workflow:codex` / `workflow:cursor` / `workflow:opencode` | optional | Spawn targets for [`harn run`](/cli/run/): is the adapter CLI installed, and how will headless children bill (subscription login vs API key)? A missing CLI warns with the vendor's official install one-liner + login command; installed-but-unauthenticated warns with the login hint |
 | `restic`       | optional | Required for `harn backup` |
-| `rclone`       | optional | Required for `harn sync` |
 | `playwright`   | optional | Required for `harn browse` (module + browsers installed) |
 | `python3`      | optional | Some examples shell out to Python. Scope `environment` |
 
@@ -107,8 +106,6 @@ $ harn doctor
 ✓ .harnery/   /home/you/projects/myrepo/.harnery
 ⚠ restic      missing (needed for `harn backup`)
     ↳ apt-get install -y restic
-⚠ rclone      missing (needed for `harn sync`)
-    ↳ curl https://rclone.org/install.sh | sudo bash
 ✓ playwright  module + browsers at /home/you/.cache/ms-playwright
 ✓ python3     Python 3.10.12
 

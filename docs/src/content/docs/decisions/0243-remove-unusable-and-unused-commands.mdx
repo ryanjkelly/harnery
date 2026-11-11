@@ -1,0 +1,96 @@
+---
+title: "ADR 0243: Remove unusable and unused commands"
+description: Remove the conversations, top-level inbox, messages and sync commands, which either could not run in any known host or had no users, and keep agents inbox, agents ping and the core inbox and conversation modules.
+sidebar:
+  order: 243
+---
+
+**Date:** 2026-11-10
+**Status:** Accepted
+
+## Context
+
+A 60-day review of usage records from the hosts that run Harnery counted how
+often each command path ran. Four top-level commands stood out:
+
+| Command | Paths | Runs in 60 days | Why |
+|---|---:|---:|---|
+| `harn conversations` | 6 | 0 | Needs conversation providers that the host passes in `context.conversations`. No known host passes them, so every call fails. |
+| `harn inbox` (including `inbox watch`) | 4 | 1 | Needs an inbox service in `context.coordinationInbox`. No known host passes one, so every call fails with "coordination inbox is not configured by this host". |
+| `harn messages` | 1 | 1 | Needs the same inbox service and fails the same way. |
+| `harn sync` | 6 | 0 | Copies identities and archived journals with rclone. It works, but no host configured a remote and nobody ran it. |
+
+The working routes for the same jobs ran constantly in the same window:
+`harn agents inbox list` ran 1,060 times, and session prompt hooks read the
+same inbox in-process. `harn agents ping` is how agents send each other
+messages. ADR 0238 kept `inbox` and `messages` as messaging commands; this
+review showed that only the `agents` forms of them ever worked.
+
+The usage records cover only some hosts and harnesses, so a count of zero
+means "not seen run", not "unused everywhere". For the first three commands
+that gap does not matter: they cannot run without a host service that no host
+supplies.
+
+## Alternatives considered
+
+- **Keep the commands and wire the services in each host.** Rejected: the
+  `agents inbox` and `agents ping` commands already do the inbox and messaging
+  jobs with a built-in service, and no one asked for host-supplied conversation
+  history in the command line.
+- **Hide the commands instead of removing them.** Rejected: a hidden command
+  that always fails is still code, tests and docs to maintain, and Harnery is
+  pre-1.0, so it cuts over directly instead of carrying aliases.
+- **Keep `sync` as an optional feature.** Rejected: it had no configured remote
+  and no users, and `harn backup` already covers durable copies of
+  `.harnery/` through restic, which can itself use an rclone remote.
+
+## Decision
+
+Remove the four commands. This is a breaking change to the command surface,
+made on purpose.
+
+### What is removed
+
+- **Commands.** The `inbox`, `messages`, `conversations` and `sync`
+  registrations in `src/commander.ts`, with `src/commands/messages.ts`,
+  `src/commands/conversations.ts`, `src/commands/sync.ts` and their test files.
+- **Host context fields.** `coordinationInbox` and `conversations` leave the
+  program context. They existed only to hand services to the removed
+  commands. A host that still sets them gets a type error, which is the
+  intended signal.
+- **The `sync` configuration section.** The `sync` block in
+  `.harnery/config.jsonc` and the config schema, its reader, the
+  `HARNERY_SYNC_REMOTE` and `HARNERY_SYNC_PREFIX` variables, and the
+  `~/.config/harnery/sync.json` fallback file. A project that still has a
+  `sync` block gets a schema warning in its editor; Harnery ignores the block.
+- **The `rclone` doctor check.** It reported whether `harn sync` could run.
+  Nothing in Harnery runs rclone any more. A restic repository on an rclone
+  remote still needs rclone, and restic reports that itself.
+- **Docs.** The `cli/sync` page and the `sync` sections of the configuration
+  reference, the first-run guide, the landing page and the README.
+
+### What stays, and why
+
+- **`harn agents inbox`** (`list`, `status` and `watch`). It is built by the
+  same `registerInboxCommand` function in `src/commands/inbox.ts`, with the
+  built-in peer inbox service, so that file stays whole.
+- **`harn agents ping`**, the way agents message each other.
+- **The `./core/inbox` export.** It backs `agents inbox`, `agents ping` and the
+  prompt hooks.
+- **The `./core/conversations` export and its storage families.** No removed
+  command was its only user: the package root re-exports it, the storage
+  framework tests use it, and it is public API that a host can still build on.
+  Whether it goes is a separate decision.
+
+No removed command owned a folder under `.harnery/`, so nothing joins the
+`harn storage retire` list from ADR 0239.
+
+## Consequences
+
+- `harn inbox`, `harn messages`, `harn conversations` and `harn sync` now fail
+  as unknown commands. Use `harn agents inbox` for the inbox and
+  `harn agents ping` to send a message. There is no replacement for
+  `conversations` or `sync`.
+- A host that passed `coordinationInbox` or `conversations` to
+  `createHarneryProgram` must drop those fields.
+- `harn doctor` no longer lists an `rclone` check.

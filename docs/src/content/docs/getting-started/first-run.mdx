@@ -17,7 +17,7 @@ After `npm install -g harnery`, run a freshness check and a tour of the daily-dr
 harn doctor
 ```
 
-You'll see a `✓ / ⚠ / ✗` checklist of every dep Harnery touches (Node, git, bun, optional restic + rclone + playwright, plus whether `.harnery/` is reachable). Warnings about missing optional deps are fine; only `node` and `git` are required for the core surface.
+You'll see a `✓ / ⚠ / ✗` checklist of every dep Harnery touches (Node, git, bun, optional restic + playwright, plus whether `.harnery/` is reachable). Warnings about missing optional deps are fine; only `node` and `git` are required for the core surface.
 
 JSON output for scripting:
 
@@ -87,11 +87,6 @@ harn backup init
 
 # Take a snapshot of the durable V3 ledger and coordination state
 harn backup snapshot
-
-# Cross-machine sync of identities + archived journals via rclone
-harn sync init           # picks the rclone remote configured via `rclone config`
-harn sync push           # local → remote
-harn sync pull           # remote → local
 ```
 
 ## Where to next
