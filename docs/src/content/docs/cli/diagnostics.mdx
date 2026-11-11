@@ -126,10 +126,7 @@ payloads, and environment blocks. Missing or unreadable sources stay visible as
 unsupported or error capabilities instead of disappearing from the result.
 The frozen inputs include the bounded activity projection and the finding-policy
 values used for episode gaps and freshness checks. New captures also include
-the bounded completed-hook projection and up to 20 recent shadow-admission
-records. Admission capture keeps only the run ID, terminal time, observer state,
-pressure, recommendation, freshness, service state, and wait time. It excludes
-workflow names, objectives, transcripts, child output, commands, and tool data.
+the bounded completed-hook projection.
 
 ## Validation and replay
 
@@ -161,8 +158,7 @@ Persistent signals compare severity, open or resolved state, recurrence count,
 peak value when units match, attributed owner, and workload relationship. The
 result also compares pressure advice and source capabilities. Completed-hook
 summaries expose invocation, degraded, faulted, slow, high-memory, and retry
-counts. Shadow-admission summaries expose pressure counts, unavailable samples,
-and maximum observation wait.
+counts.
 
 The default output is a compact readable report. `--json` returns comparison
 schema 1, including a deterministic `comparison_digest`. Repeating the same two
@@ -170,9 +166,10 @@ inputs produces the same ordered rows and digest.
 
 Threshold, engine-build, machine, capture-order, duplicate-fingerprint, and
 source-capability differences are explicit warnings. A bundle created before
-hook-health or shadow-admission capture remains valid; comparison marks the
-missing optional source unavailable rather than turning it into a zero or a
-healthy result.
+hook-health capture remains valid; comparison marks the missing optional source
+unavailable rather than turning it into a zero or a healthy result. Bundles
+captured while shadow admission existed still compare; the comparison ignores
+that source.
 
 The comparison page at `/diagnostics/compare` lists managed candidates from
 their bounded headers, then fully validates the selected pair before it renders

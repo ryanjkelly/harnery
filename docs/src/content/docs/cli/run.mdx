@@ -8,19 +8,9 @@ sidebar:
 ```
 harn run <script> [--adapter <name>] [--resume-from <run-id>]
                            [--subscription-only] [--allow-api-billing]
-                           [--observe-pressure]
-                           [--policy <file>] [--isolation <mode>]
-                           [--workspace-root <dir>] [--approval-to <address>]
+                           [--policy <file>] [--approval-to <address>]
                            [--max-agents <n>] [--concurrency <n>] [--cwd <dir>] [--json]
 harn run resume <run-id> [--json]
-harn run workspace <run-id> [--json]
-harn run workspaces [--json]
-harn run integration prepare <run-id> --policy <file> --reviewer <name>
-                                    [--reason <text>] [--target-root <dir>]
-                                    [--accept-unknown <code>] [--approval-to <address>] [--json]
-harn run integration apply <run-id> --yes [--json]
-harn run cleanup <run-id> --yes [--json]
-harn run reclaim <run-id> [--discard] [--yes] [--force] [--json]
 harn approval list [--status pending|approved|denied] [--json]
 harn approval show <approval-id> [--json]
 harn approval approve|deny <approval-id> [--actor <name>] [--reason <text>] [--json]
@@ -39,26 +29,6 @@ Before you rely on a workflow, read [Author reliable
 workflows](/guides/workflow-authoring/). It covers frozen script hashes, the
 five-minute agent timeout, response-schema failure costs, and child sandbox
 verification.
-
-## Optional shadow pressure observation
-
-Pass `--observe-pressure` to record local pressure before the first real child
-dispatch. Harnery registers the run as a short-lived supervisor consumer,
-demand-starts the optional supervisor when necessary, waits for one fresh
-cycle, reads the same advice exposed by `harn diagnostics explain`, and then
-unregisters the consumer.
-
-This mode is observer-only. Normal, elevated, critical, and unknown advice all
-leave dispatch unchanged. Startup, freshness, and read failures become explicit
-unknown advice instead of failing or parking the run. The observer stays asleep
-when every `agent()` call is served from cache or the workflow dispatches no
-children.
-
-The immutable run manifest freezes `{ schema_version: 1, mode: "shadow" }`.
-Parked resume keeps the original choice and takes another sample only if it
-reaches a new real dispatch. The transcript records `diagnostic.admission`; the
-terminal `RunReport` and proof packet carry the same observation with
-`action: "none"`.
 
 Spawn adapters: `claude-code` (default), `codex` (`codex exec
 --output-last-message`), and `cursor` (`cursor-agent -p --output-format json
@@ -282,8 +252,7 @@ resolved options, and wrapped prompt participate in resume-cache identity.
 
 `--policy <file>` applies a host-owned JSON/JSONC policy immediately before
 every uncached agent dispatch. The policy can constrain run cost, unknown
-pricing, adapter, model, working path, network state, and the host-declared
-isolation mode. It is not part of workflow metadata, so the script and child
+pricing, adapter, model, working path, and network state. It is not part of workflow metadata, so the script and child
 prompts cannot weaken it.
 
 Rules return `allow`, `ask`, or `deny`. The standalone CLI parks on `ask` and
@@ -293,11 +262,8 @@ must select `EngineOpts.approvalMode = "park"` deliberately. An embedding host
 can still supply `EngineOpts.resolvePolicyAsk` for immediate decisions. Use
 [`harn policy`](/cli/policy/) to validate a document before a run.
 
-`--isolation` declares the requested boundary: `shared`, `worktree`, `sandbox`,
-or `remote`. The standalone CLI can create the built-in local Git boundary
-when `worktree` is paired with an explicit `--workspace-root`. Other boundary
-types still require an embedding host provider. Ordinary CLI adapter
-subprocesses inherit host networking, so the CLI declares network enabled and
+Runs execute in the shared checkout, so a policy's `allowed_isolation` accepts
+only `shared`. Ordinary CLI adapter subprocesses inherit host networking, so the CLI declares network enabled and
 a `network: deny` policy blocks dispatch.
 
 Workflow code may use `ctx.authorize()` before an external mutation:
@@ -380,151 +346,6 @@ change in the parent session takes effect in these records at the parent's next
 turn, and a long-lived daemon that inherited a session marker reads that
 session's latest recorded state.
 
-## Isolated worktrees
-
-The local provider needs an explicit writable parent:
-
-```bash
-harn run ./review.mjs \
-  --isolation worktree \
-  --workspace-root ../workflow-workspaces \
-  --policy ./workflow-policy.json
-```
-
-Harnery probes Git and filesystem capabilities before allocation. A supported
-run receives a dedicated branch and worktree. The immutable run manifest binds
-that workspace to the exact run. Children start in the
-isolated active root, and approval resume reconstructs the same built-in
-provider from the frozen binding.
-
-If a non-shared mode has no provider, Harnery records a compatibility decision
-instead of pretending isolation happened. The run uses the shared checkout
-only when policy permits it. Once a binding exists, resume cannot fall back to
-shared execution.
-
-Inspect one run or list all isolated and compatibility decisions:
-
-```bash
-harn run workspace wf-2026-07-24T02-10-00-000Z-a1b2c3
-harn run workspace wf-2026-07-24T02-10-00-000Z-a1b2c3 --json
-harn run workspaces
-```
-
-The status reader validates the manifest, proof, provider event chain,
-integration authority, cleanup attempts, and receipts before projecting a
-lifecycle. It reports allocation, verification, integration, conflicts,
-cleanup, and resource state. Corrupt or contradictory evidence returns an
-explicit invalid inspection.
-
-Finish a verified standalone run in explicit phases:
-
-```bash
-harn run integration prepare <run-id> \
-  --policy ./integration-policy.json \
-  --reviewer sam \
-  --reason "reviewed the exact proof and diff" \
-  --accept-unknown network_not_attested
-
-harn run integration apply <run-id> --yes
-harn run cleanup <run-id> --yes
-```
-
-Preparation previews the fast-forward and writes review, plan, and policy
-authority. It does not update the target branch. `--reviewer` is required: it
-names who reviewed the proof and diff. Repeat `--accept-unknown` for each verification fact the
-reviewer accepts.
-
-If the policy returns `ASK`, preparation creates a durable approval and parks
-without applying Git changes or reporting a generic workflow failure. Text mode
-prints the run, plan, and approval IDs plus a copyable
-`approval approve` command. JSON mode emits a stable parked envelope
-with `status`, `runId`, `planId`, and `approvalId`. Resolve the approval, then
-rerun the same prepare command. The exact plan is reused and authorized. Apply
-requires `--yes` and rereads the plan, proof, review, policy decision, approval,
-target identity, and attempt chain before Git changes. Divergence, target
-movement, dirty state, or a Git operation in progress blocks the apply. Harnery
-does not resolve conflicts.
-
-Cleanup also requires `--yes`. It removes only resources covered by the frozen
-binding and cleanup intent. A clean unintegrated branch that is not reachable
-from the target is preserved, as is dirty or ambiguous work. The CLI supports
-the built-in local Git provider. Embedding hosts use `prepareIntegration()`,
-`applyIntegration()`, and `cleanupWorkspace()` for other providers.
-
-### Reclaiming a preserved workspace
-
-Preserving dirty work is correct, but a preserved workspace needs a way out.
-Cleanup will keep finding the same dirty tree and preserving it again, so
-`reclaim` resolves the work first and then releases
-([ADR 0042](/decisions/0042-dirty-workspace-reclaim/)). Preview either mode
-before confirming:
-
-```bash
-harn run reclaim <run-id>                   # preview salvage
-harn run reclaim <run-id> --discard         # preview discard
-harn run reclaim <run-id> --yes             # salvage the work, then release
-harn run reclaim <run-id> --discard --yes   # throw the work away, then release
-```
-
-Without `--yes`, the command reports the run ID, mode, liveness, ownership,
-lease holders, and dirty paths without changing workspace files. JSON previews
-have `action: "preview"`, `run_id`, `mode`, `liveness`, `ownership`,
-`lease_holder`, and `dirty_paths`. An unreadable path list is `null`, not an
-empty list. `lease_holder` is an array of resume, binding, or repository lease
-holders.
-
-Both modes require a proven inactive run and an `ok` workspace ownership
-attestation. The provider acquires the resume, binding, and repository leases
-before committing or discarding files, and holds them through ordinary cleanup.
-The resume lease prevents a parked run from restarting during reclaim.
-A resume lock whose owner on this host has exited, or whose PID now belongs to a
-different process, is retired automatically. A lock held by a live, foreign, or
-unreadable owner still blocks reclaim and resume.
-These refusals leave workspace files untouched:
-
-| Code | Reason |
-| --- | --- |
-| `workflow_reclaim_run_live` | The run is active |
-| `workflow_reclaim_liveness_unknown` | The run's inactivity cannot be established from its evidence |
-| `workflow_reclaim_ownership_unproven` | Workspace ownership could not be attested |
-| `workflow_reclaim_lease_held` | A required resume, binding, or repository lease cannot be acquired |
-
-`--yes` confirms the selected mode. It grants no recovery exception by itself.
-See [ADR 0207](/decisions/0207-fail-closed-on-unknown-state/) for the reclaim
-gate and the rule for unknown evidence.
-
-Salvage commits the uncommitted work to a durable `harnery/salvage/<run-id>`
-branch, so it stays recoverable by name after the worktree directory is gone.
-Discard is never the default.
-
-Once the checks pass, each mode makes the working tree clean and then hands
-off to the ordinary cleanup path under the same leases. Cleanup remains the
-only operation that removes a worktree. An already released workspace can
-report `already_gone` after its ownership and liveness checks. Confirmed
-JSON results have `action: "reclaimed"`, the preview fields, `preparation`, and
-`cleanup`.
-
-`harn run workspace <run-id>` lists the dirty paths, so the choice between
-salvaging and discarding can be made without leaving Harnery.
-
-### Forcing past unknown liveness
-
-When a transcript is missing or corrupt, reclaim reports `liveness: "unknown"`
-and refuses. If the run is known to be stopped, add `--force` to the confirmed
-command:
-
-```bash
-harn run reclaim <run-id>                 # preview shows liveness: unknown
-harn run reclaim <run-id> --force --yes   # salvage anyway
-```
-
-`--force` admits only unknown liveness. A readable active marker still refuses,
-including one amid corrupt transcript lines, and terminal proof, ownership,
-retained peers and every lease remain required. Without `--yes` it only
-previews. A forced reclaim appends one `reclaim_forced` event, with the run,
-mode, liveness, PID and host, to the workspace's provider event ledger before
-any file changes.
-
 ## Resume
 
 `--resume-from <run-id>` reuses completed agent results from a prior run's
@@ -597,11 +418,10 @@ mode `0600` and contains:
   text;
 - engine-observed repository snapshots before and after the run;
 - adapter tool-evidence coverage from the adapter capability registry;
-- observer-only shadow admission advice when `--observe-pressure` was enabled;
 - explicit unknowns for missing capability claims, cost, session IDs, and
   incomplete repository drift;
 - a SHA-256 digest of the final transcript.
-- the normalized host policy, its digest, host isolation/network declarations,
+- the normalized host policy, its digest, the isolation and network declarations,
   and bounded initial/final decision receipts when policy was configured.
 
 Acceptance is deliberately simple. Any attached `failed` evidence makes a
@@ -632,10 +452,12 @@ references. The detailed transcript continues to retain full agent results for
 resume compatibility.
 
 The programmatic surface is exported from `harnery/core/run`, including
-the engine, proof reader and renderer, workspace provider, integration and
-cleanup functions, `readWorkflowWorkspaceStatus()`,
-`inspectWorkflowWorkspace()`, `listWorkflowWorkspaceInspections()`, schema
-types, and `WORKFLOW_PROOF_SCHEMA_VERSION`.
+the engine, proof reader and renderer, approval records, run manifests, schema
+types, and `WORKFLOW_PROOF_SCHEMA_VERSION`. Packets written by earlier versions
+may carry `execution` and `diagnostic_admission` fields from the removed
+isolated workspaces and observer admission
+([ADR 0244](/decisions/0244-trim-unused-run-engine-features/)); they still load
+as history, and the reader ignores those fields.
 
 ## Web view
 
@@ -645,10 +467,7 @@ view rendering the stages → agents tree with per-agent adapter, attempts,
 duration, and cost. Parked runs have a distinct awaiting-approval status and
 show the durable approval ID and inspection command. When a terminal proof packet exists, the detail page also
 shows the objective, acceptance criteria, declared evidence, repository drift,
-host-policy decisions, and explicit unknowns. The run list also shows the
-workspace lifecycle. Detail pages separate allocation, verification,
-integration, cleanup, and repository conflicts. Invalid durable workspace
-evidence appears as an error instead of a healthy badge. Transcript-driven means a
+host-policy decisions, and explicit unknowns. Transcript-driven means a
 run stays inspectable while live and after the orchestrator exits, with no
 terminal paging limits.
 

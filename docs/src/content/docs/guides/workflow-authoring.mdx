@@ -56,22 +56,19 @@ make the result parseable, not force it to be terse.
 
 ## Reproduce failures outside the child sandbox
 
-A workflow child runs through the selected adapter CLI and its projected
-workspace policy. Its filesystem, process, network, browser, and Git
-administrative access can be narrower than the parent shell's access. A test
-failure may therefore describe the child environment rather than the code.
+A workflow child runs through the selected adapter CLI and its own vendor
+sandbox. Its filesystem, process, network, browser, and Git access can be
+narrower than the parent shell's access. A test failure may therefore describe
+the child environment rather than the code.
 
 Before recording a product failure, rerun the smallest failing check in the
-intended host environment. Inspect the bound workspace and the repository
-status too. A child may have finished useful edits but been unable to commit
-because its Git administrative path was read-only or outside the projected
-writable roots.
+intended host environment, and inspect the repository status. A child may have
+finished useful edits but been unable to commit because its sandbox kept the
+Git administrative directory read-only.
 
 Do not weaken the sandbox to make a red check disappear. Reproduce the check,
 classify the boundary, and either fix the workflow policy or carry the child's
-verified work forward through an authorized host action. See [Isolated
-workspaces](/concepts/isolated-workspaces/) for the binding and integration
-model.
+verified work forward through an authorized host action.
 
 ## Preflight checklist
 

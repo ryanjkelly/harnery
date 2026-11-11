@@ -26,7 +26,7 @@ silently ignored.
   "allowed_paths": ["../project"],
   "network": "ask",
   "external_actions": "ask",
-  "allowed_isolation": ["worktree", "sandbox"]
+  "allowed_isolation": ["shared"]
 }
 ```
 
@@ -52,7 +52,7 @@ in every run.
 | `allowed_paths` | Requires the dispatch working directory or mutation path to be contained by one listed root. |
 | `network` | Verdict applied when network is enabled or unknown. Defaults to `deny`. |
 | `external_actions` | Verdict applied to every `ctx.authorize()` external mutation. Defaults to `deny`. |
-| `allowed_isolation` | Acceptable host-created boundaries. Omit to accept any declared mode. |
+| `allowed_isolation` | Acceptable execution boundaries. Runs execute in the shared checkout, so `shared` is the only accepted value; a policy that lists `worktree`, `sandbox` or `remote` fails validation. |
 
 Independent rules compose fail-closed: `deny` beats `ask`, and `ask` beats
 `allow`. A missing field generally means no restriction, except network,

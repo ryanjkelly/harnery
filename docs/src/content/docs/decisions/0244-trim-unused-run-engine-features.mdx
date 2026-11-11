@@ -1,0 +1,118 @@
+---
+title: "ADR 0244: Trim unused run engine features"
+description: Remove the run engine's isolated workspace provider, integration and observer admission, which no recorded run outside Harnery's own tests used, and keep policy parking and approvals.
+sidebar:
+  order: 244
+---
+
+**Date:** 2026-11-10
+**Status:** Accepted
+
+## Context
+
+ADR 0238 removed work items, governors and councils and kept the run engine
+with everything around it: policy parking and approvals, the isolated
+workspace provider, integration of a workspace's commits, and observer
+admission (`--observe-pressure`). Work items were the main caller of isolated
+workspaces, so it was worth checking what real runs used once they were gone.
+
+Usage records from the installs that run Harnery covered about 100 real runs
+started through `harn run` between August and November 2026: 28 in one
+project and 68 in another. Every one of them executed in the shared checkout.
+
+| Feature | Real runs that used it | Other recorded uses |
+|---|---:|---|
+| Script execution, stages, schema checks, proof packets | all | every run |
+| Full-access workers | 18 of 28 | one test |
+| Billing check | all (automatic) | never had to refuse |
+| Isolated workspace provider (`--isolation worktree`) | 0 | work-item runs before ADR 0238, tests and demos |
+| Integration prepare and apply | 0 | one demo |
+| Observer admission | 0 | one canary test |
+| Policy documents, approvals, park and resume | 0 | tests and demos |
+
+The workspace provider was also the most expensive part to keep: about 11,000
+lines of source and tests, behind 20 of the run engine's 53 commits in the last
+60 days, most of them fixes to reclaim races and Windows portability.
+
+Three pieces of the provider were not specific to it. The event ledger,
+storage maintenance, the session finalizer and the server registry used its
+no-clobber lease lock and its durable-record helpers (`fsyncParentDirectory`,
+`stableDigest`), and sandbox projection imported its binding type.
+
+## Alternatives considered
+
+- **Keep everything.** Rejected: about 13,000 lines of unused source and tests
+  would keep drawing maintenance, and the engine's types, proof packet and
+  dashboard would stay harder to read than the features in use warrant.
+- **Remove the features but keep their commands.** Rejected: the commands could
+  only print "not supported", which is the kind of dead compatibility path
+  Harnery does not keep before 1.0.
+- **Also remove policy parking and approvals.** Not chosen now. They had no real
+  use either, but they are the only declared guard for an unattended run's cost
+  ceiling and external actions, ADR 0238 kept them a day earlier, and removing
+  a safety control is a separate decision. It stays open as a later, smaller
+  change.
+
+## Decision
+
+Remove the isolated workspace provider, integration and observer admission,
+with the commands, flags and exports that existed only for them. This is a
+breaking change, made on purpose.
+
+### What is removed
+
+- **Commands.** `harn run workspace`, `harn run workspaces`,
+  `harn run integration prepare|apply`, `harn run cleanup` and
+  `harn run reclaim`.
+- **Flags.** `--isolation`, `--workspace-root` and `--observe-pressure` on
+  `harn run <script>`. Runs always execute in the shared checkout.
+- **Code.** `src/core/run/workspaces/` except the lease lock,
+  `src/core/run/admission.ts`, and the engine paths that bound a workspace,
+  reattached it, attested it at the end of a run, or sampled pressure before the
+  first dispatch.
+- **Exports.** The workspace provider, integration, cleanup, inspection and
+  admission functions, constants and types from `harnery/core/run`, plus
+  `EngineOpts.isolation`, `workspace`, `gitWrite`, `diagnosticAdmission` and
+  `observeDiagnosticAdmission`.
+- **Git administrative grant.** `gitWrite` resolved its paths from a workspace
+  binding, so it had nothing to resolve without one. A filesystem policy that
+  names explicit writable roots is now refused before any child launches,
+  because the shared checkout has no validated root to contain them.
+- **Diagnostics.** Diagnostic bundles no longer capture a shadow-admission
+  source, and comparisons no longer report one.
+- **Dashboard and docs.** The workspace badge and workspace section of the run
+  pages, the shadow-admission card, and the isolated workspaces concept page.
+
+### What stays, and why
+
+- **Policy parking and approvals.** `--policy`, `--approval-to`, parking,
+  `harn run resume`, `ctx.authorize()`, `harn approval` and `harn policy` keep
+  their behaviour. A policy's `allowed_isolation` accepts only `shared`; a
+  policy that lists another mode fails validation instead of describing a
+  boundary Harnery cannot create.
+- **Everything real runs use.** The engine core, stage schemas, every spawner,
+  full-access workers, sandbox projection of read-only and workspace-write
+  modes, proof packets, the billing check and the dashboard's run history.
+
+## Consequences
+
+- **Moved, not removed.** The lease lock is now
+  `src/core/storage/no-clobber-lease.ts` and the durable-record helpers are
+  `src/core/storage/durable-record.ts`. Their behaviour and tests are
+  unchanged. Storage is a coordination-core module, so the toolkit layering
+  rule still holds.
+- **Old records.** Run manifests and proof packets written by earlier versions
+  may carry `isolation`, `workspace_binding`, `workspace_fallback`,
+  `diagnostic_admission` or `execution`. `harn run proof` and the dashboard
+  still load them as history and ignore those fields. A parked run that
+  executed in an isolated workspace cannot be resumed; start a new run.
+- **State.** Integration and cleanup receipts inside a run's folder stay as
+  part of that run's history. The top-level `.harnery/workspaces` folder had
+  no other writer, so it joins the `harn storage retire` list from ADR 0239.
+  Remove it with `harn storage retire workspaces` after reviewing the preview.
+- **Users of the removed exports.** A script that passed `--isolation` or
+  `--workspace-root` should drop the flag. A host that bound its own workspace
+  provider through `EngineOpts.workspace` should create the checkout itself and
+  start the run with `cwd` pointing into it. There is no replacement for
+  integration or observer admission; `harn diagnostics explain` still reports
+  local pressure on demand.
