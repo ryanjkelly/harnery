@@ -1,0 +1,381 @@
+---
+title: "ADR 0245: continue epochs across additive schemas and hold bad rows at the writer"
+description: A committed schema lineage lets rows of additive schemas share one epoch, one function decides serve, replace or block, and the writer admits only rows the reader will accept.
+sidebar:
+  order: 245
+---
+
+**Date:** 2026-11-11
+**Status:** Accepted
+
+## Context
+
+Three behaviors of the V3 event ledger caused most of its outages.
+
+**Every schema change replaced the epoch.** `control.ts` requires the genesis
+schema digest to equal the running build's digest, once in the genesis profile
+(`genesis_schema_digest_incompatible`) and once in the genesis event
+(`genesis_profile_binding_mismatch`). On a mismatch the routing boundary calls
+`refreshIncompatibleEventLedgerV3` (ADR 0111), which archives the epoch and
+starts a new one. The comparison runs in both directions, so an older runtime
+replaces a newer epoch as readily as a newer runtime replaces an older one.
+Two runtimes that share a root therefore replace each other's epoch on every
+hook. `init`, the supervisor and the route observer each repeat the comparison
+in their own code. ADR 0080 had specified an in-place advance for additive
+changes, but nothing ever wrote one, so every change, however small, cost an
+epoch.
+
+**One rejected row closed coordination for every session.** Any canonical
+reader diagnostic makes the read incomplete, and control becomes
+`ledger_integrity_failure` for the whole root (ADR 0084, ADR 0155). The rows
+that caused this were written by Harnery's own producers: out of producer
+sequence, with a clock regression, or ahead of a parent. Since ADR 0137 the
+writer holds a row until its causal parents and attestation are committed, but
+it does not check sequence or clocks, although the checkpoint it reads carries
+both. A single unreadable file in the ready queue also made every drain fail,
+because `drainReadyEventsUnderLeaseV3` validates every queued file before it
+appends any.
+
+**Command events outside a turn were dropped.** The three `command.*` schemas
+use the turn scope, which requires `turn_id`. `recordCommandSignalV3` returned
+`turn_not_started` for a command run before the first prompt or between turns,
+and `session-events.ts` wrote a `command_emit_unjoinable` diagnostic instead of
+the event.
+
+## Alternatives
+
+**Write an advance event (ADR 0080's procedure).** Rejected. A
+`ledger.schema_advanced` row needs its own write path under the bootstrap,
+append and publication leases, crash recovery at each step, and a rule that no
+row of the new schema is queued before the advance commits. Rows of the older
+compatible schema must still be accepted after the boundary, because producers
+that started earlier keep writing them, so the boundary enforces nothing. No
+consumer reads it: the projection ignores the event type.
+
+**Start every new epoch at the oldest schema of its additive group and advance
+at once.** Rejected. The additive check over the schema's history puts that
+root two steps before the digest the published runtimes carry, so those
+runtimes would replace every new epoch. Pinning the start to one published
+digest serves only runtimes on exactly that digest and keeps a special genesis
+path forever.
+
+**Contain a rejected row inside the reader.** Rejected. It weakens the rule
+that canonical reader failures are global, needs a second validation pass and a
+checkpoint that covers part of the ledger, and still closes the root when two
+sessions are affected in one epoch. Holding the row at the writer covers the
+same diagnostics and keeps the ledger valid.
+
+**Set a held row aside and restart its session automatically.** Deferred. The
+authority outbox applies a coordination change before it queues the event. If
+the event of a claim acquisition were set aside, a fresh generation would later
+release a claim the ledger never saw acquired, and the projection would report
+`claim_release_without_acquire`, which closes authority for everyone.
+
+**Check additivity at runtime.** Rejected. A runtime ships only its own schema.
+The generator checks once when the schema changes, and the hook path does a
+table lookup.
+
+**Rely on restarting old processes.** Insufficient alone. One surviving older
+process would still replace a newer epoch. Restarting remains cleanup.
+
+**Record commands with no turn in a side file.** Rejected. Such a command
+already has a session and a generation, and moving the schemas to the
+generation scope is additive.
+
+**Let adapter capability profile changes continue in place too.** Deferred.
+Whether that machinery stays at all is a separate decision. A capability
+profile change still replaces the epoch, as ADR 0111 specifies.
+
+## Decision
+
+### What additive means
+
+A schema change is additive when `validateAdditiveSchemaAdvanceV3`
+(`src/core/events/v3/advance.ts`) proves the new generated JSON Schema accepts
+every document the old one accepted: existing properties and union branches
+remain accepted, new object properties are optional, and new branches may be
+added. Removals, newly required fields, narrowed bounds, identity changes and
+changed constraints are refused. The check fails closed on any JSON Schema
+keyword it does not model, so a tightened constraint it cannot compare (for
+example `maxProperties`) is never classified as additive.
+
+ADR 0080's semantic rule stands unchanged. Reinterpreting an existing field is
+a breaking change even when the shape passes, and it requires a new group.
+
+### Schema lineage
+
+`schemas/event-v3-lineage.json` records every committed schema digest as an
+ordered list of additive groups: oldest group first, oldest digest first inside
+a group. Every digest in a group is additive to the one before it. The last
+digest of the last group is `EVENT_V3_SCHEMA_DIGEST`. The generator emits the
+same data into `src/core/events/v3/generated.ts` as `EVENT_V3_SCHEMA_LINEAGE`,
+of shape `{ groups }`, and `src/core/events/v3/schema-lineage.ts` provides the
+lookups `schemaGroupForDigestV3(digest)` and `runtimeSchemaGroupV3()`. The
+runtime's group is the last group.
+
+Only `scripts/generate-event-v3-contract.ts` writes the lineage file. When the
+generated digest differs from the committed one, it compares the new schema
+with the schema at `HEAD` (never the working tree). If the change is additive,
+it appends the new digest to the current group. Otherwise it refuses, unless
+given `--breaking`, which starts a new group. The generator also refuses to
+write in a checkout that serves a live ledger: when the checkout, or the host
+repository that contains it, has an initialized V3 epoch, it exits and names
+the worktree command to use instead. Check mode fails when the lineage head,
+`generated.ts`, the schema file and the contract source disagree.
+
+### One compatibility rule
+
+`epochCompatibilityV3` in `schema-lineage.ts` takes the epoch's genesis schema
+digest and the set of schema digests present in the epoch, and returns one of
+three verdicts for the running runtime:
+
+| The epoch's schemas, as the running runtime sees them | Verdict | Effect |
+|---|---|---|
+| Every digest present, the genesis digest included, is in the runtime's own group | `serve` | Serve the epoch. The runtime stamps its own digest on what it writes. |
+| Every digest is in the lineage, and the genesis digest is in an older group | `replace_breaking` | Replace the epoch at the routing boundary, as ADR 0111 does today. |
+| Any digest present is absent from the runtime's lineage | `unknown` | Block this runtime only, with reason `epoch_schema_unknown`. Append nothing and replace nothing. |
+
+Every caller uses this function and none compares digests itself:
+
+- both genesis checks in `control.ts`: the profile check in
+  `parseCandidateProfile` and the event binding check in
+  `parseGenesisManifestValue`;
+- `resolveLiveEventLedgerRouteV3` in `live-routing.ts`;
+- `refreshIncompatibleEventLedgerV3` in `bootstrap.ts`;
+- `eventLedgerV3RuntimeIssues` in `src/commands/init.ts`;
+- the passive route in `live-route-observer.ts`;
+- the supervisor's `src/core/supervisor/ledger-state.ts`.
+
+A `replace_breaking` verdict keeps the existing control reason
+`genesis_schema_digest_incompatible` and is the only schema verdict that is
+refreshable. The control reason for `unknown` is `epoch_schema_unknown`. It
+blocks only the runtime that reads it, and it is never refreshable: no hook,
+command, rotation, repair or initializer path replaces such an epoch
+automatically. An adapter capability profile change still replaces the epoch
+exactly as ADR 0111 specifies; this decision changes only the schema
+comparison.
+
+### One epoch holds rows of every digest in the group
+
+A row is valid in an epoch when its stamped digest (`contract.schema_digest`)
+is in the reading runtime's group and the row validates against that
+runtime's schema, which accepts every older digest's documents by
+construction. Nothing marks the first row of a newer digest: that row is the
+change.
+
+Nothing writes `ledger.schema_advanced`. Its contract branch stays, because
+removing a branch is a breaking change. The reader no longer tracks an advance
+boundary and drops the rule that a row's digest must equal the active digest.
+This supersedes ADR 0080's section "Additive in-place advances". ADR 0080's
+rule that reinterpretation is breaking is kept above.
+
+The reader reads a row's stamped digest before it validates the row's shape.
+A row written by a newer runtime is therefore reported as an unknown digest,
+not as an invalid event, and rows that depend on it are not reported as
+missing parents on top of it. When unknown-digest diagnostics are the only
+diagnostics in a read, the control reason is `epoch_schema_unknown`, not
+`ledger_integrity_failure`.
+
+### Genesis manifest version 2
+
+Every new epoch, from initialization, refresh, size rotation or recovery,
+writes its genesis manifest with `manifest_version: 2`. The shape is otherwise
+unchanged. A runtime with this decision reads versions 1 and 2. The version is
+the fence that keeps a runtime from before this decision away from epochs it
+would otherwise misjudge.
+
+What it fences, in a runtime that predates it: `parseGenesisManifestValue` in
+`control.ts` refuses any version other than 1 with
+`genesis_manifest_version_invalid`, so `readEventV3ControlState` returns an
+invalid state. That reason is not refreshable in that runtime:
+
+- Hook and command routing. `resolveLiveEventLedgerRouteV3` refreshes only on
+  `genesis_schema_digest_incompatible` or a capability change, so it returns a
+  blocked route.
+- Rotation. `rotateOversizedEventLedgerV3` rotates only an active or candidate
+  epoch and returns `not_active`.
+- Stranded-candidate repair. `repairStrandedEventLedgerV3Candidate` acts only
+  on a candidate and returns `not_stranded`.
+- Programmatic entry. `ensureEventLedgerV3` throws
+  `event_v3_control_unavailable` for any state other than active or closed.
+- Explicit refresh. `refreshIncompatibleEventLedgerV3` throws
+  `event_v3_runtime_refresh_refused`.
+
+What it does not fence:
+
+- That runtime's `init`. `eventLedgerV3RuntimeIssues` returns no issues for a
+  non-active state, and `initializeEventLedgerV3Locked` falls through for an
+  invalid state even without `forceNewEpoch`, so it archives the epoch and
+  creates a new one.
+- That runtime's `ledger-v3 initialize`, which calls the same initializer.
+- A process that passed its control check before the epoch changed. The
+  command recorder in that runtime calls `writeEventV3` without a genesis
+  fence, so it can queue one row after the change. `publishProducerState`
+  suppresses a stale publication only when control reads active or candidate,
+  so it can publish one producer state file. The door check below keeps that
+  row in the queue (its parents and producer sequence belong to another
+  epoch), and consumers already ignore a producer state stamped with another
+  epoch (ADR 0137).
+
+An older runtime's own explicit initializers therefore remain able to replace
+a newer epoch. That is accepted: they are explicit commands, and an install
+meets them only after a downgrade.
+
+### Witness and checkpoint list the digests present
+
+The control witness (ADR 0138) becomes `format_version: 3` and the append
+validation checkpoint becomes `format_version: 2`. Each records the sorted list
+of schema digests present in the epoch. A runtime checks that list against its
+own group through `epochCompatibilityV3`. It never adopts an accepted-digest
+list that another runtime wrote; today's checkpoint hydration copies
+`accepted_schema_digests` directly, and that ends. A runtime that finds a
+digest it does not know in either file blocks with `epoch_schema_unknown`
+without a full read. A runtime from before this decision cannot parse either
+new format and falls back to its full read, which fails at the first row it
+does not know.
+
+### Archive preparation accepts the group
+
+`prepareReadyHistoryV3` in `ready-history.ts` accepts every digest in the
+runtime's group when it carries pending rows into an archive, instead of only
+the genesis digest. An epoch holding rows of two digests can therefore rotate.
+
+### The door check
+
+The reader's per-row checks move into `src/core/events/v3/row-validation.ts`
+as two functions. `checkRowV3(state, row)` is pure: it returns the diagnostic
+codes the reader would report for that row at that position and mutates
+nothing. `applyRowV3(state, row)` advances the validation state. The checks
+are producer sequence, clocks, attestation, causal parents and digest
+acceptance. The reader calls both for every row. The writer's drain calls
+`checkRowV3` for every queued row and `applyRowV3` only for rows it admits, so
+the reader and the door cannot drift apart.
+
+`drainReadyEventsUnderLeaseV3` admits a queued row only when `checkRowV3`
+passes against the append validation checkpoint plus the rows already admitted
+in this drain. It repeats over the remaining rows, in queue order, until a pass
+admits nothing. When no valid checkpoint exists (for example after a torn-tail
+repair discarded it), the drain obtains one through a canonical read before it
+admits anything; within-batch ordering alone is no longer enough. A row that
+fails changes no state and stays in the queue. A row whose event ID is already
+committed passes as it does today, so replay after a crash between append and
+receipt cleanup still works. A causal cycle among queued rows no longer throws:
+the rows in the cycle wait, and the admissible rows beside them are appended.
+
+Files that can never be appended do not stall the queue. A queued file or
+`.committed` receipt that is unreadable, not canonical, or not a valid event
+under a digest the runtime knows is renamed aside beside the queue, kept, and
+reported. A row stamped with a digest the runtime does not know is left
+untouched for a runtime that knows it. Nothing is deleted.
+
+`writeEventV3` returns `committed`, `ready` or `epoch_replaced` as today, plus
+two new results, each with a reason code:
+
+- `waiting`: the row is valid but the door will not admit it yet. The reason
+  is the reader diagnostic code the row would produce, or
+  `epoch_schema_unknown` for a row of a digest this runtime does not know.
+- `set_aside`: the file can never be appended and was renamed aside. The
+  reason names the failure (unreadable, not canonical, or invalid).
+
+A producer is never told `committed` because its file left the queue. A
+session whose rows wait sees the reason on its next coordination command,
+with the two ways out: start a new session, or wait for the next rotation.
+`agents health` reports waiting rows and set-aside files by generation, with
+the reason, the first waiting producer sequence and the age.
+
+A waiting row is never discarded automatically. It leaves the queue when what
+it waits for arrives or when the epoch rotates; rotation archives the queue
+intact, and the re-anchoring and coordination carry-forward described below
+re-record the session's state in the new epoch. Automatic recovery is deferred
+because `reconcileAuthorityTransactionV3` in `authority-outbox.ts` applies the
+coordination mutation first and then calls `writeEventV3`, and it publishes a
+committed receipt for any result except `epoch_replaced`. Discarding the event
+would leave the applied state and the ledger out of step. The outbox treats
+`waiting` like `ready`, since the event stays durable in the queue, and treats
+`set_aside` for its own row as a failure.
+
+### Producers that act on another generation
+
+The causal fence holds a row behind its cited parents. A producer that writes
+about another generation is held only if it cites that generation's pending
+work. Most cite only one of the generation's producer chains, so each also
+checks one predicate before it emits: `generationHasWaitingRowsV3(coordRoot,
+generationId)`, added to `writer.ts`. It first runs an ordinary drain under the
+append lease, then reports whether any queued row with that `scope.generation_id`
+remains. After a drain, every such row is waiting. When the predicate is true,
+the producer does not emit, leaves its own state unchanged, and retries on its
+next pass.
+
+| Producer | File and function | Emits | Cites the subject's prior event | Rule |
+|---|---|---|---|---|
+| Stale sweep | `core/agents/state/stale-sweep.ts`, `emitSwept`, through `recordLiveSweepObservationV3` in `core/agents/live-lifecycle-v3.ts` | `lifecycle.sweep_observed` in the subject's scope | Yes: the hook chain's `last_event_id` | Check the predicate in `recordObservation` for the sweep event. On a waiting result `emitSwept` returns false and keeps the heartbeat file; today its catch path writes `heartbeat_sweep_unrecorded` and lets the file be deleted, which must not apply to this case. |
+| Identity takeover | `src/lib/identities/assume.ts`, `reclaimAbandonedLocalConflict` | `lifecycle.sweep_observed` | Yes: the hook chain's `last_event_id` | Check the predicate before deleting the heartbeat and pid-map rows, and refuse the reclaim with the waiting reason. |
+| Finalizer observation | `core/agents/session-finalizer-v3.ts`, `ensureRequest` and `buildObservationEvent`, reached from `reconcileSessionFinalizationV3` and `observeHostDisappearedV3` | `lifecycle.sweep_observed` | Yes: the hook chain's `last_event_id` and the cause | Check the predicate in `ensureRequest` before writing the observation or the request file. |
+| Finalizer end | `core/agents/session-finalizer-v3.ts`, `reconcileSessionFinalizationV3`, through `recordApprovedSessionEndV3` in `producers/recorder.ts` | `session.ended` | Partly: the hook chain's `last_event_id`, the cause and the session span; not the coordination or command chains | Check the predicate per pending request before salvage, command closing and the end. Leave the request pending; the explicit-end expiry still applies. |
+| Explicit end | `core/agents/session-finalizer-v3.ts`, `endSessionExplicitV3` | `command.completed` closers, `session.ended` | Partly, as above | Check the predicate first and return `unavailable` with the waiting reason. |
+| Salvage | `producers/recorder.ts`, `salvageOpenSpansV3` | the subject's pending hook event, derived `tool.completed` terminals | Yes: the hook chain's `last_event_id` and each span's open event | Covered by the finalizer's check; called only from there. |
+| Command span closer | `producers/command-recorder.ts`, `closeAbandonedCommandSpansV3` | derived `command.completed` | Yes for the command chain only | Covered by the finalizer's checks; called only from there. |
+| Group claim release | `core/agents/cli.ts`, `handleGitHook` (post-commit and post-checkout), through `recordLiveClaimChangeV3` with `subject` | `coord.claim_changed` released, in the actor's scope | No: it cites the actor's own `last_event_id` | Release only a claim the canonical coordination view shows held by the subject, cite that claim's `acquired_event_id` in `links.caused_by`, and skip when the subject's generation has waiting rows. Needs a `caused_by` input on `recordLiveClaimChangeV3` and `recordCoordinationAuthorityV3`. |
+| Claim conflict release | `core/agents/rules/claim-conflict.ts`, `releaseClaimThroughLedger` | `coord.claim_changed` released | No | The same rule as the group release. |
+
+Four other paths write about another generation and need no rule.
+`reanchorArchivedHookProducersV3` in `producers/recorder.ts` writes fresh
+generations into a new epoch, citing its boundary event; the subject's waiting
+rows stay in the archived queue. `restoreLiveCoordinationStateAfterEpochV3` in
+`core/agents/live-authority-v3.ts` then replays the cached task, claims and
+lifecycle into that new generation, which is how a rotation releases a waiting
+session. The parent's record of a delegated child's start
+(`recordLiveDelegatedChildSessionV3`) opens a generation that has no rows yet.
+`coord.status_observed` and `coord.message_observed` name a subject but change
+no projected state.
+
+Two limits are stated plainly. A subject row queued after the predicate and
+before the derived row drains can still be overtaken. For the sweep and the
+finalizer the subject has already been judged gone (a stale heartbeat, a
+vanished host, or an explicit end after its turn closed), and the hook chain
+citation covers its main chain. For the claim releases, the
+`acquired_event_id` citation and the canonical-view check close the
+acquisition case without a race. Second, the group claim release runs once per
+commit. When it skips, the claim stays held until the subject releases it, its
+session ends, or the epoch rotates, and a peer that needs the file waits that
+long. Removing that wait needs the automatic recovery deferred above.
+
+### The reader is not relaxed
+
+ADR 0155 and ADR 0084 stand unchanged. A row already in the ledger that the
+reader rejects still makes the read incomplete and closes authority for every
+session. This decision changes only what the writer lets into the ledger.
+
+### The approved replace path
+
+`ledger-v3 initialize --force-new-epoch` is a dry run unless given `--yes`, as
+`ledger-v3 recover` already is. It is the only way to replace an epoch with
+the `unknown` verdict. `init` never replaces such an epoch: it replaces an
+epoch only on the verdicts the routing boundary refreshes (`replace_breaking`
+or a capability profile change) and reports every other state it cannot serve
+without archiving it. `ledger-v3 status` reports the genesis digest, the
+digests present and the verdict.
+
+### Command events with no turn
+
+`command.started`, `command.output_observed` and `command.completed` use the
+generation scope, in which `turn_id` is optional. The two scopes differ in
+nothing else, so the change is additive. `recordCommandSignalV3` records a
+command that has no open turn against its session generation, with the
+session span as the parent span. A command whose completion crosses a turn
+boundary keeps the scope it started with. `session-events.ts` no longer writes
+`command_emit_unjoinable` for `turn_not_started`. `hook_generation_not_found`
+stays a diagnostic, because there is no generation to attach the event to.
+Consumers of a command's `turn_id` handle its absence: turn rollups skip
+commands with no turn, and session totals count them.
+
+## Result
+
+Implementation is in progress. The measures are: an additive schema change
+lands with the same genesis ID and no new archive; a runtime from before this
+decision, driven against epochs this one has written and created, appends
+nothing and replaces nothing through hooks, commands and rotation; a sequence
+gap in one session's queued rows leaves the ledger without a reader diagnostic
+while another session keeps coordinating; an unreadable queued file no longer
+stalls the queue; and every row in the archived epochs available for replay
+passes the door check in its recorded order.

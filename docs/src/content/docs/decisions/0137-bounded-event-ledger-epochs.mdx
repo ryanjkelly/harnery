@@ -86,6 +86,9 @@ artifacts, finalization observations) fence against the epoch their source
 event was recorded in, and the authority outbox accepts an explicit fence for
 transaction publication and reconciliation.
 
+> Note (2026-11-11): see [ADR 0245](/decisions/0245-continue-epochs-across-additive-schemas-and-hold-bad-rows-at-the-writer/). The writer's ordering check now applies every
+> per-row reader check, and a row that fails waits in the queue.
+
 ## Result
 
 A rotation on the 176 MB production epoch archived it intact and brought the

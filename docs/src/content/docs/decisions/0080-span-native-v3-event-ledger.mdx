@@ -99,6 +99,10 @@ changes tool or coordination authority.
 
 ### Additive in-place advances
 
+> Superseded (2026-11-11): see [ADR 0245](/decisions/0245-continue-epochs-across-additive-schemas-and-hold-bad-rows-at-the-writer/). Nothing writes `ledger.schema_advanced`;
+> rows of every digest in the runtime's additive group share one epoch. The
+> rule below that reinterpreting a field is breaking still holds.
+
 `ledger.schema_advanced` becomes effective authority in V3. An advance records
 the prior and next schema digests, generated artifact digest, compatible reader
 builds, release reference, and physical segment/byte boundary.

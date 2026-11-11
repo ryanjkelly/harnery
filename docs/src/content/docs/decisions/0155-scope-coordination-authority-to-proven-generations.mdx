@@ -71,6 +71,9 @@ codes, and the affected generation IDs on its first read. The normal health box
 shows whether coordination authority is safe and how many diagnostics were
 isolated.
 
+> Note (2026-11-11): see [ADR 0245](/decisions/0245-continue-epochs-across-additive-schemas-and-hold-bad-rows-at-the-writer/). Reader failures stay global as decided here;
+> the writer now keeps rows the reader would reject out of the ledger.
+
 ## Result
 
 Regression coverage projects two live generations beside one task-transition

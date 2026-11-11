@@ -69,6 +69,10 @@ their own session-start behavior are not duplicated.
 Failure messages distinguish a missing process-map identity from an unavailable
 V3 control packet or session generation.
 
+> Note (2026-11-11): see [ADR 0245](/decisions/0245-continue-epochs-across-additive-schemas-and-hold-bad-rows-at-the-writer/). The schema comparison now goes through one
+> compatibility rule. An epoch holding a schema the runtime does not know
+> blocks that runtime and is never refreshed automatically.
+
 ## Result and gotchas
 
 A running bridged session can cross a compatible runtime epoch handoff on its
