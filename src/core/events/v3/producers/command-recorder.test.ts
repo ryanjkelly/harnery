@@ -4,6 +4,13 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { removeDir } from "../../../../../tests/helpers/remove-dir.ts";
 import type { ParsedPayload } from "../../../hooks/adapter/parse.ts";
+import {
+  COMMAND_ACROSS_TURNS_V3,
+  COMMAND_TURN_SESSION_ID,
+  COMMAND_WITHOUT_TURN_V3,
+  type CommandTurnStepV3,
+  commandObservationV3,
+} from "../__fixtures__/command-turns.ts";
 import { buildEventV3 } from "../builder.ts";
 import { canonicalJsonV3, sha256V3 } from "../canonical.ts";
 import { adapterCapabilityProfileDigestV3 } from "../capabilities.ts";
@@ -317,6 +324,77 @@ describe("event ledger V3 persistent session-tee recorder", () => {
     expect(completion?.time.monotonic_ns).toBeUndefined();
   });
 });
+
+describe("event ledger V3 commands outside an open turn (d)", () => {
+  /** Body for a case the recorder does not implement yet. */
+  const pendingNoTurn = () => {
+    throw new Error("pending: command events still require an open turn");
+  };
+
+  test("today: a command before the first prompt is refused as turn_not_started", () => {
+    // The no-turn command work replaces this: the command is recorded against its session.
+    const root = candidateRoot();
+    const results = runCommandTurnSteps(root, COMMAND_WITHOUT_TURN_V3);
+    expect(results.slice(1)).toEqual([
+      { state: "generation_unavailable", reason: "turn_not_started" },
+      { state: "generation_unavailable", reason: "turn_not_started" },
+      { state: "generation_unavailable", reason: "turn_not_started" },
+    ]);
+    const commandEvents = readLedgerV3(root).events.filter(
+      ({ event }) => event.producer.component === "session-tee",
+    );
+    expect(commandEvents).toEqual([]);
+  });
+
+  test("today: a completion that lands after the next turn starts throws", () => {
+    // The no-turn command work replaces this: the completion closes the original span.
+    const root = candidateRoot();
+    const beforeCompletion = COMMAND_ACROSS_TURNS_V3.slice(0, -1);
+    expect(runCommandTurnSteps(root, beforeCompletion)).toEqual([
+      "recorded",
+      "recorded",
+      "recorded",
+      "recorded",
+      "recorded",
+    ]);
+    expect(() => runCommandTurnSteps(root, COMMAND_ACROSS_TURNS_V3.slice(-1))).toThrow(
+      "V3 command producer state does not match the joined hook generation",
+    );
+  });
+
+  test.todo(
+    "a command with no open turn records its start, output and completion with its session and no turn",
+    pendingNoTurn,
+  );
+  test.todo("a command with no open turn takes the session span as its parent", pendingNoTurn);
+  test.todo(
+    "a command with no open turn writes no command_emit_unjoinable diagnostic",
+    pendingNoTurn,
+  );
+  test.todo(
+    "a command whose completion crosses a turn end and the next turn start keeps one span and its original turn",
+    pendingNoTurn,
+  );
+  test.todo("turn rollups skip a command with no turn and session totals count it", pendingNoTurn);
+});
+
+/** Drive one signal script; hooks report their state, commands their whole result. */
+function runCommandTurnSteps(root: string, steps: readonly CommandTurnStepV3[]): unknown[] {
+  return steps.map((step) => {
+    if (step.kind === "hook") {
+      const payload = parsed({
+        session_id: COMMAND_TURN_SESSION_ID,
+        ...(step.turn_id ? { turn_id: step.turn_id, prompt: "private prompt" } : {}),
+      });
+      return recordHookSignalV3(hookInput(root, step.signal, payload)).state;
+    }
+    const result = recordCommandSignalV3({
+      ...commandInput(root, step.signal),
+      observation: commandObservationV3(step),
+    });
+    return result.state === "generation_unavailable" ? result : result.state;
+  });
+}
 
 function commandGeneration(root: string): `gen_${string}` {
   const started = readLedgerV3(root).events.find(
