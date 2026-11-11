@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { failingLockFileSeam } from "../../../tests/helpers/lock-file-seam.ts";
+import { failingReplaceSeam } from "../../../tests/helpers/replace-file-seam.ts";
 import {
   type Cookie,
   CookieJar,
@@ -150,5 +151,40 @@ describe("CookieJar lock file", () => {
     ).toThrow("EPERM");
     expect(lockSeam.calls).toBe(1);
     expect(new CookieJar({ path }).exists()).toBe(false);
+  });
+});
+
+describe("CookieJar store replace", () => {
+  const first: Cookie = { name: "first", value: "1", domain: "example.com" } as Cookie;
+  const second: Cookie = { name: "second", value: "2", domain: "example.com" } as Cookie;
+
+  test("retries a Windows EPERM rename while a reader has the store open", () => {
+    const path = storePath();
+    new CookieJar({ path }).set(first);
+    const replaceSeam = failingReplaceSeam("EPERM", "win32", 2);
+    new CookieJar({ path, replaceSeam }).set(second);
+    expect(replaceSeam.calls).toBe(3);
+    expect(
+      new CookieJar({ path })
+        .load()
+        .cookies.map((cookie) => cookie.name)
+        .sort(),
+    ).toEqual(["first", "second"]);
+  });
+
+  test("throws EPERM on other platforms and leaves the store unchanged", () => {
+    const path = storePath();
+    new CookieJar({ path }).set(first);
+    const replaceSeam = failingReplaceSeam("EPERM", "linux");
+    expect(() => new CookieJar({ path, replaceSeam }).set(second)).toThrow("EPERM");
+    expect(replaceSeam.calls).toBe(1);
+    expect(new CookieJar({ path }).load().cookies.map((cookie) => cookie.name)).toEqual(["first"]);
+  });
+
+  test("does not retry a Windows rename error other than a sharing refusal", () => {
+    const path = storePath();
+    const replaceSeam = failingReplaceSeam("ENOSPC", "win32");
+    expect(() => new CookieJar({ path, replaceSeam }).set(first)).toThrow("ENOSPC");
+    expect(replaceSeam.calls).toBe(1);
   });
 });

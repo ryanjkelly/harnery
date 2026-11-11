@@ -56,7 +56,21 @@ export interface CookieJarOptions {
   /** Lock file create and platform. Tests substitute them to exercise the
    * Windows branch; leave unset otherwise. */
   lockSeam?: LockFileSeam;
+  /** Store replace rename and platform. Tests substitute them to exercise
+   * the Windows branch; leave unset otherwise. */
+  replaceSeam?: ReplaceFileSeam;
 }
+
+/** The rename that replaces the store file, and the platform it runs on. */
+export interface ReplaceFileSeam {
+  rename: (from: string, to: string) => void;
+  platform: NodeJS.Platform;
+}
+
+export const realReplaceFileSeam: ReplaceFileSeam = {
+  rename: (from, to) => renameSync(from, to),
+  platform: process.platform,
+};
 
 export interface InfoResult {
   path: string;
@@ -90,6 +104,8 @@ const LOCK_WAIT_MS = 10_000;
 const LOCK_POLL_MS = 10;
 const STABLE_READ_ATTEMPTS = 5;
 const STABLE_READ_POLL_MS = 10;
+const REPLACE_WAIT_MS = 2_000;
+const REPLACE_POLL_MS = 2;
 const sleepBuffer = new Int32Array(new SharedArrayBuffer(4));
 
 function sleepSync(ms: number): void {
@@ -156,13 +172,43 @@ function readStableFile(path: string): string | undefined {
   );
 }
 
-function atomicWrite(path: string, contents: string): void {
+/**
+ * True when a rename over the store failed only because another process has
+ * the store open. Windows refuses to replace an open file: a race probe on
+ * NTFS (Bun 1.4.4) with one process reading the store every millisecond saw
+ * 115 EPERM rename failures in 2,000 two-writer rounds and none without the
+ * reader. Readers close the file within milliseconds, so the caller retries.
+ */
+function isTransientReplaceError(error: unknown, platform: NodeJS.Platform): boolean {
+  if (platform !== "win32") return false;
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return code === "EPERM" || code === "EACCES" || code === "EBUSY";
+}
+
+function replaceFile(from: string, to: string, seam: ReplaceFileSeam): void {
+  const deadline = Date.now() + REPLACE_WAIT_MS;
+  for (;;) {
+    try {
+      seam.rename(from, to);
+      return;
+    } catch (error) {
+      if (!isTransientReplaceError(error, seam.platform) || Date.now() >= deadline) throw error;
+      sleepSync(REPLACE_POLL_MS);
+    }
+  }
+}
+
+function atomicWrite(
+  path: string,
+  contents: string,
+  seam: ReplaceFileSeam = realReplaceFileSeam,
+): void {
   const dir = dirname(path);
   mkdirSync(dir, { recursive: true });
   const temporary = join(dir, `.${basename(path)}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`);
   try {
     writeFileSync(temporary, contents, { mode: 0o600 });
-    renameSync(temporary, path);
+    replaceFile(temporary, path, seam);
   } finally {
     try {
       unlinkSync(temporary);
@@ -214,11 +260,13 @@ export class CookieJar {
   readonly path: string;
   private readonly source: string;
   private readonly lockSeam: LockFileSeam;
+  private readonly replaceSeam: ReplaceFileSeam;
 
   constructor(opts: CookieJarOptions) {
     this.path = opts.path;
     this.source = opts.source ?? "harn-cookies";
     this.lockSeam = opts.lockSeam ?? realLockFileSeam;
+    this.replaceSeam = opts.replaceSeam ?? realReplaceFileSeam;
   }
 
   exists(): boolean {
@@ -252,7 +300,7 @@ export class CookieJar {
 
   private saveUnlocked(store: CookieStore): CookieStore {
     const stamped = this.stamp(store);
-    atomicWrite(this.path, `${JSON.stringify(stamped, null, 2)}\n`);
+    atomicWrite(this.path, `${JSON.stringify(stamped, null, 2)}\n`, this.replaceSeam);
     return stamped;
   }
 
@@ -385,7 +433,7 @@ export class CookieJar {
       exportedAt: new Date().toISOString(),
       exportedFrom: `${this.source}-export`,
     };
-    atomicWrite(filePath, `${JSON.stringify(stamped, null, 2)}\n`);
+    atomicWrite(filePath, `${JSON.stringify(stamped, null, 2)}\n`, this.replaceSeam);
     return { count: stamped.cookies.length };
   }
 
