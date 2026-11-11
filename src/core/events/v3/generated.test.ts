@@ -2,8 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { checkEventV3Contract } from "../../../../scripts/generate-event-v3-contract.ts";
 import { canonicalJsonV3 } from "./canonical.ts";
-import { EventV3Schema } from "./contract.ts";
+import { EVENT_V3_CORE_EVENT_TYPES, EventV3Schema } from "./contract.ts";
 import { EVENT_V3_SCHEMA_DIGEST, EVENT_V3_SCHEMA_LINEAGE } from "./generated.ts";
 
 describe("generated event ledger V3 contract", () => {
@@ -34,5 +35,12 @@ describe("generated event ledger V3 contract", () => {
     expect(lineage.format).toBe("harnery-event-v3-schema-lineage");
     expect(lineage.format_version).toBe(1);
     expect(lineage.groups).toEqual(EVENT_V3_SCHEMA_LINEAGE.groups);
+  });
+
+  test("passes the generator's check mode for this checkout", () => {
+    const root = resolve(import.meta.dir, "../../../..");
+    expect(
+      checkEventV3Contract({ root, schema: EventV3Schema, coreTypes: EVENT_V3_CORE_EVENT_TYPES }),
+    ).toEqual([]);
   });
 });
