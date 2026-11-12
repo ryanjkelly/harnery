@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.55.0
+
+### Minor Changes
+
+- 5f1fc89: A helper limit for Claude Code helper agents and `harn run` workers: the most expensive model and the highest effort a helper may use.
+
+  - Set it with `harn devtools helpers` (for example `harn devtools helpers opus medium`, `none`, or `--clear`) or on the dashboard's Tools page. Your choice covers all your projects, and a project can commit a default under `helpers` in `.harnery/config.jsonc`.
+  - A Claude Code plugin applies the limit to each helper's model request; `harn devtools helpers --install` and `--uninstall` manage it. Installing adds one `CLAUDE_CODE_PLUGIN_DIRS` entry to the `env` block of each Claude Code user settings file and leaves every other byte as it was; uninstalling takes only that entry out. When the plugin cannot read your preferences file, it leaves helper requests unchanged rather than guessing. Run workers on Claude Code are lowered by the run engine.
+  - A machine-wide count of what helpers ran on, kept seven days, is shown in the report, with whether the limit is active and what it covers. `--format json` returns the same report.
+
+### Patch Changes
+
+- 5f8b597: The event ledger no longer stops recording for good when a lease is left held inside a process that keeps running. A host that records from a worker thread inside a long-lived process could lose every later write after that thread was terminated or crashed mid-append, or after a release was skipped, because an expired lease was reclaimable only when its owner's process had exited. Lease owner records now name the holder thread. An expired lease that the same thread left held without a live handle is reclaimed, and `releaseEventV3LeasesHeldByExitedThreadV3(coordRoot, threadId)` releases the ledger leases of a worker thread that has exited; the OpenClaw plugin calls it when its recorder worker exits, and if the release stops part-way it repeats it with backoff until it reports clean, and before starting another recorder worker. The release never makes the calling thread the lease owner, so a release that stops part-way does not block other threads or processes once it is repeated. Leases held by another process or another live thread are never reclaimed. The OpenClaw recorder worker now also logs why it rejected a record, as `[harnery] recorder worker rejected <kind> (<reason>)`, with the error code, or the start of the message up to its first filesystem path, which is shown as `<path>`. No part of a path reaches the log.
+
 ## 0.54.0
 
 ### Minor Changes
