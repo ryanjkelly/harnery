@@ -225,3 +225,65 @@ where each `ToolStatus` carries `installed`, `loggedIn`, `account`, `plan`,
 `rateLimitTier`, `authExpiresAt`, `sessions`, `lastActivity`, `quota[]`,
 `tokensUsed`, `api`, `usage` (Cursor billing/percent-used), `spend` (overage),
 and `notes[]`.
+
+## Helper agents
+
+A helper agent is an agent another agent starts for part of its work, such as
+a Claude Code subagent or a `harn run` worker. Helpers can cost as much as the
+main session. The helper limit sets the most expensive model and the highest
+effort a helper may use. A helper asked for more is lowered to the limit. A
+helper asked for less, or one that names no model or effort, is left alone.
+
+```bash
+harn devtools helpers                  # the limit, whether it is active, the last 24 hours
+harn devtools helpers opus medium      # set your limit for all your projects
+harn devtools helpers sonnet           # model only; effort has no limit
+harn devtools helpers medium           # effort only; model has no limit
+harn devtools helpers none             # no limit, even where a project sets one
+harn devtools helpers --clear          # remove your choice so the project default applies
+harn devtools helpers --install        # install or refresh the Claude Code plugin
+harn devtools helpers --uninstall      # remove the plugin
+harn devtools helpers --format json    # the same report as JSON
+```
+
+The words can come in any order. Setting a limit replaces the whole pair: `sonnet`
+alone removes an effort you set before. Models, cheapest first, are `haiku`,
+`sonnet`, `opus` and `fable`. Efforts, lowest first, are `low`, `medium`,
+`high`, `xhigh` and `max`. The dashboard's Tools page offers the same choice.
+
+### Where the choice is stored
+
+Your choice covers every project on this machine. It is kept in
+`~/.config/harnery/preferences.json` (or under `XDG_CONFIG_HOME`). A project can
+commit a default in `.harnery/config.jsonc`:
+
+```jsonc
+{ "helpers": { "claude-code": { "max_model": "sonnet", "max_effort": "medium" } } }
+```
+
+Your choice wins over the project default in both directions. When you have
+made no choice, the project default applies. When neither is set, helpers have
+no limit.
+
+### How it is applied
+
+A small Claude Code plugin applies the limit to each helper's request to the
+model. Setting a limit installs it, and `--install` refreshes it. Claude Code
+sessions that are already open need a restart to pick it up. Harnery starts
+`harn run` workers itself, so it applies the limit to them directly.
+
+The limit applies to Claude Code helpers, including helpers started by helpers
+and Workflow agents, and to `harn run` workers on Claude Code. It does not
+apply to forks, to agent-team teammates, or to helpers in Codex, Cursor and
+OpenCode.
+
+If the limit falls below a full-access floor configured for run workers, those
+workers run sandboxed, and the report says so.
+
+Every helper is counted in a machine-wide log under `~/.cache/harnery/helpers/`,
+kept seven days, even with no limit set. The report shows how many helpers ran
+in the last 24 hours, how many were lowered and which models they ran on.
+
+The limit is a best-effort cost preference, not a guarantee. When Harnery
+cannot apply it, for example on an older Claude Code or without the plugin,
+helpers run as asked and the report says the limit is not active.

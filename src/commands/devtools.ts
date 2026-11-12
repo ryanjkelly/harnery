@@ -12,6 +12,7 @@ import {
   resolveCursorApiKey,
   type ToolStatus,
 } from "../lib/devtools.ts";
+import { type HelperCommandDeps, registerHelpersCommand } from "./devtools-helpers.ts";
 
 /**
  * `devtools`: report the local state of the AI coding agents harnery supports
@@ -35,7 +36,11 @@ interface DevtoolsOpts {
   noApi?: boolean;
 }
 
-export function registerDevtoolsCommand(program: Command, emit: EmitContext): void {
+export function registerDevtoolsCommand(
+  program: Command,
+  emit: EmitContext,
+  helperDeps: HelperCommandDeps = {},
+): void {
   const cmd = program
     .command("devtools")
     .description("Local status of the AI coding agents (Claude Code, Codex, Cursor)")
@@ -89,6 +94,7 @@ export function registerDevtoolsCommand(program: Command, emit: EmitContext): vo
 
   registerCursorKeyCommand(cmd, emit);
   registerDoctorCommand(cmd, emit);
+  registerHelpersCommand(cmd, emit, helperDeps);
 }
 
 /**
