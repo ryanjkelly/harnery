@@ -32,6 +32,7 @@ import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { helperUsageDir } from "./helper-usage.ts";
 import { addPathListEntry, removePathListEntry } from "./settings-text-edit.ts";
+import { PERSONAL_FILE_MODE } from "./storage/modes.ts";
 
 /** First Claude Code release whose model-request hook accepts a family name. */
 export const HELPER_PLUGIN_MIN_CLAUDE_VERSION = "2.1.309";
@@ -253,7 +254,7 @@ function onlyPluginEntry(settings: Record<string, unknown>, dir: string): boolea
 }
 
 /** Owner-only mode for files that are new or hold Harnery's own state. */
-const PRIVATE_MODE = 0o600;
+const PRIVATE_MODE = PERSONAL_FILE_MODE;
 
 /**
  * Write through an owner-only temp file and rename. An existing file keeps its
