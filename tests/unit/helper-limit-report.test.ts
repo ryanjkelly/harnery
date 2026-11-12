@@ -3,7 +3,11 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { buildHelperLimitReport, helperLimitSummary } from "../../src/core/helper-limit-report.ts";
-import type { HelperPluginStatus } from "../../src/core/helper-plugin.ts";
+import {
+  ensureHelperPlugin,
+  type HelperPluginStatus,
+  helperPluginStatus,
+} from "../../src/core/helper-plugin.ts";
 import { appendHelperUsage } from "../../src/core/helper-usage.ts";
 import { writeHelperLimit } from "../../src/core/preferences.ts";
 import { removeDir } from "../helpers/remove-dir.ts";
@@ -226,5 +230,28 @@ describe("full-access floor warning", () => {
     const report = build({ coordRoot: root });
     expect(report.warnings).toHaveLength(1);
     expect(report.warnings[0]).toContain("Opus at High effort");
+  });
+
+  test("an installed plugin with an unreadable Claude Code version is active", () => {
+    const claudeDir = path.join(dir, "claude");
+    mkdirSync(claudeDir, { recursive: true });
+    const settings = path.join(claudeDir, "settings.json");
+    writeFileSync(settings, "{}\n");
+    const pluginOptions = {
+      configHome: path.join(dir, "config"),
+      settingsFiles: [settings],
+      claudeVersion: () => null,
+    };
+    const savedCache = process.env.XDG_CACHE_HOME;
+    process.env.XDG_CACHE_HOME = path.join(dir, "cache");
+    try {
+      ensureHelperPlugin(pluginOptions);
+    } finally {
+      if (savedCache === undefined) delete process.env.XDG_CACHE_HOME;
+      else process.env.XDG_CACHE_HOME = savedCache;
+    }
+    const report = build({ pluginStatus: () => helperPluginStatus(pluginOptions) });
+    expect(report.active).toBe(true);
+    expect(report.inactive_reason).toBeNull();
   });
 });

@@ -1,9 +1,10 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import {
   chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -20,6 +21,7 @@ import {
   helperPluginStatus,
   removeHelperPlugin,
 } from "./helper-plugin.ts";
+import { addPathListEntry } from "./settings-text-edit.ts";
 
 let root: string;
 let savedCache: string | undefined;
@@ -255,12 +257,14 @@ describe("helperPluginStatus", () => {
     );
   });
 
-  test("Claude Code version unreadable", () => {
+  test("an unreadable Claude Code version still counts as active", () => {
     const file = settingsFile("claude", "{}\n");
     ensureHelperPlugin(options([file]));
-    expect(helperPluginStatus(options([file], null)).reason).toBe(
-      "the Claude Code version could not be read",
-    );
+    const status = helperPluginStatus(options([file], null));
+    expect(status).toMatchObject({ installed: true, active: true, reason: null });
+    expect(status.claude_version).toBeNull();
+    const garbled = helperPluginStatus(options([file], "unknown"));
+    expect(garbled).toMatchObject({ active: true, reason: null, claude_version: null });
   });
 
   test("reports the installed package version", () => {
@@ -285,5 +289,213 @@ describe("compareClaudeVersions", () => {
     expect(compareClaudeVersions("2.10.0", "2.9.9")).toBe(1);
     expect(compareClaudeVersions("2.1.309-dev.20261101", "2.1.309")).toBe(0);
     expect(compareClaudeVersions("unknown", "2.1.309")).toBeNull();
+  });
+});
+
+describe("text-preserving settings edits", () => {
+  const otherPlugin = "/opt/other-plugin";
+  const styles: Record<string, string> = {
+    "two spaces": '{\n  "model": "sonnet",\n  "hooks": {\n    "Stop": []\n  }\n}\n',
+    "four spaces": '{\n    "model": "sonnet",\n    "hooks": { "Stop": [] }\n}\n',
+    tabs: '{\n\t"model": "sonnet",\n\t"permissions": {\n\t\t"allow": ["Read"]\n\t}\n}',
+    "compact one line": '{"model":"sonnet","hooks":{"Stop":[]}}',
+    "spaced one line": '{ "model": "sonnet" }\n',
+    crlf: '{\r\n  "model": "sonnet",\r\n  "theme": "dark"\r\n}\r\n',
+    "empty object": "{}\n",
+    "empty object, no newline": "{}",
+  };
+  const withEnv: Record<string, string> = {
+    "env, two spaces": '{\n  "env": {\n    "FOO": "1"\n  },\n  "model": "sonnet"\n}\n',
+    "env, tabs": '{\n\t"env": {\n\t\t"FOO": "1"\n\t}\n}',
+    "env, compact": '{"env":{"FOO":"1"},"model":"sonnet"}',
+    "env, crlf": '{\r\n    "env": {\r\n        "FOO": "1"\r\n    }\r\n}\r\n',
+    "env, empty": '{\n  "env": {},\n  "model": "sonnet"\n}\n',
+    "env, other plugin dirs": `{\n  "env": {\n    "CLAUDE_CODE_PLUGIN_DIRS": "${otherPlugin}",\n    "FOO": "1"\n  }\n}\n`,
+    "env, other plugin dirs, compact": `{"env":{"CLAUDE_CODE_PLUGIN_DIRS":"${otherPlugin}"}}`,
+    "env, empty plugin dirs": '{\n  "env": {\n    "CLAUDE_CODE_PLUGIN_DIRS": ""\n  }\n}\n',
+  };
+
+  for (const [name, original] of Object.entries({ ...styles, ...withEnv })) {
+    test(`install then remove returns the file byte for byte: ${name}`, () => {
+      const file = settingsFile("claude", original);
+      const opts = options([file]);
+      const before = JSON.parse(original);
+      ensureHelperPlugin(opts);
+      const installed = readFileSync(file, "utf8");
+      const after = JSON.parse(installed);
+      // Only the one entry changed.
+      const env = { ...(after.env as Record<string, unknown>) };
+      const dirs = String(env.CLAUDE_CODE_PLUGIN_DIRS).split(delimiter);
+      expect(dirs.at(-1)).toBe(helperPluginDir(opts));
+      const priorDirs = before.env?.CLAUDE_CODE_PLUGIN_DIRS;
+      if (priorDirs) expect(dirs.slice(0, -1).join(delimiter)).toBe(priorDirs);
+      delete env.CLAUDE_CODE_PLUGIN_DIRS;
+      const priorEnv = { ...(before.env ?? {}) };
+      delete priorEnv.CLAUDE_CODE_PLUGIN_DIRS;
+      expect(env).toEqual(priorEnv);
+      const { env: _a, ...restAfter } = after;
+      const { env: _b, ...restBefore } = before;
+      expect(restAfter).toEqual(restBefore);
+      // Line endings are kept.
+      if (original.includes("\r\n")) expect(installed.replace(/\r\n/g, "")).not.toContain("\n");
+      removeHelperPlugin(opts);
+      expect(readFileSync(file, "utf8")).toBe(original);
+    });
+  }
+
+  test("keeps the layout of the members it adds to", () => {
+    const file = settingsFile("claude", '{\n\t"model": "sonnet"\n}\n');
+    const opts = options([file]);
+    ensureHelperPlugin(opts);
+    const dir = JSON.stringify(helperPluginDir(opts));
+    expect(readFileSync(file, "utf8")).toBe(
+      `{\n\t"model": "sonnet",\n\t"env": {\n\t\t"CLAUDE_CODE_PLUGIN_DIRS": ${dir}\n\t}\n}\n`,
+    );
+  });
+
+  test("a change made after install is kept; only the plugin entry goes", () => {
+    const original = '{\n  "env": {\n    "FOO": "1"\n  },\n  "model": "sonnet"\n}\n';
+    const file = settingsFile("claude", original);
+    const opts = options([file]);
+    ensureHelperPlugin(opts);
+    const edited = readFileSync(file, "utf8").replace('"model": "sonnet"', '"model": "opus"');
+    writeFileSync(file, edited);
+    removeHelperPlugin(opts);
+    expect(readFileSync(file, "utf8")).toBe(original.replace('"sonnet"', '"opus"'));
+  });
+
+  test("a path added after ours keeps its place when ours is removed", () => {
+    const file = settingsFile("claude", "{}\n");
+    const opts = options([file]);
+    ensureHelperPlugin(opts);
+    const dir = helperPluginDir(opts);
+    const text = readFileSync(file, "utf8").replace(
+      JSON.stringify(dir),
+      JSON.stringify([dir, otherPlugin].join(delimiter)),
+    );
+    writeFileSync(file, text);
+    removeHelperPlugin(opts);
+    expect(read(file)).toEqual({ env: { CLAUDE_CODE_PLUGIN_DIRS: otherPlugin } });
+  });
+
+  test("a settings file it created stays when something else was added to it", () => {
+    const file = settingsFile("claude");
+    const opts = options([file]);
+    ensureHelperPlugin(opts);
+    const value = read(file);
+    value.theme = "dark";
+    writeFileSync(file, JSON.stringify(value, null, 2));
+    removeHelperPlugin(opts);
+    expect(read(file)).toEqual({ theme: "dark" });
+  });
+
+  test("refuses an edit the scanner would misplace and leaves the file untouched", () => {
+    // Duplicate keys: JSON.parse keeps the last `env`, the scanner edits the first.
+    const tricky = '{"env":{"A":"1"},"env":{"B":"2"}}';
+    const result = addPathListEntry(tricky, "/x", {
+      name: "CLAUDE_CODE_PLUGIN_DIRS",
+      delimiter: ":",
+    });
+    expect(result.ok).toBe(false);
+
+    const file = settingsFile("claude", tricky);
+    const opts = options([file]);
+    const change = ensureHelperPlugin(opts);
+    expect(readFileSync(file, "utf8")).toBe(tricky);
+    expect(change.notes.some((n) => n.includes(file) && n.startsWith("Left"))).toBe(true);
+    expect(change.status.settings_files).toEqual([]);
+  });
+
+  test("refuses duplicate plugin entries and leaves the file untouched", () => {
+    const tricky = '{"env":{"CLAUDE_CODE_PLUGIN_DIRS":"/a","CLAUDE_CODE_PLUGIN_DIRS":"/b"}}';
+    const file = settingsFile("claude", tricky);
+    ensureHelperPlugin(options([file]));
+    expect(readFileSync(file, "utf8")).toBe(tricky);
+  });
+
+  test("leaves env alone when it is not an object", () => {
+    const original = '{"env":"oops"}';
+    const file = settingsFile("claude", original);
+    const change = ensureHelperPlugin(options([file]));
+    expect(readFileSync(file, "utf8")).toBe(original);
+    expect(change.notes.some((n) => n.includes("env setting is not an object"))).toBe(true);
+  });
+
+  test("the install record holds no settings content and is owner-only", () => {
+    const secret = "sk-test-0123456789abcdef-secret";
+    const original = `{\n  "env": {\n    "API_TOKEN": "${secret}"\n  },\n  "model": "sonnet"\n}\n`;
+    const file = settingsFile("claude", original);
+    const created = join(root, "fresh", "settings.json");
+    mkdirSync(join(root, "fresh"), { recursive: true });
+    const opts = options([file, created]);
+    ensureHelperPlugin(opts);
+    const recordPath = join(root, "config", "harnery", "claude-code-plugin.install.json");
+    const recordText = readFileSync(recordPath, "utf8");
+    expect(recordText).not.toContain(secret);
+    expect(recordText).not.toContain("sonnet");
+    expect(recordText).not.toContain("API_TOKEN");
+    expect(JSON.parse(recordText)).toEqual({
+      files: {
+        [file]: { created_file: false, created_env: false, created_entry: true },
+        [created]: { created_file: true, created_env: true, created_entry: true },
+      },
+    });
+    expect(statSync(recordPath).mode & 0o777).toBe(0o600);
+    // A settings file the install created is owner-only too.
+    expect(statSync(created).mode & 0o777).toBe(0o600);
+    // No temp files are left beside either.
+    for (const dir of [
+      join(root, "config", "harnery"),
+      join(root, "claude"),
+      join(root, "fresh"),
+    ]) {
+      expect(readdirSync(dir).filter((f) => f.endsWith(".tmp"))).toEqual([]);
+    }
+    removeHelperPlugin(opts);
+    expect(readFileSync(file, "utf8")).toBe(original);
+    expect(existsSync(created)).toBe(false);
+    expect(existsSync(recordPath)).toBe(false);
+  });
+
+  test("temp files are created owner-only, even with a permissive umask", async () => {
+    const file = settingsFile("claude", "{}\n");
+    chmodSync(file, 0o644);
+    const created = join(root, "fresh", "settings.json");
+    mkdirSync(join(root, "fresh"), { recursive: true });
+    const fs = await import("node:fs");
+    const real = { ...fs };
+    const seen: Array<{ path: string; mode: number }> = [];
+    const written: number[] = [];
+    mock.module("node:fs", () => ({
+      ...real,
+      writeFileSync: (...args: Parameters<typeof real.writeFileSync>) => {
+        real.writeFileSync(...args);
+        const path = String(args[0]);
+        if (path.endsWith(".tmp")) written.push(real.statSync(path).mode & 0o777);
+      },
+      renameSync: (from: string, to: string) => {
+        if (from.endsWith(".tmp") && real.statSync(from).isFile()) {
+          seen.push({ path: to, mode: real.statSync(from).mode & 0o777 });
+        }
+        return real.renameSync(from, to);
+      },
+    }));
+    const umask = process.umask(0);
+    try {
+      ensureHelperPlugin(options([file, created]));
+    } finally {
+      process.umask(umask);
+      mock.module("node:fs", () => real);
+    }
+    const recordPath = join(root, "config", "harnery", "claude-code-plugin.install.json");
+    // Temp files are created owner-only, then given the target's mode just before the rename.
+    expect(written).toEqual([0o600, 0o600, 0o600]);
+    expect(seen.map((s) => s.path).sort()).toEqual([created, file, recordPath].sort());
+    expect(seen.find((s) => s.path === file)?.mode).toBe(0o644);
+    expect(seen.find((s) => s.path === created)?.mode).toBe(0o600);
+    expect(seen.find((s) => s.path === recordPath)?.mode).toBe(0o600);
+    expect(statSync(recordPath).mode & 0o777).toBe(0o600);
+    expect(statSync(created).mode & 0o777).toBe(0o600);
+    expect(statSync(file).mode & 0o777).toBe(0o644);
   });
 });

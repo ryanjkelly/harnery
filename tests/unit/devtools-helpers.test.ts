@@ -296,4 +296,15 @@ describe("devtools helpers", () => {
     expect(text).toContain("This is the project's default from .harnery/config.jsonc.");
     expect(text).toContain("Warning: The limit (Sonnet) is below the full-access floor");
   });
+
+  test("an unknown Claude Code version reads as active, with no version number", async () => {
+    pluginActive = true;
+    const out = await run([], {
+      pluginStatus: () => ({ ...status(), active: true, reason: null, claude_version: null }),
+    });
+    const text = out.text.join("\n");
+    expect(text).toContain("Active in Claude Code.");
+    expect(text).not.toContain("Not active");
+    expect(text).not.toMatch(/Active in Claude Code \d/);
+  });
 });

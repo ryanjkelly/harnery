@@ -8,8 +8,10 @@
  * Claude Code user settings file. Project settings cannot load a plugin this
  * way, and a path into one project's checkout would break when it moves.
  *
- * Signatures below are the contract between the plugin, the command and the
- * dashboard; the bodies are filled in by the plugin work.
+ * The installer changes only that one entry and leaves every other byte of a
+ * settings file as it was (see `settings-text-edit.ts`). Its install record
+ * holds no settings content, only which parts the install created, and is
+ * written owner-only.
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -23,13 +25,13 @@ import {
   renameSync,
   rmSync,
   statSync,
-  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { helperUsageDir } from "./helper-usage.ts";
+import { addPathListEntry, removePathListEntry } from "./settings-text-edit.ts";
 
 /** First Claude Code release whose model-request hook accepts a family name. */
 export const HELPER_PLUGIN_MIN_CLAUDE_VERSION = "2.1.309";
@@ -37,7 +39,10 @@ export const HELPER_PLUGIN_MIN_CLAUDE_VERSION = "2.1.309";
 export interface HelperPluginStatus {
   /** The plugin folder exists and at least one settings file loads it. */
   installed: boolean;
-  /** Installed, current, and the local Claude Code is new enough. */
+  /**
+   * Installed, current, and loaded by at least one settings file, unless the
+   * local Claude Code version is known and older than the minimum.
+   */
   active: boolean;
   /** Plain-words reason when `active` is false; null when active. */
   reason: string | null;
@@ -237,25 +242,36 @@ function loadsPlugin(settings: Record<string, unknown>, dir: string): boolean {
   return pathList(env[PLUGIN_ENV]).some((p) => samePath(p, dir));
 }
 
-/** Serialize in the file's own indentation, keeping its final newline. */
-function serialize(value: Record<string, unknown>, original: string | null): string {
-  const indent = original ? (/^[{[]\s*\n([ \t]+)\S/.exec(original)?.[1] ?? "  ") : "  ";
-  const newline = original === null || original.endsWith("\n") ? "\n" : "";
-  return JSON.stringify(value, null, indent) + newline;
+/** The settings hold nothing but `env.CLAUDE_CODE_PLUGIN_DIRS` naming `dir`. */
+function onlyPluginEntry(settings: Record<string, unknown>, dir: string): boolean {
+  const keys = Object.keys(settings);
+  if (keys.length !== 1 || keys[0] !== "env" || !isPlainObject(settings.env)) return false;
+  const envKeys = Object.keys(settings.env);
+  if (envKeys.length !== 1 || envKeys[0] !== PLUGIN_ENV) return false;
+  const entries = pathList(settings.env[PLUGIN_ENV]);
+  return entries.length > 0 && entries.every((p) => samePath(p, dir));
 }
 
-/** Write through a temp file and rename, keeping the file's mode. */
-function writeAtomic(file: string, text: string): void {
-  let mode: number | undefined;
-  try {
-    mode = statSync(file).mode & 0o7777;
-  } catch {
-    mode = undefined;
+/** Owner-only mode for files that are new or hold Harnery's own state. */
+const PRIVATE_MODE = 0o600;
+
+/**
+ * Write through an owner-only temp file and rename. An existing file keeps its
+ * own mode; a new one is created owner-only.
+ */
+function writeAtomic(file: string, text: string, fixedMode?: number): void {
+  let mode = fixedMode ?? PRIVATE_MODE;
+  if (fixedMode === undefined) {
+    try {
+      mode = statSync(file).mode & 0o7777;
+    } catch {
+      mode = PRIVATE_MODE;
+    }
   }
   const temp = `${file}.harnery-${process.pid}-${Date.now()}.tmp`;
   try {
-    writeFileSync(temp, text, mode === undefined ? undefined : { mode });
-    if (mode !== undefined) chmodSync(temp, mode);
+    writeFileSync(temp, text, { mode: PRIVATE_MODE, flag: "wx" });
+    chmodSync(temp, mode);
     renameSync(temp, file);
   } catch (err) {
     rmSync(temp, { force: true });
@@ -263,8 +279,21 @@ function writeAtomic(file: string, text: string): void {
   }
 }
 
+/**
+ * What removal needs to know about each settings file the install changed. It
+ * holds no settings content: only which parts the install created.
+ */
+interface InstallEntry {
+  /** The install created the settings file itself. */
+  created_file: boolean;
+  /** The install added the `env` object. */
+  created_env: boolean;
+  /** The install added the `CLAUDE_CODE_PLUGIN_DIRS` entry. */
+  created_entry: boolean;
+}
+
 interface InstallRecord {
-  files: Record<string, { original: string | null; written: string }>;
+  files: Record<string, InstallEntry>;
 }
 
 function readInstallRecord(options: HelperPluginOptions): InstallRecord {
@@ -273,9 +302,12 @@ function readInstallRecord(options: HelperPluginOptions): InstallRecord {
     if (isPlainObject(value) && isPlainObject(value.files)) {
       const files: InstallRecord["files"] = {};
       for (const [file, entry] of Object.entries(value.files)) {
-        if (!isPlainObject(entry) || typeof entry.written !== "string") continue;
-        const original = typeof entry.original === "string" ? entry.original : null;
-        files[file] = { original, written: entry.written };
+        if (!isPlainObject(entry)) continue;
+        files[file] = {
+          created_file: entry.created_file === true,
+          created_env: entry.created_env === true,
+          created_entry: entry.created_entry === true,
+        };
       }
       return { files };
     }
@@ -292,7 +324,7 @@ function writeInstallRecord(options: HelperPluginOptions, record: InstallRecord)
     return;
   }
   mkdirSync(dirname(path), { recursive: true });
-  writeAtomic(path, `${JSON.stringify(record, null, 2)}\n`);
+  writeAtomic(path, `${JSON.stringify(record, null, 2)}\n`, PRIVATE_MODE);
 }
 
 /** Read-only: is the plugin installed, current and usable. Never throws. */
@@ -316,7 +348,9 @@ export function helperPluginStatus(options: HelperPluginOptions = {}): HelperPlu
         status.settings_files.push(file);
     }
     status.installed = stamp !== null && status.settings_files.length > 0;
-    status.claude_version = options.claudeVersion ? options.claudeVersion() : localClaudeVersion();
+    const version = options.claudeVersion ? options.claudeVersion() : localClaudeVersion();
+    const release = releaseOf(version);
+    status.claude_version = release ? release.join(".") : null;
 
     if (stamp === null) {
       status.reason = "the Harnery plugin for Claude Code is not installed";
@@ -324,15 +358,14 @@ export function helperPluginStatus(options: HelperPluginOptions = {}): HelperPlu
       status.reason = "no Claude Code settings file loads the Harnery plugin";
     } else if (stamp !== pluginSource()?.stamp) {
       status.reason = "the installed Harnery plugin for Claude Code is out of date";
-    } else if (status.claude_version === null) {
-      status.reason = "the Claude Code version could not be read";
-    } else {
-      const cmp = compareClaudeVersions(status.claude_version, HELPER_PLUGIN_MIN_CLAUDE_VERSION);
-      if (cmp === null) status.reason = "the Claude Code version could not be read";
-      else if (cmp < 0) {
-        status.reason = `Claude Code ${status.claude_version} is older than ${HELPER_PLUGIN_MIN_CLAUDE_VERSION}`;
-      }
+    } else if (
+      status.claude_version !== null &&
+      compareClaudeVersions(status.claude_version, HELPER_PLUGIN_MIN_CLAUDE_VERSION) === -1
+    ) {
+      status.reason = `Claude Code ${status.claude_version} is older than ${HELPER_PLUGIN_MIN_CLAUDE_VERSION}`;
     }
+    // An unreadable version is not evidence of an old one: the plugin checks
+    // the running Claude Code's version itself and stays off when it is older.
     status.active = status.reason === null;
   } catch (err) {
     status.active = false;
@@ -422,7 +455,6 @@ export function ensureHelperPlugin(options: HelperPluginOptions = {}): HelperPlu
       continue;
     }
     if (read.kind === "missing" && !existsSync(dirname(file))) continue;
-    const original = read.kind === "ok" ? read.text : null;
     const value = read.kind === "ok" ? read.value : {};
     if (loadsPlugin(value, pluginDir)) continue;
     if (isScratchPluginInRealSettings(pluginDir, file, options)) {
@@ -430,15 +462,22 @@ export function ensureHelperPlugin(options: HelperPluginOptions = {}): HelperPlu
       continue;
     }
 
-    const env = isPlainObject(value.env) ? { ...value.env } : {};
-    const entries = pathList(env[PLUGIN_ENV]);
-    env[PLUGIN_ENV] = [...entries, pluginDir].join(delimiter);
-    const next = { ...value, env };
-    const text = serialize(next, original);
-    writeAtomic(file, text);
+    const createdFile = read.kind === "missing";
+    const edit = addPathListEntry(read.kind === "ok" ? read.text : "{}\n", pluginDir, {
+      name: PLUGIN_ENV,
+      delimiter,
+    });
+    if (!edit.ok) {
+      notes.push(`Left ${file} alone: ${edit.error}.`);
+      continue;
+    }
+    writeAtomic(file, edit.text);
     changed = true;
-    const prior = record.files[file];
-    record.files[file] = { original: prior ? prior.original : original, written: text };
+    record.files[file] = {
+      created_file: createdFile,
+      created_env: edit.createdEnv,
+      created_entry: edit.createdMember,
+    };
     recordChanged = true;
     notes.push(`Claude Code now loads the Harnery plugin through ${file}.`);
   }
@@ -470,18 +509,25 @@ export function removeHelperPlugin(options: HelperPluginOptions = {}): HelperPlu
       delete record.files[file];
       continue;
     }
-    if (entry && entry.written === read.text) {
-      // Nothing else changed since the install: put the file back exactly.
-      if (entry.original === null) unlinkSync(file);
-      else writeAtomic(file, entry.original);
+    const createdEntry = entry ? entry.created_entry : true;
+    if (entry?.created_file && createdEntry && onlyPluginEntry(read.value, pluginDir)) {
+      // The install made this file and nothing else was added since.
+      rmSync(file, { force: true });
     } else {
-      const env = { ...(read.value.env as Record<string, unknown>) };
-      const kept = pathList(env[PLUGIN_ENV]).filter((p) => !samePath(p, pluginDir));
-      if (kept.length > 0) env[PLUGIN_ENV] = kept.join(delimiter);
-      else delete env[PLUGIN_ENV];
-      const next: Record<string, unknown> = { ...read.value, env };
-      if (Object.keys(env).length === 0) delete next.env;
-      writeAtomic(file, serialize(next, read.text));
+      const edit = removePathListEntry(read.text, pluginDir, {
+        name: PLUGIN_ENV,
+        delimiter,
+        matches: (p) => samePath(p, pluginDir),
+        createdEnv: entry ? entry.created_env : false,
+        createdMember: createdEntry,
+      });
+      if (!edit.ok) {
+        notes.push(
+          `Left ${file} alone: ${edit.error}. Remove ${pluginDir} from ${PLUGIN_ENV} there by hand.`,
+        );
+        continue;
+      }
+      writeAtomic(file, edit.text);
     }
     delete record.files[file];
     changed = true;

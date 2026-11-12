@@ -239,7 +239,9 @@ export function renderHelperReport(
   lines.push(sourceSentence(report, context.cmdLine));
   if (report.active) {
     lines.push(
-      context.claudeVersion ? `Active in Claude Code ${context.claudeVersion}.` : "Active.",
+      context.claudeVersion
+        ? `Active in Claude Code ${context.claudeVersion}.`
+        : "Active in Claude Code.",
     );
   } else {
     const reason = (report.inactive_reason ?? "unknown reason").replace(/\.+$/, "");
