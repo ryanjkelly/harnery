@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { removeDir } from "../../../tests/helpers/remove-dir.ts";
@@ -127,6 +134,13 @@ function sessionStart(root: string, extraEnv: Record<string, string>): string {
   ]) {
     delete env[key];
   }
+  // The hook installs the helper plugin into the Claude Code user settings when a
+  // limit is in effect, so keep the home folder and Claude Code's config folder
+  // inside the test root as well as the config home.
+  const home = join(root, "home");
+  const claudeConfig = join(root, "claude-config");
+  mkdirSync(home, { recursive: true });
+  mkdirSync(claudeConfig, { recursive: true });
   const native = process.platform === "win32";
   const result = spawnSync(
     native ? process.execPath : "bash",
@@ -145,6 +159,9 @@ function sessionStart(root: string, extraEnv: Record<string, string>): string {
         HARNERY_COORD_ROOT_OVERRIDE: root,
         HARNERY_AGENT_COORD_BYPASS_STOP: "1",
         HARNERY_BIN: "acme",
+        HOME: home,
+        USERPROFILE: home,
+        CLAUDE_CONFIG_DIR: claudeConfig,
         ...extraEnv,
       },
     },
@@ -168,6 +185,14 @@ describe("SessionStart helper-limit line", () => {
     );
     const limitedOut = sessionStart(limited, { XDG_CONFIG_HOME: join(limited, "xdg") });
     expect(limitedOut).toContain(EXPECTED);
+    // The same session start installs the helper plugin, inside the test root only.
+    const pluginDir = join(limited, "xdg", "harnery", "claude-code-plugin");
+    expect(existsSync(join(pluginDir, "hooks", "register.js"))).toBe(true);
+    const settings = JSON.parse(
+      readFileSync(join(limited, "claude-config", "settings.json"), "utf8"),
+    );
+    expect(settings.env.CLAUDE_CODE_PLUGIN_DIRS).toBe(pluginDir);
+    expect(existsSync(join(unlimited, "claude-config", "settings.json"))).toBe(false);
 
     const skipped = sessionStart(limited, {
       XDG_CONFIG_HOME: join(limited, "xdg"),

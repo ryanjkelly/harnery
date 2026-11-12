@@ -99,6 +99,7 @@ import {
 } from "../events/v3/live-routing.ts";
 import type { TurnRitualEvidenceV3 } from "../events/v3/producers/hook-base.ts";
 import { captureSpanClockV3 } from "../events/v3/span-state.ts";
+import { ensureHelperPlugin } from "../helper-plugin.ts";
 import { ensureRelayDaemon, fetchPresence, publishPresence } from "../presence/index.ts";
 import { importMail, publishMail } from "../presence/mail.ts";
 import { stableScopeId } from "../run/scope-id.ts";
@@ -2638,6 +2639,7 @@ async function emitSessionStartSystemMessage(
   if (backupCue && !workflowChild) {
     additionalContext = [additionalContext, backupCue].filter(Boolean).join("\n\n");
   }
+  healHelperPlugin(coordRoot, adapter);
   if (!workflowChild) {
     const helperNote = sessionHelperLimitNote(coordRoot, adapter);
     if (helperNote)
@@ -2660,6 +2662,23 @@ async function emitSessionStartSystemMessage(
     await acknowledgeEmittedPeerInbox(coordRoot, instanceId, peerMessageIds);
   }
   return emitted;
+}
+
+/**
+ * Keep the helper-limit plugin installed for this Claude Code config while a
+ * limit is in effect, so every config directory heals on its first session.
+ * Adds nothing to the agent's context; any failure is logged and ignored.
+ */
+function healHelperPlugin(coordRoot: string, adapter: Adapter): void {
+  if (adapter !== "claude-code") return;
+  try {
+    if (helperLimitSkipped()) return;
+    if (!resolveHelperLimit(adapter, { coordRoot }).limit) return;
+    // The version check is the status reader's job; skip spawning Claude Code here.
+    ensureHelperPlugin({ claudeVersion: () => null });
+  } catch (err) {
+    logError(coordRoot, err, { phase: "helper-plugin-heal" });
+  }
 }
 
 /** The helper-limit line for the session-start context; "" when none is due or on error. */
