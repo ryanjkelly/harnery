@@ -10,6 +10,7 @@ import {
   readdirSync,
   readFileSync,
   readSync,
+  realpathSync,
   renameSync,
   statSync,
   truncateSync,
@@ -22,7 +23,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { processMayBeAlive } from "../../../lib/process-alive.ts";
 import { fsyncParentDirectory } from "../../storage/durable-record.ts";
 import { stateDirMode, stateFileMode, stateModeTooOpen } from "../../storage/modes.ts";
-import { acquireNoClobberLease } from "../../storage/no-clobber-lease.ts";
+import { acquireNoClobberLease, type NoClobberLease } from "../../storage/no-clobber-lease.ts";
 import { canonicalJsonV3, sha256V3 } from "./canonical.ts";
 import type { EventV3 } from "./contract.ts";
 import { genesisIdFromManifestV3, liveGenesisIdV3 } from "./control.ts";
@@ -41,6 +42,7 @@ import {
   rowValidationStateFromCheckpointV3,
 } from "./row-validation.ts";
 import { acceptedSchemaDigestsV3, schemaGroupForDigestV3 } from "./schema-lineage.ts";
+import { eventV3PrivateLeasePathsV3 } from "./thread-leases.ts";
 import { assertEventV3, validateEventV3 } from "./validate.ts";
 
 const MAX_LINE_BYTES = 16 * 1024;
@@ -231,22 +233,30 @@ export function drainReadyEventsHeldLeaseV3(coordRoot: string): number {
   return drainReadyEventsUnderLeaseV3(eventV3Paths(coordRoot));
 }
 
-export function withEventV3LedgerLease<T>(
+/** Take the append lease; the caller must release it. Prefer `withEventV3LedgerLease`. */
+export function acquireEventV3AppendLeaseV3(
   coordRoot: string,
-  options: WriteEventV3Options,
-  operation: () => T,
-): T {
-  const paths = eventV3Paths(coordRoot);
+  options: Pick<WriteEventV3Options, "leaseMs" | "now"> = {},
+): NoClobberLease {
   // This lock survives both epoch and schema changes.
   const authority = createHash("sha256").update(resolve(coordRoot)).digest("hex");
-  const lease = acquireNoClobberLease({
-    path: paths.lease,
+  return acquireNoClobberLease({
+    path: eventV3Paths(coordRoot).lease,
     scope: "event-v3-append",
     authoritySha256: authority,
     staleAfterMs: options.leaseMs ?? DEFAULT_LEASE_MS,
     now: options.now,
     validateStaleOwner: (owner) => owner.host === hostname() && !processMayBeAlive(owner.pid),
+    recoverAbandonedOwnThread: true,
   });
+}
+
+export function withEventV3LedgerLease<T>(
+  coordRoot: string,
+  options: WriteEventV3Options,
+  operation: () => T,
+): T {
+  const lease = acquireEventV3AppendLeaseV3(coordRoot, options);
   try {
     return operation();
   } finally {
@@ -258,15 +268,26 @@ function withReadyPublicationLease<T>(coordRoot: string, operation: () => T): T 
   const root = resolve(coordRoot);
   // Writes are synchronous. A nested publisher can borrow this stack's lease,
   // but a cutover must acquire its own: it cannot move an unfinished temp row.
-  if (publishingRoots.has(root)) return operation();
+  // The borrow is keyed by the root's real path, so a nested publisher that
+  // reaches the same root through a symlink borrows instead of contending.
+  const key = realRootKey(root);
+  if (publishingRoots.has(key)) return operation();
   return withEventV3PublicationLease(root, () => {
-    publishingRoots.add(root);
+    publishingRoots.add(key);
     try {
       return operation();
     } finally {
-      publishingRoots.delete(root);
+      publishingRoots.delete(key);
     }
   });
+}
+
+function realRootKey(root: string): string {
+  try {
+    return realpathSync.native(root);
+  } catch {
+    return root;
+  }
 }
 
 /** Stable across epoch renames. Cutovers always acquire exclusive ownership. */
@@ -276,11 +297,12 @@ export function withEventV3PublicationLease<T>(coordRoot: string, operation: () 
   for (let attempt = 0; attempt < 20; attempt++) {
     try {
       lease = acquireNoClobberLease({
-        path: join(root, ".harnery", "private", "event-v3-publication-lease"),
+        path: eventV3PrivateLeasePathsV3(root).publication,
         scope: "event-v3-publication",
         authoritySha256: createHash("sha256").update(root).digest("hex"),
         staleAfterMs: DEFAULT_LEASE_MS,
         validateStaleOwner: (owner) => owner.host === hostname() && !processMayBeAlive(owner.pid),
+        recoverAbandonedOwnThread: true,
       });
       break;
     } catch (error) {
@@ -830,7 +852,7 @@ export function eventV3Paths(coordRoot: string) {
     diagnostics: join(root, "diagnostics"),
     segments: join(root, "segments"),
     authorityOutbox: join(root, "authority-outbox"),
-    lease: join(resolvedCoordRoot, ".harnery", "private", "event-v3-append-lease"),
+    lease: eventV3PrivateLeasePathsV3(resolvedCoordRoot).append,
   };
 }
 

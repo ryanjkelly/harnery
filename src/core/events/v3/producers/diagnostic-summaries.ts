@@ -230,6 +230,7 @@ function withKeyLease<T>(root: string, digest: string, operation: () => T): T {
         authoritySha256: authority,
         staleAfterMs: LEASE_STALE_AFTER_MS,
         validateStaleOwner: (owner) => owner.host === hostname() && !processMayBeAlive(owner.pid),
+        recoverAbandonedOwnThread: true,
       });
       break;
     } catch (error) {

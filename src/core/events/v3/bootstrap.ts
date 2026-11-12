@@ -42,6 +42,7 @@ import { EVENT_V3_LEDGER_RELATIVE_ROOT } from "./reader.ts";
 import { carryReadyEventHistoryV3 } from "./ready-history.ts";
 import { resolveEventLedgerRotateActiveBytesV3 } from "./rotation-config.ts";
 import { currentHarneryRuntimeBuild, liveEventV3BuildId, livePlatformV3 } from "./runtime-build.ts";
+import { eventV3PrivateLeasePathsV3 } from "./thread-leases.ts";
 import {
   drainReadyEventsHeldLeaseV3,
   withEventV3LedgerLease,
@@ -593,11 +594,12 @@ function withBootstrapLease<T>(coordRoot: string, operation: () => T): T {
   for (let attempt = 0; attempt < BOOTSTRAP_LEASE_RETRIES; attempt += 1) {
     try {
       lease = acquireNoClobberLease({
-        path: join(root, ".harnery", "private", "event-v3-bootstrap-lease"),
+        path: eventV3PrivateLeasePathsV3(root).bootstrap,
         scope: "event-v3-bootstrap",
         authoritySha256: authority,
         staleAfterMs: BOOTSTRAP_LEASE_STALE_MS,
         validateStaleOwner: (owner) => owner.host === hostname() && !processMayBeAlive(owner.pid),
+        recoverAbandonedOwnThread: true,
       });
       break;
     } catch (error) {

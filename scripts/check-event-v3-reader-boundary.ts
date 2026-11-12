@@ -82,6 +82,13 @@ export const EXACT_DECLARATION_EXCEPTIONS: readonly EventV3ReaderBoundaryExcepti
       "eventV3ArchivesRoot is the single owner of the closed-epoch root; other modules import it.",
   },
   {
+    file: "src/core/events/v3/thread-leases.ts",
+    token: LEDGER_SEGMENT_JOIN_TOKEN,
+    declaration: 'const LEDGER_ROOT_SEGMENTS = [".harnery", "ledgers", "v3"] as const;',
+    reason:
+      "Locates producer and summary lease directories only; it stays free of the reader and writer so a host's supervising thread can load it.",
+  },
+  {
     file: "src/core/events/v3/recovery-record.ts",
     token: LEDGER_SEGMENT_JOIN_TOKEN,
     declaration: 'return join(resolve(coordRoot), ".harnery", "ledgers", "v3-recoveries");',

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   type EventV3Fixture,
   eventV3Fixture,
@@ -40,6 +40,35 @@ describe("event ledger V3 causal append ordering", () => {
         ).toBe("ready");
         expect(readFileSync(current, "utf8")).toBe(owner);
         expect(activeEvents(root)).toEqual([]);
+      },
+    });
+
+    expect(result.state).toBe("committed");
+    expect(existsSync(current)).toBeFalse();
+    expect(activeEvents(root).map(({ event_id }) => event_id)).toEqual([
+      parent.event_id,
+      child.event_id,
+    ]);
+  });
+
+  test("a nested publisher reaching the root through a symlink shares ownership", () => {
+    const root = temporaryRoot();
+    const alias = join(mkdtempSync(join(tmpdir(), "harnery-event-v3-alias-")), "root");
+    roots.push(dirname(alias));
+    symlinkSync(root, alias);
+    const parent = fixture("tool.requested", 1, "prd_hook", 1);
+    const child = fixture("command.started", 2, "prd_command", 1);
+    fixtureObject(child.links).caused_by = [parent.event_id];
+    const current = join(root, ".harnery", "private", "event-v3-publication-lease", "current");
+
+    const result = writeEventV3(root, parent as unknown as EventV3, {
+      onStep: (step) => {
+        if (step !== "ready_temp_flushed") return;
+        const owner = readFileSync(current, "utf8");
+        expect(writeEventV3(alias, child as unknown as EventV3, { deferDrain: true }).state).toBe(
+          "ready",
+        );
+        expect(readFileSync(current, "utf8")).toBe(owner);
       },
     });
 

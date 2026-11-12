@@ -19,6 +19,7 @@ import { fsyncParentDirectory } from "../../storage/durable-record.ts";
 import { stateDirMode, stateFileMode, stateModeTooOpen } from "../../storage/modes.ts";
 import { acquireNoClobberLease } from "../../storage/no-clobber-lease.ts";
 import type { FingerprintContextV3 } from "./canonical.ts";
+import { eventV3PrivateLeasePathsV3 } from "./thread-leases.ts";
 
 const KEY_BYTES = 32;
 const LOCK_RETRIES = 200;
@@ -139,7 +140,7 @@ function withKeyStoreLock<T>(coordRoot: string, operation: () => T): T {
   const privateDir = join(resolve(coordRoot), ".harnery/private");
   mkdirSync(privateDir, { recursive: true, mode: stateDirMode() });
   chmodSync(privateDir, stateDirMode());
-  const leasePath = join(privateDir, "fingerprint-key-lease");
+  const leasePath = eventV3PrivateLeasePathsV3(coordRoot).fingerprintKey;
   const authority = createHash("sha256").update(resolve(coordRoot)).digest("hex");
   let lease: ReturnType<typeof acquireNoClobberLease> | undefined;
   for (let attempt = 0; attempt < LOCK_RETRIES; attempt += 1) {
@@ -150,6 +151,7 @@ function withKeyStoreLock<T>(coordRoot: string, operation: () => T): T {
         authoritySha256: authority,
         staleAfterMs: 5_000,
         validateStaleOwner: (owner) => owner.host === hostname() && !processMayBeAlive(owner.pid),
+        recoverAbandonedOwnThread: true,
       });
       break;
     } catch (error) {

@@ -70,6 +70,7 @@ export function importArchivedReadyEventsV3(
     authoritySha256: createHash("sha256").update(dir).digest("hex"),
     staleAfterMs: 5000,
     validateStaleOwner: (owner) => owner.host === hostname() && !processMayBeAlive(owner.pid),
+    recoverAbandonedOwnThread: true,
   });
   try {
     return run();

@@ -511,6 +511,7 @@ function acquireCoordinationLease(coordRoot: string, statePath: string) {
       .digest("hex"),
     staleAfterMs: 5_000,
     validateStaleOwner: (owner) => owner.host === hostname() && !processMayBeAlive(owner.pid),
+    recoverAbandonedOwnThread: true,
   });
 }
 
