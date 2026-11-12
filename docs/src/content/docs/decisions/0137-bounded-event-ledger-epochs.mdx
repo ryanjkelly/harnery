@@ -89,6 +89,34 @@ transaction publication and reconciliation.
 > Note (2026-11-11): see [ADR 0245](/decisions/0245-continue-epochs-across-additive-schemas-and-hold-bad-rows-at-the-writer/). The writer's ordering check now applies every
 > per-row reader check, and a row that fails waits in the queue.
 
+> Note (2026-11-11): the append lease, like every other event ledger lease, now
+> records the holder's thread (`thread_id`, 0 on the main thread) beside its
+> host and pid. Expiry alone still reclaims nothing, and a lease owned by
+> another process or another live thread is never reclaimed. Two rules cover a
+> lease left held inside a process that keeps running, which the pid check can
+> never release. An expired lease owned by the contender's own thread is
+> reclaimed when that thread holds no live handle for it: the handle was
+> dropped or its release failed. A nested acquisition of a lease the thread
+> still holds keeps refusing. And when a worker thread exits while holding
+> leases, the thread that supervised it calls
+> `releaseEventV3LeasesHeldByExitedThreadV3(coordRoot, threadId)`, which
+> reclaims only the leases whose owner names this process and that thread,
+> through the same stale-pin recovery a takeover uses. A thread's held leases
+> are keyed by the lease directory's identity (device and inode of its real
+> path), so a path through a symlink or bind mount cannot pass for a lease the
+> thread does not hold. The exited-thread release retires the exited owner
+> through a recovery claim and links no replacement owner, so it never leaves a
+> lease owned by the live supervising thread. Its claim carries the duration
+> of the record it reclaims and records that the observed holder's thread
+> exited. If the release stops part-way, what remains is that claim. Other
+> threads and processes keep respecting it while the supervising process
+> lives, because they cannot see whether its release is still running. The
+> supervising thread can see that, so repeating the release clears the claim at
+> once, along with the exited thread's records; the supervisor repeats it with
+> backoff until it reports clean, and before it starts another recorder. After
+> the process exits, the lease's normal callers recover the claim by the
+> pid check.
+
 ## Result
 
 A rotation on the 176 MB production epoch archived it intact and brought the
