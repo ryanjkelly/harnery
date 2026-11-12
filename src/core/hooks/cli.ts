@@ -73,9 +73,11 @@ import {
 import {
   agentsRequireGitFinalization,
   coordFreshnessSeconds,
+  helperLimitSkipped,
   hostPromptContextConfig,
   readAdmissionConfig,
   resolveBinName,
+  resolveHelperLimit,
 } from "../config.ts";
 import {
   checkpointContext,
@@ -138,6 +140,7 @@ import {
   observeHookError,
   writeHookHealthCompletion,
 } from "./health.ts";
+import { buildHelperLimitNote } from "./helper-limit-note.ts";
 import { adapterPidFromEnv, parsePsChainLine, selectAnchorPid } from "./resolve/anchor.ts";
 import { extractIntentComment, resolveIntent } from "./resolve/intent.ts";
 import { resolveOwner } from "./resolve/owner.ts";
@@ -2635,6 +2638,11 @@ async function emitSessionStartSystemMessage(
   if (backupCue && !workflowChild) {
     additionalContext = [additionalContext, backupCue].filter(Boolean).join("\n\n");
   }
+  if (!workflowChild) {
+    const helperNote = sessionHelperLimitNote(coordRoot, adapter);
+    if (helperNote)
+      additionalContext = [additionalContext, helperNote].filter(Boolean).join("\n\n");
+  }
   if (!workflowChild && behavior.bridgeFor(emittedData.cwd)) {
     const fileLinkContext = behavior.fileLinkContext?.(coordRoot, emittedData.cwd) ?? "";
     if (fileLinkContext) {
@@ -2652,6 +2660,22 @@ async function emitSessionStartSystemMessage(
     await acknowledgeEmittedPeerInbox(coordRoot, instanceId, peerMessageIds);
   }
   return emitted;
+}
+
+/** The helper-limit line for the session-start context; "" when none is due or on error. */
+function sessionHelperLimitNote(coordRoot: string, adapter: Adapter): string {
+  if (adapter !== "claude-code") return "";
+  try {
+    return buildHelperLimitNote({
+      adapter,
+      limit: resolveHelperLimit(adapter, { coordRoot }).limit,
+      skipped: helperLimitSkipped(),
+      bin: resolveBinName(coordRoot),
+    });
+  } catch (err) {
+    logError(coordRoot, err, { phase: "helper-limit-note" });
+    return "";
+  }
 }
 
 function completeRecoveryInjection(
