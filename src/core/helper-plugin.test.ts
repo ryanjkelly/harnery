@@ -93,6 +93,24 @@ describe("ensureHelperPlugin", () => {
     expect(readFileSync(file, "utf8")).toBe(first);
   });
 
+  test("never registers a temp-folder plugin in a settings file outside the temp folder", () => {
+    const scratch = join(root, "scratch");
+    const real = join(root, "real-home", ".claude");
+    mkdirSync(real, { recursive: true });
+    const file = join(real, "settings.json");
+    const before = `${JSON.stringify({ model: "opus" }, null, 2)}\n`;
+    writeFileSync(file, before);
+    const result = ensureHelperPlugin({
+      configHome: join(scratch, "config"),
+      settingsFiles: [file],
+      claudeVersion: () => "2.1.310",
+      tempDir: scratch,
+    });
+    expect(readFileSync(file, "utf8")).toBe(before);
+    expect(result.status.settings_files).toEqual([]);
+    expect(result.notes.some((note) => note.includes("temporary"))).toBe(true);
+  });
+
   test("keeps other path-list entries and adds its own once", () => {
     const other = join(root, "other-plugin");
     const file = settingsFile(

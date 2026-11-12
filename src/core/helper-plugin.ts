@@ -26,7 +26,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { helperUsageDir } from "./helper-usage.ts";
@@ -66,6 +66,8 @@ export interface HelperPluginOptions {
   settingsFiles?: string[];
   /** Override how the local Claude Code version is read (tests). */
   claudeVersion?: () => string | null;
+  /** Override what counts as the OS temp directory (tests). */
+  tempDir?: string;
 }
 
 const PLUGIN_ENV = "CLAUDE_CODE_PLUGIN_DIRS";
@@ -358,6 +360,27 @@ function copyPlugin(sourceDir: string, targetDir: string, stamp: string): void {
   }
 }
 
+function isInside(path: string, dir: string): boolean {
+  const base = resolve(dir);
+  const target = resolve(path);
+  return target === base || target.startsWith(`${base}/`) || target.startsWith(`${base}\\`);
+}
+
+/**
+ * A plugin folder under the OS temp directory belongs to a test or a scratch
+ * run. Registering it in a settings file outside that directory would leave a
+ * person's real settings pointing at a folder that is about to disappear, so
+ * that combination is refused.
+ */
+function isScratchPluginInRealSettings(
+  pluginDir: string,
+  settingsFile: string,
+  options: HelperPluginOptions,
+): boolean {
+  const temp = options.tempDir ?? tmpdir();
+  return isInside(pluginDir, temp) && !isInside(settingsFile, temp);
+}
+
 /**
  * Install the plugin, or refresh a copy from an older version. Idempotent.
  * Changes only the plugin folder and the one `CLAUDE_CODE_PLUGIN_DIRS` entry in
@@ -402,6 +425,10 @@ export function ensureHelperPlugin(options: HelperPluginOptions = {}): HelperPlu
     const original = read.kind === "ok" ? read.text : null;
     const value = read.kind === "ok" ? read.value : {};
     if (loadsPlugin(value, pluginDir)) continue;
+    if (isScratchPluginInRealSettings(pluginDir, file, options)) {
+      notes.push(`Left ${file} alone: the plugin folder ${pluginDir} is a temporary one.`);
+      continue;
+    }
 
     const env = isPlainObject(value.env) ? { ...value.env } : {};
     const entries = pathList(env[PLUGIN_ENV]);
