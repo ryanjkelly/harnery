@@ -98,6 +98,20 @@ describe("summarizeHelperUsage", () => {
     expect(result.by_model).toEqual({ yesterday: 1, today: 1 });
   });
 
+  test("per-writer files for a day are read alongside the shared file", () => {
+    const line = (agent: string) =>
+      `${JSON.stringify({ ts: "2026-03-05T10:00:00.000Z", tool: "claude-code", kind: "helper", session_id: "s1", agent_id: agent, sent_model: "opus", lowered: true })}\n`;
+    writeFileSync(join(dir, "usage-2026-03-05.jsonl"), line("a1"));
+    writeFileSync(join(dir, "usage-2026-03-05.session-abc_1.jsonl"), line("a2"));
+    writeFileSync(join(dir, "usage-2026-03-05.bad name.jsonl"), line("a3"));
+    const summary = summarizeHelperUsage(new Date("2026-03-05T00:00:00.000Z"), {
+      dir,
+      now: new Date("2026-03-05T12:00:00.000Z"),
+    });
+    expect(summary.helpers).toBe(2);
+    expect(summary.lowered).toBe(2);
+  });
+
   test("repeated turns of one helper count once, under its latest model", () => {
     writeDay("2026-11-10", [
       line({ ts: "2026-11-10T22:00:00Z", session_id: "s", agent_id: "a", answered_model: "opus" }),

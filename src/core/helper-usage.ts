@@ -2,7 +2,8 @@
  * Machine-wide record of helper agents: what each asked for, what it was sent
  * with, and, where the adapter reports it, which model answered. One JSON line
  * per helper turn or `run` worker, in one file per UTC day under
- * `~/.cache/harnery/helpers/` (honors `XDG_CACHE_HOME`).
+ * `~/.cache/harnery/helpers/` (honors `XDG_CACHE_HOME`). A writer that cannot
+ * append to a shared file keeps its own `usage-YYYY-MM-DD.<writer>.jsonl`.
  *
  * It is deliberately not a coordination event: a helper limit covers every
  * project on the machine, and a project's event ledger covers one.
@@ -83,7 +84,9 @@ export interface SummarizeHelperUsageOptions {
   family?: (model: string) => string | null;
 }
 
-const USAGE_FILE = /^usage-(\d{4}-\d{2}-\d{2})\.jsonl$/;
+// `usage-YYYY-MM-DD.jsonl`, or `usage-YYYY-MM-DD.<writer>.jsonl` for a writer
+// that cannot append to a shared file and so keeps a file of its own.
+const USAGE_FILE = /^usage-(\d{4}-\d{2}-\d{2})(?:\.[A-Za-z0-9_-]+)?\.jsonl$/;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 function utcDay(date: Date): string {
