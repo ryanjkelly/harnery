@@ -339,7 +339,9 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
         const ledger = readEventV3ControlState(projectRoot);
         if (ledger.state !== "active") {
           issues.push(
-            `event ledger V3 is ${ledger.state}${"reason" in ledger ? ` (${ledger.reason})` : ""}`,
+            // The closed line is matched verbatim by embedding hosts; name the reason only
+            // for a ledger that is present and cannot be served.
+            `event ledger V3 is ${ledger.state}${ledger.state === "invalid" ? ` (${ledger.reason})` : ""}`,
           );
         }
         const ledgerRuntimeIssues = eventLedgerV3RuntimeIssues(ledger);
