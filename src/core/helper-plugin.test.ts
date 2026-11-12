@@ -144,7 +144,8 @@ describe("ensureHelperPlugin", () => {
     expect(existsSync(absent)).toBe(false);
   });
 
-  test("keeps the file's mode", () => {
+  // File modes are a POSIX notion; Windows reports its own fixed bits.
+  test.skipIf(process.platform === "win32")("keeps the file's mode", () => {
     const file = settingsFile("claude", "{}\n");
     chmodSync(file, 0o600);
     ensureHelperPlugin(options([file]));
@@ -440,9 +441,9 @@ describe("text-preserving settings edits", () => {
         [created]: { created_file: true, created_env: true, created_entry: true },
       },
     });
-    expect(statSync(recordPath).mode & 0o777).toBe(0o600);
+    if (process.platform !== "win32") expect(statSync(recordPath).mode & 0o777).toBe(0o600);
     // A settings file the install created is owner-only too.
-    expect(statSync(created).mode & 0o777).toBe(0o600);
+    if (process.platform !== "win32") expect(statSync(created).mode & 0o777).toBe(0o600);
     // No temp files are left beside either.
     for (const dir of [
       join(root, "config", "harnery"),
@@ -457,45 +458,48 @@ describe("text-preserving settings edits", () => {
     expect(existsSync(recordPath)).toBe(false);
   });
 
-  test("temp files are created owner-only, even with a permissive umask", async () => {
-    const file = settingsFile("claude", "{}\n");
-    chmodSync(file, 0o644);
-    const created = join(root, "fresh", "settings.json");
-    mkdirSync(join(root, "fresh"), { recursive: true });
-    const fs = await import("node:fs");
-    const real = { ...fs };
-    const seen: Array<{ path: string; mode: number }> = [];
-    const written: number[] = [];
-    mock.module("node:fs", () => ({
-      ...real,
-      writeFileSync: (...args: Parameters<typeof real.writeFileSync>) => {
-        real.writeFileSync(...args);
-        const path = String(args[0]);
-        if (path.endsWith(".tmp")) written.push(real.statSync(path).mode & 0o777);
-      },
-      renameSync: (from: string, to: string) => {
-        if (from.endsWith(".tmp") && real.statSync(from).isFile()) {
-          seen.push({ path: to, mode: real.statSync(from).mode & 0o777 });
-        }
-        return real.renameSync(from, to);
-      },
-    }));
-    const umask = process.umask(0);
-    try {
-      ensureHelperPlugin(options([file, created]));
-    } finally {
-      process.umask(umask);
-      mock.module("node:fs", () => real);
-    }
-    const recordPath = join(root, "config", "harnery", "claude-code-plugin.install.json");
-    // Temp files are created owner-only, then given the target's mode just before the rename.
-    expect(written).toEqual([0o600, 0o600, 0o600]);
-    expect(seen.map((s) => s.path).sort()).toEqual([created, file, recordPath].sort());
-    expect(seen.find((s) => s.path === file)?.mode).toBe(0o644);
-    expect(seen.find((s) => s.path === created)?.mode).toBe(0o600);
-    expect(seen.find((s) => s.path === recordPath)?.mode).toBe(0o600);
-    expect(statSync(recordPath).mode & 0o777).toBe(0o600);
-    expect(statSync(created).mode & 0o777).toBe(0o600);
-    expect(statSync(file).mode & 0o777).toBe(0o644);
-  });
+  test.skipIf(process.platform === "win32")(
+    "temp files are created owner-only, even with a permissive umask",
+    async () => {
+      const file = settingsFile("claude", "{}\n");
+      chmodSync(file, 0o644);
+      const created = join(root, "fresh", "settings.json");
+      mkdirSync(join(root, "fresh"), { recursive: true });
+      const fs = await import("node:fs");
+      const real = { ...fs };
+      const seen: Array<{ path: string; mode: number }> = [];
+      const written: number[] = [];
+      mock.module("node:fs", () => ({
+        ...real,
+        writeFileSync: (...args: Parameters<typeof real.writeFileSync>) => {
+          real.writeFileSync(...args);
+          const path = String(args[0]);
+          if (path.endsWith(".tmp")) written.push(real.statSync(path).mode & 0o777);
+        },
+        renameSync: (from: string, to: string) => {
+          if (from.endsWith(".tmp") && real.statSync(from).isFile()) {
+            seen.push({ path: to, mode: real.statSync(from).mode & 0o777 });
+          }
+          return real.renameSync(from, to);
+        },
+      }));
+      const umask = process.umask(0);
+      try {
+        ensureHelperPlugin(options([file, created]));
+      } finally {
+        process.umask(umask);
+        mock.module("node:fs", () => real);
+      }
+      const recordPath = join(root, "config", "harnery", "claude-code-plugin.install.json");
+      // Temp files are created owner-only, then given the target's mode just before the rename.
+      expect(written).toEqual([0o600, 0o600, 0o600]);
+      expect(seen.map((s) => s.path).sort()).toEqual([created, file, recordPath].sort());
+      expect(seen.find((s) => s.path === file)?.mode).toBe(0o644);
+      expect(seen.find((s) => s.path === created)?.mode).toBe(0o600);
+      expect(seen.find((s) => s.path === recordPath)?.mode).toBe(0o600);
+      if (process.platform !== "win32") expect(statSync(recordPath).mode & 0o777).toBe(0o600);
+      if (process.platform !== "win32") expect(statSync(created).mode & 0o777).toBe(0o600);
+      expect(statSync(file).mode & 0o777).toBe(0o644);
+    },
+  );
 });
