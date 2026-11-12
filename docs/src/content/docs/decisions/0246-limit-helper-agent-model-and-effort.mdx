@@ -1,0 +1,153 @@
+---
+title: "ADR 0246: Limit helper-agent model and effort"
+description: A person sets the most expensive model and the highest reasoning effort a helper agent may use, once for all their projects. Harnery lowers a helper's real model request to that limit and records what helpers ran on.
+sidebar:
+  order: 246
+---
+
+**Date:** 2026-11-11
+**Status:** Accepted
+
+## Context
+
+A helper agent (a subagent) that names no model runs on the main session's
+model at the session's reasoning effort. A main session on the most expensive
+model can therefore start several helpers that each cost as much as it does,
+for work such as reading files that a cheaper model handles well. The person
+paying for the session has no single place to say "helpers may cost at most
+this much", and nothing shows them what their helpers ran on.
+
+The controls a coding tool offers on its own each miss part of this. A default
+helper model is not a limit, because a call that names a stronger model still
+gets it. A setting that forces one model onto every helper also raises helpers
+that were deliberately cheaper. A model line in an agent definition covers one
+agent type and cannot reach built-in types. An instruction to the agent is
+only as reliable as the agent's memory. None of them limits effort.
+
+## Alternatives considered
+
+**Rewrite the helper call before it runs.** A tool-call hook can change the
+model and effort on the call that starts a helper. To know whether a helper is
+above the limit, Harnery would have to predict what it will run on: the call's
+own fields, the agent definition, built-in exceptions, environment overrides
+and the parent session's model. That is a second implementation of the coding
+tool's selection rules, and it has to track every release. It also records
+only what Harnery asked for, not what answered. Rejected as the main route.
+
+**Lower the helper's model request itself.** Claude Code plugins can handle
+the event that fires before each request to the model. The event states the
+request's real model and effort and marks a helper's requests, and the plugin
+can send the request on with either value changed. Nothing has to be
+predicted, every kind of helper passes through the same point, and the result
+names the model that answered. Chosen.
+
+**Refuse a helper above the limit.** The agent would retry with a cheaper
+helper, at the cost of a turn each time. Rejected: lowering gets the work done.
+
+**A guaranteed ceiling that stops work when it cannot be enforced.** Rejected.
+This is a cost preference. An older coding tool, a blocked plugin or an error
+should not stop an agent from working. Misses are made visible instead.
+
+**A default instead of a limit.** Filling in only an empty model leaves a call
+that names the strongest model untouched, and "the most a helper may cost" is
+the setting a person can reason about. Rejected.
+
+**Record each decision in the project's event ledger.** Rejected. The limit
+belongs to a person and covers every project on their machine, and a ledger
+covers one project. Counts drawn from it would miss helpers elsewhere.
+
+**A new dashboard page and a top-level command.** Rejected. The dashboard's
+Tools page already shows the allowance the limit protects, and the `devtools`
+command already owns per-tool controls.
+
+## Decision
+
+### The limit
+
+A helper limit is a pair: a highest model and a highest reasoning effort.
+Either side may be absent. Rankings are data on each adapter profile:
+`effortValues`, and a new `modelLadder` of model families, cheapest first. A
+full model id ranks by the family name inside it. Claude Code is the first
+adapter with a model ranking.
+
+One pure function, `decideHelperLimit()`, makes every decision. A stated value
+above the limit is lowered to the limit. Everything else is left as it was: a
+value at or below the limit, a value the request does not state, and a value
+that cannot be ranked. Harnery never raises a helper and never writes a value
+it would have to guess.
+
+### Where the choice lives
+
+| Order | Layer | Storage |
+|---|---|---|
+| 1 | The person, for all their projects | `preferences.json` in the user config directory, `helpers.<adapter>` |
+| 2 | The project's default | `.harnery/config.jsonc`, `helpers.<adapter>` |
+| 3 | Nothing set | No limit |
+
+The person's choice wins over the project's default in both directions,
+because this is a cost preference and not a safety control. An explicit "no
+limit" from the person beats a project default. A layer holds the whole pair;
+fields never merge across layers. The default is no limit, so nothing changes
+until someone chooses.
+
+### Enforcement
+
+**Claude Code helpers.** Harnery ships a Claude Code plugin built from its own
+source, so the plugin and the rest of Harnery share the decision function. On
+each model request that belongs to a helper, the plugin lowers the model and
+effort to the limit and forwards the request. The main conversation's requests
+are never touched. Forks are left alone, because a fork shares the main
+session's model by design. Any error forwards the request unchanged.
+
+The plugin is installed for the person, not the project: it is copied to one
+folder under the user config directory and loaded through the plugin-directory
+variable in the `env` block of the Claude Code user settings file. A project
+settings file cannot load a plugin this way. Setting a limit installs it, and a
+session start refreshes it when a limit is in effect.
+
+**Run workers.** The `run` engine starts its own workers, so it applies the
+limit itself, directly after a worker's options are resolved. The worker's
+proof record, resume key, cost estimate and access decision all read the
+lowered values. Applying the limit any later would let a worker be granted
+full access as a stronger model than the one it runs on. A limit below a
+configured full-access floor therefore makes those workers run sandboxed, and
+setting such a limit says so.
+
+### Best effort, with visible misses
+
+When the limit cannot be applied (the coding tool is too old, the plugin is
+not loaded, an organization blocks plugins), helpers run as asked. The command
+and the dashboard state whether the limit is active and, when it is not, why.
+
+### What ran
+
+Every helper turn and every run worker is recorded in a machine-wide log under
+the user cache directory: what it asked for, what it was sent with and, for
+Claude Code helpers, which model answered. Helpers are recorded with no limit
+set too, so a person can see the problem before choosing. Daily files are kept
+for seven days.
+
+### Surfaces
+
+`devtools helpers` shows, sets and clears the limit and installs or removes the
+plugin. The dashboard's Tools page carries the same control on the Claude Code
+card, under its quota bars, with the last 24 hours of helpers by model. When a
+limit is in effect, one line in the session's opening context tells the agent
+the limit and asks it to say so if the person requests a stronger helper.
+
+## Consequences
+
+- Harnery now reaches Claude Code two ways: settings hooks wired per project,
+  and one plugin installed per person. The plugin sits in the path of every
+  model request, so it stays small, fails open and has its own tests.
+- A person's Claude Code user settings file gains one entry. Removing the
+  plugin removes only that entry.
+- The limit can make a helper weaker than its task needs. The person chose it,
+  the agent is told about it, and one command or one click changes it.
+- A new release of the coding tool can change the plugin events. The plugin
+  checks the version it runs under and does nothing on a version older than
+  the first one whose request event accepts a family name.
+- Other adapters gain a limit by adding a model ranking to their profile and
+  an enforcement point of their own. Helpers they start themselves are not
+  covered until then.
+- Forks and agent-team teammates are not covered.
