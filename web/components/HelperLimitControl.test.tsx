@@ -37,17 +37,33 @@ describe("HelperLimitControl", () => {
       '<option value="" selected="">No limit</option><option value="low">Low</option>',
     );
     expect(html).not.toContain("Use project default");
+    expect(html).toContain("Remove my choice");
   });
 
-  test("offers Use project default only with a saved choice and a project default", () => {
+  test("offers Remove my choice for any saved choice when no project default exists", () => {
+    const explicitNoLimit = renderToStaticMarkup(
+      <HelperLimitControl ladders={ladders} user={{}} hasProjectDefault={false} />,
+    );
+    expect(explicitNoLimit).toContain("Remove my choice");
+    expect(explicitNoLimit).not.toContain("Use project default");
+    const noChoice = renderToStaticMarkup(
+      <HelperLimitControl ladders={ladders} user={null} hasProjectDefault={false} />,
+    );
+    expect(noChoice).not.toContain("Remove my choice");
+    expect(noChoice).toContain("Not set. Choose a model or effort to limit helpers.");
+  });
+
+  test("offers Use project default with a saved choice and a project default", () => {
     const withBoth = renderToStaticMarkup(
       <HelperLimitControl ladders={ladders} user={{}} hasProjectDefault />,
     );
     expect(withBoth).toContain("Use project default");
+    expect(withBoth).not.toContain("Remove my choice");
     const noChoice = renderToStaticMarkup(
       <HelperLimitControl ladders={ladders} user={null} hasProjectDefault />,
     );
     expect(noChoice).not.toContain("Use project default");
+    expect(noChoice).not.toContain("Remove my choice");
     expect(noChoice).toContain("Not set. The project default applies.");
   });
 

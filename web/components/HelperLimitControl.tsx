@@ -146,14 +146,14 @@ export function HelperLimitControl({
             ))}
           </select>
         </label>
-        {hasChoice && hasProjectDefault ? (
+        {hasChoice ? (
           <button
             type="button"
             disabled={saving}
             onClick={() => apply(null, "", "")}
             className="font-medium text-primary hover:underline disabled:opacity-50"
           >
-            Use project default
+            {hasProjectDefault ? "Use project default" : "Remove my choice"}
           </button>
         ) : null}
         {saving ? <span className="text-muted-foreground">Saving…</span> : null}
