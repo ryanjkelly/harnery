@@ -28,10 +28,17 @@ import { DEFAULT_WEB_PORT } from "../lib/local-file-url.ts";
 import { AUTOUPDATE_DEFAULTS, type AutoUpdateConfig } from "./autoupdate/types.ts";
 import { resolveEventLedgerRotateActiveBytesV3 } from "./events/v3/rotation-config.ts";
 import {
+  type EffectiveHelperLimit,
+  effectiveHelperLimit,
+  type HelperLimit,
+  parseStoredHelperLimit,
+} from "./helper-limit.ts";
+import {
   type PromptContextConfig,
   parsePromptContextConfig,
 } from "./hooks/prompt-context/contract.ts";
 import { findCoordRoot } from "./hooks/resolve/coord-root.ts";
+import { type Preferences, readPreferences } from "./preferences.ts";
 
 export { DEFAULT_WEB_PORT } from "../lib/local-file-url.ts";
 export { DEFAULT_EVENT_LEDGER_ROTATE_ACTIVE_BYTES } from "./events/v3/rotation-config.ts";
@@ -227,6 +234,13 @@ interface HarneryConfig {
   };
   /** Standalone dashboard defaults. */
   web?: { port?: number; bind?: string };
+  /**
+   * The project's default helper limit, keyed by adapter id: the most
+   * expensive model and highest effort a helper agent may use. A person's own
+   * choice, kept outside the project, wins in both directions. Read via
+   * `resolveHelperLimit()`.
+   */
+  helpers?: Record<string, { max_model?: string; max_effort?: string }>;
   /**
    * Opt-in desktop control (`computer` command, ADRs 0228 and 0230). Inert
    * unless `mode` (or the older `enabled: true`) turns it on. Project config
@@ -1021,6 +1035,50 @@ export interface ComputerPreferences {
   sign_in?: boolean;
   /** Agent sign-in for one project, keyed by its absolute root. Wins over `sign_in`. */
   sign_in_projects?: Record<string, boolean>;
+}
+
+export interface ResolvedHelperLimit extends EffectiveHelperLimit {
+  /** Adapter id the limit is for. */
+  tool: string;
+  /** The person's own choice; absent when they made none, empty for "no limit". */
+  user?: HelperLimit;
+  /** The project's committed default, or null when it sets none. */
+  project_default: HelperLimit | null;
+}
+
+/**
+ * The helper limit in effect for one adapter: the person's choice from
+ * `preferences.json`, else the project's `helpers` default, else none. Every
+ * enforcement point and the command read the limit through this one function.
+ */
+export function resolveHelperLimit(
+  tool: string,
+  options: { coordRoot?: string | null; preferences?: Preferences } = {},
+): ResolvedHelperLimit {
+  const prefs = options.preferences ?? readPreferences();
+  const root = options.coordRoot === undefined ? findCoordRoot() : options.coordRoot;
+  let projectDefault: HelperLimit | null = null;
+  if (root) {
+    const section = readProjectConfig(root).helpers;
+    if (section && typeof section === "object" && !Array.isArray(section)) {
+      const parsed = parseStoredHelperLimit((section as Record<string, unknown>)[tool]);
+      if (parsed && (parsed.max_model !== undefined || parsed.max_effort !== undefined)) {
+        projectDefault = parsed;
+      }
+    }
+  }
+  const user = prefs.helpers?.[tool];
+  return {
+    tool,
+    ...effectiveHelperLimit({ user, projectDefault }),
+    ...(user !== undefined ? { user } : {}),
+    project_default: projectDefault,
+  };
+}
+
+/** True when `HARNERY_HELPER_LIMIT_SKIP=1` turns enforcement off for this process. */
+export function helperLimitSkipped(): boolean {
+  return coordEnv("HELPER_LIMIT_SKIP") === "1";
 }
 
 /** `~/.config/harnery/computer.json` (honors `XDG_CONFIG_HOME`). */

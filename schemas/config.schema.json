@@ -316,6 +316,24 @@
         }
       }
     },
+    "helpers": {
+      "type": "object",
+      "description": "The project's default helper limit, keyed by adapter id (for example claude-code): the most expensive model and the highest reasoning effort a helper agent may use. A person's own choice, kept outside the project, wins in both directions.",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "max_model": {
+            "type": "string",
+            "description": "Highest model family a helper may use, for example opus."
+          },
+          "max_effort": {
+            "type": "string",
+            "description": "Highest reasoning effort a helper may use, for example medium."
+          }
+        }
+      }
+    },
     "computer": {
       "type": "object",
       "additionalProperties": false,
