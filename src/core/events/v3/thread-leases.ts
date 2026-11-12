@@ -1,13 +1,13 @@
 import { lstatSync, readdirSync } from "node:fs";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
-import { threadId as currentThreadId } from "node:worker_threads";
 import { processMayBeAlive } from "../../../lib/process-alive.ts";
 import {
   type LeaseRecoveryStep,
   type NoClobberLeaseOwner,
   reclaimNoClobberLeaseOfExitedThread,
 } from "../../storage/no-clobber-lease.ts";
+import { currentThreadId } from "../../storage/thread-identity.ts";
 import { eventV3ArchivesRoot } from "./archive-retention.ts";
 
 // This module stays free of the ledger's reader and writer so an embedding

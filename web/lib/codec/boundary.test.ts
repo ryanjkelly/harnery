@@ -171,6 +171,36 @@ function readOnlyGitRootResolver(source: string): boolean {
   );
 }
 
+/** The one module allowed to import worker_threads: it may only read `threadId`. */
+const THREAD_IDENTITY_MODULE = path.resolve(WEB_ROOT, "../src/core/storage/thread-identity.ts");
+
+/** True when the module's only runtime import is `{ threadId }` from node:worker_threads. */
+function threadIdentityOnly(source: string): boolean {
+  const file = ts.createSourceFile("module.ts", source, ts.ScriptTarget.Latest, true);
+  let imports = 0;
+  let safe = true;
+  const visit = (node: ts.Node) => {
+    if (ts.isImportDeclaration(node)) {
+      imports += 1;
+      const clause = node.importClause;
+      const bindings = clause?.namedBindings;
+      safe &&=
+        ts.isStringLiteral(node.moduleSpecifier) &&
+        node.moduleSpecifier.text === "node:worker_threads" &&
+        !!clause &&
+        !clause.name &&
+        !!bindings &&
+        ts.isNamedImports(bindings) &&
+        bindings.elements.length === 1 &&
+        bindings.elements[0]?.name.text === "threadId" &&
+        !bindings.elements[0]?.propertyName;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return safe && imports === 1 && runtimeImports(source).length === 1;
+}
+
 function resolveLocal(spec: string, fromFile: string): string | null {
   let base: string;
   if (spec.startsWith("@/")) {
@@ -208,6 +238,12 @@ function collectImports(file: string, seen: Set<string>, violations: string[]): 
           spec === "node:child_process" &&
           file === path.resolve(WEB_ROOT, "../src/core/hooks/resolve/coord-root.ts") &&
           readOnlyGitRootResolver(source)
+        )
+          continue;
+        if (
+          spec === "node:worker_threads" &&
+          file === THREAD_IDENTITY_MODULE &&
+          threadIdentityOnly(source)
         )
           continue;
         violations.push(`${path.relative(WEB_ROOT, file)} imports "${spec}"`);
@@ -255,6 +291,20 @@ describe("codec dependency boundary", () => {
     expect(readOnlyGitRootResolver(source.replace("{ spawnSync }", "{ spawnSync, exec }"))).toBe(
       false,
     );
+  });
+
+  test("the thread identity exception allows only a threadId read", () => {
+    const source = readFileSync(THREAD_IDENTITY_MODULE, "utf8");
+    expect(threadIdentityOnly(source)).toBe(true);
+    expect(threadIdentityOnly(source.replace("{ threadId }", "{ threadId, Worker }"))).toBe(false);
+    expect(threadIdentityOnly(source.replace("{ threadId }", "{ Worker as threadId }"))).toBe(
+      false,
+    );
+    expect(threadIdentityOnly(source.replace("{ threadId }", "* as threads"))).toBe(false);
+    expect(threadIdentityOnly(`${source}\nimport { spawnSync } from "node:child_process";`)).toBe(
+      false,
+    );
+    expect(threadIdentityOnly(`${source}\nconst w = import("node:worker_threads");`)).toBe(false);
   });
 
   test("type-only imports, type queries, and comments do not load modules", () => {

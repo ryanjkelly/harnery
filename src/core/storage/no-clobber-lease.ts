@@ -18,9 +18,9 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { threadId as currentThreadId } from "node:worker_threads";
 import { fsyncDirectory } from "./durable-record.ts";
 import { stateDirMode, stateFileMode } from "./modes.ts";
+import { currentThreadId } from "./thread-identity.ts";
 
 const MAX_LEASE_BYTES = 8 * 1024;
 const MAX_CONTENTION_OBSERVATION_ATTEMPTS = 8;
