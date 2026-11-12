@@ -307,6 +307,18 @@ test("Windows: USERPROFILE stands in for HOME", async ($, on) => {
   ).toBe(true);
 });
 
+test("Windows: a nested working folder finds the project default above it", async ($, on) => {
+  const config = `{ "helpers": { "claude-code": { "max_model": "haiku", "max_effort": "low" } } }`;
+  const { sent } = stubs(on, {
+    noHome: true,
+    env: { USERPROFILE: "C:\\Users\\tester" },
+    cwd: "C:\\work\\app\\src",
+    files: { "C:\\work\\app/.harnery/config.jsonc": config },
+  });
+  await step($, { model: "claude-opus-5-5", effort: "max", agentId: "w3" });
+  expect(sent[0]).toEqual({ model: "haiku", effort: "low", agentId: "w3" });
+});
+
 test("Windows: XDG folders still win over USERPROFILE", async ($, on) => {
   const { sent } = stubs(on, {
     noHome: true,

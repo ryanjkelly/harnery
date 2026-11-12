@@ -66,11 +66,16 @@ export function userFolders(env) {
   };
 }
 
+/** The parent folder, for `/` and `\\` separated paths; null at a root. */
 function parentDir(path) {
   const trimmed = trimSlash(path);
-  const index = trimmed.lastIndexOf("/");
-  if (index <= 0) return index === 0 && trimmed !== "/" ? "/" : null;
-  return trimmed.slice(0, index);
+  const index = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+  if (index < 0) return null;
+  if (index === 0) return trimmed.length > 1 ? trimmed[0] : null;
+  const parent = trimmed.slice(0, index);
+  // `C:\work` has the drive root `C:\` as its parent; keep its separator.
+  if (/^[A-Za-z]:$/.test(parent)) return `${parent}${trimmed[index]}`;
+  return parent;
 }
 
 function nonEmpty(value) {
@@ -202,7 +207,7 @@ async function readUserLimit($, setup) {
 async function readProjectDefault($, setup) {
   let dir = setup.cwd;
   for (let depth = 0; dir && depth < 64; depth++) {
-    const path = `${dir === "/" ? "" : dir}/.harnery/config.jsonc`;
+    const path = `${/[\\/]$/.test(dir) ? dir.slice(0, -1) : dir}/.harnery/config.jsonc`;
     let found = false;
     try {
       found = await $.fs.exists(path);

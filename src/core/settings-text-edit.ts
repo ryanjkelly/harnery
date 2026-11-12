@@ -374,15 +374,22 @@ export function removePathListEntry(
     const suffix = escaped(`${options.delimiter}${dir}`);
     const alone = escaped(dir);
     let value: string;
-    if (kept.length > 0 && raw.endsWith(suffix)) {
+    const wanted = kept.join(options.delimiter);
+    const withoutSuffix =
+      kept.length > 0 && raw.endsWith(suffix)
+        ? (JSON.parse(`"${raw.slice(0, -suffix.length)}"`) as string)
+        : null;
+    // The shortcut is only right when cutting the tail removes every matching
+    // entry; an earlier duplicate has to go too, so the list is rewritten.
+    if (withoutSuffix !== null && withoutSuffix === wanted) {
       const cut = member.value.end - 1 - suffix.length;
       edit = { start: cut, end: member.value.end - 1, insert: "" };
-      value = JSON.parse(`"${raw.slice(0, -suffix.length)}"`);
+      value = withoutSuffix;
     } else if (kept.length === 0 && raw === alone) {
       edit = { start: member.value.start + 1, end: member.value.end - 1, insert: "" };
       value = "";
     } else {
-      value = kept.join(options.delimiter);
+      value = wanted;
       edit = { start: member.value.start, end: member.value.end, insert: JSON.stringify(value) };
     }
     intended = { ...parsed, env: { ...env, [options.name]: value } };

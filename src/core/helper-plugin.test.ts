@@ -167,6 +167,20 @@ describe("ensureHelperPlugin", () => {
 });
 
 describe("removeHelperPlugin", () => {
+  test("removes every copy of the plugin path, not only the last one", () => {
+    const opts = options([]);
+    const dir = helperPluginDir(opts);
+    const list = [dir, "/opt/other", dir].join(delimiter);
+    const file = settingsFile(
+      "claude",
+      `${JSON.stringify({ env: { CLAUDE_CODE_PLUGIN_DIRS: list }, model: "sonnet" }, null, 2)}\n`,
+    );
+    removeHelperPlugin({ ...opts, settingsFiles: [file] });
+    const after = read(file) as { env: Record<string, string>; model: string };
+    expect(after.env.CLAUDE_CODE_PLUGIN_DIRS).toBe("/opt/other");
+    expect(after.model).toBe("sonnet");
+  });
+
   test("restores an untouched settings file byte for byte", () => {
     const original = '{\n\t"model": "sonnet"\n}';
     const file = settingsFile("claude", original);
