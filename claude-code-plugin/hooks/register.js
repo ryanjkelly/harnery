@@ -42,7 +42,28 @@ export function writerName(sessionId) {
 }
 
 function trimSlash(path) {
-  return path.length > 1 ? path.replace(/\/+$/, "") : path;
+  return path.length > 1 ? path.replace(/[\\/]+$/, "") : path;
+}
+
+/**
+ * The user config and cache folders, resolved the way Harnery's installer and
+ * preferences writer do: the XDG variables when set, otherwise `.config` and
+ * `.cache` in the home folder. The home folder is `HOME`, or `USERPROFILE` on
+ * Windows, where `HOME` is usually unset. Null parts when none is known.
+ */
+export function userFolders(env) {
+  const home = nonEmpty(env.HOME) ?? nonEmpty(env.USERPROFILE);
+  const join = (base, name) => {
+    const trimmed = trimSlash(base);
+    const sep = !trimmed.includes("/") && trimmed.includes("\\") ? "\\" : "/";
+    return `${trimmed}${sep}${name}`;
+  };
+  const configBase = nonEmpty(env.XDG_CONFIG_HOME) ?? (home ? join(home, ".config") : null);
+  const cacheBase = nonEmpty(env.XDG_CACHE_HOME) ?? (home ? join(home, ".cache") : null);
+  return {
+    configBase: configBase ? trimSlash(configBase) : null,
+    cacheBase: cacheBase ? trimSlash(cacheBase) : null,
+  };
 }
 
 function parentDir(path) {
@@ -100,11 +121,13 @@ async function readSetup($) {
   const release = version?.base ?? version?.version;
   const cmp = compareVersions(release, MIN_CLAUDE_VERSION);
   if (cmp === null || cmp < 0) return { enabled: false };
-  const home = nonEmpty(await $.env.get("HOME"));
-  const xdgConfig = nonEmpty(await $.env.get("XDG_CONFIG_HOME"));
-  const xdgCache = nonEmpty(await $.env.get("XDG_CACHE_HOME"));
-  const configBase = xdgConfig ?? (home ? `${trimSlash(home)}/.config` : null);
-  const cacheBase = xdgCache ?? (home ? `${trimSlash(home)}/.cache` : null);
+  const folders = userFolders({
+    HOME: await $.env.get("HOME"),
+    USERPROFILE: await $.env.get("USERPROFILE"),
+    XDG_CONFIG_HOME: await $.env.get("XDG_CONFIG_HOME"),
+    XDG_CACHE_HOME: await $.env.get("XDG_CACHE_HOME"),
+  });
+  const { configBase, cacheBase } = folders;
   if (!configBase || !cacheBase) return { enabled: false };
   let cwd = null;
   try {
@@ -141,24 +164,41 @@ async function setupOf($) {
   return state.setupPromise;
 }
 
-async function readJson($, path, jsonc) {
+/**
+ * Read a JSON file. `{ kind: "absent" }` when it does not exist, `{ kind: "ok",
+ * value }` when it reads and parses to an object, and `{ kind: "error" }` for
+ * anything else: unreadable, unparsable, or not an object.
+ */
+async function readJsonObject($, path, jsonc) {
   try {
-    if (!(await $.fs.exists(path))) return undefined;
+    if (!(await $.fs.exists(path))) return { kind: "absent" };
     const text = await $.fs.read(path);
-    if (typeof text !== "string") return undefined;
-    return JSON.parse(jsonc ? stripJsonComments(text) : text);
+    if (typeof text !== "string") return { kind: "error" };
+    const value = JSON.parse(jsonc ? stripJsonComments(text) : text);
+    return plainObject(value) ? { kind: "ok", value } : { kind: "error" };
   } catch {
-    return undefined;
+    return { kind: "error" };
   }
 }
 
+/** Thrown when a limit file cannot be read: the request then goes on unchanged. */
+class LimitUnreadable extends Error {}
+
+/** The person's own choice; undefined when they made none. Throws on error. */
 async function readUserLimit($, setup) {
-  const prefs = await readJson($, `${setup.configBase}/harnery/preferences.json`, false);
-  if (!plainObject(prefs) || !plainObject(prefs.helpers)) return undefined;
-  const parsed = parseStoredHelperLimit(prefs.helpers[TOOL]);
-  return parsed ?? undefined;
+  const prefs = await readJsonObject($, `${setup.configBase}/harnery/preferences.json`, false);
+  if (prefs.kind === "absent") return undefined;
+  if (prefs.kind === "error") throw new LimitUnreadable("preferences");
+  const helpers = prefs.value.helpers;
+  if (helpers === undefined) return undefined;
+  if (!plainObject(helpers)) throw new LimitUnreadable("preferences");
+  if (helpers[TOOL] === undefined) return undefined;
+  const parsed = parseStoredHelperLimit(helpers[TOOL]);
+  if (parsed === null) throw new LimitUnreadable("preferences");
+  return parsed;
 }
 
+/** The nearest project's default; null when there is none or it cannot be read. */
 async function readProjectDefault($, setup) {
   let dir = setup.cwd;
   for (let depth = 0; dir && depth < 64; depth++) {
@@ -167,12 +207,12 @@ async function readProjectDefault($, setup) {
     try {
       found = await $.fs.exists(path);
     } catch {
-      found = false;
+      return null;
     }
     if (found) {
-      const config = await readJson($, path, true);
-      if (!plainObject(config) || !plainObject(config.helpers)) return null;
-      return parseStoredHelperLimit(config.helpers[TOOL]);
+      const config = await readJsonObject($, path, true);
+      if (config.kind !== "ok" || !plainObject(config.value.helpers)) return null;
+      return parseStoredHelperLimit(config.value.helpers[TOOL]);
     }
     dir = parentDir(dir);
   }
@@ -185,18 +225,27 @@ async function readLimit($, setup) {
   return effectiveHelperLimit({ user, projectDefault }).limit;
 }
 
-/** The limit in effect, re-read at most every LIMIT_TTL_MS. Null = no limit. */
+/**
+ * The limit in effect, re-read at most every LIMIT_TTL_MS. Null = no limit.
+ * Rejects when the person's preferences cannot be read.
+ */
 async function limitOf($, setup) {
   const now = Date.now();
   if (state.limit && now - state.limit.readAt < LIMIT_TTL_MS) return state.limit.limit;
   if (!state.limitPromise) {
-    state.limitPromise = readLimit($, setup)
-      .catch(() => (state.limit ? state.limit.limit : null))
-      .then((limit) => {
+    state.limitPromise = readLimit($, setup).then(
+      (limit) => {
         state.limit = { limit, readAt: Date.now() };
         state.limitPromise = null;
         return limit;
-      });
+      },
+      (err) => {
+        // Forget any earlier read and let the caller forward the request.
+        state.limit = null;
+        state.limitPromise = null;
+        throw err;
+      },
+    );
   }
   return state.limitPromise;
 }

@@ -14,19 +14,29 @@ interface Setup {
   version?: string;
   cwd?: string;
   failRead?: boolean;
+  /** Paths whose read throws, as an unreadable file would. */
+  failPaths?: string[];
+  /** Leave HOME unset, as on native Windows. */
+  noHome?: boolean;
 }
 
 // biome-ignore lint/suspicious/noExplicitAny: the kit's `on` and `$` are untyped here.
 function stubs(on: any, setup: Setup = {}) {
   const files = new Map(Object.entries(setup.files ?? {}));
   const sent: Array<{ model?: string; effort?: string; agentId?: string }> = [];
-  mock.env(on, { HOME, ...(setup.env ?? {}) });
+  mock.env(on, setup.noHome ? (setup.env ?? {}) : { HOME, ...(setup.env ?? {}) });
   on("session.version", () => ({ value: { version: setup.version ?? "2.1.310" } }));
   on("session.cwd", () => ({ value: setup.cwd ?? "/work/app" }));
   on("session.id", () => ({ value: "sess:1/x" }));
-  on("fs.exists", (_$: unknown, e: { path: string }) => ({ value: files.has(e.path) }));
+  // A Windows-style path is not absolute on the test host, so Claude Code
+  // resolves it against the working folder; match such keys by their ending.
+  const key = (path: string) =>
+    files.has(path) ? path : ([...files.keys()].find((k) => path.endsWith(`/${k}`)) ?? path);
+  on("fs.exists", (_$: unknown, e: { path: string }) => ({ value: files.has(key(e.path)) }));
   on("fs.read", (_$: unknown, e: { path: string }) =>
-    setup.failRead ? { deny: "read refused" } : { value: files.get(e.path) ?? "" },
+    setup.failRead || setup.failPaths?.includes(key(e.path))
+      ? { deny: "read refused" }
+      : { value: files.get(key(e.path)) ?? "" },
   );
   on("fs.write", (_$: unknown, e: { path: string; text: string }) => {
     files.set(e.path, e.text);
@@ -225,4 +235,88 @@ test("a failure inside the plugin forwards the request unchanged", async ($, on)
   const { sent } = stubs(on, { files: { [PREFS]: LIMIT }, failRead: true });
   await step($, { model: "claude-opus-5-5", effort: "high", agentId: "h9" });
   expect(sent[0]).toEqual({ model: "claude-opus-5-5", effort: "high", agentId: "h9" });
+});
+
+const PROJECT_HAIKU = {
+  "/work/app/.harnery/config.jsonc":
+    '{ "helpers": { "claude-code": { "max_model": "haiku", "max_effort": "low" } } }',
+};
+
+test("absent preferences: the project default applies", async ($, on) => {
+  const { sent } = stubs(on, { files: { ...PROJECT_HAIKU } });
+  await step($, { model: "claude-opus-5-5", effort: "max", agentId: "p1" });
+  expect(sent[0]).toEqual({ model: "haiku", effort: "low", agentId: "p1" });
+});
+
+test("valid preferences: the person's choice applies over the project default", async ($, on) => {
+  const { sent } = stubs(on, {
+    files: {
+      ...PROJECT_HAIKU,
+      [PREFS]: JSON.stringify({ helpers: { "claude-code": { max_model: "sonnet" } } }),
+    },
+  });
+  await step($, { model: "claude-opus-5-5", effort: "max", agentId: "p2" });
+  expect(sent[0]).toEqual({ model: "sonnet", effort: "max", agentId: "p2" });
+});
+
+test("preferences that cannot be read leave the request unchanged", async ($, on) => {
+  const { sent } = stubs(on, { files: { ...PROJECT_HAIKU, [PREFS]: LIMIT }, failPaths: [PREFS] });
+  await step($, { model: "claude-opus-5-5", effort: "max", agentId: "p3" });
+  expect(sent[0]).toEqual({ model: "claude-opus-5-5", effort: "max", agentId: "p3" });
+});
+
+test("preferences that do not parse leave the request unchanged", async ($, on) => {
+  const { sent } = stubs(on, { files: { ...PROJECT_HAIKU, [PREFS]: "{ not json" } });
+  await step($, { model: "claude-opus-5-5", effort: "max", agentId: "p4" });
+  expect(sent[0]).toEqual({ model: "claude-opus-5-5", effort: "max", agentId: "p4" });
+});
+
+test("preferences that are not an object leave the request unchanged", async ($, on) => {
+  const { sent } = stubs(on, { files: { ...PROJECT_HAIKU, [PREFS]: "[1, 2]" } });
+  await step($, { model: "claude-opus-5-5", effort: "max", agentId: "p5" });
+  expect(sent[0]).toEqual({ model: "claude-opus-5-5", effort: "max", agentId: "p5" });
+});
+
+test("a project config that cannot be read means no project default", async ($, on) => {
+  const { sent } = stubs(on, {
+    files: { ...PROJECT_HAIKU },
+    failPaths: Object.keys(PROJECT_HAIKU),
+  });
+  await step($, { model: "claude-opus-5-5", effort: "max", agentId: "p6" });
+  expect(sent[0]).toEqual({ model: "claude-opus-5-5", effort: "max", agentId: "p6" });
+});
+
+test("a project config that does not parse means no project default", async ($, on) => {
+  const { sent } = stubs(on, { files: { "/work/app/.harnery/config.jsonc": "{ helpers: " } });
+  await step($, { model: "claude-opus-5-5", effort: "max", agentId: "p7" });
+  expect(sent[0]).toEqual({ model: "claude-opus-5-5", effort: "max", agentId: "p7" });
+});
+
+test("Windows: USERPROFILE stands in for HOME", async ($, on) => {
+  const profile = "C:\\Users\\tester";
+  const { sent, files } = stubs(on, {
+    noHome: true,
+    env: { USERPROFILE: profile },
+    files: { [`${profile}\\.config/harnery/preferences.json`]: LIMIT },
+  });
+  await step($, { model: "claude-opus-5-5", effort: "high", agentId: "w1" });
+  await complete($, "w1", "claude-haiku-5-5");
+  expect(sent[0]).toEqual({ model: "haiku", effort: "low", agentId: "w1" });
+  expect(
+    [...files.keys()].some((p) => p.includes(`${profile}\\.cache/harnery/helpers/usage-`)),
+  ).toBe(true);
+});
+
+test("Windows: XDG folders still win over USERPROFILE", async ($, on) => {
+  const { sent } = stubs(on, {
+    noHome: true,
+    env: {
+      USERPROFILE: "C:\\Users\\tester",
+      XDG_CONFIG_HOME: "D:\\cfg",
+      XDG_CACHE_HOME: "D:\\cache",
+    },
+    files: { "D:\\cfg/harnery/preferences.json": LIMIT },
+  });
+  await step($, { model: "claude-opus-5-5", effort: "high", agentId: "w2" });
+  expect(sent[0]).toEqual({ model: "haiku", effort: "low", agentId: "w2" });
 });
