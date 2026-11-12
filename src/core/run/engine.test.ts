@@ -1736,7 +1736,7 @@ describe("helper limit on run workers", () => {
     expect(lines).toHaveLength(2);
   });
 
-  test("a worker lowered onto a model with no effort setting is sent without one", async () => {
+  test("a model-only limit lowers the model and keeps the worker's stated effort", async () => {
     const { requests, spawner } = capture();
     await runWorkflow(
       writeScript(`export default ({ agent }) => agent("x", { model: "opus", effort: "high" });`),
@@ -1748,7 +1748,7 @@ describe("helper limit on run workers", () => {
       },
     );
     expect(requests[0]?.model).toBe("haiku");
-    expect(requests[0] && "effort" in requests[0] ? requests[0].effort : undefined).toBeUndefined();
+    expect(requests[0]?.effort).toBe("high");
   });
 
   test("a throwing usage recorder does not fail the run", async () => {

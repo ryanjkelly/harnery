@@ -65,8 +65,6 @@ export interface AdapterProfile {
    * first. A full model id ranks by the family name inside it. Absent when the
    * adapter has no ranking, so a helper limit cannot name a model for it. */
   modelLadder?: readonly string[];
-  /** Families in `modelLadder` that take no reasoning-effort setting. */
-  effortlessModels?: readonly string[];
   capabilities: AdapterCapabilities;
   /** The last real vendor CLI contract used to validate this declaration. */
   verified?: { date: string; version: string };

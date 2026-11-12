@@ -1189,7 +1189,7 @@ function applyHelperLimit(
   if (!decision.changed) return { opts: agentOpts, lowered: false };
   const lowered: AgentOpts = { ...agentOpts };
   if (decision.model !== undefined) lowered.model = decision.model;
-  if (decision.droppedEffort || decision.effort === undefined) delete lowered.effort;
+  if (decision.effort === undefined) delete lowered.effort;
   else lowered.effort = decision.effort;
   return { opts: lowered, lowered: true };
 }

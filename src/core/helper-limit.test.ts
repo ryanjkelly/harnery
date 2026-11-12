@@ -14,21 +14,17 @@ import {
 const LADDERS: HelperLadders = {
   models: ["haiku", "sonnet", "opus", "fable"],
   efforts: ["low", "medium", "high", "xhigh", "max"],
-  effortlessModels: ["haiku"],
 };
 
 const OPUS_MEDIUM = { max_model: "opus", max_effort: "medium" };
 
 describe("helperLadders", () => {
-  test("reads the profile fields and defaults the optional ones to empty", () => {
-    expect(
-      helperLadders({ effortValues: ["low"], modelLadder: ["a", "b"], effortlessModels: ["a"] }),
-    ).toEqual({ models: ["a", "b"], efforts: ["low"], effortlessModels: ["a"] });
-    expect(helperLadders({ effortValues: [] })).toEqual({
-      models: [],
-      efforts: [],
-      effortlessModels: [],
+  test("reads the profile fields and defaults a missing model ladder to empty", () => {
+    expect(helperLadders({ effortValues: ["low"], modelLadder: ["a", "b"] })).toEqual({
+      models: ["a", "b"],
+      efforts: ["low"],
     });
+    expect(helperLadders({ effortValues: [] })).toEqual({ models: [], efforts: [] });
   });
 });
 
@@ -60,7 +56,6 @@ describe("decideHelperLimit", () => {
       effort: "medium",
       loweredModel: true,
       loweredEffort: true,
-      droppedEffort: false,
       changed: true,
     });
   });
@@ -84,7 +79,6 @@ describe("decideHelperLimit", () => {
       effort: undefined,
       loweredModel: false,
       loweredEffort: false,
-      droppedEffort: false,
       changed: false,
     });
     const modelOnly = decideHelperLimit({ model: "fable" }, OPUS_MEDIUM, LADDERS);
@@ -123,28 +117,28 @@ describe("decideHelperLimit", () => {
     expect(within.changed).toBe(false);
   });
 
-  test("lowering onto an effortless family drops a stated effort and never writes one", () => {
+  test("lowering the model also lowers a stated effort, and never writes an unstated one", () => {
     const limit = { max_model: "haiku", max_effort: "low" };
     const stated = decideHelperLimit({ model: "opus", effort: "high" }, limit, LADDERS);
     expect(stated).toEqual({
       model: "haiku",
-      effort: undefined,
+      effort: "low",
       loweredModel: true,
-      loweredEffort: false,
-      droppedEffort: true,
+      loweredEffort: true,
       changed: true,
     });
     const unstated = decideHelperLimit({ model: "opus" }, limit, LADDERS);
     expect(unstated.model).toBe("haiku");
     expect(unstated.effort).toBeUndefined();
-    expect(unstated.droppedEffort).toBe(false);
+    expect(unstated.loweredEffort).toBe(false);
   });
 
-  test("a request that already pairs an effortless model with an effort is left alone", () => {
+  test("the effort limit applies on every model family, the cheapest included", () => {
     const decision = decideHelperLimit({ model: "haiku", effort: "max" }, OPUS_MEDIUM, LADDERS);
     expect(decision.model).toBe("haiku");
-    expect(decision.effort).toBe("max");
-    expect(decision.changed).toBe(false);
+    expect(decision.effort).toBe("medium");
+    expect(decision.loweredModel).toBe(false);
+    expect(decision.loweredEffort).toBe(true);
   });
 
   test("a model-only limit leaves every effort alone", () => {
@@ -309,7 +303,6 @@ describe("parseHelperLimitWords", () => {
     const effortOnly: HelperLadders = {
       models: [],
       efforts: ["low", "high"],
-      effortlessModels: [],
     };
     expect(parseHelperLimitWords(["high"], effortOnly)).toEqual({
       ok: true,
@@ -319,7 +312,7 @@ describe("parseHelperLimitWords", () => {
       ok: false,
       error: '"opus" is not a model or an effort; models: none for this tool; efforts: low, high',
     });
-    const empty: HelperLadders = { models: [], efforts: [], effortlessModels: [] };
+    const empty: HelperLadders = { models: [], efforts: [] };
     const result = parseHelperLimitWords(["low"], empty);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toContain("efforts: none for this tool");

@@ -45,7 +45,6 @@ export const BUILTIN_ADAPTER_PROFILES = {
     modelFamily: "claude",
     effortValues: ["low", "medium", "high", "xhigh", "max"],
     modelLadder: ["haiku", "sonnet", "opus", "fable"],
-    effortlessModels: ["haiku"],
     verified: { date: "2026-08-18", version: "2.1.233 (Claude Code)" },
     // Checked against 2.1.283 (ADR 0192). Claude Code has no sandbox mode flag;
     // its permission mode and its optional Bash sandbox are separate, so full

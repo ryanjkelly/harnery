@@ -26,8 +26,6 @@ export type HelperLimitSource = "user" | "project" | "none";
 export interface HelperLadders {
   models: readonly string[];
   efforts: readonly string[];
-  /** Model families that take no reasoning-effort setting. */
-  effortlessModels: readonly string[];
 }
 
 /** What one helper request states. Either side may be absent. */
@@ -39,13 +37,10 @@ export interface HelperRequest {
 export interface HelperDecision {
   /** The model to send: the request's own, or the limit when it was lowered. */
   model?: string;
-  /** The effort to send. Absent when the request stated none, or when the model
-   * was lowered onto a family that takes no effort (`droppedEffort`). */
+  /** The effort to send: the request's own, or the limit when it was lowered. */
   effort?: string;
   loweredModel: boolean;
   loweredEffort: boolean;
-  /** The request stated an effort, and the lowered model does not take one. */
-  droppedEffort: boolean;
   /** True when anything about the request changed. */
   changed: boolean;
 }
@@ -60,14 +55,12 @@ export interface EffectiveHelperLimit {
 interface LadderProfile {
   effortValues: readonly string[];
   modelLadder?: readonly string[];
-  effortlessModels?: readonly string[];
 }
 
 export function helperLadders(profile: LadderProfile): HelperLadders {
   return {
     models: profile.modelLadder ?? [],
     efforts: profile.effortValues,
-    effortlessModels: profile.effortlessModels ?? [],
   };
 }
 
@@ -107,7 +100,6 @@ export function decideHelperLimit(
   let effort = request.effort;
   let loweredModel = false;
   let loweredEffort = false;
-  let droppedEffort = false;
 
   const modelCap = modelRank(limit?.max_model, ladders.models);
   const modelHave = modelRank(model, ladders.models);
@@ -116,22 +108,11 @@ export function decideHelperLimit(
     loweredModel = true;
   }
 
-  const finalFamily = model === undefined ? null : modelFamily(model, ladders.models);
-  const takesNoEffort = finalFamily !== null && ladders.effortlessModels.includes(finalFamily);
-  if (takesNoEffort) {
-    // Only drop an effort this decision made invalid. A request that already
-    // paired an effortless model with an effort is the caller's own business.
-    if (loweredModel && effort !== undefined) {
-      effort = undefined;
-      droppedEffort = true;
-    }
-  } else {
-    const effortCap = rankOf(limit?.max_effort, ladders.efforts);
-    const effortHave = rankOf(effort, ladders.efforts);
-    if (limit?.max_effort && effortCap !== null && effortHave !== null && effortHave > effortCap) {
-      effort = limit.max_effort;
-      loweredEffort = true;
-    }
+  const effortCap = rankOf(limit?.max_effort, ladders.efforts);
+  const effortHave = rankOf(effort, ladders.efforts);
+  if (limit?.max_effort && effortCap !== null && effortHave !== null && effortHave > effortCap) {
+    effort = limit.max_effort;
+    loweredEffort = true;
   }
 
   return {
@@ -139,8 +120,7 @@ export function decideHelperLimit(
     effort,
     loweredModel,
     loweredEffort,
-    droppedEffort,
-    changed: loweredModel || loweredEffort || droppedEffort,
+    changed: loweredModel || loweredEffort,
   };
 }
 
