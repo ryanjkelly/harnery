@@ -17,6 +17,7 @@ import {
 } from "../../src/core/agents/live-authority-v3.ts";
 import { readHeartbeat } from "../../src/core/agents/state/heartbeat-writer.ts";
 import { ensureLiveCoordinationHeartbeat } from "../../src/core/agents/state/live-coordination-writer.ts";
+import { priorBreakingDigestV3 } from "../../src/core/events/v3/__fixtures__/ledger-replay.ts";
 import { initializeEventLedgerV3 } from "../../src/core/events/v3/bootstrap.ts";
 import { sha256V3 } from "../../src/core/events/v3/canonical.ts";
 import { EVENT_V3_GENESIS_MANIFEST } from "../../src/core/events/v3/control.ts";
@@ -435,7 +436,7 @@ describe("codex-wsl bridge ping attribution", () => {
       const root = makeSandbox();
       const genesisPath = path.join(root, EVENT_V3_GENESIS_MANIFEST);
       const genesis = JSON.parse(readFileSync(genesisPath, "utf8"));
-      genesis.profile.initial_schema_digest = `sha256:${"c".repeat(64)}`;
+      genesis.profile.initial_schema_digest = priorBreakingDigestV3();
       writeFileSync(genesisPath, `${JSON.stringify(genesis)}\n`);
 
       const binDir = path.join(root, "interrupted-bin");
@@ -496,7 +497,7 @@ process.exit(73);
       const genesis = JSON.parse(readFileSync(genesisPath, "utf8")) as {
         profile: { initial_schema_digest: string };
       };
-      genesis.profile.initial_schema_digest = `sha256:${"c".repeat(64)}`;
+      genesis.profile.initial_schema_digest = priorBreakingDigestV3();
       writeFileSync(genesisPath, `${JSON.stringify(genesis)}\n`, "utf8");
       const bridgeEnv = {
         HARNERY_AGENT_COORD_BRIDGE: "codex-wsl",

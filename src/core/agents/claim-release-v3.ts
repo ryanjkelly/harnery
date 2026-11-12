@@ -67,15 +67,15 @@ export function releaseClaimOnBehalfV3(
     if (!view.source_complete || !generation.files_touched.includes(canonical)) {
       return { state: "skipped", reason: "claim_not_held" };
     }
-    const claim = Object.values(reduceSafetyProjectionV3(read).claims).find(
+    const held = Object.values(reduceSafetyProjectionV3(read).claims).find(
       (candidate) =>
         candidate.subject_instance_id === subjectId &&
         candidate.access === "write" &&
         candidate.target_kind === "workspace_path" &&
         candidate.target_display === canonical,
     );
-    if (!claim) return { state: "skipped", reason: "claim_not_held" };
-    const acquired = claim.acquired_event_id as `evt_${string}`;
+    if (!held) return { state: "skipped", reason: "claim_not_held" };
+    const acquired = held.acquired_event_id as `evt_${string}`;
     const result = recordLiveClaimChangeV3({
       coordRoot: input.coordRoot,
       owner: input.owner,

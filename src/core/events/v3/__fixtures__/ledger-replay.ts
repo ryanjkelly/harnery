@@ -15,6 +15,7 @@ import {
   eventV3Fixture,
   fixtureObject,
 } from "../../../../../tests/helpers/event-v3.ts";
+import { stateFileMode } from "../../../storage/modes.ts";
 import { initializeEventLedgerV3 } from "../bootstrap.ts";
 import { canonicalJsonV3, sha256V3 } from "../canonical.ts";
 import type { EventV3 } from "../contract.ts";
@@ -230,7 +231,7 @@ export function plantUnreadableSpoolFileV3(
     spool,
     `${"9".repeat(16)}-evt_00000000-0000-7000-8000-${name.padEnd(12, "0").slice(0, 12)}-${"0".repeat(64)}.${kind}`,
   );
-  writeFileSync(path, "{not an event\n", { mode: 0o600 });
+  writeFileSync(path, "{not an event\n", { mode: stateFileMode() });
   return path;
 }
 
@@ -245,7 +246,7 @@ function plantSpoolFileV3(spool: string, event: EventV3Fixture, kind: "ready" | 
   const sequence = String(fixtureObject(event.producer).sequence).padStart(16, "0");
   const name = `${sequence}-${event.event_id as string}-${sha256V3(row).slice(7)}.${kind}`;
   const path = join(spool, name);
-  writeFileSync(path, row, { mode: 0o600 });
+  writeFileSync(path, row, { mode: stateFileMode() });
   return path;
 }
 
