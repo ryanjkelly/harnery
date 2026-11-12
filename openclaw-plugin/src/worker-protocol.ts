@@ -24,4 +24,6 @@ export interface RecordWorkerReply {
   id: number;
   kind: RecordWorkerMessage["kind"];
   ok: boolean;
+  /** Why a message was rejected: an error code or a short, path-masked message line. */
+  reason?: string;
 }

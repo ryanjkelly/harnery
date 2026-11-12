@@ -1,5 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { Worker } from "node:worker_threads";
+import {
+  type ExitedThreadLeaseReleaseV3,
+  releaseEventV3LeasesHeldByExitedThreadV3,
+} from "../../src/core/events/v3/thread-leases.ts";
+import { rejectionReason } from "./rejection-reason.ts";
 import type { HarneryOpenClawConfig, RecordQueue, RecordQueueStats } from "./types.ts";
 import type {
   RecordWorkerData,
@@ -9,6 +14,8 @@ import type {
 } from "./worker-protocol.ts";
 
 interface WorkerHandle {
+  /** Captured at start: Node reports -1 once the thread has exited. */
+  readonly threadId: number;
   postMessage(message: RecordWorkerMessage): void;
   on(event: "message", listener: (reply: RecordWorkerReply) => void): this;
   on(event: "error", listener: (error: Error) => void): this;
@@ -21,7 +28,27 @@ export interface RecordQueueDependencies {
   packageVersion: string;
   createWorker?: (data: RecordWorkerData) => WorkerHandle;
   report?: (message: string) => void;
+  /** Reclaims ledger leases an exited worker thread left held. */
+  releaseExitedThreadLeases?: (coordRoot: string, threadId: number) => ExitedThreadLeaseReleaseV3;
+  /** Schedules a retry of an unfinished lease release; defaults to an unref'd timer. */
+  scheduleRetry?: (retry: () => void, delayMs: number) => void;
 }
+
+const RELEASE_RETRY_FIRST_MS = 250;
+const RELEASE_RETRY_MAX_MS = 30_000;
+
+interface UnfinishedRelease {
+  /** Runs the release once; true when it reported nothing left. */
+  attempt(): boolean;
+}
+
+/**
+ * Exited recorder threads whose lease release has not yet reported clean, by
+ * ledger root. Anything the release leaves is a recovery claim of this
+ * thread, which other threads and processes must respect while the gateway
+ * lives, so only this thread can clear it.
+ */
+const unfinishedReleases = new Map<string, Map<number, UnfinishedRelease>>();
 
 interface PendingMessage {
   resolve(): void;
@@ -37,6 +64,13 @@ export function createRecordQueue(
     packageVersion: dependencies.packageVersion,
     instanceId: `inst_openclaw-${randomUUID()}`,
   };
+  const releaseExitedThreadLeases =
+    dependencies.releaseExitedThreadLeases ?? releaseEventV3LeasesHeldByExitedThreadV3;
+  const scheduleRetry = dependencies.scheduleRetry ?? scheduleUnrefTimer;
+  // A new recorder must not start behind residue an earlier one left.
+  for (const unfinished of [...(unfinishedReleases.get(config.ledgerRoot)?.values() ?? [])]) {
+    unfinished.attempt();
+  }
   let worker: WorkerHandle;
   try {
     worker = dependencies.createWorker?.(workerData) ?? createWorker(workerData);
@@ -45,6 +79,7 @@ export function createRecordQueue(
   }
 
   worker.unref();
+  const workerThreadId = worker.threadId;
   const pending = new Map<number, PendingMessage>();
   let nextId = 1;
   let accepted = 0;
@@ -70,12 +105,20 @@ export function createRecordQueue(
     pending.delete(reply.id);
     if (!reply.ok) {
       failures += 1;
-      report(`[harnery] recorder worker rejected ${reply.kind}`);
+      // The worker already masks paths; mask again so a reply can never
+      // put a path in the gateway log.
+      report(
+        `[harnery] recorder worker rejected ${replyKind(reply.kind)} (${rejectionReason(reply.reason)})`,
+      );
     }
     waiter.resolve();
   });
   worker.on("error", () => settleAll("worker_error"));
   worker.on("exit", (code) => {
+    // A terminated or crashed worker runs no `finally` block, so a ledger
+    // lease it held stays held by this still-running process. Release it
+    // before anything else in this process writes to the ledger.
+    releaseLeasesOfExitedWorker();
     if (!closed && code !== 0) settleAll("worker_exit");
     else {
       available = false;
@@ -83,6 +126,15 @@ export function createRecordQueue(
       pending.clear();
     }
   });
+
+  function releaseLeasesOfExitedWorker(): void {
+    if (!Number.isSafeInteger(workerThreadId) || workerThreadId <= 0) return;
+    releaseUntilClean(config.ledgerRoot, workerThreadId, {
+      release: releaseExitedThreadLeases,
+      report,
+      scheduleRetry,
+    });
+  }
 
   const submit = (
     body: RecordWorkerMessageBody,
@@ -151,6 +203,81 @@ export function createRecordQueue(
     },
     stats,
   };
+}
+
+/**
+ * Run the exited-thread release now and, while it reports anything left,
+ * again with doubling delays up to a cap until it reports clean. The first
+ * failure is logged once; a later success says how many attempts it took.
+ */
+function releaseUntilClean(
+  ledgerRoot: string,
+  threadId: number,
+  dependencies: {
+    release: (coordRoot: string, threadId: number) => ExitedThreadLeaseReleaseV3;
+    report: (message: string) => void;
+    scheduleRetry: (retry: () => void, delayMs: number) => void;
+  },
+): void {
+  let attempts = 0;
+  let reported = false;
+  let delay = RELEASE_RETRY_FIRST_MS;
+  const forRoot = unfinishedReleases.get(ledgerRoot) ?? new Map<number, UnfinishedRelease>();
+  unfinishedReleases.set(ledgerRoot, forRoot);
+
+  const attempt = (): boolean => {
+    attempts += 1;
+    let failure: string;
+    try {
+      const { failed } = dependencies.release(ledgerRoot, threadId);
+      if (failed.length === 0) {
+        forRoot.delete(threadId);
+        if (forRoot.size === 0 && unfinishedReleases.get(ledgerRoot) === forRoot) {
+          unfinishedReleases.delete(ledgerRoot);
+        }
+        if (reported) {
+          dependencies.report(
+            `[harnery] recorder worker ledger leases released after ${attempts} attempts`,
+          );
+        }
+        return true;
+      }
+      failure = `[harnery] recorder worker exited holding ledger leases it could not release (${failed.join(", ")})`;
+    } catch {
+      failure = "[harnery] recorder worker exit lease release failed";
+    }
+    if (!reported) {
+      reported = true;
+      dependencies.report(failure);
+    }
+    return false;
+  };
+  const retry = (): void => {
+    // A release run before a new worker started may already have finished it.
+    if (!forRoot.has(threadId) || attempt()) return;
+    dependencies.scheduleRetry(retry, delay);
+    delay = Math.min(delay * 2, RELEASE_RETRY_MAX_MS);
+  };
+  forRoot.set(threadId, { attempt });
+  retry();
+}
+
+function scheduleUnrefTimer(retry: () => void, delayMs: number): void {
+  setTimeout(retry, delayMs).unref?.();
+}
+
+const REPLY_KINDS: ReadonlySet<string> = new Set([
+  "record",
+  "capture",
+  "log",
+  "boot",
+  "flush",
+  "shutdown",
+]);
+
+/** The reply's kind from the fixed protocol vocabulary, never free text. */
+function replyKind(kind: unknown): string {
+  return typeof kind === "string" && REPLY_KINDS.has(kind) ? kind : "message";
 }
 
 function createWorker(data: RecordWorkerData): WorkerHandle {

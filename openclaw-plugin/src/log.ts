@@ -1,5 +1,7 @@
 import { appendFileSync, chmodSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { rejectionReason } from "./rejection-reason.ts";
+
 export function writeBootRow(row: Record<string, unknown>, path: string): void {
   appendJsonLine(path, { observed_at: new Date().toISOString(), ...row });
 }
@@ -11,6 +13,6 @@ export function appendJsonLine(path: string, row: Record<string, unknown>): void
     appendFileSync(path, `${JSON.stringify(row)}\n`, { encoding: "utf8", mode: 0o600 });
     chmodSync(path, 0o600);
   } catch (error) {
-    process.stderr.write(`[harnery] log write failed: ${String(error)}\n`);
+    process.stderr.write(`[harnery] log write failed (${rejectionReason(error)})\n`);
   }
 }

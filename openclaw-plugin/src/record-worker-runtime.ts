@@ -5,6 +5,7 @@ import {
   recordHookSignalV3,
 } from "../../src/core/events/v3/producers/recorder.ts";
 import { appendJsonLine, writeBootRow } from "./log.ts";
+import { rejectionReason } from "./rejection-reason.ts";
 import type { OpenClawHookName, OpenClawTranslation } from "./types.ts";
 import type { RecordWorkerData, RecordWorkerMessage } from "./worker-protocol.ts";
 
@@ -18,8 +19,14 @@ export interface RecordWorkerRuntimeDependencies {
   appendBoot?: (row: Record<string, unknown>) => void;
 }
 
+export { rejectionReason };
+
+export type RecordWorkerOutcome = { ok: true } | { ok: false; reason: string };
+
 export interface RecordWorkerProcessor {
   process(message: RecordWorkerMessage): boolean;
+  /** Like `process`, with a short reason for a rejection. */
+  processDetailed(message: RecordWorkerMessage): RecordWorkerOutcome;
 }
 
 /**
@@ -61,7 +68,10 @@ export function createRecordWorkerProcessor(
     appendDebug({ observed_at: new Date().toISOString(), event, ...detail });
   };
 
-  const record = (hook: OpenClawHookName, translation: OpenClawTranslation): boolean => {
+  const record = (
+    hook: OpenClawHookName,
+    translation: OpenClawTranslation,
+  ): RecordWorkerOutcome => {
     try {
       if (data.config.recorderFault) throw new RecorderFaultInjectedError();
       if (!initialized) {
@@ -94,36 +104,39 @@ export function createRecordWorkerProcessor(
           ? { reason: result.reason }
           : {}),
       });
-      return true;
+      return { ok: true };
     } catch (error) {
       log("record_failure", {
         hook,
         signal: translation.signal,
         error_name: error instanceof Error ? error.name : "unknown",
       });
-      return false;
+      return { ok: false, reason: rejectionReason(error) };
+    }
+  };
+
+  const processDetailed = (message: RecordWorkerMessage): RecordWorkerOutcome => {
+    switch (message.kind) {
+      case "record":
+        return record(message.hook, message.translation);
+      case "capture":
+        log("capture", { hook: message.hook, skeleton: message.skeleton });
+        return { ok: true };
+      case "log":
+        log(message.event, message.detail);
+        return { ok: true };
+      case "boot":
+        appendBoot(message.row);
+        return { ok: true };
+      case "flush":
+      case "shutdown":
+        return { ok: true };
     }
   };
 
   return {
-    process(message) {
-      switch (message.kind) {
-        case "record":
-          return record(message.hook, message.translation);
-        case "capture":
-          log("capture", { hook: message.hook, skeleton: message.skeleton });
-          return true;
-        case "log":
-          log(message.event, message.detail);
-          return true;
-        case "boot":
-          appendBoot(message.row);
-          return true;
-        case "flush":
-        case "shutdown":
-          return true;
-      }
-    },
+    process: (message) => processDetailed(message).ok,
+    processDetailed,
   };
 }
 

@@ -1,5 +1,9 @@
 import { parentPort, workerData } from "node:worker_threads";
-import { createRecordWorkerProcessor } from "./record-worker-runtime.ts";
+import {
+  createRecordWorkerProcessor,
+  type RecordWorkerOutcome,
+  rejectionReason,
+} from "./record-worker-runtime.ts";
 import type {
   RecordWorkerData,
   RecordWorkerMessage,
@@ -12,13 +16,15 @@ const port = parentPort;
 const processor = createRecordWorkerProcessor(workerData as RecordWorkerData);
 
 port.on("message", (message: RecordWorkerMessage) => {
-  let ok = false;
+  let outcome: RecordWorkerOutcome;
   try {
-    ok = processor.process(message);
-  } catch {
-    ok = false;
+    outcome = processor.processDetailed(message);
+  } catch (error) {
+    outcome = { ok: false, reason: rejectionReason(error) };
   }
-  const reply: RecordWorkerReply = { id: message.id, kind: message.kind, ok };
+  const reply: RecordWorkerReply = outcome.ok
+    ? { id: message.id, kind: message.kind, ok: true }
+    : { id: message.id, kind: message.kind, ok: false, reason: outcome.reason };
   port.postMessage(reply);
   if (message.kind === "shutdown") port.close();
 });
