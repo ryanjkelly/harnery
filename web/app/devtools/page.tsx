@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { CursorKeyControl } from "@/components/CursorKeyControl";
 import { FormattedDateTime } from "@/components/FormattedDateTime";
+import { HelperAgentsBlock } from "@/components/HelperAgentsBlock";
 import { Notice } from "@/components/layout/Notice";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { PageShell } from "@/components/layout/PageShell";
@@ -12,6 +13,8 @@ import {
   readDevtoolsReport,
   type ToolStatus,
 } from "@/lib/devtools-reader";
+import type { HelperLimitReport } from "@/lib/helper-limit";
+import { readHelperLimitReport } from "@/lib/helper-limit-reader";
 import { TONE, type Tone } from "@/lib/tone";
 
 export const dynamic = "force-dynamic";
@@ -55,7 +58,10 @@ const QUOTA_SOURCE: Partial<Record<ToolStatus["tool"], string>> = {
 };
 
 export default async function DevtoolsPage() {
-  const report: DevtoolsReport = await readDevtoolsReport();
+  const [report, helpers]: [DevtoolsReport, HelperLimitReport | null] = await Promise.all([
+    readDevtoolsReport(),
+    readHelperLimitReport(),
+  ]);
   const now = Date.now();
 
   return (
@@ -72,7 +78,13 @@ export default async function DevtoolsPage() {
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {report.tools.map((t) => (
-            <ToolCard key={t.tool} tool={t} now={now} windowDays={report.windowDays} />
+            <ToolCard
+              key={t.tool}
+              tool={t}
+              now={now}
+              windowDays={report.windowDays}
+              helpers={helpers}
+            />
           ))}
         </div>
       )}
@@ -90,10 +102,12 @@ function ToolCard({
   tool,
   now,
   windowDays,
+  helpers,
 }: {
   tool: ToolStatus;
   now: number;
   windowDays: number | null;
+  helpers: HelperLimitReport | null;
 }) {
   const src = SOURCES[tool.tool];
   if (!tool.installed) {
@@ -182,6 +196,8 @@ function ToolCard({
           ))}
         </div>
       ) : null}
+
+      {tool.tool === "claude-code" ? <HelperAgentsBlock report={helpers} /> : null}
 
       {tool.usage ? <CursorUsageBlock usage={tool.usage} now={now} /> : null}
 
