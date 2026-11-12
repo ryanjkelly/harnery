@@ -6,10 +6,17 @@ import {
   probeBinaryVersion,
 } from "../core/adapters/index.ts";
 import { resolveCoordRoot } from "../core/agents/coord-client.ts";
-import { resolveBinName, workflowSubscriptionOnly } from "../core/config.ts";
+import {
+  helperLimitSkipped,
+  resolveBinName,
+  resolveHelperLimit,
+  workflowSubscriptionOnly,
+} from "../core/config.ts";
+import { appendHelperUsage } from "../core/helper-usage.ts";
 import { loadPolicyFile } from "../core/policy/index.ts";
 import type { WorkflowApproval, WorkflowApprovalStatus } from "../core/run/approvals.ts";
 import { WorkflowParkedError } from "../core/run/engine.ts";
+import type { EngineOpts } from "../core/run/types.ts";
 
 /**
  * `workflow run <script>`: execute a workflow script — bounded, schema-gated,
@@ -130,6 +137,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
         const report = await runWorkflow(script, {
           coordRoot,
           spawners: registry.spawners(),
+          ...helperLimitEngineOptions(coordRoot),
           defaultAdapter: opts.adapter,
           resumeFrom: opts.resumeFrom,
           subscriptionOnly,
@@ -217,6 +225,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
         const report = await runWorkflow(manifest.script.path, {
           coordRoot,
           spawners: registry.spawners(),
+          ...helperLimitEngineOptions(coordRoot),
           resumeRunId: runId,
           ...adapterProofInputs(
             registry.list().map((adapter) => adapter.profile),
@@ -415,4 +424,16 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
 /** Next operator command after resolving an approval: a parked run resumes. */
 function approvalNextActionHint(approval: WorkflowApproval): string {
   return `resume: ${resolveBinName()} run resume ${approval.request.run_id}\n`;
+}
+
+/** The person's helper limit for each adapter, read when a worker starts, and
+ * the machine-wide usage log. `HARNERY_HELPER_LIMIT_SKIP=1` applies no limit. */
+function helperLimitEngineOptions(
+  coordRoot: string,
+): Pick<EngineOpts, "helperLimit" | "recordHelperUsage"> {
+  return {
+    helperLimit: (adapter) =>
+      helperLimitSkipped() ? null : resolveHelperLimit(adapter, { coordRoot }).limit,
+    recordHelperUsage: appendHelperUsage,
+  };
 }

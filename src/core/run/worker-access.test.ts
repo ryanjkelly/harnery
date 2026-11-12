@@ -3,10 +3,13 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { removeDir } from "../../../tests/helpers/remove-dir.ts";
+import { BUILTIN_ADAPTER_PROFILES } from "../adapters/profiles.ts";
+import { helperLadders } from "../helper-limit.ts";
 import type { ParentAccessEvidence } from "./types.ts";
 import {
   decideWorkerAccess,
   detectParentAccess,
+  floorsBelowHelperLimit,
   lastLineContaining,
   type ParentAccessDeps,
   parseWorkerFullAccessPolicy,
@@ -335,5 +338,68 @@ describe("lastLineContaining", () => {
     } finally {
       removeDir(dir);
     }
+  });
+});
+
+describe("floorsBelowHelperLimit", () => {
+  const ladders = helperLadders(BUILTIN_ADAPTER_PROFILES["claude-code"]);
+  const floors = parseWorkerFullAccessPolicy({
+    enabled: true,
+    floors: {
+      "claude-code": [
+        { model: "claude-fable-5-2", minEffort: "high" },
+        { model: "opus", minEffort: "high" },
+        { model: "sonnet", minEffort: "low" },
+        { model: "custom-model", minEffort: "low" },
+      ],
+    },
+  });
+
+  test("a limit whose model ranks under a floor's model is below it", () => {
+    expect(floorsBelowHelperLimit(floors, "claude-code", { max_model: "opus" }, ladders)).toEqual([
+      { model: "claude-fable-5-2", minEffort: "high" },
+    ]);
+  });
+
+  test("a limit at or above a floor's model but under its effort is below it", () => {
+    expect(
+      floorsBelowHelperLimit(
+        floors,
+        "claude-code",
+        { max_model: "opus", max_effort: "medium" },
+        ladders,
+      ),
+    ).toEqual([
+      { model: "claude-fable-5-2", minEffort: "high" },
+      { model: "opus", minEffort: "high" },
+    ]);
+    expect(
+      floorsBelowHelperLimit(floors, "claude-code", { max_effort: "medium" }, ladders),
+    ).toEqual([
+      { model: "claude-fable-5-2", minEffort: "high" },
+      { model: "opus", minEffort: "high" },
+    ]);
+  });
+
+  test("a limit that meets every rankable floor reports none", () => {
+    expect(
+      floorsBelowHelperLimit(
+        floors,
+        "claude-code",
+        { max_model: "fable", max_effort: "high" },
+        ladders,
+      ),
+    ).toEqual([]);
+    expect(floorsBelowHelperLimit(floors, "codex", { max_model: "opus" }, ladders)).toEqual([]);
+  });
+
+  test("a floor whose model cannot be ranked is never reported", () => {
+    const below = floorsBelowHelperLimit(
+      floors,
+      "claude-code",
+      { max_model: "haiku", max_effort: "low" },
+      ladders,
+    );
+    expect(below.map((floor) => floor.model)).toEqual(["claude-fable-5-2", "opus", "sonnet"]);
   });
 });

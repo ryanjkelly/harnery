@@ -1520,3 +1520,252 @@ describe("workflow child terminal conformance", () => {
     }
   });
 });
+
+describe("helper limit on run workers", () => {
+  const opusMedium = { max_model: "opus", max_effort: "medium" };
+  const fullParent = {
+    state: "full-access" as const,
+    adapters: ["claude-code"],
+    detail: "the parent runs unsandboxed",
+  };
+
+  function capture(): { requests: SpawnRequest[]; spawner: Spawner } {
+    const requests: SpawnRequest[] = [];
+    return {
+      requests,
+      spawner: async (req) => {
+        requests.push(req);
+        return okSpawn("ok");
+      },
+    };
+  }
+
+  function events(path: string): Array<Record<string, unknown> & { event: string }> {
+    return readFileSync(path, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+  }
+
+  function startKey(path: string): unknown {
+    return events(path).find((event) => event.event === "agent.start")?.key;
+  }
+
+  test("a worker above the limit is lowered before proof, access, cost and spawn", async () => {
+    const { requests, spawner } = capture();
+    const estimated: Array<{ model?: unknown; effort?: unknown }> = [];
+    const script = writeScript(`
+      const opts = { model: "fable", effort: "max" };
+      export default async ({ agent }) => {
+        await agent("inspect", opts);
+        return opts;
+      };
+    `);
+    const report = await runWorkflow(script, {
+      coordRoot: root,
+      spawners: { "claude-code": spawner },
+      helperLimit: () => opusMedium,
+      policy: { max_cost_usd: 1, network: "allow" },
+      estimateDispatchCost: (request) => {
+        estimated.push({ model: request.model, effort: request.effort });
+        return 0.1;
+      },
+      ...quiet,
+    });
+    expect(requests[0]?.model).toBe("opus");
+    expect(requests[0]?.effort).toBe("medium");
+    expect(estimated).toEqual([{ model: "opus", effort: "medium" }]);
+    // The script's own options object is never mutated.
+    expect(report.result).toEqual({ model: "fable", effort: "max" });
+    const proof = JSON.parse(readFileSync(report.proofPath, "utf8")) as WorkflowProof;
+    expect(proof.agents[0]?.model).toBe("opus");
+    const all = events(report.transcriptPath);
+    const lowered = all.find((event) => event.event === "helper_limit.lowered");
+    expect(lowered).toMatchObject({
+      asked_model: "fable",
+      asked_effort: "max",
+      sent_model: "opus",
+      sent_effort: "medium",
+    });
+    const start = all.find((event) => event.event === "agent.start");
+    expect(start).toMatchObject({ model: "opus", effort: "medium" });
+  });
+
+  test("the access decision sees the lowered values and keeps the worker sandboxed", async () => {
+    writeFileSync(
+      join(root, ".harnery", "config.jsonc"),
+      JSON.stringify({
+        workflow: {
+          workerFullAccess: {
+            enabled: true,
+            floors: {
+              "claude-code": [
+                { model: "fable", minEffort: "high" },
+                { model: "opus", minEffort: "high" },
+              ],
+            },
+          },
+        },
+      }),
+    );
+    const script = `
+      export default async ({ agent }) => [
+        await agent("a", { model: "fable", effort: "max", label: "fable" }),
+        await agent("b", { model: "opus", effort: "max", label: "opus" }),
+      ];
+    `;
+    const unlimited = capture();
+    const free = await runWorkflow(writeScript(script), {
+      coordRoot: root,
+      spawners: { "claude-code": unlimited.spawner },
+      detectParentAccess: () => fullParent,
+      ...quiet,
+    });
+    expect(unlimited.requests.map((req) => req.access)).toEqual(["full-access", "full-access"]);
+    expect(free.agentsSpawned).toBe(2);
+
+    const limited = capture();
+    const report = await runWorkflow(writeScript(script), {
+      coordRoot: root,
+      spawners: { "claude-code": limited.spawner },
+      detectParentAccess: () => fullParent,
+      helperLimit: () => opusMedium,
+      ...quiet,
+    });
+    expect(limited.requests.every((req) => req.access === undefined)).toBe(true);
+    const proof = JSON.parse(readFileSync(report.proofPath, "utf8")) as WorkflowProof;
+    expect(proof.agents[0]?.access).toMatchObject({
+      mode: "sandboxed",
+      reason: "effort_below_floor",
+      detail: "opus at effort medium is below the high floor",
+    });
+    expect(proof.agents[1]?.access).toMatchObject({
+      mode: "sandboxed",
+      reason: "effort_below_floor",
+      detail: "opus at effort medium is below the high floor",
+    });
+  });
+
+  test("the resume key changes only when the limit changes the worker", async () => {
+    const run = async (body: string, helperLimit?: () => typeof opusMedium | null) => {
+      const { spawner } = capture();
+      const report = await runWorkflow(writeScript(body), {
+        coordRoot: root,
+        spawners: { "claude-code": spawner },
+        ...(helperLimit ? { helperLimit } : {}),
+        ...quiet,
+      });
+      return startKey(report.transcriptPath);
+    };
+    const above = `export default ({ agent }) => agent("x", { model: "fable", effort: "max" });`;
+    const within = `export default ({ agent }) => agent("x", { model: "sonnet", effort: "low" });`;
+    expect(await run(above)).not.toEqual(await run(above, () => opusMedium));
+    expect(await run(within)).toEqual(await run(within, () => opusMedium));
+  });
+
+  test("an unnamed model, a worker within the limit, and an unranked adapter are untouched", async () => {
+    const { requests, spawner } = capture();
+    const report = await runWorkflow(
+      writeScript(`
+        export default async ({ agent }) => [
+          await agent("none"),
+          await agent("cheap", { model: "haiku" }),
+          await agent("within", { model: "sonnet", effort: "low" }),
+          await agent("cursor", { adapter: "cursor", model: "fable-max" }),
+        ];
+      `),
+      {
+        coordRoot: root,
+        spawners: { "claude-code": spawner, cursor: spawner },
+        helperLimit: () => opusMedium,
+        ...quiet,
+      },
+    );
+    expect(requests.map((req) => [req.model, req.effort])).toEqual([
+      [undefined, undefined],
+      ["haiku", undefined],
+      ["sonnet", "low"],
+      ["fable-max", undefined],
+    ]);
+    expect(events(report.transcriptPath).some((e) => e.event === "helper_limit.lowered")).toBe(
+      false,
+    );
+  });
+
+  test("usage is recorded once per dispatched worker, never for a replay", async () => {
+    const lines: Array<Record<string, unknown>> = [];
+    const body = `
+      export default async ({ agent }) => [
+        await agent("high", { model: "fable", effort: "max" }),
+        await agent("low", { model: "sonnet" }),
+      ];
+    `;
+    const script = writeScript(body);
+    const first = await runWorkflow(script, {
+      coordRoot: root,
+      spawners: { "claude-code": capture().spawner },
+      helperLimit: () => opusMedium,
+      recordHelperUsage: (line) => lines.push({ ...line }),
+      ...quiet,
+    });
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toMatchObject({
+      kind: "run-worker",
+      tool: "claude-code",
+      session_id: first.runId,
+      agent_id: `${first.runId}-a1`,
+      asked_model: "fable",
+      asked_effort: "max",
+      sent_model: "opus",
+      sent_effort: "medium",
+      lowered: true,
+    });
+    expect(typeof lines[0]?.ts).toBe("string");
+    expect(lines[1]).toMatchObject({ asked_model: "sonnet", sent_model: "sonnet", lowered: false });
+    expect(lines[1]?.asked_effort).toBeUndefined();
+
+    const replay = await runWorkflow(writeScript(body), {
+      coordRoot: root,
+      spawners: { "claude-code": capture().spawner },
+      helperLimit: () => opusMedium,
+      recordHelperUsage: (line) => lines.push({ ...line }),
+      resumeFrom: first.runId,
+      ...quiet,
+    });
+    expect(replay.agentsCached).toBe(2);
+    expect(lines).toHaveLength(2);
+  });
+
+  test("a worker lowered onto a model with no effort setting is sent without one", async () => {
+    const { requests, spawner } = capture();
+    await runWorkflow(
+      writeScript(`export default ({ agent }) => agent("x", { model: "opus", effort: "high" });`),
+      {
+        coordRoot: root,
+        spawners: { "claude-code": spawner },
+        helperLimit: () => ({ max_model: "haiku" }),
+        ...quiet,
+      },
+    );
+    expect(requests[0]?.model).toBe("haiku");
+    expect(requests[0] && "effort" in requests[0] ? requests[0].effort : undefined).toBeUndefined();
+  });
+
+  test("a throwing usage recorder does not fail the run", async () => {
+    const { requests, spawner } = capture();
+    const report = await runWorkflow(
+      writeScript(`export default ({ agent }) => agent("x", { model: "fable" });`),
+      {
+        coordRoot: root,
+        spawners: { "claude-code": spawner },
+        helperLimit: () => opusMedium,
+        recordHelperUsage: () => {
+          throw new Error("disk full");
+        },
+        ...quiet,
+      },
+    );
+    expect(report.agentsSpawned).toBe(1);
+    expect(requests[0]?.model).toBe("opus");
+  });
+});

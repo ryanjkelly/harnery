@@ -29,6 +29,7 @@ import {
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { builtinAdapterProfile } from "../adapters/profiles.ts";
+import { type HelperLadders, type HelperLimit, modelFamily } from "../helper-limit.ts";
 import type { ParentAccessEvidence, SpawnFilesystemPolicy, WorkerAccessDecision } from "./types.ts";
 
 /** One model an adapter's worker may run unsandboxed on. `minEffort` is on the
@@ -224,6 +225,45 @@ export function decideWorkerAccess(input: WorkerAccessInput): WorkerAccessDecisi
     reason: "qualified",
     detail: `${input.model}${effortPart} meets the ${adapter} floor and ${parent.detail}`,
   };
+}
+
+/**
+ * The configured full-access floors for one adapter that a helper limit falls
+ * below, so a person can be told those workers will run sandboxed. A limit is
+ * below a floor when its model ranks under the floor's model, or when the
+ * floor's model ranks at or under the limit's model (or the limit names no
+ * model) and the limit's effort ranks under the floor's `minEffort`. A floor
+ * whose model the adapter's ladder cannot rank is never reported.
+ */
+export function floorsBelowHelperLimit(
+  policy: WorkerFullAccessPolicy,
+  adapter: string,
+  limit: HelperLimit,
+  ladders: HelperLadders,
+): WorkerFullAccessFloor[] {
+  const rankModel = (model: string): number | null => {
+    const family = modelFamily(model, ladders.models);
+    return family === null ? null : ladders.models.indexOf(family);
+  };
+  const rankEffort = (effort: string): number | null => {
+    const index = ladders.efforts.indexOf(effort.trim().toLowerCase());
+    return index === -1 ? null : index;
+  };
+  const limitModel = limit.max_model === undefined ? null : rankModel(limit.max_model);
+  const limitEffort = limit.max_effort === undefined ? null : rankEffort(limit.max_effort);
+  const below: WorkerFullAccessFloor[] = [];
+  for (const floor of policy.floors[adapter] ?? []) {
+    const floorModel = rankModel(floor.model);
+    if (floorModel === null) continue;
+    if (limitModel !== null && limitModel < floorModel) {
+      below.push(floor);
+      continue;
+    }
+    if (floor.minEffort === undefined || limitEffort === null) continue;
+    const floorEffort = rankEffort(floor.minEffort);
+    if (floorEffort !== null && limitEffort < floorEffort) below.push(floor);
+  }
+  return below;
 }
 
 // ---------------------------------------------------------------------------

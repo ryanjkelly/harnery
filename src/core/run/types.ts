@@ -8,6 +8,8 @@
  */
 
 import type { ClaudeMcpMode } from "../../lib/headless/index.ts";
+import type { HelperLimit } from "../helper-limit.ts";
+import type { HelperUsageLine } from "../helper-usage.ts";
 import type {
   DispatchCostEstimator,
   ExternalMutationRequest,
@@ -574,6 +576,13 @@ export interface EngineOpts {
   resolvePolicyAsk?: PolicyAskResolver;
   /** Host-owned cost projection. Required to allow budgeted dispatches with known pricing. */
   estimateDispatchCost?: DispatchCostEstimator;
+  /** The helper limit in effect for one adapter, or null for none. Applied to
+   * each worker's model and effort before its proof record, resume key, cost
+   * estimate, access decision and spawn read them. Absent applies no limit. */
+  helperLimit?: (adapter: AdapterName) => HelperLimit | null;
+  /** Receives one usage line per dispatched worker (never for a cached
+   * replay). Absent records nothing; a throwing recorder is ignored. */
+  recordHelperUsage?: (line: HelperUsageLine) => void;
   /** Maximum wait for an ASK resolver (default 60 seconds). */
   policyAskTimeoutMs?: number;
   /** Missing or unavailable ASK resolver behavior (library default: deny). */

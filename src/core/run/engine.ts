@@ -21,8 +21,10 @@ import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { builtinAdapterProfile } from "../adapters/profiles.ts";
 import { workflowWorkerFullAccessConfig } from "../config.ts";
 import { snapshotRepo } from "../context/index.ts";
+import { decideHelperLimit, helperLadders } from "../helper-limit.ts";
 import type {
   ExternalMutationRequest,
   NormalizedPolicy,
@@ -514,14 +516,21 @@ async function executeWorkflow(
 
   const agent = async (prompt: string, requestedOpts: AgentOpts = {}): Promise<unknown> => {
     const assignment = resolveSpecialistAssignment(specialists, prompt, requestedOpts);
-    const agentOpts = assignment.opts;
+    const adapter = assignment.opts.adapter ?? defaultAdapter;
+    // The helper limit is applied here, once, so the proof record, resume key,
+    // cost estimate, access decision and spawn all read the values the worker
+    // really runs with. Applying it later would let a worker qualify for full
+    // access as a stronger model than the one it is sent on.
+    const askedModel = assignment.opts.model;
+    const askedEffort = assignment.opts.effort;
+    const helperLimit = applyHelperLimit(assignment.opts, adapter, opts.helperLimit);
+    const agentOpts = helperLimit.opts;
     const assignmentPrompt = assignment.prompt;
     const dispatchPrompt = agentOpts.schema
       ? withSchemaContract(assignmentPrompt, agentOpts.schema)
       : assignmentPrompt;
     let reservedForDispatch = 0;
     let spawnCountClaimed = false;
-    const adapter = agentOpts.adapter ?? defaultAdapter;
     const spawner = opts.spawners[adapter];
     if (!spawner) {
       throw new Error(
@@ -544,6 +553,16 @@ async function executeWorkflow(
       duration_ms: 0,
     };
     agentProofs.set(id, agentProof);
+    if (helperLimit.lowered) {
+      transcript("helper_limit.lowered", {
+        id,
+        adapter,
+        asked_model: askedModel ?? null,
+        asked_effort: askedEffort ?? null,
+        sent_model: agentOpts.model ?? null,
+        sent_effort: agentOpts.effort ?? null,
+      });
+    }
 
     // Call identity for resume: same stage + adapter + model + effort + turns + schema
     // + ORIGINAL prompt → same key. Retry-mutated prompts never enter the key.
@@ -707,6 +726,25 @@ async function executeWorkflow(
       },
     });
     agentProof.access = access;
+    if (opts.recordHelperUsage) {
+      try {
+        opts.recordHelperUsage({
+          ts: new Date().toISOString(),
+          tool: adapter,
+          kind: "run-worker",
+          session_id: runId,
+          agent_id: childInstanceId(runId, id),
+          ...(agentOpts.specialist ? { agent_type: agentOpts.specialist } : {}),
+          ...(askedModel !== undefined ? { asked_model: askedModel } : {}),
+          ...(askedEffort !== undefined ? { asked_effort: askedEffort } : {}),
+          ...(agentOpts.model !== undefined ? { sent_model: agentOpts.model } : {}),
+          ...(agentOpts.effort !== undefined ? { sent_effort: agentOpts.effort } : {}),
+          lowered: helperLimit.lowered,
+        });
+      } catch {
+        // A usage record is best effort and must never fail the run.
+      }
+    }
 
     let recordAgentEnd: (() => void) | undefined;
     const finalizeChild = (): void => {
@@ -1127,6 +1165,35 @@ function boundedSchemaReply(value: string): string {
 
 /** Stable identity for one agent() call, for the resume cache. The ORIGINAL
  * prompt (never a retry-mutated one) plus everything that changes behavior. */
+/**
+ * Lower one worker's model and effort to the helper limit for its adapter.
+ * Returns the script's own options object untouched when nothing changes, and a
+ * new object otherwise; the script's object is never mutated. An adapter with
+ * no rankings, a worker that names no model, and a worker at or below the limit
+ * are all left alone.
+ */
+function applyHelperLimit(
+  agentOpts: AgentOpts,
+  adapter: AdapterName,
+  resolveLimit: EngineOpts["helperLimit"],
+): { opts: AgentOpts; lowered: boolean } {
+  if (!resolveLimit) return { opts: agentOpts, lowered: false };
+  const limit = resolveLimit(adapter);
+  const profile = builtinAdapterProfile(adapter);
+  if (!limit || !profile) return { opts: agentOpts, lowered: false };
+  const decision = decideHelperLimit(
+    { model: agentOpts.model, effort: agentOpts.effort },
+    limit,
+    helperLadders(profile),
+  );
+  if (!decision.changed) return { opts: agentOpts, lowered: false };
+  const lowered: AgentOpts = { ...agentOpts };
+  if (decision.model !== undefined) lowered.model = decision.model;
+  if (decision.droppedEffort || decision.effort === undefined) delete lowered.effort;
+  else lowered.effort = decision.effort;
+  return { opts: lowered, lowered: true };
+}
+
 function agentCallKey(
   stage: string,
   adapter: string,
