@@ -1,0 +1,8 @@
+{
+  "name": "harnery-helper-limit",
+  "version": "0.1.0",
+  "description": "Applies the Harnery helper limit to helper agents' model requests and records what each helper ran on.",
+  "author": { "name": "Harnery", "url": "https://harnery.com" },
+  "homepage": "https://harnery.com",
+  "license": "MIT"
+}

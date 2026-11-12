@@ -11,6 +11,7 @@
       "**",
       "!**/node_modules",
       "!**/dist",
+      "!claude-code-plugin/hooks/generated",
       "!**/docs/.astro",
       "!**/docs/dist",
       "!**/*.md",
