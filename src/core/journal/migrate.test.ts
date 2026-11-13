@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   statSync,
   utimesSync,
@@ -199,20 +200,63 @@ describe("migrateJournals", () => {
   });
 });
 
-describe("writers refuse files they cannot read", () => {
-  test("append, edit, and delete name the migrate command and leave the file alone", () => {
+describe("writers migrate retired stamps before writing", () => {
+  test("append migrates the file it writes, backs up the original, and keeps every entry", () => {
     const path = join(dir, "old.md");
     writeFileSync(path, RETIRED);
-    expect(() => appendEntry("old", "note", "new", { root })).toThrow(JournalNeedsMigrationError);
-    expect(() => appendEntry("old", "note", "new", { root })).toThrow(/journal migrate/);
-    expect(() => editEntry("old", 0, "2026-11-07 10:38 PM CST", "note", "x", root)).toThrow(
-      JournalNeedsMigrationError,
+    const doc = appendEntry("old", "note", "new", {
+      root,
+      now: new Date("2026-11-08T05:00:00Z"),
+    });
+    expect(doc.entries.map((e) => e.body.split("\n")[0])).toEqual([
+      "new",
+      "summary",
+      "second 1:30, after fall-back",
+      "first 1:30",
+    ]);
+    expect(doc.entries.map((e) => e.ts_display)).toEqual([
+      "2026-11-07 11:00 PM -06:00",
+      "2026-11-07 10:38 PM -06:00",
+      "2026-11-01 1:30 AM -06:00",
+      "2026-11-01 1:30 AM -05:00",
+    ]);
+    expect(doc.header.started).toBe("2026-11-01 1:30 AM -05:00");
+    // Body lines that only look like retired headers are untouched.
+    expect(doc.entries[1]!.body).toContain("## 2026-11-07 10:38 PM CST · idea");
+    expect(doc.entries[1]!.body).toContain("  ## 2026-11-07 10:38 PM CST · note");
+    expect(loadJournal("old", root)!.unreadable_lines).toEqual([]);
+
+    const runs = readdirSync(join(dir, MIGRATION_BACKUP_DIR));
+    expect(runs).toHaveLength(1);
+    expect(readFileSync(join(dir, MIGRATION_BACKUP_DIR, runs[0]!, "old.md"), "utf8")).toBe(RETIRED);
+  });
+
+  test("edit and delete migrate first and then match the migrated stamp", () => {
+    writeFileSync(join(dir, "old.md"), RETIRED);
+    expect(editEntry("old", 0, "2026-11-07 10:38 PM -06:00", "note", "edited", root)).toMatchObject(
+      { ok: true },
     );
-    expect(() => deleteEntry("old", 0, "2026-11-07 10:38 PM CST", root)).toThrow(
-      JournalNeedsMigrationError,
-    );
-    expect(readFileSync(path, "utf8")).toBe(RETIRED);
-    expect(existsSync(join(dir, "archived"))).toBe(true);
+    writeFileSync(join(dir, "old2.md"), RETIRED.replace("agent-Old", "agent-Old2"));
+    expect(deleteEntry("old2", 2, "2026-11-01 1:30 AM -05:00", root)).toMatchObject({
+      ok: true,
+      entries: 2,
+    });
+  });
+
+  test("a stamp the migration cannot convert still refuses and leaves the file alone", () => {
+    const foreign = RETIRED.replace(
+      "## 2026-11-01 1:30 AM CST · note",
+      "## 2026-11-01 1:30 AM EST · note",
+    )
+      .replaceAll(" CDT", " -05:00")
+      .replace("## 2026-11-07 10:38 PM CST · handoff", "## 2026-11-07 10:38 PM -06:00 · handoff")
+      .replace("last_updated: 2026-11-07 10:38 PM CST", "last_updated: 2026-11-07 10:38 PM -06:00");
+    const path = join(dir, "odd.md");
+    writeFileSync(path, foreign);
+    expect(() => appendEntry("odd", "note", "new", { root })).toThrow(JournalNeedsMigrationError);
+    expect(() => appendEntry("odd", "note", "new", { root })).toThrow(/journal migrate/);
+    expect(readFileSync(path, "utf8")).toBe(foreign);
+    expect(existsSync(join(dir, MIGRATION_BACKUP_DIR))).toBe(false);
   });
 
   test("append writes the resolved zone with its offset after migration", () => {

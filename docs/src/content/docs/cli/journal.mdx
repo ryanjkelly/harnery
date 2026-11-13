@@ -128,12 +128,15 @@ rewriting it. A second run changes nothing. A retired-looking timestamp that
 is not a real date or time is reported, left as it was, and makes the command
 exit 1.
 
-You rarely need to run it by hand: journals are per machine, so the
+You rarely need to run it by hand. Journals are per machine, so the
 session-start janitor runs the same migration quietly whenever it finds a
-retired timestamp. Until a file is migrated, readers skip its retired entries
-and writers (`add`, `ping`, dashboard edits) refuse to rewrite it, with an
-error that names the command, because rewriting would fold those entries into
-their neighbours.
+retired timestamp, and every writer (`add`, `ping`, dashboard edits) runs it on
+the one file it is about to rewrite, with the same backup. That covers a
+session whose journal an older release wrote before Harnery updated
+mid-session, and harnesses whose session start does not run the janitor.
+Until a file is migrated, readers skip its retired entries. A writer refuses
+only a line the migration cannot convert, with an error that names the
+command, because rewriting would fold that entry into its neighbours.
 
 ## Notes
 

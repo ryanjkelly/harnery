@@ -42,6 +42,7 @@ import {
   serializeJournal,
 } from "./codec.ts";
 import { withJournalLock } from "./lock.ts";
+import { migrateJournalFile, migrationBackupDir } from "./migrate.ts";
 
 export * from "./codec.ts";
 export { holdsJournalLock, JournalLockBusyError, withJournalLock } from "./lock.ts";
@@ -56,8 +57,10 @@ export { holdsJournalLock, JournalLockBusyError, withJournalLock } from "./lock.
  *   - Append-only, newest entry first. Atomic temp-file + rename on each write.
  *   - Every mutation (append, entry edit/delete, archive, prune, migrate)
  *     holds the project's journal lock (`./lock.ts`).
- *   - A writer refuses a file whose timestamps it cannot read and names
- *     `journal migrate`, because rewriting it would merge or drop entries.
+ *   - A writer first migrates retired timestamps in the file it is about to
+ *     rewrite (`./migrate.ts`, original backed up). It refuses a file whose
+ *     timestamps still cannot be read and names `journal migrate`, because
+ *     rewriting it would merge or drop entries.
  *   - 50 KB hard cap; auto-prunes oldest entries when exceeded.
  *   - SessionEnd hook archives to `.harnery/journal/archived/<instance_id>-<ts>.md`;
  *     SessionStart janitor migrates legacy timestamps, deletes archives older
@@ -203,9 +206,25 @@ export class JournalNeedsMigrationError extends Error {
   }
 }
 
+/**
+ * Read a journal a writer is about to rewrite. The caller holds the journal
+ * lock. A file that still carries retired timestamps (written by a build
+ * before ADR 0237, for example by the same session before Harnery updated
+ * mid-session) goes through the bounded migration first, with the original
+ * saved under `.migration-backup/`. Only lines the migration cannot convert
+ * make the writer refuse, because rewriting would fold them into neighbours.
+ */
 function readWritableJournal(path: string): JournalDoc | null {
   if (!existsSync(path)) return null;
-  const doc = parseJournal(path, readFileSync(path, "utf8"));
+  let doc = parseJournal(path, readFileSync(path, "utf8"));
+  if (doc.unreadable_lines.length === 0) return doc;
+  const dir = dirname(path);
+  const migrated = migrateJournalFile(dir, path, {
+    apply: true,
+    backupDir: migrationBackupDir(dir),
+  });
+  if (!migrated?.changed) throw new JournalNeedsMigrationError(path, doc.unreadable_lines);
+  doc = parseJournal(path, readFileSync(path, "utf8"));
   if (doc.unreadable_lines.length > 0) {
     throw new JournalNeedsMigrationError(path, doc.unreadable_lines);
   }

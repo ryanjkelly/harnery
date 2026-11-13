@@ -74,6 +74,18 @@ the same migration quietly whenever it finds a retired timestamp. A failure
 leaves the files unchanged and never fails the hook. Archives that arrive from
 another machine through sync are healed the same way at the next session start.
 
+**Amendment (2026-11-13): writers migrate before refusing.** The janitor alone
+left two gaps. A Harnery update in the middle of a session leaves that
+session's journal in the retired format until the next session start, and
+adapters whose session start does not run journal maintenance (Codex,
+OpenCode, OpenClaw) never run the janitor at all. In both cases `journal add`
+refused the file and the user had to run the command by hand. A writer now
+runs the same bounded migration on the one file it is about to rewrite, under
+the lock it already holds, saving the original under `.migration-backup/`, and
+then re-reads it. It refuses only when a line remains that the migration
+cannot convert. This is still the one decoder in `migrate.ts` making a one-way
+rewrite, not a reader that accepts both formats.
+
 **Dashboard display.** The dashboard's formatters no longer default to a fixed
 zone. Components pass the viewer's display preference (the browser zone by
 default); a formatter called without a zone uses the runtime's own.

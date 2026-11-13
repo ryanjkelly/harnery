@@ -9,8 +9,10 @@
  * and the instant, and changes nothing else in the file.
  *
  * This module is the only code that knows the retired format. Normal readers
- * and writers do not accept it; writers refuse a file that still contains it
- * and point here.
+ * do not accept it. A writer that meets it runs this migration on that one
+ * file first (same rules, same backup), so a journal written by an older
+ * build before an upgrade mid-session still takes the next append. Only a
+ * stamp this module cannot convert makes the writer refuse.
  *
  * Guarantees:
  *   - Covers active journals and `archived/`.
@@ -178,52 +180,77 @@ export interface MigrateJournalsOptions {
   now?: Date;
 }
 
+export interface MigrateJournalFileOptions {
+  /** Rewrite the file; without it, report only. */
+  apply?: boolean;
+  /** Where to save the original before rewriting (one run's backup directory). */
+  backupDir: string;
+}
+
+/**
+ * Plan or apply the migration for one journal file under `journalDir`. Holds
+ * the journal lock (reentrant, so a writer that already holds it can call
+ * this). Returns null when the file vanished. Before rewriting, the original
+ * is copied to `backupDir/<path relative to journalDir>`.
+ */
+export function migrateJournalFile(
+  journalDir: string,
+  full: string,
+  opts: MigrateJournalFileOptions,
+): JournalMigrationFile | null {
+  const rel = relative(journalDir, full);
+  return withJournalLock(journalDir, () => {
+    if (!existsSync(full)) return null; // archived or pruned since the listing
+    const original = readFileSync(full);
+    const text = original.toString("utf8");
+    const rewrite = rewriteRetiredStamps(text);
+    const changed = rewrite.content !== text;
+    if (changed && opts.apply === true) {
+      const stat = statSync(full);
+      const backupPath = join(opts.backupDir, rel);
+      mkdirSync(dirname(backupPath), { recursive: true });
+      copyFileSync(full, backupPath);
+      utimesSync(backupPath, stat.atime, stat.mtime);
+      const tmp = `${full}.migrate.${process.pid}`;
+      writeFileSync(tmp, rewrite.content, "utf8");
+      chmodSync(tmp, stat.mode & 0o7777);
+      utimesSync(tmp, stat.atime, stat.mtime);
+      renameSync(tmp, full);
+    }
+    return {
+      path: rel,
+      headers: rewrite.headers,
+      metadata: rewrite.metadata,
+      unparseable: rewrite.unparseable,
+      changed,
+    } satisfies JournalMigrationFile;
+  });
+}
+
+/** A fresh backup directory for one migration run. */
+export function migrationBackupDir(journalDir: string, now: Date = new Date()): string {
+  return join(journalDir, MIGRATION_BACKUP_DIR, backupRunId(now));
+}
+
 /** Plan or apply the migration for every journal under `journalDir`. */
 export function migrateJournals(
   journalDir: string,
   opts: MigrateJournalsOptions = {},
 ): JournalMigrationReport {
   const apply = opts.apply === true;
-  const backupDir = join(journalDir, MIGRATION_BACKUP_DIR, backupRunId(opts.now ?? new Date()));
-  let backupUsed = false;
+  const backupDir = migrationBackupDir(journalDir, opts.now ?? new Date());
   const files: JournalMigrationFile[] = [];
   for (const full of journalFiles(journalDir)) {
-    const rel = relative(journalDir, full);
-    const result = withJournalLock(journalDir, () => {
-      if (!existsSync(full)) return null; // archived or pruned since the listing
-      const original = readFileSync(full);
-      const text = original.toString("utf8");
-      const rewrite = rewriteRetiredStamps(text);
-      const changed = rewrite.content !== text;
-      if (changed && apply) {
-        const stat = statSync(full);
-        const backupPath = join(backupDir, rel);
-        mkdirSync(dirname(backupPath), { recursive: true });
-        copyFileSync(full, backupPath);
-        utimesSync(backupPath, stat.atime, stat.mtime);
-        backupUsed = true;
-        const tmp = `${full}.migrate.${process.pid}`;
-        writeFileSync(tmp, rewrite.content, "utf8");
-        chmodSync(tmp, stat.mode & 0o7777);
-        utimesSync(tmp, stat.atime, stat.mtime);
-        renameSync(tmp, full);
-      }
-      return {
-        path: rel,
-        headers: rewrite.headers,
-        metadata: rewrite.metadata,
-        unparseable: rewrite.unparseable,
-        changed,
-      } satisfies JournalMigrationFile;
-    });
+    const result = migrateJournalFile(journalDir, full, { apply, backupDir });
     if (result) files.push(result);
   }
+  const changed = files.filter((f) => f.changed).length;
   return {
     applied: apply,
     journal_dir: journalDir,
-    backup_dir: backupUsed ? backupDir : null,
+    backup_dir: apply && changed > 0 ? backupDir : null,
     files_scanned: files.length,
-    files_changed: files.filter((f) => f.changed).length,
+    files_changed: changed,
     headers: files.reduce((n, f) => n + f.headers, 0),
     metadata: files.reduce((n, f) => n + f.metadata, 0),
     unparseable: files.reduce((n, f) => n + f.unparseable.length, 0),
