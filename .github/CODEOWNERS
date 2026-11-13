@@ -2,3 +2,11 @@
 # Every path is owned by the maintainer, so every PR auto-requests their review.
 # Once branch protection is enabled, this makes maintainer review required.
 * @ryanjkelly
+
+# The release PR that changesets/action opens touches only these paths. Leaving
+# them unowned keeps that bot PR from requesting the maintainer's review, which
+# sent two notification emails per release. A PR that also touches any other
+# path still requests review through the rule above.
+/.changeset/
+/CHANGELOG.md
+/package.json
