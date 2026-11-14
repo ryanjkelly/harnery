@@ -134,6 +134,7 @@ import {
 import { toolInputHash, toolTargetHash } from "./events/input-hash.ts";
 import { detectClaudeCodeFork } from "./fork-lineage.ts";
 import { canonicalize } from "./guard-path.ts";
+import { writeToolFilePath, writeToolTargets } from "./guard-targets.ts";
 import {
   beginHookHealth,
   type HookHealthState,
@@ -1751,7 +1752,14 @@ async function handleToolRequested(run: HookRun): Promise<number | undefined> {
   // (incl. Agent) yield no targets and pass through with no deny.
   let guardAllowed = true;
   try {
-    guardAllowed = await runPreToolUseGuard(coordRoot, owner.instance_id, sessionId, data, adapter);
+    guardAllowed = await runPreToolUseGuard(
+      coordRoot,
+      owner.instance_id,
+      sessionId,
+      data,
+      adapter,
+      payload?.tool_input,
+    );
   } catch (err) {
     logError(coordRoot, err, { phase: "pre-tool-use-guard" });
   }
@@ -1896,7 +1904,7 @@ async function handlePostToolUse(run: HookRun): Promise<void> {
 async function handlePostToolUseFailure(run: HookRun): Promise<void> {
   const { coordRoot, adapter, payload, owner, data } = run;
   try {
-    releaseClaimOnFailure(coordRoot, owner.instance_id, data, payload?.raw);
+    releaseClaimOnFailure(coordRoot, owner.instance_id, data, payload?.tool_input);
   } catch (err) {
     logError(coordRoot, err, { phase: "post-tool-use-failure-release" });
   }
@@ -2335,9 +2343,12 @@ async function runPreToolUseGuard(
   sessionId: string,
   data: Record<string, unknown>,
   adapter: Adapter,
+  toolInput: unknown,
 ): Promise<boolean> {
   const toolName = (data.tool_name as string | undefined) ?? "";
-  const rawTargets = collectGuardTargets(toolName, data);
+  // The adapter's parsed input, not data.tool_input: that copy is clamped for
+  // the ledger and stops parsing once a write passes its limit.
+  const rawTargets = writeToolTargets(toolName, toolInput);
   if (rawTargets.length === 0) return true;
 
   let targets: Array<{ path: string; finalization?: ClaimFinalizationDescriptor }>;
@@ -2405,58 +2416,6 @@ async function runPreToolUseGuard(
 /** Canonicalize a path to monorepo-relative form. Absolute paths under
  * coordRoot get the prefix stripped; relative paths pass through (assumed
  * already canonical). */
-/** Pull the candidate path(s) out of a write-tool payload. Empty array when
- * the tool isn't a write or no path could be derived. */
-function collectGuardTargets(toolName: string, data: Record<string, unknown>): string[] {
-  const writeTools = new Set(["Edit", "Write", "NotebookEdit", "StrReplace"]);
-  if (writeTools.has(toolName)) {
-    const target = extractFilePathFromData(data);
-    return target ? [target] : [];
-  }
-  if (toolName === "apply_patch") {
-    return parseApplyPatchPaths(data);
-  }
-  return [];
-}
-
-function extractFilePathFromData(data: Record<string, unknown>): string | undefined {
-  const raw = data.tool_input;
-  if (typeof raw !== "string") return undefined;
-  try {
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    return (
-      (parsed.file_path as string | undefined) ??
-      (parsed.path as string | undefined) ??
-      (parsed.notebook_path as string | undefined) ??
-      undefined
-    );
-  } catch {
-    return undefined;
-  }
-}
-
-/** Parse Codex's `apply_patch` body for `*** Add|Update|Delete File: <path>`
- * directives. Extracts apply_patch target paths for Codex. */
-function parseApplyPatchPaths(data: Record<string, unknown>): string[] {
-  const raw = data.tool_input;
-  if (typeof raw !== "string") return [];
-  let body = "";
-  try {
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    body = (parsed.command as string | undefined) ?? "";
-  } catch {
-    return [];
-  }
-  if (!body) return [];
-  const out: string[] = [];
-  const re = /^\s*\*\*\* (Add|Update|Delete) File:\s*(.+)$/gm;
-  let m: RegExpExecArray | null = re.exec(body);
-  while (m !== null) {
-    out.push(m[2]!.trim());
-    m = re.exec(body);
-  }
-  return out;
-}
 
 /**
  * Walk up the ppid chain on Linux/WSL looking for the adapter anchor PID,
@@ -2558,35 +2517,11 @@ function releaseClaimOnFailure(
   coordRoot: string,
   instanceId: string,
   data: Record<string, unknown>,
-  rawPayload: Record<string, unknown> | undefined,
+  toolInput: unknown,
 ): void {
   const toolName = (data.tool_name as string | undefined) ?? "";
   if (toolName !== "Edit" && toolName !== "Write" && toolName !== "NotebookEdit") return;
-  // Path is in tool_input parsed from payload; try data first, fall back to raw.
-  const toolInputRaw = data.tool_input;
-  let filePath = "";
-  if (typeof toolInputRaw === "string") {
-    try {
-      const parsed = JSON.parse(toolInputRaw) as Record<string, unknown>;
-      filePath =
-        (parsed.file_path as string | undefined) ??
-        (parsed.path as string | undefined) ??
-        (parsed.notebook_path as string | undefined) ??
-        "";
-    } catch {
-      /* skip */
-    }
-  }
-  if (!filePath && rawPayload) {
-    const ti = rawPayload.tool_input as Record<string, unknown> | undefined;
-    if (ti) {
-      filePath =
-        (ti.file_path as string | undefined) ??
-        (ti.path as string | undefined) ??
-        (ti.notebook_path as string | undefined) ??
-        "";
-    }
-  }
+  const filePath = writeToolFilePath(toolInput);
   if (!filePath) return;
 
   // The same identity the claim was stored under, so a Windows `C:\...` target

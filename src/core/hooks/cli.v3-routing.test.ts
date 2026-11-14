@@ -231,6 +231,41 @@ describe("agent-hook V3 hard cut", () => {
     expect(existsSync(probe)).toBeFalse();
   });
 
+  test("claims a written file whose input is larger than the ledger's clamped copy", () => {
+    // The ledger stores tool_input clamped to 8000 characters. The guard once
+    // parsed that copy, so a large Write claimed nothing and skipped the
+    // peer-conflict check.
+    const root = candidateRoot();
+    const owner = "large-write-claim";
+    expect(
+      run(
+        AGENT_HOOK,
+        ["session-start", "--adapter", "claude-code"],
+        { session_id: owner, cwd: root, source: "startup" },
+        root,
+      ).status,
+    ).toBe(0);
+    const write = (name: string, size: number) =>
+      run(
+        AGENT_HOOK,
+        ["pre-tool-use", "--adapter", "claude-code"],
+        {
+          session_id: owner,
+          cwd: root,
+          tool_name: "Write",
+          tool_use_id: `write-${name}`,
+          tool_input: { file_path: join(root, name), content: "x".repeat(size) },
+          hook_event_name: "PreToolUse",
+        },
+        root,
+      );
+    expect(write("small.ts", 100).status).toBe(0);
+    const large = write("large.ts", 20_000);
+    expect(large.status).toBe(0);
+    expect(large.stdout).not.toContain('"permissionDecision":"deny"');
+    expect(readLiveCoordinationRow(root, owner)?.files_touched).toEqual(["large.ts", "small.ts"]);
+  });
+
   test("session start publishes V3 presence and starts the configured relay daemon", async () => {
     const root = candidateRoot();
     const origin = join(root, "presence-origin.git");
