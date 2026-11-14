@@ -23,6 +23,12 @@ import { type Adapter, normalizeAdapter as titleAdapter } from "../core/adapter.
 import { stripCoordRoot } from "../core/agents/claim-path.ts";
 import { coordBinPath, spawnCoordBinSync } from "../core/agents/coord-bin.ts";
 import {
+  attemptEndTurnSync,
+  type EndTurnSyncRun,
+  formatEndTurnSyncRefusal,
+  formatEndTurnSyncSummary,
+} from "../core/agents/end-turn-sync.ts";
+import {
   checkGitFinalization,
   formatGitFinalizationFailure,
   type GitFinalizationResult,
@@ -2291,21 +2297,34 @@ function runStatus(opts: {
   );
 
   let finalization: GitFinalizationResult | null = null;
+  let endTurnSync: EndTurnSyncRun | null = null;
   if (opts.endTurn) {
     const scope = readSessionFinalizationScope(root, hb, myOwner);
-    finalization = checkGitFinalization(root, scope.paths, {
-      claimHistoryComplete: scope.complete,
-      reconcilePeerSubmodules: true,
-    });
+    const check = () =>
+      checkGitFinalization(root, scope.paths, {
+        claimHistoryComplete: scope.complete,
+        reconcilePeerSubmodules: true,
+      });
+    finalization = check();
     if (!finalization.ok) {
+      // Opt-in: a failure that is only "behind upstream" runs the host's sync
+      // command once, then repeats the full check. Anything else refuses.
+      const synced = attemptEndTurnSync(root, finalization, check);
+      if (synced) {
+        endTurnSync = synced.sync;
+        finalization = synced.result;
+      }
+    }
+    if (!finalization.ok) {
+      const failure = formatGitFinalizationFailure(
+        finalization,
+        resolveBinName(root),
+        "status",
+        agentsGitSyncCommand(root),
+      );
       emit.error({
         code: "git_not_finalized",
-        message: formatGitFinalizationFailure(
-          finalization,
-          resolveBinName(root),
-          "status",
-          agentsGitSyncCommand(root),
-        ),
+        message: endTurnSync ? `${formatEndTurnSyncRefusal(endTurnSync)}\n${failure}` : failure,
       });
       process.exitCode = 1;
       return;
@@ -2473,6 +2492,7 @@ function runStatus(opts: {
     ...(quality ? { quality } : {}),
     ...(qaSignal ? { qa: qaSignal.pointer } : {}),
     ...(finalization ? { finalization } : {}),
+    ...(endTurnSync ? { end_turn_sync: endTurnSync } : {}),
     ...(sessionEnd ? { session_end: sessionEnd } : {}),
   };
 
@@ -2513,6 +2533,10 @@ function runStatus(opts: {
   if (qaSignal) {
     const idx = rows.findIndex((row) => row[0] === "time");
     rows.splice(idx, 0, ["qa", qaSignal.value]);
+  }
+  if (endTurnSync) {
+    const idx = rows.findIndex((row) => row[0] === "time");
+    rows.splice(idx, 0, ["sync", formatEndTurnSyncSummary(endTurnSync)]);
   }
   if (sessionEnd) {
     const idx = rows.findIndex((row) => row[0] === "time");

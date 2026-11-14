@@ -245,6 +245,15 @@ describe("checkGitFinalization", () => {
     );
     expect(mixed).toContain("Commit and push the owned Git work");
     expect(mixed).not.toContain("nothing of yours to commit");
+
+    // Each refusal leads with one plain sentence naming the exact next command.
+    expect(named.split("\n")[0]).toBe(
+      "This checkout is behind changes another session pushed, and nothing of yours is unfinished: run `sync-all`, then rerun `harn agents status --end-turn`.",
+    );
+    expect(named).not.toContain("Owned work is not finalized");
+    expect(mixed.split("\n")[0]).toBe(
+      "This session has work that is not committed and pushed: finish it, then rerun `harn agents status --end-turn`.",
+    );
   });
 
   test("does not globally block an unrelated turn on a submodule checkout ahead of its gitlink", () => {

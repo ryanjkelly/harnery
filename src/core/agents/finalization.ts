@@ -777,10 +777,33 @@ export function formatGitFinalizationFailure(
   phase: "status" | "stop" = "status",
   syncCommand: string | null = null,
 ): string {
+  const statusCommand = `${bin} agents status --end-turn`;
+  const ownedFindings =
+    !result.claim_history_complete ||
+    result.dirty_paths.length > 0 ||
+    result.unpushed_repos.length > 0 ||
+    result.unsupported_paths.length > 0 ||
+    result.unverifiable_paths.length > 0 ||
+    result.unverifiable_repos.length > 0;
+  const freshnessFindings =
+    result.behind_repos.length > 0 ||
+    result.stale_submodules.length > 0 ||
+    result.diverged_submodules.length > 0;
+  // Lead with one plain sentence: what happened and the exact next command.
+  const syncStep = syncCommand ? `run \`${syncCommand}\`, then` : "sync the checkout, then";
+  const lead =
+    !ownedFindings && freshnessFindings
+      ? `This checkout is behind changes another session pushed, and nothing of yours is unfinished: ${syncStep} rerun \`${statusCommand}\`.`
+      : `This session has work that is not committed and pushed: finish it, then rerun \`${statusCommand}\`.`;
   const lines = [
-    phase === "stop"
-      ? "Owned work is not finalized at the end of this turn."
-      : "Owned work is not finalized; the status box was not issued.",
+    lead,
+    !ownedFindings && freshnessFindings
+      ? phase === "stop"
+        ? "A stale checkout cannot end the turn."
+        : "The status box was not issued."
+      : phase === "stop"
+        ? "Owned work is not finalized at the end of this turn."
+        : "Owned work is not finalized; the status box was not issued.",
   ];
   if (!result.claim_history_complete) {
     lines.push("This session's full write-claim history could not be verified.");
