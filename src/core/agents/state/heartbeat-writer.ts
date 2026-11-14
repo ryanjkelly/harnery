@@ -211,6 +211,76 @@ export function stampSessionNameReminded(
   );
 }
 
+/** Record the surface resolved at mint time, plus the client's thread id when it has one. Idempotent. */
+export function stampSessionTitleSurface(
+  coordRoot: string,
+  instanceId: string,
+  surfaceId: string,
+  clientThreadId?: string,
+): Heartbeat | null {
+  if (!surfaceId) return null;
+  return mutate(coordRoot, instanceId, (hb) => {
+    // Once a surface has written a title to the client, that surface owns the
+    // title; a later resolution (another hook process with a different
+    // environment) must not reassign it.
+    if (
+      hb.session_title_applied_for &&
+      hb.session_title_surface &&
+      hb.session_title_surface !== surfaceId
+    ) {
+      return hb;
+    }
+    return {
+      ...hb,
+      session_title_surface: surfaceId,
+      ...(clientThreadId ? { session_title_client_thread: clientThreadId } : {}),
+    };
+  });
+}
+
+/**
+ * A writing surface confirmed `title` on the client. Sets
+ * session_title_applied_for = title, clears session_title_fallback_for, and
+ * marks the name as shown exactly like stampSessionNameSeen(coordRoot,
+ * instanceId, pendingName) where pendingName is the row's current
+ * suggested_session_name when it is still pending (so a drifted-but-accepted
+ * title still closes the latch).
+ */
+export function stampSessionTitleApplied(
+  coordRoot: string,
+  instanceId: string,
+  title: string,
+  surfaceId: string,
+): Heartbeat | null {
+  if (!title || !surfaceId) return null;
+  return mutate(coordRoot, instanceId, (hb) => {
+    const { session_title_fallback_for: _cleared, ...rest } = hb;
+    const pending =
+      hb.suggested_session_name && hb.session_name_seen_for !== hb.suggested_session_name
+        ? hb.suggested_session_name
+        : undefined;
+    return {
+      ...rest,
+      session_title_surface: surfaceId,
+      session_title_applied_for: title,
+      session_name_seen_at: hb.session_name_seen_at ?? nowIsoSeconds(),
+      ...(pending ? { session_name_seen_for: pending } : {}),
+    };
+  });
+}
+
+/** The surface's own delivery failed for `title`; the name block is owed instead. Idempotent. */
+export function stampSessionTitleFallback(
+  coordRoot: string,
+  instanceId: string,
+  title: string,
+): Heartbeat | null {
+  if (!title) return null;
+  return mutate(coordRoot, instanceId, (hb) =>
+    hb.session_title_fallback_for === title ? hb : { ...hb, session_title_fallback_for: title },
+  );
+}
+
 export function releaseClaim(
   coordRoot: string,
   instanceId: string,

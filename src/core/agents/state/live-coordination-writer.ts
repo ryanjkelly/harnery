@@ -115,6 +115,18 @@ function materializeLiveCoordinationHeartbeat(
           ...(typeof current.session_name_display_reminders === "number"
             ? { session_name_display_reminders: current.session_name_display_reminders }
             : {}),
+          ...(current.session_title_surface
+            ? { session_title_surface: current.session_title_surface }
+            : {}),
+          ...(current.session_title_client_thread
+            ? { session_title_client_thread: current.session_title_client_thread }
+            : {}),
+          ...(current.session_title_applied_for
+            ? { session_title_applied_for: current.session_title_applied_for }
+            : {}),
+          ...(current.session_title_fallback_for
+            ? { session_title_fallback_for: current.session_title_fallback_for }
+            : {}),
         }
       : {};
   const materialized: V3HeartbeatMaterialization = {

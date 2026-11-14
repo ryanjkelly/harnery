@@ -48,6 +48,14 @@ export interface Heartbeat {
    * endless stream of "show the block" context.
    */
   session_name_display_reminders?: number;
+  /** Title surface id resolved when the name was minted (ADR 0247). */
+  session_title_surface?: string;
+  /** The client's own thread id for this session, captured at mint time. */
+  session_title_client_thread?: string;
+  /** The title a writing surface confirmed on the client. */
+  session_title_applied_for?: string;
+  /** The owed title whose surface delivery failed; the name block is owed instead. */
+  session_title_fallback_for?: string;
   last_status_at?: string;
   current_turn_id?: string;
   parent_instance_id?: string;
