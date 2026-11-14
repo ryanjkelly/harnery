@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parseBackupDuration, readHostSnapshotCache } from "../backup/host-snapshot.ts";
+import { inspectBackupSetup } from "../backup/setup.ts";
 import { harnCliEntry } from "../cli-entry.ts";
 import { backupConfig, resolveBinName } from "../config.ts";
 import {
@@ -26,8 +27,9 @@ export interface ScheduledBackupStatus {
 }
 
 export interface ScheduledBackupPlan {
-  /** `disabled`: no schedule; `fresh`: local cache proves this host is current; `launch`: run the snapshot. */
-  action: "disabled" | "fresh" | "launch";
+  /** `disabled`: no schedule; `unconfigured`: missing local setup;
+   * `fresh`: this host is current; `launch`: run the snapshot. */
+  action: "disabled" | "unconfigured" | "fresh" | "launch";
   /** One line for the session context when the previous scheduled run failed. */
   cue: string | null;
   invocation: ScheduledBackupInvocation | null;
@@ -69,8 +71,8 @@ export function readScheduledBackupStatus(statusFile: string): ScheduledBackupSt
  * Decide what session start should do. The local host cache written by
  * `harn backup snapshot` is only an optimisation: when it is missing, stale,
  * or from another host, the launched command still asks restic. A failed
- * previous run always relaunches so a transient error heals on the next
- * session instead of waiting out the freshness window.
+ * previous run relaunches when local prerequisites are present so a transient
+ * error heals on the next session instead of waiting out the freshness window.
  */
 export function planScheduledBackup(
   coordRoot: string,
@@ -79,6 +81,9 @@ export function planScheduledBackup(
 ): ScheduledBackupPlan {
   const invocation = scheduledBackupInvocation(coordRoot, cliEntry);
   if (!invocation) return { action: "disabled", cue: null, invocation: null };
+  if (inspectBackupSetup(backupConfig(coordRoot)).missing.length > 0) {
+    return { action: "unconfigured", cue: null, invocation: null };
+  }
   const status = readScheduledBackupStatus(invocation.statusFile);
   const failed = status !== null && status.exitCode !== 0;
   const cue = failed

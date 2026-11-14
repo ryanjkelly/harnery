@@ -77,7 +77,13 @@ Use `backup.include` to add `.harnery`-relative paths and `backup.exclude` to re
 | `schedule` | unset | Optional session-start snapshot policy. |
 | `keep_daily`, `keep_weekly`, `keep_monthly` | `7`, `4`, `6` | Retention used by `prune`. |
 
-When `backup.schedule` is present, the session-start hook launches `snapshot --if-stale <duration>` in the background with the configured tags. The child owns none of the hook's stdio, so the harness never waits for restic or the remote provider. The hook stays quiet on success.
+When `backup.schedule` is present, the session-start hook checks this machine's local setup before launching `snapshot --if-stale <duration>` in the background with the configured tags. The child owns none of the hook's stdio, so the harness never waits for restic or the remote provider. The hook stays quiet on success.
+
+The local check requires `restic` on PATH and the configured password file. A repository beginning with `rclone:` also requires `rclone` on PATH. For a named remote such as `archive` in `rclone:archive:path`, that remote must appear in the active rclone config or have a `RCLONE_CONFIG_ARCHIVE_TYPE` environment setting. The check reads `RCLONE_CONFIG` when set; otherwise it looks beside the rclone executable, in AppData on Windows, in `XDG_CONFIG_HOME`, and in the home configuration locations, using the first existing config file. Inline rclone backends do not require a named remote.
+
+If any prerequisite is missing, the hook launches nothing and prints no failure cue, including a cue left by an earlier scheduled run. It checks again on the next session, so providing the missing setup enables the schedule without changing shared project configuration. These checks use local filesystem reads and PATH lookups. They never run a subprocess, contact the repository, or read the password's contents.
+
+Restic checks credentials and repository access during the snapshot. The command reports authentication, repository, and other run failures. The hook lets restic handle encrypted or unreadable rclone configuration because the local check cannot cheaply determine which remotes it contains.
 
 Three small files under `.harnery/logs/` carry the schedule's state:
 
@@ -87,7 +93,7 @@ Three small files under `.harnery/logs/` carry the schedule's state:
 | `backup-schedule.status.json` | the background runner | Exit code and finish time of the last scheduled run. |
 | `backup-host-snapshot.json` | `harn backup snapshot` | This host's newest known snapshot time. |
 
-The hook reads the status file first. When the last scheduled run failed, it adds one line naming the exit code, the finish time, and the log path to the session's start-up context, prints the same line on stderr, and relaunches the snapshot so a transient error heals on the next session. It then reads the host cache: when this host's newest snapshot is younger than `if_stale`, the hook launches nothing, so a machine with many session starts a day asks the remote repository about once per freshness window rather than on every start. A missing, stale, or foreign-host cache always launches the command, and the command still asks restic before deciding.
+Once local prerequisites are present, the hook reads the status file. When the last scheduled run failed, it adds one line naming the exit code, the finish time, and the log path to the session's start-up context, prints the same line on stderr, and relaunches the snapshot so a transient error heals on the next session. It then reads the host cache: when this host's newest snapshot is younger than `if_stale`, the hook launches nothing, so a machine with many session starts a day asks the remote repository about once per freshness window rather than on every start. A missing, stale, or foreign-host cache launches the command, and the command still asks restic before deciding.
 
 ## Take a snapshot
 
@@ -97,6 +103,8 @@ harn backup snapshot --if-stale 24h --tag daily
 ```
 
 `--tag` is repeatable. `--if-stale` exits successfully without creating a snapshot when this restic host already has one newer than the duration. Restic's host filter keeps snapshots independent across machines. A cross-process lock prevents two concurrent hooks on one machine from both passing the same freshness check.
+
+A manual snapshot exits with an error naming each missing local prerequisite. This includes the effective password file path or named rclone remote, after applying command options and environment overrides. Manual snapshots never silently skip missing setup.
 
 If the selected files exceed `backup.max_bytes`, the command reports the selected size and stops. `--include-artifacts` adds managed working artifacts for a deliberate one-off snapshot; the size gate still applies. `--allow-large` bypasses that guard for one invocation.
 

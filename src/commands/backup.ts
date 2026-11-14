@@ -38,6 +38,7 @@ import {
   parseBackupDuration,
   recordHostSnapshot,
 } from "../core/backup/host-snapshot.ts";
+import { inspectBackupSetup } from "../core/backup/setup.ts";
 import { type BackupConfig, backupConfig } from "../core/config.ts";
 import { createStorageCatalog } from "../core/storage/catalog.ts";
 import type { HarneryStorageClass } from "../core/storage/contract.ts";
@@ -372,16 +373,22 @@ export function registerBackupCommand(program: Command, emit: EmitContext): void
           ifStale?: string;
         },
       ) => {
-        if (!checkRestic(emit)) {
-          emit.setExitCode(1);
-          return;
-        }
         const harneryDir = findHarneryDir();
         if (!harneryDir) {
           emit.error({
             code: "target_missing",
             message: "No .harnery/ found above cwd; run from an initialized project",
           });
+          emit.setExitCode(1);
+          return;
+        }
+        const config = backupConfig(path.dirname(harneryDir));
+        const setup = inspectBackupSetup({
+          repo: opts.repo ?? config.repo,
+          passwordFile: opts.passwordFile ?? config.passwordFile,
+        });
+        if (setup.missing.length > 0) {
+          for (const issue of setup.missing) emit.error(issue);
           emit.setExitCode(1);
           return;
         }
@@ -419,7 +426,6 @@ export function registerBackupCommand(program: Command, emit: EmitContext): void
               return;
             }
           }
-          const config = backupConfig(path.dirname(harneryDir));
           const selection = resolveBackupSelection(
             path.dirname(harneryDir),
             config,

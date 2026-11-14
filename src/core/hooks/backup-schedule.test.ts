@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,8 +17,27 @@ import {
 } from "./backup-schedule-worker.ts";
 
 const roots: string[] = [];
+const setupEnv = {
+  PATH: process.env.PATH,
+  HARNERY_RESTIC_REPO: process.env.HARNERY_RESTIC_REPO,
+  HARNERY_RESTIC_PASSWORD_FILE: process.env.HARNERY_RESTIC_PASSWORD_FILE,
+};
+
+beforeEach(() => {
+  const root = tempRoot();
+  const binary = process.platform === "win32" ? "restic.exe" : "restic";
+  writeFileSync(join(root, binary), "", { mode: 0o755 });
+  writeFileSync(join(root, "password"), "fixture\n");
+  process.env.PATH = root;
+  process.env.HARNERY_RESTIC_REPO = join(root, "repository");
+  process.env.HARNERY_RESTIC_PASSWORD_FILE = join(root, "password");
+});
 
 afterEach(() => {
+  for (const [key, value] of Object.entries(setupEnv)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
   for (const root of roots.splice(0)) removeDir(root);
 });
 
