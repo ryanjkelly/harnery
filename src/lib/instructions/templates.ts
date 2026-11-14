@@ -531,15 +531,17 @@ refuses an attach otherwise; do not ask them to turn it on to save a step.
 2. Bind the window: cua's \`get_browser_state\` with its \`pid\` and
    \`window_id\` (from \`list_windows\`). If it refuses with
    \`browser_consent_required\`, make the \`browser_prepare\` call it names
-   (\`strategy: {"kind": "existing_profile"}\`). That first attach briefly
-   brings the browser forward and answers its consent prompt, so \`call\`
-   waits for a quiet keyboard and mouse first.
+   (\`strategy: {"kind": "existing_profile"}\`). The attach briefly brings
+   the browser forward and answers its consent prompt, so \`call\` waits for
+   a quiet keyboard and mouse first. Keep one \`session\` label for the whole
+   task: a new session attaches, and flashes the browser, again.
 3. Act only in your tab: \`get_browser_state\` with \`target_id\`, \`tab_id\`
    and \`snapshot_format: "semantic_v2"\` (a \`query\` narrows it), then
    \`browser_navigate\`, \`browser_type\`, \`browser_click\`. Read the page back
    after each action; the result says \`unverifiable\` until you do.
 4. Leave the tab on \`about:blank\` or tell the person it is open, and end
-   your driver session (\`end_session\`) when you finish.
+   your driver session (\`end_session\`) when the task is done; that closes
+   the browser's debugging connection.
 
 The browser tools never sign in. A sign-in page goes through "Signing in for
 the person" below. Never type into a password field with \`browser_type\`,

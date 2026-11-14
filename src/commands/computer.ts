@@ -1156,7 +1156,7 @@ export function createComputerCommand(
           if (attach && !config.browser_attach) {
             throw new ComputerError(
               "browser_attach_off",
-              `Attaching to the person's running browser is off: ${describeBrowserAttach(config, deps.binName)}.`,
+              `Browser attach is ${describeBrowserAttach(config, deps.binName)}, so this attach to the person's running browser was not sent.`,
               EXIT_APPROVAL_REQUIRED,
               "Nothing was sent. Work in the browser window through the accessibility route instead (get_window_state or agent-desktop refs), or ask the person whether to turn browser attach on.",
             );

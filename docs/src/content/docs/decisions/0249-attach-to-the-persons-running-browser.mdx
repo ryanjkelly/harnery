@@ -35,6 +35,8 @@ A trial on a Windows desktop with Chrome showed:
   sent real input. In background mode, and without counting as a foreground
   action, it bypassed the quiet wait.
 - Ending the driver session closed the browser's debugging port again.
+- With driver 0.49.9 the same route attached through Harnery's gate, and
+  typing and clicking in a background tab both reached the page.
 - A password manager's save offer covered a form's submit button, and a
   click by element reference landed on the offer instead.
 
@@ -85,9 +87,11 @@ A trial on a Windows desktop with Chrome showed:
 - A project whose setting is off can share a machine with one whose setting
   is on. The daemon then holds the grant, and only the `call` gate keeps the
   first project's agents from attaching.
-- The first attach in a browser still brings it forward briefly and answers
-  its consent prompt. Driver 0.49 keeps one approved connection per browser
-  for up to 30 minutes idle, so later sessions do not repeat it.
+- Each attach still brings the browser forward briefly and answers its
+  consent prompt. On Windows with driver 0.49.9, ending a session closed the
+  browser's debugging connection, and the next session's attach repeated the
+  setup. The skill therefore keeps one session label per task. (The driver
+  documents reusing one approved connection for up to 30 minutes on macOS.)
 - The driver has no tool to open a tab, so agents open one through the
   person's default browser; if that is not the browser they bind, the tab
   appears elsewhere.
