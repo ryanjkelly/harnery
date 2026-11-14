@@ -10,6 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { removeDir } from "../../../tests/helpers/remove-dir.ts";
+import { resolveMachineLabel } from "../../lib/machine.ts";
 import { recordLiveLifecycleChangeV3 } from "../agents/live-authority-v3.ts";
 import { readLiveCoordinationRows } from "../agents/state/live-coordination-view.ts";
 import { initializeEventLedgerV3 } from "../events/v3/bootstrap.ts";
@@ -22,6 +23,7 @@ import {
   recordApprovedSessionEndV3,
   recordHookSignalV3,
 } from "../events/v3/producers/recorder.ts";
+import { sanitizeRefComponent } from "../presence/git.ts";
 import { resolveMessageTarget } from "./targets.ts";
 
 const roots: string[] = [];
@@ -118,7 +120,7 @@ describe("durable message targets", () => {
     const root = fixture();
     session(root, "stale-active", "Maya");
     const before = readLiveCoordinationRows(root);
-    expect(resolveMessageTarget(root, { name: "agent-maya", now: later })).toEqual({
+    expect(resolveMessageTarget(root, { name: "agent-maya", now: later })).toMatchObject({
       ok: true,
       target: { instance_id: "stale-active", name: "Maya", delivery: "queued" },
     });
@@ -291,5 +293,173 @@ describe("durable message targets", () => {
       ok: false,
       code: "authority_unsafe",
     });
+  });
+});
+
+function remote(root: string, machine: string, instanceId = `session-${machine}`, ageSecs = 0) {
+  const directory = join(root, ".harnery", "presence", "remote");
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(
+    join(directory, `${machine}.json`),
+    JSON.stringify({
+      v: 1,
+      machine,
+      published_at: new Date(Date.now() - ageSecs * 1000).toISOString(),
+      agents: [
+        { instance_id: instanceId, name: "Maya", activity: "working", task_state: "active" },
+      ],
+    }),
+  );
+}
+
+describe("overlapping names across machines", () => {
+  test("live remote wins over stale local, including require-live and ambiguous dormant history", () => {
+    const root = fixture();
+    session(root, "old-local", "Maya");
+    remote(root, "peer-east");
+    expect(
+      resolveMessageTarget(root, { name: "agent-maya", now: later, requireLive: true }),
+    ).toMatchObject({
+      ok: true,
+      target: { instance_id: "session-peer-east", machine: "peer-east", delivery: "remote" },
+    });
+    session(root, "another-old-local", "Maya");
+    expect(resolveMessageTarget(root, { name: "Maya", now: later })).toMatchObject({
+      ok: true,
+      target: { machine: "peer-east" },
+    });
+  });
+
+  test("fresh local wins over several live remote namesakes and explains explicit addresses", () => {
+    const root = fixture();
+    session(root, "local", "Maya", new Date().toISOString());
+    remote(root, "peer-east");
+    remote(root, "peer-west");
+    expect(resolveMessageTarget(root, { name: "Maya" })).toMatchObject({
+      ok: true,
+      target: {
+        instance_id: "local",
+        delivery: "written-live",
+        local_machine: sanitizeRefComponent(resolveMachineLabel()),
+        remote_namesakes: [
+          { machine: "peer-east", address: "Maya@peer-east" },
+          { machine: "peer-west", address: "Maya@peer-west" },
+        ],
+        routing_note: expect.stringContaining("Maya@peer-east"),
+      },
+    });
+  });
+
+  test("dormant local retains the message when the remote name is also dormant", () => {
+    const root = fixture();
+    session(root, "local", "Maya");
+    remote(root, "peer-east", "remote", 3600);
+    expect(resolveMessageTarget(root, { name: "Maya", now: later })).toMatchObject({
+      ok: true,
+      target: { instance_id: "local", delivery: "queued", local_machine: expect.any(String) },
+    });
+    remote(root, "peer-west", "other-remote", 3600);
+    expect(resolveMessageTarget(root, { name: "Maya", now: later })).toMatchObject({
+      ok: true,
+      target: { instance_id: "local", delivery: "queued" },
+    });
+  });
+
+  test("an unused local name resolves remote live or dormant, but an unused name everywhere refuses", () => {
+    const root = fixture();
+    remote(root, "peer-east");
+    expect(resolveMessageTarget(root, { name: "Maya" })).toMatchObject({
+      ok: true,
+      target: { machine: "peer-east" },
+    });
+    remote(root, "peer-east", "session-peer-east", 3600);
+    expect(resolveMessageTarget(root, { name: "Maya" })).toMatchObject({
+      ok: true,
+      target: { machine: "peer-east" },
+    });
+    expect(resolveMessageTarget(root, { name: "Maya", requireLive: true })).toMatchObject({
+      ok: false,
+      code: "not_live",
+    });
+    expect(resolveMessageTarget(root, { name: "NeverUsed" })).toMatchObject({
+      ok: false,
+      code: "no_peer",
+    });
+  });
+
+  test("machine-qualified names select local or remote explicitly, including dormant recipients", () => {
+    const root = fixture();
+    session(root, "local", "Maya");
+    remote(root, "peer-east");
+    const local = sanitizeRefComponent(resolveMachineLabel());
+    expect(resolveMessageTarget(root, { name: `Maya@${local}`, now: later })).toMatchObject({
+      ok: true,
+      target: { instance_id: "local", delivery: "queued", local_machine: local },
+    });
+    expect(resolveMessageTarget(root, { name: "agent-maya@PEER-EAST", now: later })).toMatchObject({
+      ok: true,
+      target: { instance_id: "session-peer-east", machine: "peer-east" },
+    });
+    expect(resolveMessageTarget(root, { name: "Maya@missing" })).toMatchObject({
+      ok: false,
+      code: "no_peer",
+    });
+    remote(root, "peer-east", "session-peer-east", 3600);
+    expect(resolveMessageTarget(root, { name: "Maya@peer-east" })).toMatchObject({
+      ok: true,
+      target: { machine: "peer-east" },
+    });
+    expect(resolveMessageTarget(root, { name: "Maya@peer-east", requireLive: true })).toMatchObject(
+      { ok: false, code: "not_live" },
+    );
+  });
+
+  test("exact local instance and generation addressing cannot be rerouted by a remote name", () => {
+    const root = fixture();
+    session(root, "local", "Maya");
+    remote(root, "peer-east");
+    const view = readCoordinationViewV3(root);
+    expect(
+      resolveMessageTarget(root, { name: "Maya", instanceId: "local", now: later }),
+    ).toMatchObject({
+      ok: true,
+      target: { instance_id: "local", delivery: "queued" },
+    });
+    expect(
+      resolveMessageTarget(root, {
+        name: "Maya",
+        generationId: view.instances.inst_local!.generation_id,
+        now: later,
+      }),
+    ).toMatchObject({ ok: true, target: { instance_id: "local", delivery: "queued" } });
+  });
+
+  test("two remote live namesakes require a machine address even when their instance IDs match", () => {
+    const root = fixture();
+    session(root, "old-local", "Maya");
+    remote(root, "peer-east", "shared-id");
+    remote(root, "peer-west", "shared-id");
+    expect(resolveMessageTarget(root, { name: "Maya", now: later })).toMatchObject({
+      ok: false,
+      code: "ambiguous_peer",
+    });
+    expect(resolveMessageTarget(root, { instanceId: "shared-id" })).toMatchObject({
+      ok: false,
+      code: "ambiguous_peer",
+    });
+    expect(
+      resolveMessageTarget(root, { name: "Maya@peer-west", instanceId: "shared-id" }),
+    ).toMatchObject({
+      ok: true,
+      target: { machine: "peer-west", instance_id: "shared-id" },
+    });
+  });
+
+  test("malformed qualified names fail without falling back to another destination", () => {
+    const root = fixture();
+    session(root, "local", "Maya");
+    for (const name of ["Maya@", "@peer-east", "Maya@peer@east"]) {
+      expect(resolveMessageTarget(root, { name })).toMatchObject({ ok: false, code: "no_peer" });
+    }
   });
 });

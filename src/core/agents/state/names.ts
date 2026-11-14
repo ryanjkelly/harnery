@@ -15,6 +15,9 @@
  *
  * Durable persistence: `.harnery/.name-history` (JSONL, one row per assignment)
  * + `.harnery/.name-counter` (current counter, atomic temp+rename).
+ * Assignment serializes counter and history updates with the shared directory
+ * lock in `.harnery/name-assignment/`. A missing counter starts at a stable
+ * machine-label hash; existing counters keep their position.
  *
  * Recreation rule:
  *   1. Own instance_id in name-history → latest (name, kind, agent_id)
@@ -31,11 +34,16 @@
  * resume under a stable instance_id keep a name for far longer. A counter-only
  * pick therefore hands a live agent's name to a new one (observed 2026-09-06:
  * two concurrent "Maya" agents, their pool slots exactly 520 apart). Assignment
- * now probes forward past any name a fresh heartbeat still holds.
+ * probes forward past names held in local heartbeats or fresh remote presence.
  */
 
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import type { LockDirSeam } from "../../../lib/held-lock.ts";
+import { resolveMachineLabel } from "../../../lib/machine.ts";
+import { withJournalLock } from "../../journal/lock.ts";
+import { readRemoteMachines } from "../../presence/index.ts";
 import { atomicWrite } from "./atomic-write.ts";
 
 /** All 260 names. */
@@ -526,6 +534,8 @@ export function assignName(
     fork?: boolean;
     forkChecked?: boolean;
     nowMs?: number;
+    /** The shared lock's syscall seam, for platform tests. */
+    lockSeam?: LockDirSeam;
   },
 ): string {
   // Check 1: existing history row → original name. A resume re-enters here,
@@ -534,45 +544,69 @@ export function assignName(
   const existing = resolveName(coordRoot, instanceId);
   if (existing) return existing.name;
 
-  // New owner: consume a counter slot. The live set is gathered BEFORE the
-  // counter read on purpose. Counter read-modify-write is already unlocked, so
-  // concurrent assignments can collide on one slot; doing the directory scan
-  // first keeps that window exactly as narrow as it was before the skip existed.
-  const live = readLiveNames(coordRoot, {
-    freshnessSecs: opts.freshnessSecs,
-    ...(opts.nowMs !== undefined ? { nowMs: opts.nowMs } : {}),
-  });
-
-  const cPath = counterPath(coordRoot);
-  let counter = 0;
-  if (existsSync(cPath)) {
-    const raw = readFileSync(cPath, "utf8").trim();
-    if (/^\d+$/.test(raw)) counter = Number.parseInt(raw, 10);
-  }
-
-  let chosen = counter;
-  for (let probe = 0; probe < 260; probe++) {
-    const candidate = COORD_NAMES[(counter + probe) % 260]!;
-    if (!live.has(candidate)) {
-      chosen = counter + probe;
-      break;
+  // Presence is a best-effort snapshot, gathered outside the short counter lock.
+  const live = new Set(
+    [
+      ...readLiveNames(coordRoot, {
+        freshnessSecs: opts.freshnessSecs,
+        ...(opts.nowMs !== undefined ? { nowMs: opts.nowMs } : {}),
+      }),
+    ].map((name) => name.toLowerCase()),
+  );
+  try {
+    for (const { agents } of readRemoteMachines(coordRoot)) {
+      for (const agent of agents) {
+        if (agent.name) live.add(agent.name.toLowerCase());
+      }
     }
+  } catch {
+    // Missing or unreadable remote data must never prevent a local assignment.
   }
 
-  const name = COORD_NAMES[chosen % 260]!;
-  atomicWrite(cPath, String(chosen + 1));
-  const forkedFrom = opts.forkedFrom;
-  appendHistory(coordRoot, {
-    instance_id: instanceId,
-    name,
-    kind,
-    source: "pool",
-    ...(forkedFrom && forkedFrom !== instanceId ? { forked_from: forkedFrom } : {}),
-    ...(opts.fork || (forkedFrom && forkedFrom !== instanceId) ? { fork: true as const } : {}),
-    ...(opts.forkChecked ? { fork_checked: true as const } : {}),
-    ts: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
-  });
-  return name;
+  return withJournalLock(
+    join(coordRoot, ".harnery", "name-assignment"),
+    () => {
+      // A concurrent start for the same instance may have assigned it while we waited.
+      const assigned = resolveName(coordRoot, instanceId);
+      if (assigned) return assigned.name;
+
+      const cPath = counterPath(coordRoot);
+      let counter = 0;
+      if (existsSync(cPath)) {
+        const raw = readFileSync(cPath, "utf8").trim();
+        if (/^\d+$/.test(raw)) counter = Number.parseInt(raw, 10);
+      } else {
+        counter =
+          createHash("sha256").update(resolveMachineLabel()).digest().readUInt32BE(0) %
+          COORD_NAMES.length;
+      }
+
+      let chosen = counter;
+      for (let probe = 0; probe < COORD_NAMES.length; probe++) {
+        const candidate = COORD_NAMES[(counter + probe) % COORD_NAMES.length]!;
+        if (!live.has(candidate.toLowerCase())) {
+          chosen = counter + probe;
+          break;
+        }
+      }
+
+      const name = COORD_NAMES[chosen % COORD_NAMES.length]!;
+      atomicWrite(cPath, String(chosen + 1));
+      const forkedFrom = opts.forkedFrom;
+      appendHistory(coordRoot, {
+        instance_id: instanceId,
+        name,
+        kind,
+        source: "pool",
+        ...(forkedFrom && forkedFrom !== instanceId ? { forked_from: forkedFrom } : {}),
+        ...(opts.fork || (forkedFrom && forkedFrom !== instanceId) ? { fork: true as const } : {}),
+        ...(opts.forkChecked ? { fork_checked: true as const } : {}),
+        ts: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+      });
+      return name;
+    },
+    { lockSeam: opts.lockSeam },
+  );
 }
 
 export interface ForkState {

@@ -5,6 +5,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -20,6 +21,7 @@ import {
   resolveForkAncestry,
   resolveName,
 } from "../../src/core/agents/state/names.ts";
+import { resolveMachineLabel } from "../../src/lib/machine.ts";
 import { removeDir } from "../helpers/remove-dir.ts";
 
 describe("COORD_NAMES layout invariants", () => {
@@ -255,6 +257,7 @@ describe("assignName / resolveName", () => {
   beforeEach(() => {
     root = mkdtempSync(path.join(os.tmpdir(), "harn-names-"));
     mkdirSync(path.join(root, ".harnery"), { recursive: true });
+    writeFileSync(path.join(root, ".harnery", ".name-counter"), "0");
   });
 
   afterEach(() => {
@@ -479,6 +482,7 @@ describe("live-name skip at pool assignment", () => {
   beforeEach(() => {
     root = mkdtempSync(path.join(os.tmpdir(), "harn-live-names-"));
     mkdirSync(path.join(root, ".harnery", "active"), { recursive: true });
+    writeFileSync(path.join(root, ".harnery", ".name-counter"), "0");
   });
 
   afterEach(() => {
@@ -570,4 +574,175 @@ describe("live-name skip at pool assignment", () => {
     beat("someone-else", first, 10);
     expect(assignName(root, "sess-x", "session", { freshnessSecs: 600 })).toBe(first);
   });
+});
+
+describe("machine-aware name assignment", () => {
+  let root: string;
+  let priorMachine: string | undefined;
+
+  beforeEach(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), "harn-machine-names-"));
+    mkdirSync(path.join(root, ".harnery"));
+    priorMachine = process.env.HARNERY_MACHINE;
+    process.env.HARNERY_MACHINE = "peer-east";
+  });
+  afterEach(() => {
+    if (priorMachine === undefined) delete process.env.HARNERY_MACHINE;
+    else process.env.HARNERY_MACHINE = priorMachine;
+    removeDir(root);
+  });
+
+  function seed(label: string): number {
+    return createHash("sha256").update(label).digest().readUInt32BE(0) % COORD_NAMES.length;
+  }
+
+  test("a missing counter starts at the stable machine-label hash", () => {
+    const index = seed(resolveMachineLabel());
+    expect(assignName(root, "first", "session", { freshnessSecs: 600 })).toBe(COORD_NAMES[index]!);
+    expect(readFileSync(path.join(root, ".harnery", ".name-counter"), "utf8")).toBe(
+      String(index + 1),
+    );
+    expect(assignName(root, "second", "session", { freshnessSecs: 600 })).toBe(
+      COORD_NAMES[(index + 1) % COORD_NAMES.length]!,
+    );
+  });
+
+  test("a second machine starts elsewhere while existing counters retain their position", () => {
+    const first = assignName(root, "east", "session", { freshnessSecs: 600 });
+    process.env.HARNERY_MACHINE = "peer-west";
+    const other = path.join(root, "other");
+    expect(assignName(other, "west", "session", { freshnessSecs: 600 })).toBe(
+      COORD_NAMES[seed("peer-west")]!,
+    );
+    expect(resolveName(other, "west")?.name).not.toBe(first);
+    writeFileSync(path.join(root, ".harnery", ".name-counter"), "7");
+    expect(assignName(root, "existing", "session", { freshnessSecs: 600 })).toBe(COORD_NAMES[7]!);
+  });
+
+  function remote(machine: string, name: string, ageSecs = 0): void {
+    const directory = path.join(root, ".harnery", "presence", "remote");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+      path.join(directory, `${machine}.json`),
+      JSON.stringify({
+        v: 1,
+        machine,
+        published_at: new Date(Date.now() - ageSecs * 1000).toISOString(),
+        agents: [
+          { instance_id: `session-${machine}`, name, activity: "working", task_state: "active" },
+        ],
+      }),
+    );
+  }
+
+  test("fresh remote names reserve slots but stale and self-machine rows do not", () => {
+    writeFileSync(path.join(root, ".harnery", ".name-counter"), "0");
+    remote("peer-west", "anna");
+    remote("peer-old", "Bob", 3600);
+    remote("peer-east", "Bob");
+    expect(assignName(root, "new", "session", { freshnessSecs: 600 })).toBe("Bob");
+    expect(readFileSync(path.join(root, ".harnery", ".name-counter"), "utf8")).toBe("2");
+  });
+
+  test("missing, malformed, and disabled presence never prevent assignment", () => {
+    writeFileSync(path.join(root, ".harnery", ".name-counter"), "0");
+    expect(assignName(root, "missing", "session", { freshnessSecs: 600 })).toBe("Anna");
+    const directory = path.join(root, ".harnery", "presence", "remote");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(path.join(directory, "broken.json"), "{torn");
+    expect(assignName(root, "malformed", "session", { freshnessSecs: 600 })).toBe("Bob");
+    remote("peer-west", "Carmen");
+    writeFileSync(
+      path.join(root, ".harnery", "config.jsonc"),
+      JSON.stringify({ presence: { enabled: false } }),
+    );
+    expect(assignName(root, "disabled", "session", { freshnessSecs: 600 })).toBe("Carmen");
+  });
+
+  test("the assignment lock retries the shared Windows EPERM contention case", () => {
+    let attempts = 0;
+    const name = assignName(root, "windows", "session", {
+      freshnessSecs: 600,
+      lockSeam: {
+        platform: "win32",
+        mkdir(directory) {
+          if (++attempts === 1) throw Object.assign(new Error("releasing lock"), { code: "EPERM" });
+          mkdirSync(directory);
+        },
+      },
+    });
+    expect(name).toBe(COORD_NAMES[seed("peer-east")]!);
+    expect(attempts).toBe(2);
+  });
+
+  test("simultaneous starts serialize the counter and reuse one binding per instance", async () => {
+    writeFileSync(path.join(root, ".harnery", ".name-counter"), "0");
+    const source = new URL("../../src/core/agents/state/names.ts", import.meta.url).href;
+    const script = `
+      import { assignName } from ${JSON.stringify(source)};
+      import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+      const [root, id, ready] = process.argv.slice(1);
+      writeFileSync(root + "/" + ready, "ready");
+      while (!existsSync(root + "/go")) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+      const name = assignName(root, id, "session", { freshnessSecs: 600, lockSeam: {
+        platform: process.platform,
+        mkdir(path) { mkdirSync(path); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20); }
+      }});
+      console.log(name);
+    `;
+    const children = Array.from({ length: 12 }, (_, index) =>
+      Bun.spawn(
+        [
+          process.execPath,
+          "-e",
+          script,
+          root,
+          index < 6 ? `instance-${index}` : "shared-instance",
+          `ready-${index}`,
+        ],
+        { stdout: "pipe", stderr: "pipe" },
+      ),
+    );
+    try {
+      const deadline = Date.now() + 15_000;
+      while (
+        !children.every((_, index) => {
+          try {
+            readFileSync(path.join(root, `ready-${index}`));
+            return true;
+          } catch {
+            return false;
+          }
+        })
+      ) {
+        if (Date.now() > deadline) throw new Error("assignment workers did not start");
+        await Bun.sleep(10);
+      }
+      writeFileSync(path.join(root, "go"), "go");
+      const names = await Promise.all(
+        children.map(async (child) => {
+          const [code, stdout, stderr] = await Promise.all([
+            child.exited,
+            new Response(child.stdout).text(),
+            new Response(child.stderr).text(),
+          ]);
+          expect(stderr).toBe("");
+          expect(code).toBe(0);
+          return stdout.trim();
+        }),
+      );
+      expect(new Set(names.slice(0, 6)).size).toBe(6);
+      expect(new Set(names.slice(6)).size).toBe(1);
+      expect(new Set(names).size).toBe(7);
+      expect(readFileSync(path.join(root, ".harnery", ".name-counter"), "utf8")).toBe("7");
+      expect(
+        readFileSync(path.join(root, ".harnery", ".name-history"), "utf8")
+          .trim()
+          .split("\n"),
+      ).toHaveLength(7);
+    } finally {
+      for (const child of children) child.kill();
+      await Promise.all(children.map((child) => child.exited));
+    }
+  }, 20_000);
 });

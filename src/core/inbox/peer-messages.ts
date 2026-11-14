@@ -176,12 +176,11 @@ export function sendPeerMessage(input: PeerMessageInput): PeerMessageResult {
             },
           };
         const view = readCoordinationViewV3(input.coordRoot);
-        let target = resolveMessageTarget(input.coordRoot, input.target, { view });
-        if (!target.ok && target.code === "no_peer") {
-          target = resolveRemoteMessageTarget(input.coordRoot, input.target) ?? target;
-        }
+        const target = resolveMessageTarget(input.coordRoot, input.target, { view });
         if (!target.ok) return { result: target };
-        const generation = selectedGeneration(view, target.target.instance_id);
+        const generation = target.target.machine
+          ? undefined
+          : selectedGeneration(view, target.target.instance_id);
         const reference = target.target.machine
           ? { state: "unknown" as const, reason: "remote_parent_evidence_unavailable" }
           : resolveAgentParentReference(
@@ -259,6 +258,7 @@ export function sendPeerMessage(input: PeerMessageInput): PeerMessageResult {
   const resolvePlanned = (recipient: RecipientPlan) =>
     recipient.target.machine
       ? resolveRemoteMessageTarget(input.coordRoot, {
+          name: `${recipient.target.name}@${recipient.target.machine}`,
           instanceId: recipient.target.instance_id,
           requireLive: plan.require_live,
           now: input.target.now,

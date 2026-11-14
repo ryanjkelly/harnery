@@ -1,3 +1,4 @@
+import { resolveMachineLabel } from "../../lib/machine.ts";
 import { resolveName } from "../agents/state/names.ts";
 import { coordFreshnessSeconds } from "../config.ts";
 import {
@@ -11,6 +12,7 @@ import {
   nativeInstanceIdV3,
   observeLiveEventLedgerRouteV3,
 } from "../events/v3/live-route-observer.ts";
+import { sanitizeRefComponent } from "../presence/git.ts";
 import { readRemoteMachines } from "../presence/index.ts";
 import { knownRemoteSenders } from "../presence/mail.ts";
 
@@ -32,6 +34,10 @@ export type MessageTargetResult =
         delivery: "written-live" | "queued" | "remote";
         /** Set when the recipient lives on another machine (ADR 0222). */
         machine?: string;
+        /** Local destination label; machine remains reserved for remote transport. */
+        local_machine?: string;
+        remote_namesakes?: RemoteNamesake[];
+        routing_note?: string;
       };
     }
   | {
@@ -41,14 +47,25 @@ export type MessageTargetResult =
       candidates?: string[];
     };
 
+interface RemoteNamesake {
+  name: string;
+  machine: string;
+  instance_id: string;
+  address: string;
+}
+
 /** Resolve one immutable recipient without extending presence or claiming attention. */
 export function resolveMessageTarget(
   coordRoot: string,
   input: MessageTargetInput,
   options: { view?: CoordinationViewV3 } = {},
 ): MessageTargetResult {
-  const requestedName = normalizeName(input.name);
+  const address = parseAddress(input.name);
+  if (!address) return { ok: false, code: "no_peer", message: "Use name or name@machine." };
+  const requestedName = address.name;
   const requestedInstance = input.instanceId?.trim();
+  const localMachine = sanitizeRefComponent(resolveMachineLabel());
+  const explicitLocal = address.machine === localMachine;
   if (!requestedName && !requestedInstance) {
     return { ok: false, code: "no_peer", message: "Supply an exact agent name or instance id." };
   }
@@ -66,6 +83,16 @@ export function resolveMessageTarget(
     if (!view.source_complete) return unsafe("The event ledger read is incomplete.");
   } catch {
     return unsafe("The event ledger cannot establish message recipient authority.");
+  }
+
+  if (address.machine && !explicitLocal) {
+    return (
+      resolveRemoteMessageTarget(coordRoot, input) ?? {
+        ok: false,
+        code: "no_peer",
+        message: `No known agent matches that address on ${address.machine}.`,
+      }
+    );
   }
 
   // Address historical instances without reopening them. A current generation
@@ -101,16 +128,24 @@ export function resolveMessageTarget(
   });
 
   if (candidates.length === 0) {
-    return {
-      ok: false,
-      code: "no_peer",
-      message: "No known agent matches that exact name and instance.",
-    };
+    return (
+      (!explicitLocal && resolveRemoteMessageTarget(coordRoot, input)) || {
+        ok: false,
+        code: "no_peer",
+        message: "No known agent matches that exact name and instance.",
+      }
+    );
   }
   if (candidates.some((candidate) => !candidate.safe)) {
     return unsafe("A matching agent generation does not have safe coordination authority.");
   }
   const fresh = candidates.filter((candidate) => candidate.fresh);
+  // An old local binding must not hide a live namesake on another machine.
+  // Exact instance/generation and machine addresses always retain their scope.
+  if (!fresh.length && !requestedInstance && !input.generationId && !explicitLocal) {
+    const remote = resolveRemoteMessageTarget(coordRoot, { ...input, requireLive: true });
+    if (remote?.ok || (remote && remote.code === "ambiguous_peer")) return remote;
+  }
   const selected = requestedInstance ? candidates : fresh.length > 0 ? fresh : candidates;
   if (selected.length !== 1) {
     return {
@@ -136,19 +171,27 @@ export function resolveMessageTarget(
         "That agent is known but outside live presence; omit --require-live to queue its message.",
     };
   }
+  const remoteNamesakes =
+    requestedName && !address.machine ? liveRemoteNamesakes(coordRoot, requestedName) : [];
   return {
     ok: true,
     target: {
       instance_id: target.instanceId,
       name: target.name,
       delivery: target.fresh ? "written-live" : "queued",
+      local_machine: localMachine,
+      ...(remoteNamesakes.length
+        ? {
+            remote_namesakes: remoteNamesakes,
+            routing_note: `Selected the local agent on ${localMachine}. Live remote namesakes: ${remoteNamesakes.map(({ address, instance_id }) => `${address} (--instance-id ${instance_id})`).join(", ")}. Use a machine address to select one.`,
+          }
+        : {}),
     },
   };
 }
 
 /**
- * Resolve a recipient on another machine, for a name or instance this
- * machine's ledger has never seen. Candidates come from peer presence (live
+ * Resolve a recipient on another machine. Candidates come from peer presence (live
  * or stale) and from senders this machine has received mail from. Returns
  * null when nothing matches, so the caller can report the local miss.
  */
@@ -156,24 +199,33 @@ export function resolveRemoteMessageTarget(
   coordRoot: string,
   input: MessageTargetInput,
 ): MessageTargetResult | null {
-  const requestedName = normalizeName(input.name);
+  const address = parseAddress(input.name);
+  if (!address) return null;
+  const requestedName = address.name;
   const requestedInstance = input.instanceId?.trim();
   if (!requestedName && !requestedInstance) return null;
   // Presence/mail names do not prove an exact V3 generation.
   if (input.generationId) return null;
   const live = new Set(
-    readRemoteMachines(coordRoot).flatMap(({ agents }) => agents.map((a) => a.instance_id)),
+    readRemoteMachines(coordRoot).flatMap(({ machine, agents }) =>
+      agents.map((a) => remoteKey(machine, a.instance_id)),
+    ),
   );
   const known = new Map<string, { instanceId: string; name: string; machine: string }>();
   for (const { machine, agents } of readRemoteMachines(coordRoot, { includeStale: true })) {
     for (const agent of agents) {
       if (agent.name)
-        known.set(agent.instance_id, { instanceId: agent.instance_id, name: agent.name, machine });
+        known.set(remoteKey(machine, agent.instance_id), {
+          instanceId: agent.instance_id,
+          name: agent.name,
+          machine,
+        });
     }
   }
   for (const sender of knownRemoteSenders(coordRoot)) {
-    if (!known.has(sender.instance_id)) {
-      known.set(sender.instance_id, {
+    const key = remoteKey(sender.machine, sender.instance_id);
+    if (!known.has(key)) {
+      known.set(key, {
         instanceId: sender.instance_id,
         name: sender.name,
         machine: sender.machine,
@@ -181,23 +233,16 @@ export function resolveRemoteMessageTarget(
     }
   }
   const candidates = [...known.values()]
+    .filter(({ machine }) => !address.machine || machine === address.machine)
     .filter(({ instanceId }) => !requestedInstance || instanceId === requestedInstance)
     .filter(({ name }) => !requestedName || normalizeName(name) === requestedName)
-    .map((candidate) => ({ ...candidate, fresh: live.has(candidate.instanceId) }));
+    .map((candidate) => ({
+      ...candidate,
+      fresh: live.has(remoteKey(candidate.machine, candidate.instanceId)),
+    }));
   if (candidates.length === 0) return null;
   const fresh = candidates.filter(({ fresh }) => fresh);
-  const selected = requestedInstance ? candidates : fresh.length > 0 ? fresh : candidates;
-  if (selected.length !== 1) {
-    return {
-      ok: false,
-      code: "ambiguous_peer",
-      message:
-        "Several agent instances on other machines hold that exact name; specify --instance-id.",
-      candidates: selected.map(({ instanceId, machine }) => `${instanceId} (${machine})`).sort(),
-    };
-  }
-  const target = selected[0]!;
-  if (input.requireLive && !target.fresh) {
+  if (input.requireLive && fresh.length === 0) {
     return {
       ok: false,
       code: "not_live",
@@ -205,6 +250,16 @@ export function resolveRemoteMessageTarget(
         "That agent is on another machine and outside live presence; omit --require-live to queue its message.",
     };
   }
+  const selected = requestedInstance ? candidates : fresh.length > 0 ? fresh : candidates;
+  if (selected.length !== 1) {
+    return {
+      ok: false,
+      code: "ambiguous_peer",
+      message: "Several remote agents match; use name@machine and --instance-id to select one.",
+      candidates: selected.map(({ instanceId, machine }) => `${instanceId} (${machine})`).sort(),
+    };
+  }
+  const target = selected[0]!;
   return {
     ok: true,
     target: {
@@ -232,6 +287,33 @@ function normalizeName(name: string | undefined): string {
     .trim()
     .replace(/^agent-/i, "")
     .toLowerCase();
+}
+
+function parseAddress(value: string | undefined): { name: string; machine?: string } | null {
+  const parts = (value ?? "").trim().split("@");
+  if (parts.length > 2 || (parts.length === 2 && (!parts[0]?.trim() || !parts[1]?.trim())))
+    return null;
+  return {
+    name: normalizeName(parts[0]),
+    ...(parts[1] ? { machine: sanitizeRefComponent(parts[1].trim()) } : {}),
+  };
+}
+
+function remoteKey(machine: string, instanceId: string): string {
+  return `${machine}\0${instanceId}`;
+}
+
+function liveRemoteNamesakes(coordRoot: string, name: string): RemoteNamesake[] {
+  return readRemoteMachines(coordRoot).flatMap(({ machine, agents }) =>
+    agents
+      .filter((agent) => normalizeName(agent.name) === name)
+      .map((agent) => ({
+        name: agent.name!,
+        machine,
+        instance_id: agent.instance_id,
+        address: `${agent.name}@${machine}`,
+      })),
+  );
 }
 
 function unsafe(message: string): MessageTargetResult {

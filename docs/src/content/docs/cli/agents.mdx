@@ -405,17 +405,36 @@ The coordination-in-motion commands.
   `.harnery/active/`), printing one line per delta: started, ended, activity,
   file claim, task change. `--poll-ms <n>` tunes the debounce (default `200`).
 - **`ping <name> <message...>`** stores a durable message for the task instance
-  resolved when the command runs. A fresh exact name takes precedence;
-  otherwise a unique known stale or done task can receive queued feedback.
-  A name this machine has never seen is looked up in other machines' presence
-  and in the senders of mail this machine received; a match there is queued in
-  this machine's mail ref and delivered when the recipient's machine next
-  fetches (see [presence](/cli/presence/#cross-machine-messages)).
-  Unknown or ambiguous names are refused. Use `--instance-id <id>` to select
-  an exact known instance, or `--require-live` when fresh presence is required.
+  resolved when the command runs. A fresh local agent takes precedence. If
+  its local namesake is dormant, a live agent on another machine receives the
+  message. When both are live, the receipt names the local destination and
+  lists the remote namesakes with their machine addresses.
+
+  Use `ping Maya@laptop "message"` to select a machine explicitly. Names are
+  case-insensitive and accept the `agent-` prefix. Machine addresses use the
+  labels shown in presence. An explicit local machine address keeps the
+  message local even if a remote namesake is live.
+
+  With no live namesake anywhere, a unique known dormant local task holds the
+  message. If the name has no local task, remote presence and prior mail senders
+  supply known addresses, including dormant ones. Remote messages enter this
+  machine's mail ref and reach the recipient after its machine next fetches
+  (see [presence](/cli/presence/#cross-machine-messages)). An unused name is
+  refused. Multiple matching local live agents, or multiple remote live agents
+  without a local live match, require a more specific address. Multiple dormant
+  instances of the same name also need an exact instance. Use
+  `--instance-id <id>` to select an exact known instance, or `--require-live`
+  when fresh presence is required.
+  Combine `name@machine` with `--instance-id` when one machine has several
+  matching instances. Exact instance and generation requests retain their
+  original recipient rather than following another live namesake.
   A later task assigned the same display name cannot receive the old message.
 
-  `written-live` and `queued` receipts confirm a synced append, not attention.
+  Every successful result identifies its destination: local recipients have
+  `child.target.local_machine`; remote recipients have `child.target.machine`.
+  Local collisions also include `remote_namesakes` and `routing_note` in that
+  target. `written-live` and `queued` receipts confirm a synced append,
+  not attention.
   Messages live in private `.harnery/inbox/<instance-id>.jsonl` histories with
   message IDs and separate surfaced records. They are not journal entries.
   The body limit remains 4000 bytes, with at most 25 pending messages per

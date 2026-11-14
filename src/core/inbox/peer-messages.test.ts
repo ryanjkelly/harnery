@@ -1,7 +1,9 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import {
   appendFileSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -24,6 +26,8 @@ import {
   recordApprovedSessionEndV3,
   recordHookSignalV3,
 } from "../events/v3/producers/recorder.ts";
+import { fetchPresence } from "../presence/index.ts";
+import { importMail } from "../presence/mail.ts";
 import { updateCrashSafeJsonlFile } from "../storage/durable-history.ts";
 import {
   acknowledgeEmittedPeerInbox,
@@ -97,6 +101,127 @@ function routingFixture() {
   };
   return { root, input, spy, reference, route };
 }
+
+function remotePeer(root: string, machine = "peer-east", instanceId = "remote-child") {
+  const directory = join(root, ".harnery", "presence", "remote");
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(
+    join(directory, `${machine}.json`),
+    JSON.stringify({
+      v: 1,
+      machine,
+      published_at: new Date().toISOString(),
+      agents: [
+        { instance_id: instanceId, name: "child", activity: "working", task_state: "active" },
+      ],
+    }),
+  );
+}
+
+test("a live remote namesake receives mail instead of the dormant local task", () => {
+  const { root, input } = routingFixture();
+  remotePeer(root);
+  const result = sendPeerMessage({
+    ...input,
+    target: { name: "child", now: new Date(Date.now() + 30 * 60_000) },
+  });
+  expect(result).toMatchObject({
+    ok: true,
+    target: { instance_id: "remote-child", delivery: "remote", machine: "peer-east" },
+    parent_copy: { state: "skipped", reason: "remote_parent_evidence_unavailable" },
+  });
+  expect(peerInbox(root).pending("child")).toHaveLength(0);
+  expect(peerInbox(root).pending("parent")).toHaveLength(0);
+  expect(readFileSync(join(root, ".harnery", "mail", "log.jsonl"), "utf8")).toContain(
+    '"to_machine":"peer-east"',
+  );
+});
+
+test("two clones with overlapping names and instance IDs deliver only to the selected machine", () => {
+  const { root, input } = routingFixture();
+  const receiver = routingFixture().root;
+  const origin = join(root, "origin.git");
+  const git = (...args: string[]) => {
+    const result = spawnSync("git", args, { encoding: "utf8" });
+    if (result.status !== 0) throw new Error(result.stderr);
+  };
+  git("init", "--bare", origin);
+  for (const clone of [root, receiver]) {
+    git("init", clone);
+    git("-C", clone, "remote", "add", "origin", origin);
+  }
+  const priorMachine = process.env.HARNERY_MACHINE;
+  const priorPresence = process.env.HARNERY_PRESENCE;
+  try {
+    process.env.HARNERY_MACHINE = "peer-west";
+    process.env.HARNERY_PRESENCE = "1";
+    remotePeer(root, "peer-east", "child");
+    expect(
+      sendPeerMessage({
+        ...input,
+        target: { name: "child", now: new Date(Date.now() + 30 * 60_000) },
+      }),
+    ).toMatchObject({
+      ok: true,
+      published: true,
+      target: { machine: "peer-east", instance_id: "child" },
+    });
+    expect(peerInbox(root).pending("child")).toHaveLength(0);
+    process.env.HARNERY_MACHINE = "peer-east";
+    expect(fetchPresence(receiver, { sync: true, force: true }).status).toBe("fetched");
+    expect(importMail(receiver, peerInbox(receiver), { publish: false }).received).toBe(1);
+    expect(
+      peerInbox(receiver)
+        .pending("child")
+        .map(({ body }) => body),
+    ).toEqual([input.body]);
+    expect(importMail(receiver, peerInbox(receiver), { publish: false }).received).toBe(0);
+  } finally {
+    if (priorMachine === undefined) delete process.env.HARNERY_MACHINE;
+    else process.env.HARNERY_MACHINE = priorMachine;
+    if (priorPresence === undefined) delete process.env.HARNERY_PRESENCE;
+    else process.env.HARNERY_PRESENCE = priorPresence;
+  }
+});
+
+test("a local live namesake wins and the receipt identifies remote addresses", () => {
+  const { root, input } = routingFixture();
+  remotePeer(root);
+  expect(sendPeerMessage({ ...input, target: { name: "child" } })).toMatchObject({
+    ok: true,
+    target: {
+      instance_id: "child",
+      delivery: "written-live",
+      local_machine: expect.any(String),
+      remote_namesakes: [
+        {
+          name: "child",
+          machine: "peer-east",
+          instance_id: "remote-child",
+          address: "child@peer-east",
+        },
+      ],
+      routing_note: expect.stringContaining("child@peer-east"),
+    },
+  });
+  expect(peerInbox(root).pending("child")).toHaveLength(1);
+});
+
+test("a qualified remote target stays on its machine during frozen-plan revalidation", () => {
+  const { root, input } = routingFixture();
+  remotePeer(root, "peer-east", "shared-id");
+  remotePeer(root, "peer-west", "shared-id");
+  const result = sendPeerMessage({ ...input, target: { name: "child@peer-west" } });
+  expect(result).toMatchObject({
+    ok: true,
+    target: { machine: "peer-west", instance_id: "shared-id" },
+  });
+  expect(peerInbox(root).pending("child")).toHaveLength(0);
+  const history = readFileSync(join(root, ".harnery", "mail", "log.jsonl"), "utf8");
+  expect(history).toContain('"to_machine":"peer-west"');
+  expect(history).not.toContain('"to_machine":"peer-east"');
+  expect(sendPeerMessage({ ...input, target: { name: "child@peer-west" } })).toEqual(result);
+});
 
 function fill(root: string, recipient: string) {
   send(root, "existing-0", recipient);

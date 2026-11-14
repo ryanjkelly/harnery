@@ -1,0 +1,42 @@
+---
+title: "0258: Route names to live peers across machines"
+description: "Prefer live recipients over dormant namesakes and support explicit machine addresses."
+---
+
+**Status:** accepted (2026-11-14)
+
+## Context
+
+Each machine keeps its own name history and pool counter. Starting every
+counter at zero repeats the same names across machines. Local-first ping
+lookup then lets dormant local history hide a live remote recipient.
+
+## Decision
+
+Seed only missing counters with the first unsigned 32 bits of the machine
+label's SHA-256 hash modulo the pool size. Preserve existing counters. Reuse
+the synchronous directory lock for the counter update and history append,
+including its Windows contention handling and abandoned-owner recovery.
+Recheck an instance's binding after acquiring the lock. Skip local live names
+and names in the existing fresh remote presence view. Remote reads are
+best-effort and never fetch or publish as part of assignment.
+
+For unqualified names, prefer a live local recipient, then a live remote
+recipient, then a unique dormant local recipient. If no local recipient is
+known, retain remote presence and prior mail senders as address sources.
+Refuse unused or ambiguous names. `name@machine` restricts resolution to that
+machine, and exact instance or generation addressing never follows a different
+live namesake. A local receipt identifies the machine and any live remote
+namesakes, including their explicit addresses. Remote receipts identify the
+recipient machine. Freeze both instance and machine before transport.
+
+## Alternatives and limits
+
+Keeping local-first lookup would preserve the delivery error. Refusing all
+duplicate names would prevent useful delivery when only one namesake is live.
+A global name allocator would require a reachable coordination service.
+
+Hash collisions, simultaneous starts on disconnected machines, stale presence,
+and an exhausted pool can still produce duplicate names. Machine addresses
+resolve those collisions without requiring global allocation. Focused tests
+cover concurrent local assignments and overlapping names across machines.
