@@ -11,7 +11,7 @@ harn run <script> [--adapter <name>] [--resume-from <run-id>]
                            [--policy <file>] [--approval-to <address>]
                            [--max-agents <n>] [--concurrency <n>] [--cwd <dir>] [--json]
 harn run resume <run-id> [--json]
-harn approval list [--status pending|approved|denied] [--json]
+harn approval list [--status pending|approved|denied] [--remote] [--json]
 harn approval show <approval-id> [--json]
 harn approval approve|deny <approval-id> [--actor <name>] [--reason <text>] [--json]
 harn run proof <run-id> [--json]
@@ -368,6 +368,13 @@ harn approval approve apr-0123456789abcdef0123 \
   --actor ryan --reason "reviewed the release target"
 harn run resume wf-2026-07-21T12-00-00-000Z-a1b2c3
 ```
+
+When the project shares its docket (`decision.share`, see
+[decision](/cli/decision/#sharing-across-machines)), `approval list --remote`
+also lists pending approvals parked on other machines, and `approval show`
+falls back to those copies. They are labelled with their source machine and
+are read only: `approve` and `deny` refuse them and print an `agents ping`
+line for an agent on that machine.
 
 Requests are immutable private records. Resolution creates a separate
 exclusive decision record: the first verdict wins, the same-verdict retry is

@@ -11,6 +11,17 @@ import {
 import { readLiveCoordinationRow } from "../core/agents/state/live-coordination-view.ts";
 import { resolveBinName } from "../core/config.ts";
 import {
+  type DocketDecision,
+  docketContact,
+  docketSourceLabel,
+  fetchPresence,
+  findRemoteDecision,
+  type RemoteDocket,
+  readRemoteDockets,
+  readRemoteMachines,
+  searchRemoteDecisions,
+} from "../core/presence/index.ts";
+import {
   archiveDecision,
   claimDecision,
   DECISION_STAKES,
@@ -109,6 +120,10 @@ export function registerDecisionCommand(program: Command, emitParam: EmitContext
       "--waiting",
       "Only what a human still has to rule on: tier 2, unresolved. Oldest-first within stakes.",
     )
+    .option(
+      "--remote",
+      "Also list read-only copies shared by other machines (needs decision.share on theirs)",
+    )
     .action((opts: ListOpts) => {
       const coordRoot = coordRootOrExit();
       const status = opts.status ? parseStatus(opts.status) : undefined;
@@ -129,6 +144,24 @@ export function registerDecisionCommand(program: Command, emitParam: EmitContext
         openOnly: opts.open || opts.waiting,
         includeArchived: opts.waiting ? false : opts.archived,
       }).map(summarize);
+      let remoteMeta: Record<string, unknown>[] | undefined;
+      if (opts.remote) {
+        const dockets = loadRemoteDockets(coordRoot);
+        const localIds = new Set(rows.map((r) => String(r.decision_id)));
+        remoteMeta = dockets.map(docketMeta);
+        for (const source of dockets) {
+          for (const d of source.decisions) {
+            if (localIds.has(d.decision_id)) continue;
+            if (status && d.status !== status) continue;
+            const wantTier = opts.waiting ? 2 : tier;
+            if (wantTier !== undefined && d.tier !== wantTier) continue;
+            if (stakes && d.stakes !== stakes) continue;
+            if ((opts.open || opts.waiting) && TERMINAL.has(d.status)) continue;
+            if (!opts.archived && d.status === "archived") continue;
+            rows.push(summarizeRemote(d, source));
+          }
+        }
+      }
       if (opts.waiting) {
         rows = rows.filter((r) => !r.resolved).sort(byStakesThenAge);
       }
@@ -136,6 +169,7 @@ export function registerDecisionCommand(program: Command, emitParam: EmitContext
         rows,
         meta: {
           total: rows.length,
+          ...(remoteMeta ? { remote: remoteMeta } : {}),
           filter: {
             status,
             tier: opts.waiting ? 2 : tier,
@@ -143,6 +177,7 @@ export function registerDecisionCommand(program: Command, emitParam: EmitContext
             open: !!(opts.open || opts.waiting),
             archived: opts.waiting ? false : !!opts.archived,
             waiting: !!opts.waiting,
+            remote: !!opts.remote,
           },
         },
       });
@@ -155,8 +190,18 @@ export function registerDecisionCommand(program: Command, emitParam: EmitContext
     .action((id: string) => {
       const coordRoot = coordRootOrExit();
       const detail = showDecision(coordRoot, id);
-      if (!detail) return fail("not_found", `no decision "${id}"`);
-      emit.data(detail);
+      if (detail) {
+        emit.data(detail);
+        return;
+      }
+      const hit = findRemoteDecision(loadRemoteDockets(coordRoot), id);
+      if (!hit) return fail("not_found", `no decision "${id}"`);
+      emit.data({
+        manifest: hit.decision,
+        bodies: hit.decision.brief ? [{ name: "brief.md", content: hit.decision.brief }] : [],
+        archived: hit.decision.status === "archived",
+        remote: remoteSource(hit.source, hit.decision.filed_by),
+      });
     });
 
   // ── search ───────────────────────────────────────────────────────────────
@@ -165,12 +210,19 @@ export function registerDecisionCommand(program: Command, emitParam: EmitContext
     .description("Substring search over questions, context, resolutions, bodies (incl. archive).")
     .action((query: string[]) => {
       const coordRoot = coordRootOrExit();
-      const hits = searchDecisions(coordRoot, query.join(" ")).map((h) => ({
+      const q = query.join(" ");
+      const hits: Record<string, unknown>[] = searchDecisions(coordRoot, q).map((h) => ({
         ...summarize(h.manifest),
         where: h.where,
         snippet: h.snippet,
       }));
-      emit.data({ rows: hits, meta: { total: hits.length, query: query.join(" ") } });
+      const localIds = new Set(hits.map((h) => String(h.decision_id)));
+      const dockets = loadRemoteDockets(coordRoot);
+      for (const h of searchRemoteDecisions(dockets, q)) {
+        if (localIds.has(h.decision.decision_id)) continue;
+        hits.push({ ...summarizeRemote(h.decision, h.source), where: h.where, snippet: h.snippet });
+      }
+      emit.data({ rows: hits, meta: { total: hits.length, query: q } });
     });
 
   // ── claim ────────────────────────────────────────────────────────────────
@@ -188,7 +240,7 @@ export function registerDecisionCommand(program: Command, emitParam: EmitContext
         );
       }
       const r = claimDecision(coordRoot, id, owner);
-      if (!r.ok) return fail("claim_failed", r.reason);
+      if (!r.ok) return failMutation(coordRoot, id, "claim_failed", r.reason);
       emit.data(r.manifest);
     });
 
@@ -225,7 +277,7 @@ export function registerDecisionCommand(program: Command, emitParam: EmitContext
         revisit_when: opts.revisitWhen,
         resolved_by: resolvedBy,
       });
-      if (!r.ok) return fail("resolve_failed", r.reason);
+      if (!r.ok) return failMutation(coordRoot, id, "resolve_failed", r.reason);
       emitDecisionEvent("resolved", r.manifest!);
       emit.data(r.manifest);
     });
@@ -251,7 +303,7 @@ export function registerDecisionCommand(program: Command, emitParam: EmitContext
         verdict: opts.verdict as ReviewVerdict,
         note: opts.note,
       });
-      if (!r.ok) return fail("review_failed", r.reason);
+      if (!r.ok) return failMutation(coordRoot, id, "review_failed", r.reason);
       emitDecisionEvent("reviewed", r.manifest!);
       emit.data(r.manifest);
     });
@@ -273,7 +325,7 @@ export function registerDecisionCommand(program: Command, emitParam: EmitContext
         tier: opts.tier !== undefined ? parseTier(opts.tier) : undefined,
         stakes: opts.stakes !== undefined ? parseStakes(opts.stakes) : undefined,
       });
-      if (!r.ok) return fail("triage_failed", r.reason);
+      if (!r.ok) return failMutation(coordRoot, id, "triage_failed", r.reason);
       emit.data(r.manifest);
     });
 
@@ -288,7 +340,7 @@ export function registerDecisionCommand(program: Command, emitParam: EmitContext
     .action((id: string, opts: { graduatedTo?: string }) => {
       const coordRoot = coordRootOrExit();
       const r = archiveDecision(coordRoot, id, opts.graduatedTo);
-      if (!r.ok) return fail("archive_failed", r.reason);
+      if (!r.ok) return failMutation(coordRoot, id, "archive_failed", r.reason);
       emitDecisionEvent("archived", r.manifest!);
       emit.data(r.manifest);
     });
@@ -304,7 +356,7 @@ export function registerDecisionCommand(program: Command, emitParam: EmitContext
     .action((id: string) => {
       const coordRoot = coordRootOrExit();
       const r = reopenDecision(coordRoot, id);
-      if (!r.ok) return fail("reopen_failed", r.reason);
+      if (!r.ok) return failMutation(coordRoot, id, "reopen_failed", r.reason);
       emitDecisionEvent("reviewed", r.manifest!, "archived");
       emit.data(r.manifest);
     });
@@ -317,7 +369,7 @@ export function registerDecisionCommand(program: Command, emitParam: EmitContext
     .action((id: string, opts: { by?: string }) => {
       const coordRoot = coordRootOrExit();
       const r = supersedeDecision(coordRoot, id, opts.by);
-      if (!r.ok) return fail("supersede_failed", r.reason);
+      if (!r.ok) return failMutation(coordRoot, id, "supersede_failed", r.reason);
       emitDecisionEvent("superseded", r.manifest!);
       emit.data(r.manifest);
     });
@@ -330,7 +382,7 @@ export function registerDecisionCommand(program: Command, emitParam: EmitContext
     .action((id: string, opts: { reason?: string }) => {
       const coordRoot = coordRootOrExit();
       const r = wontfixDecision(coordRoot, id, opts.reason);
-      if (!r.ok) return fail("wontfix_failed", r.reason);
+      if (!r.ok) return failMutation(coordRoot, id, "wontfix_failed", r.reason);
       emitDecisionEvent("wontfix", r.manifest!);
       emit.data(r.manifest);
     });
@@ -353,6 +405,7 @@ interface ListOpts {
   open?: boolean;
   archived?: boolean;
   waiting?: boolean;
+  remote?: boolean;
 }
 interface ResolveOpts {
   recommendation: string;
@@ -376,6 +429,85 @@ function coordRootOrExit(): string {
     process.exit(1);
   }
   return root;
+}
+
+/** Statuses past which a decision is read-only (mirrors the engine's terminal set). */
+const TERMINAL = new Set<string>(["archived", "superseded", "wontfix"]);
+
+/** Other machines' shared dockets, after a throttled fetch that fails open. */
+function loadRemoteDockets(coordRoot: string): RemoteDocket[] {
+  try {
+    fetchPresence(coordRoot, { sync: true });
+  } catch {
+    /* fail open: read whatever refs are already local */
+  }
+  return readRemoteDockets(coordRoot);
+}
+
+function docketMeta(d: RemoteDocket): Record<string, unknown> {
+  return {
+    machine: docketSourceLabel(d),
+    published_at: d.published_at,
+    age_secs: d.age_secs,
+    stale: d.stale,
+    label_collision: d.label_collision,
+    truncated: d.truncated,
+  };
+}
+
+/** Where a remote item lives and how to reach its owner. Read-only by contract. */
+function remoteSource(source: RemoteDocket, filedBy: string | undefined): Record<string, unknown> {
+  const agents =
+    readRemoteMachines(monorepoRoot() ?? "", { includeStale: true }).find(
+      (m) => m.machine === source.ref || m.machine === source.machine,
+    )?.agents ?? [];
+  const contact = docketContact(filedBy, agents);
+  return {
+    machine: docketSourceLabel(source),
+    published_at: source.published_at,
+    age_secs: source.age_secs,
+    stale: source.stale,
+    read_only: true,
+    note: "Shared copy. Resolve, claim, or review it on the machine that filed it.",
+    reach: contact
+      ? `${resolveBinName()} agents ping ${contact} "<message>"`
+      : `no agent known on ${docketSourceLabel(source)}; ask its owner directly`,
+  };
+}
+
+function summarizeRemote(d: DocketDecision, source: RemoteDocket): Record<string, unknown> {
+  return {
+    decision_id: d.decision_id,
+    status: d.status,
+    tier: d.tier,
+    stakes: d.stakes,
+    question: d.question,
+    filed_by: d.filed_by ?? null,
+    filed_at: d.filed_at,
+    claimed_by: d.claimed_by ?? null,
+    resolved: d.resolution_summary !== undefined || d.resolved_at !== undefined,
+    reviewed: d.review_verdict !== undefined,
+    graduated_to: null,
+    remote: remoteSource(source, d.filed_by),
+  };
+}
+
+/**
+ * A mutation on an id that exists only in another machine's shared docket
+ * explains where it lives instead of a bare "no decision".
+ */
+function failMutation(coordRoot: string, id: string, code: string, reason?: string): never {
+  if (reason?.startsWith("no decision")) {
+    const hit = findRemoteDecision(readRemoteDockets(coordRoot), id);
+    if (hit) {
+      const src = remoteSource(hit.source, hit.decision.filed_by);
+      fail(
+        "remote_decision",
+        `decision "${id}" was filed on ${String(src.machine)}; it can only change there. Reach it: ${String(src.reach)}`,
+      );
+    }
+  }
+  fail(code, reason);
 }
 
 function fail(code: string, message?: string): never {

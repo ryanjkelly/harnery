@@ -1,0 +1,82 @@
+---
+title: "0255: Share the docket across machines as read-only copies"
+description: "ADR: with decision.share on, each machine publishes its waiting decisions, pending run approvals, and recently changed decisions to refs/harnery/docket/<machine> on the presence transport. Other machines list, show, and search those copies labelled with their source machine. Resolution stays on the filing machine."
+---
+
+**Status:** accepted (2026-11-14) · **Scope:** product tier (`core/presence`, `commands/decision`, `commands/approval`)
+
+## Context
+
+Decisions live in `.harnery/decisions/` and parked run approvals in
+`.harnery/approvals/`. Hosts do not commit `.harnery/`, so both exist only on
+the machine that filed them. When several people each run agents on their own
+machine against one origin, a decision waiting for a person on one machine
+is invisible on every other machine. A docket id cited in a committed
+document resolves only where it was filed, and `decision.state_changed` is a
+local ledger event, so nothing else learns about it.
+
+The presence transport (ADR 0016) already moves small per-machine payloads
+between clones: each machine force-pushes a parentless commit to its own ref
+under `refs/harnery/`, and one fetch brings in every peer. Mail (ADR 0222)
+rides the same path. Each machine writes only its own ref, so there is no
+merge.
+
+## Alternatives considered
+
+- **Commit decisions to the host repository.** Durable and visible, but it
+  mixes runtime state into the host's branches, races between machines, and
+  publishes decision text into permanent history.
+- **A remote write path, so any machine can resolve any decision.** That
+  needs cross-machine locking and an authority model for who may rule on
+  whose decision. The filing machine already has both, locally.
+- **Notify people (chat or email) when a decision waits.** Out of scope for
+  the coordination layer, and it does not make the record readable anywhere.
+- **A third ref namespace on the presence transport (chosen).** Same
+  credentials, same fetch, same failure handling, no new service.
+
+## Decision
+
+1. **Opt in per project.** `{ "decision": { "share": true } }` in
+   `.harnery/config.jsonc` turns publishing on. The default is off because
+   decision text can be sensitive. `HARNERY_DOCKET_SHARE=1|0` overrides per
+   process. Sharing needs presence, whose transport carries the blob.
+2. **One bounded blob per machine** at `refs/harnery/docket/<machine>`:
+   every tier 2 decision that is unresolved and not terminal (up to 50),
+   decisions changed in the last 14 days (up to 50), and pending run
+   approvals (up to 30). Each entry is a manifest: id, question, tier,
+   stakes, status, timestamps, filer, and a short resolution summary. A
+   waiting decision also carries up to 2,000 characters of its brief. The
+   blob is capped at 48 KiB: briefs go first, then recent decisions, then
+   waiting ones. The blob's `truncated` counts say what was left out.
+3. **Same cadence as presence.** `publishPresence` publishes the docket on
+   its own change detector, with a 30 minute keepalive and a 15 second floor.
+   `fetchPresence` fetches the docket namespace in the same round trip as
+   presence and mail. Turning sharing off publishes one empty, withdrawn
+   blob so peers stop showing the old copy.
+4. **Read-only remote views.** `decision list --remote`, the `decision show`
+   and `decision search` fallbacks, and `approval list --remote` and the
+   `approval show` fallback mark every remote item with its source machine,
+   its age, whether it is stale, and an `agents ping <name>` line that
+   reaches its filer or an agent on that machine. Changing a remote item
+   (claim, resolve, approve, and so on) is refused with the same pointer.
+5. **Authority stays local.** No remote resolve, approve, or deny exists.
+
+## Edge cases
+
+- **Label collisions.** Each clone keeps a random id. If the fetched ref for
+  this machine's label belongs to a different id and is fresh, this machine
+  publishes under `<label>-<id prefix>` and stays there. Readers flag
+  dockets that share a label and show the id prefix beside the machine name.
+- **Stale machines.** A docket older than three keepalives is shown with
+  `stale: true`. One older than 14 days is hidden.
+- **Malformed blobs.** A blob that fails validation is dropped; a malformed
+  entry inside a valid blob is dropped on its own. Nothing throws into a
+  hook.
+- **Failed fetch or push.** Local behavior is unchanged. Readers use
+  whatever refs are already local.
+
+## Consequences
+
+People on other machines can see what is waiting and who to ask, and a docket
+id in a committed document resolves on any machine that has fetched. The
+dashboard does not show remote dockets yet; that is follow-up work.

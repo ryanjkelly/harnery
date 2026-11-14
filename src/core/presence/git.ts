@@ -21,7 +21,13 @@ import { spawn, spawnSync } from "node:child_process";
  * refs carry cross-machine peer messages on the same transport (ADR 0222). */
 export const PRESENCE_REF_PREFIX = "refs/harnery/presence/";
 export const MAIL_REF_PREFIX = "refs/harnery/mail/";
-type HarneryRefPrefix = typeof PRESENCE_REF_PREFIX | typeof MAIL_REF_PREFIX;
+/** Shared docket refs: a machine's waiting decisions and pending approvals,
+ * published only when the project opts in (ADR 0255). */
+export const DOCKET_REF_PREFIX = "refs/harnery/docket/";
+type HarneryRefPrefix =
+  | typeof PRESENCE_REF_PREFIX
+  | typeof MAIL_REF_PREFIX
+  | typeof DOCKET_REF_PREFIX;
 
 /** Well-known SHA of git's empty tree; `git mktree` below guarantees the
  * object exists in the local odb before we build a commit on it. */
@@ -117,7 +123,7 @@ export function writePresenceCommit(root: string, message: string): string | nul
 }
 
 /**
- * Force-push a commit to `<prefix><machine>` (presence or mail). `sync: true`
+ * Force-push a commit to `<prefix><machine>` (presence, mail, or docket). `sync: true`
  * (CLI/tests) waits and reports; default is detached fire-and-forget (hook
  * path — a slow or credential-less push must not block a turn).
  */
@@ -132,13 +138,15 @@ export function pushMachineRef(
   return runNetworkGit(root, ["push", "--quiet", "--no-verify", "origin", refspec], opts);
 }
 
-/** Fetch every peer presence and mail ref from origin into the local ref
- * namespace, in one round trip. A namespace with no refs is not an error. */
+/** Fetch every peer presence, mail, and docket ref from origin into the local
+ * ref namespace, in one round trip. A namespace with no refs is not an error. */
 export function fetchMachineRefs(
   root: string,
   opts: { sync?: boolean } = {},
 ): { ok: boolean; error?: string } {
-  const refspecs = [PRESENCE_REF_PREFIX, MAIL_REF_PREFIX].map((p) => `+${p}*:${p}*`);
+  const refspecs = [PRESENCE_REF_PREFIX, MAIL_REF_PREFIX, DOCKET_REF_PREFIX].map(
+    (p) => `+${p}*:${p}*`,
+  );
   return runNetworkGit(root, ["fetch", "--quiet", "--no-tags", "origin", ...refspecs], opts);
 }
 

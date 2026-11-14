@@ -28,8 +28,9 @@ manifest per decision plus a sibling dir for long-form bodies.
 harn decision file <question...>   # file a decision; --tier --stakes --context --default-taken --brief
 harn decision list                 # active queue, newest first; --status --tier --stakes --open --archived
 harn decision list --waiting       # only what a human still owes a ruling on (tier 2, unresolved)
-harn decision show <id>            # one decision: manifest + long-form bodies
-harn decision search <query...>    # substring search over questions/context/resolutions/bodies (incl. archive)
+harn decision list --remote        # also list read-only copies shared by other machines
+harn decision show <id>            # one decision: manifest + long-form bodies (falls back to a shared copy)
+harn decision search <query...>    # substring search over questions/context/resolutions/bodies (incl. archive and shared copies)
 harn decision claim <id>           # claim for deliberation (--owner to override)
 harn decision resolve <id>         # resolve; --recommendation (req) + --evidence (≥1 req) + --confidence/--reversal-cost/--wrong-if/--revisit-when
 harn decision review <id>          # record a verdict: --verdict ratified|overridden|wrong-tier-high|wrong-tier-low
@@ -39,6 +40,35 @@ harn decision reopen <id>          # unarchive back to reviewed (the inverse of 
 harn decision supersede <id>       # mark superseded by a newer decision (terminal); --by <id>
 harn decision wontfix <id>         # close an un-deliberated decision without action (terminal); --reason <text>
 ```
+
+## Sharing across machines
+
+Decisions live in the filing machine's `.harnery/`, which a host does not
+commit. To let people on other machines see them, opt the project in:
+
+```jsonc
+// .harnery/config.jsonc
+{ "decision": { "share": true } }
+```
+
+Each machine then publishes a bounded copy of its docket to
+`refs/harnery/docket/<machine>` on `origin`, on the same push and fetch as
+[presence](/cli/presence/). The copy holds every tier 2 decision that is
+still unresolved, decisions changed in the last 14 days, and pending run
+approvals, capped by count and at 48 KiB. Briefs are dropped first when the
+cap is reached, and the copy records how many items it left out. Sharing is
+off by default because decision text can be sensitive.
+`HARNERY_DOCKET_SHARE=1|0` overrides it for one process.
+
+On another machine, `decision list --remote` adds the shared rows, and `show`
+and `search` fall back to them when an id or hit is not local. Every remote
+row carries a `remote` block: the source machine, its age, `stale: true` when
+that machine stopped publishing, and a `reach` line such as
+`harn agents ping <name> "<message>"`. Remote copies are read only. `claim`,
+`resolve`, `review`, and the other changes refuse a remote id and print the
+same pointer, because only the filing machine can rule on its decisions.
+Turning sharing off publishes an empty copy so peers stop showing the old
+one. Design: [decision 0255](/decisions/0255-share-the-docket-across-machines/).
 
 ## Tiers
 

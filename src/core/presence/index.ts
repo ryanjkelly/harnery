@@ -30,6 +30,7 @@ import { coordEnv } from "../../lib/env.ts";
 import { resolveMachineLabel } from "../../lib/machine.ts";
 import { presenceEnabled } from "../config.ts";
 import { buildPresenceBlob, type PresenceAgent, type PresenceBlob } from "./blob.ts";
+import { publishDocket } from "./docket.ts";
 import {
   fetchMachineRefs,
   hasOrigin,
@@ -43,6 +44,22 @@ import {
 export type { PresenceAgent, PresenceBlob } from "./blob.ts";
 export { buildPresenceBlob } from "./blob.ts";
 export {
+  type DocketApproval,
+  type DocketBlob,
+  type DocketDecision,
+  type DocketPublishResult,
+  docketContact,
+  docketShareEnabled,
+  docketSourceLabel,
+  findRemoteApproval,
+  findRemoteDecision,
+  publishDocket,
+  type RemoteDocket,
+  readRemoteDockets,
+  searchRemoteDecisions,
+} from "./docket.ts";
+export {
+  DOCKET_REF_PREFIX,
   MAIL_REF_PREFIX,
   PRESENCE_REF_PREFIX,
   parseForEachRefOutput,
@@ -112,10 +129,26 @@ function writeState(coordRoot: string, state: PublishState): void {
  * Publish this machine's presence blob to origin if it changed (or the
  * keepalive elapsed). `sync: true` pushes in-process and reports errors (CLI
  * path); default spawns the push detached (hook path).
+ *
+ * The shared docket (ADR 0255) rides the same cadence: it publishes on its own
+ * change detector and keepalive, only when the project opts in, and its
+ * outcome never changes the presence result.
  */
 export function publishPresence(
   coordRoot: string,
   opts: { force?: boolean; sync?: boolean } = {},
+): PublishResult {
+  try {
+    publishDocket(coordRoot, { sync: opts.sync });
+  } catch {
+    /* fail-silent: the docket never breaks presence */
+  }
+  return publishPresenceBlob(coordRoot, opts);
+}
+
+function publishPresenceBlob(
+  coordRoot: string,
+  opts: { force?: boolean; sync?: boolean },
 ): PublishResult {
   try {
     if (!presenceEnabled(coordRoot)) return { status: "skipped", reason: "disabled" };
