@@ -17,12 +17,14 @@ export interface PresenceRecord {
   state: PresenceState;
   updated_at: string;
   source: PresenceSource;
+  pinned: boolean;
 }
 
 export interface PresenceRead {
   state: PresenceState;
   updated_at: string | null;
   source: PresenceSource | null;
+  pinned: boolean;
   is_default: boolean;
 }
 
@@ -35,7 +37,13 @@ export function presenceFilePath(): string {
 export function readPresence(): PresenceRead {
   const path = presenceFilePath();
   if (!existsSync(path)) {
-    return { state: DEFAULT_STATE, updated_at: null, source: null, is_default: true };
+    return {
+      state: DEFAULT_STATE,
+      updated_at: null,
+      source: null,
+      pinned: false,
+      is_default: true,
+    };
   }
   try {
     const raw = readFileSync(path, "utf8").trim();
@@ -47,14 +55,25 @@ export function readPresence(): PresenceRead {
       state,
       updated_at: typeof parsed.updated_at === "string" ? parsed.updated_at : null,
       source,
+      pinned: parsed.pinned === true,
       is_default: false,
     };
   } catch {
-    return { state: DEFAULT_STATE, updated_at: null, source: null, is_default: true };
+    return {
+      state: DEFAULT_STATE,
+      updated_at: null,
+      source: null,
+      pinned: false,
+      is_default: true,
+    };
   }
 }
 
-export function writePresence(state: PresenceState, source: PresenceSource): PresenceRecord {
+export function writePresence(
+  state: PresenceState,
+  source: PresenceSource,
+  pinned = false,
+): PresenceRecord {
   const path = presenceFilePath();
   const dir = dirname(path);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
@@ -63,11 +82,17 @@ export function writePresence(state: PresenceState, source: PresenceSource): Pre
     state,
     updated_at: new Date().toISOString(),
     source,
+    pinned,
   };
   const tmp = `${path}.tmp.${process.pid}.${Date.now()}`;
   writeFileSync(tmp, `${JSON.stringify(record)}\n`);
   renameSync(tmp, path);
   return record;
+}
+
+export function unpinPresence(): void {
+  const current = readPresence();
+  if (current.pinned) writePresence(current.state, "cli");
 }
 
 export function clearPresence(): boolean {
@@ -82,6 +107,11 @@ const STRAIGHT_RE = /['"]/;
 const FENCED_BACKTICK_RE = /^```[\s\S]*?^```/gm;
 const FENCED_TILDE_RE = /^~~~[\s\S]*?^~~~/gm;
 const BLOCK_QUOTE_RE = /^>.*$/gm;
+// Long or multi-paragraph smart-quoted text is often pasted prose, not phone typing.
+const MAX_CURLY_PROMPT_CHARS = 400;
+const BLANK_LINE_RE = /\r?\n[ \t]*\r?\n/;
+// A trailing space is a phone-keyboard signal only for a brief original message.
+const TRAILING_SPACE_PROMPT_CHAR_LIMIT = 100;
 
 /**
  * Strip fenced code blocks and `>`-quoted lines from the prompt before
@@ -104,20 +134,26 @@ export function preprocessForDetection(prompt: string): string {
  *
  * Rule order (first match wins):
  *   1. Both curly AND straight present -> null (mixed)
- *   2. Curly only -> mobile
+ *   2. Curly only -> mobile if <=400 chars in one paragraph; otherwise null
  *   3. Straight only -> office
  *   4. <100 chars and ends with space -> mobile
  *   5. Otherwise -> null
  */
 export function detectFromPrompt(prompt: string): PresenceState | null {
-  const cleaned = preprocessForDetection(prompt);
+  const cleaned = preprocessForDetection(prompt).trim();
   const hasCurly = CURLY_RE.test(cleaned);
   const hasStraight = STRAIGHT_RE.test(cleaned);
 
   if (hasCurly && hasStraight) return null;
-  if (hasCurly) return "mobile";
+  if (hasCurly) {
+    return cleaned.length <= MAX_CURLY_PROMPT_CHARS && !BLANK_LINE_RE.test(cleaned)
+      ? "mobile"
+      : null;
+  }
   if (hasStraight) return "office";
-  if (prompt.length < 100 && prompt.endsWith(" ")) return "mobile";
+  if (prompt.length < TRAILING_SPACE_PROMPT_CHAR_LIMIT && prompt.endsWith(" ")) {
+    return "mobile";
+  }
   return null;
 }
 
@@ -131,7 +167,7 @@ export interface DetectResult {
 export function applyDetection(prompt: string): DetectResult {
   const current = readPresence();
   const detected = detectFromPrompt(prompt);
-  if (detected === null || detected === current.state) {
+  if (current.pinned || detected === null || detected === current.state) {
     return { changed: false, before: current.state, after: current.state, detected };
   }
   writePresence(detected, "hook");

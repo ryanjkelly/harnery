@@ -6,7 +6,7 @@ sidebar:
 ---
 
 ```
-harn presence [get|set|clear|publish|fetch|peers|mail|relay-status] [options]
+harn presence [get|set|pin|unpin|clear|publish|fetch|peers|mail|relay-status] [options]
 ```
 
 Two related surfaces share this command: **mobile/office state** (is the human
@@ -22,15 +22,18 @@ reads presence can shorten replies and hand over links instead of file paths.
 State lives in one small JSON file at `~/.claude/presence`; the default when the
 file is absent is `office`.
 
-Run bare, `harn presence` prints the full record (state, source, age). The
-subcommands read, set, and clear that record.
+Run bare, `harn presence` prints the full record (state, source, pin status,
+age). The subcommands read, set, pin, unpin, and clear that record. This state
+and its pin apply to every session using the same home directory on the machine.
 
 ## Subcommands
 
 ```
-harn presence get             # print just the state ("mobile" / "office")
-harn presence get --json      # full record: state, updated_at, source, is_default, path
-harn presence set <state>     # set state explicitly (source=cli); <state> = mobile | office
+harn presence get             # show state, source, and whether it is pinned
+harn presence get --json      # state, updated_at, source, pinned, is_default, path
+harn presence set <state>     # set once and remove any pin; detection can change it later
+harn presence pin <state>     # set mobile | office and prevent automatic changes
+harn presence unpin           # allow detection again, keeping the current state
 harn presence clear           # delete the file (next read returns the default, "office")
 harn presence detect          # internal: infer state from prompt text on stdin (hook-driven)
 ```
@@ -39,25 +42,40 @@ harn presence detect          # internal: infer state from prompt text on stdin 
 
 | Flag | Applies to | Description |
 | --- | --- | --- |
-| `--json` | `get` | Print the full record as JSON instead of the bare state string. |
+| `--json` | `get` | Print the full record as JSON instead of the state, source, and pin summary. |
+
+Plain `get` prints a line such as `office (source: cli, pinned: yes)`.
+Use the JSON `state` field for scripts that need only `mobile` or `office`.
 
 ## How the state gets set
 
 Two sources write the file, and the `source` field records which:
 
-- **`cli`**: an explicit `harn presence set mobile` / `office`. Deliberate and
-  authoritative for that moment, but not sticky: a later detection can still
-  overwrite it.
+- **`cli`**: an explicit `set`, `pin`, or `unpin`. `set` changes the state once
+  and removes any pin. A later detection can overwrite it. `pin` sets the state
+  and prevents detection from changing the record until `unpin`, `set`, or `clear`.
 - **`hook`**: `harn presence detect` reads a prompt on stdin and infers the
   state. It's meant to be wired into a prompt-submit hook so presence tracks the
   human automatically. Detection only writes when the signal is unambiguous;
   a mixed or absent signal leaves the current state untouched.
 
-The inference is a small set of first-match-wins rules over the prompt text
-(fenced code blocks and quoted lines are stripped first so pasted content can't
-skew it): curly “smart” quotes alone read as `mobile` (phone keyboards produce
-them), straight quotes alone read as `office`, both together are ambiguous and
-skipped, and a short message ending in a trailing space reads as `mobile`.
+Detection leaves a pinned record untouched. Otherwise, it strips fenced code
+blocks and `>`-quoted lines, then applies these rules in order:
+
+| Prompt signal | Result |
+| --- | --- |
+| Both curly and straight quotes | Keep the current state. |
+| Curly quotes only, at most 400 characters in one paragraph | `mobile` |
+| Curly quotes only, longer than 400 characters or containing a blank line | Keep the current state. |
+| Straight quotes only, at any length | `office` |
+| No quotes, original prompt under 100 characters and ending with a space | `mobile` |
+| Anything else | Keep the current state. |
+
+The 400-character limit uses the remaining text with surrounding whitespace
+trimmed. A blank line separates paragraphs; a single line break does not.
+This guard keeps longer pasted emails and documents with curly apostrophes
+from switching a desktop user to mobile. A short pasted paragraph can still
+look like phone typing. Pin `office` when automatic inference is unsuitable.
 
 ## Examples
 
@@ -66,9 +84,15 @@ skipped, and a short message ending in a trailing space reads as `mobile`.
 harn presence get
 
 # Branch on it in a script
-[ "$(harn presence get)" = "mobile" ] && echo "keep the reply short"
+[ "$(harn presence get --json | jq -r .state)" = "mobile" ] && echo "keep the reply short"
 
-# Force mobile for this session
+# Keep this machine in office mode even when prompts contain curly quotes
+harn presence pin office
+
+# Resume automatic detection without changing the current state
+harn presence unpin
+
+# Set mobile once; a later prompt can change it
 harn presence set mobile
 
 # Inspect the full record, including how stale it is
@@ -81,7 +105,7 @@ harn presence clear
 ## Notes
 
 - The file path (`~/.claude/presence`) is a Claude Code convention, but the
-  read/set/clear logic is generic, so any agent adapter can adopt the same file.
+  state logic is generic, so any agent adapter can adopt the same file.
 - Writes are atomic (temp file + rename), so a concurrent read never sees a
   half-written record.
 - A malformed or unreadable file falls back to the default `office` rather than

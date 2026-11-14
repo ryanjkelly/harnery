@@ -26,6 +26,7 @@ import {
   type PresenceState,
   presenceFilePath,
   readPresence,
+  unpinPresence,
   writePresence,
 } from "../lib/presence.ts";
 
@@ -33,7 +34,7 @@ import {
  * `presence`: two related surfaces under one name.
  *
  *   1. Mobile/office state for agents (~/.claude/presence): get / set /
- *      clear / detect. The state file path is Claude-Code-specific but the
+ *      pin / unpin / clear / detect. The state file path is Claude-Code-specific but the
  *      logic is generic.
  *   2. Cross-machine session presence (ADR 0016): publish / fetch / peers —
  *      the git-refs transport that lets sessions on other machines show up
@@ -46,7 +47,7 @@ export function registerPresenceCommand(program: Command, emit: EmitContext): vo
   const cmd = program
     .command("presence")
     .description(
-      "Presence: mobile/office state (get/set/clear/detect) + cross-machine session presence (publish/fetch/peers/relay-status)",
+      "Presence: mobile/office state (get/set/pin/unpin/clear/detect) + cross-machine session presence (publish/fetch/peers/relay-status)",
     )
     .action(() => {
       printStatus(emit);
@@ -54,7 +55,7 @@ export function registerPresenceCommand(program: Command, emit: EmitContext): vo
 
   cmd
     .command("get")
-    .description('Print just the state ("mobile" / "office"), or full record with --json')
+    .description("Show the state, source, and pin status, or the full record with --json")
     .option("--json", "Print the full record as JSON")
     .action((opts: { json?: boolean }) => {
       const r = readPresence();
@@ -64,18 +65,23 @@ export function registerPresenceCommand(program: Command, emit: EmitContext): vo
           state: r.state,
           updated_at: r.updated_at,
           source: r.source,
+          pinned: r.pinned,
           is_default: r.is_default,
           path: presenceFilePath(),
         });
         return;
       }
-      emit.text(`${r.state}\n`);
+      emit.text(
+        `${r.state} (source: ${r.source ?? "default"}, pinned: ${r.pinned ? "yes" : "no"})\n`,
+      );
     });
 
   cmd
     .command("set")
     .argument("<state>", "mobile | office")
-    .description("Set state explicitly (source=cli). Hook auto-detection can still overwrite.")
+    .description(
+      "Set state once and remove any pin (source=cli). Detection can overwrite it; use presence pin to keep it.",
+    )
     .action((state: string) => {
       if (state !== "mobile" && state !== "office") {
         emit.error({
@@ -87,6 +93,34 @@ export function registerPresenceCommand(program: Command, emit: EmitContext): vo
       const before = readPresence();
       writePresence(state as PresenceState, "cli");
       emitPresenceChange(before.state, state as PresenceState, "cli");
+      printStatus(emit);
+    });
+
+  cmd
+    .command("pin")
+    .argument("<state>", "mobile | office")
+    .description(
+      "Set and pin the state until presence unpin, set, or clear; detection cannot overwrite it",
+    )
+    .action((state: string) => {
+      if (state !== "mobile" && state !== "office") {
+        emit.error({
+          code: "invalid_state",
+          message: `state must be "mobile" or "office" (got: ${JSON.stringify(state)})`,
+        });
+        process.exit(2);
+      }
+      const before = readPresence();
+      writePresence(state as PresenceState, "cli", true);
+      emitPresenceChange(before.state, state as PresenceState, "cli");
+      printStatus(emit);
+    });
+
+  cmd
+    .command("unpin")
+    .description("Resume automatic detection while keeping the current state")
+    .action(() => {
+      unpinPresence();
       printStatus(emit);
     });
 
@@ -371,6 +405,7 @@ function printStatus(emit: EmitContext): void {
     state: r.state,
     updated_at: r.updated_at,
     source: r.source,
+    pinned: r.pinned,
     is_default: r.is_default,
     age_seconds: r.is_default ? null : ageSeconds(r.updated_at),
     age_human: r.is_default ? "(default: file missing)" : formatAge(ageSeconds(r.updated_at)),
