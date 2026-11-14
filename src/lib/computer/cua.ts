@@ -29,6 +29,18 @@ import { posix, win32 } from "node:path";
 import { windowsExecutable } from "../windows-executable.ts";
 import { INSTALL_MARKER, installPinnedArchive, markerMatches } from "./archive.ts";
 import {
+  checkBrowserUrl,
+  closeWindowScript,
+  cuaBrowserCalls,
+  cuaBrowserObservation,
+  DEFAULT_BROWSER_SCRIPT,
+  defaultBrowserPattern,
+  newWindowScript,
+  parseWindowList,
+  pickBrowser,
+  processPathScript,
+} from "./cua-browser.ts";
+import {
   archLabel,
   defaultSpawnDetached,
   defaultSpawnSync,
@@ -53,8 +65,15 @@ import type {
   InstallPlan,
   InstallResult,
   PinnedArtifact,
+  WindowRef,
 } from "./types.ts";
 
+export {
+  cuaBrowserCalls,
+  cuaBrowserObservation,
+  PASSWORD_OFFER_PATTERN,
+  SENSITIVE_FIELD_PATTERN,
+} from "./cua-browser.ts";
 export type { SpawnResult, SpawnSyncFn };
 export { INSTALL_MARKER };
 
@@ -132,6 +151,11 @@ export const CALL_TIMEOUT_MS = 120_000;
 export const STATUS_TIMEOUT_MS = 15_000;
 export const START_DEADLINE_MS = 10_000;
 const START_POLL_MS = 250;
+/** How long `openBrowserWindow` waits for the new window, and how often it looks. */
+export const OPEN_WINDOW_DEADLINE_MS = 8_000;
+const OPEN_WINDOW_POLL_MS = 250;
+/** Driver 0.49 ends a named session after 300 s idle and then rejects calls that name it. */
+const SESSION_ENDED = /session has ended; tool call .* was rejected/;
 
 /** Arg keys whose string values are file paths in the caller's syntax. */
 const PATH_ARG_KEYS = new Set([
@@ -422,27 +446,48 @@ export function createCuaDriver(deps: CuaDeps = {}): DesktopDriver {
     return pathApi(host).join(requireStateDir(host), "tools", "cua-driver", "daemon-start.json");
   }
 
-  function readStartRecord(host: HostInfo): { pid?: number; browser_attach?: boolean } {
+  interface StartRecord {
+    pid?: number;
+    browser_attach?: boolean;
+    version?: string;
+    started_at?: string;
+  }
+
+  function readStartRecord(host: HostInfo): StartRecord {
     try {
       const value = JSON.parse(readFileSync(startRecordPath(host), "utf8")) as unknown;
-      return value && typeof value === "object" ? (value as Record<string, never>) : {};
+      return value && typeof value === "object" ? (value as StartRecord) : {};
     } catch {
       return {};
     }
   }
 
-  function writeStartRecord(host: HostInfo, record: { pid: number; browser_attach: boolean }) {
+  function writeStartRecord(host: HostInfo, record: StartRecord & { pid: number }) {
     const path = startRecordPath(host);
     try {
       mkdirSync(pathApi(host).dirname(path), { recursive: true });
       const tmp = `${path}.${process.pid}.tmp`;
       writeFileSync(
         tmp,
-        `${JSON.stringify({ ...record, started_at: new Date(now()).toISOString() })}\n`,
+        `${JSON.stringify({ started_at: new Date(now()).toISOString(), ...record })}\n`,
       );
       renameSync(tmp, path);
     } catch {
       // Best effort: without the record the daemon's grant reads as unknown.
+    }
+  }
+
+  /** The running daemon's version from `get_config`, or undefined on any failure. */
+  function queryDaemonVersion(host: HostInfo): string | undefined {
+    try {
+      const result = exec(host, ["call", "get_config", "{}"], STATUS_TIMEOUT_MS);
+      if (result.exitCode !== 0) return undefined;
+      const json = result.json as { version?: unknown } | undefined;
+      return json && typeof json.version === "string" && json.version !== ""
+        ? json.version
+        : undefined;
+    } catch {
+      return undefined;
     }
   }
 
@@ -452,13 +497,30 @@ export function createCuaDriver(deps: CuaDeps = {}): DesktopDriver {
     const detail = text.split("\n").slice(0, 3).join("\n");
     const running = result.exitCode === 0 && !/not running/i.test(result.stdout);
     const status: DaemonStatus = { running, detail };
+    if (!running) return status;
     const pid = /pid:\s*(\d+)/i.exec(result.stdout);
-    if (running && pid) {
+    const record = pid ? readStartRecord(host) : {};
+    const sameDaemon = pid !== null && record.pid === Number(pid[1]);
+    if (pid) {
       status.pid = Number(pid[1]);
-      const record = readStartRecord(host);
-      if (record.pid === status.pid && typeof record.browser_attach === "boolean")
+      if (sameDaemon && typeof record.browser_attach === "boolean")
         status.browserAttach = record.browser_attach;
     }
+    if (sameDaemon && typeof record.version === "string" && record.version !== "") {
+      status.version = record.version;
+      return status;
+    }
+    const version = queryDaemonVersion(host);
+    if (version === undefined) return status;
+    status.version = version;
+    // Remember it for this pid so later status reads cost no extra process.
+    if (status.pid !== undefined)
+      writeStartRecord(
+        host,
+        sameDaemon
+          ? { ...record, pid: status.pid, version }
+          : { pid: status.pid, version, started_at: undefined },
+      );
     return status;
   }
 
@@ -595,8 +657,14 @@ export function createCuaDriver(deps: CuaDeps = {}): DesktopDriver {
       status = daemonStatus(host);
       if (status.running) {
         if (status.pid !== undefined) {
-          writeStartRecord(host, { pid: status.pid, browser_attach: browserAttach });
+          // Harnery started the pinned executable, so the version is known.
+          writeStartRecord(host, {
+            pid: status.pid,
+            browser_attach: browserAttach,
+            version: CUA_DRIVER_VERSION,
+          });
           status.browserAttach = browserAttach;
+          status.version = CUA_DRIVER_VERSION;
         }
         return status;
       }
@@ -635,11 +703,129 @@ export function createCuaDriver(deps: CuaDeps = {}): DesktopDriver {
     return { exitCode: 1, stdout: `${JSON.stringify(json)}\n`, stderr: "", json };
   }
 
+  const sessionEnded = (result: DriverCallResult): boolean =>
+    SESSION_ENDED.test(result.stdout) || SESSION_ENDED.test(result.stderr);
+
   function call(host: HostInfo, tool: string, args: Record<string, unknown>): DriverCallResult {
-    const result = exec(host, ["call", tool, JSON.stringify(args)], CALL_TIMEOUT_MS);
+    const argv = ["call", tool, JSON.stringify(args)];
+    let result = exec(host, argv, CALL_TIMEOUT_MS);
+    // The driver ended an idle named session: start it again once, then retry once.
+    if (typeof args.session === "string" && args.session !== "" && sessionEnded(result)) {
+      exec(
+        host,
+        ["call", "start_session", JSON.stringify({ session: args.session })],
+        CALL_TIMEOUT_MS,
+      );
+      result = exec(host, argv, CALL_TIMEOUT_MS);
+    }
     if (host.kind === "macos" && isPermissionsPending(result))
       result.stderr += `${permissionsPendingHint()}\n`;
     return result;
+  }
+
+  function listWindows(host: HostInfo, filter: Record<string, unknown> = {}) {
+    return parseWindowList(
+      exec(host, ["call", "list_windows", JSON.stringify(filter)], CALL_TIMEOUT_MS).stdout,
+    );
+  }
+
+  /** The executable path of process `pid`, read from the operating system. */
+  function browserExecutable(host: HostInfo, pid: number): string {
+    let result: SpawnResult;
+    if (host.kind === "windows" || host.kind === "wsl")
+      result = run(
+        windowsExecutable("powershell.exe"),
+        ["-NoProfile", "-Command", processPathScript(pid)],
+        { timeout: 30_000, env: baseEnv() },
+      );
+    else if (host.kind === "macos")
+      result = run("ps", ["-o", "comm=", "-p", String(pid)], {
+        timeout: STATUS_TIMEOUT_MS,
+        env: baseEnv(),
+      });
+    else
+      result = run("readlink", [`/proc/${pid}/exe`], {
+        timeout: STATUS_TIMEOUT_MS,
+        env: baseEnv(),
+      });
+    const path = normalize(result.stdout).trim().split("\n")[0]?.trim() ?? "";
+    if (result.status !== 0 || path === "")
+      throw new Error(`Could not find the executable of browser process ${pid}.`);
+    return path;
+  }
+
+  /** The person's default browser as an app-name pattern, when the system says and it is supported. */
+  function defaultBrowser(host: HostInfo): RegExp | undefined {
+    let result: SpawnResult;
+    try {
+      if (host.kind === "windows" || host.kind === "wsl")
+        result = run(
+          windowsExecutable("powershell.exe"),
+          ["-NoProfile", "-Command", DEFAULT_BROWSER_SCRIPT],
+          { timeout: 30_000, env: baseEnv() },
+        );
+      else if (host.kind === "linux")
+        result = run("xdg-settings", ["get", "default-web-browser"], {
+          timeout: STATUS_TIMEOUT_MS,
+          env: baseEnv(),
+        });
+      else return undefined;
+    } catch {
+      return undefined;
+    }
+    if (result.status !== 0) return undefined;
+    return defaultBrowserPattern(normalize(result.stdout).trim().split("\n")[0] ?? "");
+  }
+
+  async function openBrowserWindow(
+    host: HostInfo,
+    options: { url?: string; pid?: number },
+  ): Promise<WindowRef> {
+    const url = checkBrowserUrl(options.url);
+    if (options.pid !== undefined && (!Number.isInteger(options.pid) || options.pid <= 0))
+      throw new Error(`pid must be a positive integer, got ${String(options.pid)}.`);
+    const before = listWindows(host);
+    const pid = options.pid ?? pickBrowser(before, defaultBrowser(host));
+    const known = new Set(before.filter((w) => w.pid === pid).map((w) => w.window_id));
+    const exe = browserExecutable(host, pid);
+    if (host.kind === "windows" || host.kind === "wsl") {
+      const result = run(
+        windowsExecutable("powershell.exe"),
+        ["-NoProfile", "-Command", newWindowScript(exe, url)],
+        { timeout: 30_000, env: baseEnv() },
+      );
+      if (result.status !== 0)
+        throw new Error(
+          `Opening a browser window failed: ${normalize(
+            result.stderr || result.stdout || result.error?.message || "no output",
+          )
+            .trim()
+            .slice(0, 400)}`,
+        );
+    } else {
+      (deps.spawnDetached ?? defaultSpawnDetached)(exe, ["--new-window", url], baseEnv());
+    }
+    const deadline = now() + OPEN_WINDOW_DEADLINE_MS;
+    while (now() < deadline) {
+      await sleep(OPEN_WINDOW_POLL_MS);
+      const fresh = listWindows(host, { pid }).find(
+        (w) => w.pid === pid && !known.has(w.window_id),
+      );
+      if (fresh) return { pid, window_id: fresh.window_id };
+    }
+    throw new Error(
+      `The browser (pid ${pid}) did not open a new window within ${OPEN_WINDOW_DEADLINE_MS / 1000} s.`,
+    );
+  }
+
+  function closeWindow(host: HostInfo, window: WindowRef): boolean {
+    if (host.kind !== "windows" && host.kind !== "wsl") return false;
+    const script = closeWindowScript(window);
+    const result = run(windowsExecutable("powershell.exe"), ["-NoProfile", "-Command", script], {
+      timeout: 30_000,
+      env: baseEnv(),
+    });
+    return result.status === 0 && normalize(result.stdout).trim() === "True";
   }
 
   function stopDaemon(host: HostInfo): DaemonStatus {
@@ -673,6 +859,10 @@ export function createCuaDriver(deps: CuaDeps = {}): DesktopDriver {
     takesForeground: cuaTakesForeground,
     attachesPersonBrowser: cuaAttachesPersonBrowser,
     supportsBrowserAttach: true,
+    browserCalls: cuaBrowserCalls,
+    browserObservation: cuaBrowserObservation,
+    openBrowserWindow,
+    closeWindow,
     planInstall,
     install,
     installedExecutable,

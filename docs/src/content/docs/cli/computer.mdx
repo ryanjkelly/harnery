@@ -152,6 +152,30 @@ consent prompt, so it waits for a quiet keyboard and mouse first. Browser
 attach and agent sign-in are separate: the browser tools never sign in. See
 [decision record 0249](/decisions/0249-attach-to-the-persons-running-browser/).
 
+#### Own window
+
+An agent works in a window of its own. `harn computer browser open` opens a
+new window in the person's browser and binds it, and `harn computer browser
+close` closes it again (see [below](#computer-browser-open--close)). `call`
+then checks every browser tool call against that window and refuses, with
+exit 4 and nothing sent, a call that could act on the person's own tabs or
+their secrets:
+
+| Code | Refused call |
+|---|---|
+| `browser_window_not_yours` | An attach to, or a bind of, a window of the person's attached browser that the agent did not open. `--person-window` overrides it, only when the person asked the agent to work in a window they opened; the override is logged |
+| `browser_target_unknown` | A browser tool call whose target the agent did not bind. The driver mints new `target_id` and `tab_id` values on every bind, so use the ones from the latest bind |
+| `browser_sensitive_field` | `browser_type` into a field that takes a password, passcode or one-time code, matched by the field's name or its `type=password` attribute |
+| `browser_read_back_required` | `browser_click` or `browser_pointer` in a tab after `browser_type`, without a newer `get_browser_state` snapshot of that tab |
+| `browser_password_offer` | A click while the latest snapshot shows a password manager's save or fill offer |
+| `browser_script_not_checked` | A `run_script` program that names browser tools, or the legacy `page` tool. Make each browser call its own call |
+
+The typing and click rules also cover the tabs of a driver-owned isolated
+browser. The guard is cooperative: a client that talks to the daemon
+directly skips it. Field and offer detection are heuristics, and they let a
+call through when its element reference is not in the latest snapshot. See
+[decision record 0250](/decisions/0250-keep-agents-in-their-own-browser-window/).
+
 ## Approval
 
 In an ask mode, `call` and `lease acquire` refuse with exit 4 until the agent
@@ -210,7 +234,8 @@ agent-desktop's command host on macOS, gets a `helpers:` line with their
 process ids. It ends with the current desktop lease holder, its generation,
 and its idle expiry. `--json` emits the same fields, with the drivers under
 `drivers` (background processes under `background_processes`) and the default
-under `default_driver`. Status never changes anything.
+under `default_driver`. It also lists agent browser windows that are still
+open. Status never changes anything.
 
 ## computer install
 
@@ -297,7 +322,10 @@ object (default `{}`). In order, the command:
 3. Starts the driver's daemon if it has one and it is not running. An
    attach to the person's running browser is refused (exit 4) unless
    [browser attach](#browser-attach) is on, and with it on a daemon without
-   the grant is restarted first.
+   the grant is restarted first. A running daemon whose version is not the
+   pinned one is restarted too (`up` does the same), so an upgrade never
+   leaves the old daemon serving the new client. The browser guard
+   ([own window](#own-window)) checks the call here.
 4. Holds a [foreground action](#foreground-actions-wait-for-the-person) until
    the person's keyboard and mouse are quiet, or exits 5 with nothing sent.
 5. Translates file paths in the arguments and results between WSL and Windows
@@ -306,6 +334,10 @@ object (default `{}`). In order, the command:
    2,048 or more base64 characters, with a short `<omitted N chars; …>` note,
    so one state read cannot flood an agent's context. Pass `--keep-screenshot`
    to keep the inline image, or write it to a file and read that file.
+7. Starts a named driver session again when the driver rejects it. Cua ends
+   a session after 5 minutes idle and then rejects calls that name it, so
+   `call` starts it again and retries once, and the agent sees no error. An
+   idle browser attach therefore closes itself after 5 minutes.
 
 The driver's stderr passes through and its exit code becomes the command's
 exit code.
@@ -344,6 +376,31 @@ actions in a row are at least one quiet period apart. Set
 `status` shows the setting on its `quiet:` line. See
 [decision record 0248](/decisions/0248-hold-foreground-actions-until-the-person-is-quiet/).
 
+## computer browser open / close
+
+```bash
+harn computer browser open https://example.com
+harn computer browser open --browser-pid 4120 --json
+harn computer browser close
+```
+
+`browser open [url]` needs [browser attach](#browser-attach) on. It waits for
+a quiet keyboard and mouse, opens a new window in the person's default
+browser when it is a running Chromium browser (Chrome, Edge or Brave), else
+their front-most one (`--browser-pid` picks one), attaches,
+binds the window, and prints `pid`, `window_id`, `session`, `target_id` and
+`tab_id`. The agent then passes those ids to the driver's browser tools
+(`get_browser_state`, `browser_navigate`, `browser_type`, `browser_click`)
+through `call`. `--json` prints them as one object.
+
+`browser close` ends the agent's driver browser sessions, which closes the
+browser's debugging connection, and closes the windows the agent opened.
+`computer done` and `computer lease release` do the same automatically. On
+Windows (also from WSL) the window closes. On macOS and Linux it stays open
+and the command names it, so the agent tells the person. A window opened by
+an agent that has gone away stays open until that agent runs
+`browser close` or the person closes it; `status` lists it.
+
 ## computer lease
 
 | Command | Effect |
@@ -370,6 +427,6 @@ holder increments the generation.
 | 0 | Success |
 | 1 | Error: computer use disabled, unsupported host, driver not installed, bad arguments, or a failing health check |
 | 3 | The desktop lease is held by another agent |
-| 4 | Desktop control needs the person's approval first, or they declined or did not answer |
+| 4 | Desktop control needs the person's approval first, or they declined or did not answer, or a browser call was refused (browser attach off, or a [browser guard code](#own-window)) |
 | 5 | A foreground action was held back because the person is using the keyboard or mouse; nothing was sent |
 | other | `call`, `tools`, and `describe` pass through the driver's exit code |

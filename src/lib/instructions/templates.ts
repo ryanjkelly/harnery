@@ -505,8 +505,9 @@ lists them.
   route attaches nothing, so sites see the person's own browser. Open a new
   tab rather than taking over theirs, and if a page needs a sign-in, the person
   signs in there unless they let agents do it (below). When
-  \`${b} computer status\` shows \`browser: on\`, work in their tabs through
-  cua's browser tools instead (below); never attach any other way.
+  \`${b} computer status\` shows \`browser: on\`, work in your own window of
+  their browser through cua's browser tools instead (below); never attach any
+  other way.
 - Never type a password, username, or one-time code into a sign-in page
   yourself.
 - An approval to use the desktop is not approval to communicate. Never click
@@ -526,27 +527,28 @@ person lets agents attach to their running browser and act inside its tabs
 without moving their mouse (\`${b} computer browser-attach\`). \`call\`
 refuses an attach otherwise; do not ask them to turn it on to save a step.
 
-1. Open your own tab with \`${b} open <url>\`, so you never take over a tab
-   they are using.
-2. Bind the window: cua's \`get_browser_state\` with its \`pid\` and
-   \`window_id\` (from \`list_windows\`). If it refuses with
-   \`browser_consent_required\`, make the \`browser_prepare\` call it names
-   (\`strategy: {"kind": "existing_profile"}\`). The attach briefly brings
-   the browser forward and answers its consent prompt, so \`call\` waits for
-   a quiet keyboard and mouse first. Keep one \`session\` label for the whole
-   task: a new session attaches, and flashes the browser, again.
-3. Act only in your tab: \`get_browser_state\` with \`target_id\`, \`tab_id\`
-   and \`snapshot_format: "semantic_v2"\` (a \`query\` narrows it), then
-   \`browser_navigate\`, \`browser_type\`, \`browser_click\`. Read the page back
-   after each action; the result says \`unverifiable\` until you do.
-4. Leave the tab on \`about:blank\` or tell the person it is open, and end
-   your driver session (\`end_session\`) when the task is done; that closes
-   the browser's debugging connection.
+1. Run \`${b} computer browser open <url>\`. It waits for a quiet keyboard
+   and mouse, opens a new window for you in their default browser,
+   attaches and binds it, and prints \`pid\`, \`window_id\`, \`session\`,
+   \`target_id\` and \`tab_id\`. Keep them; work only in that window.
+2. Read with cua's \`get_browser_state\` (those ids,
+   \`snapshot_format: "semantic_v2"\`, an optional \`query\`), then act with
+   \`browser_navigate\`, \`browser_type\` or \`browser_click\`, one tool per
+   call. Read back after every action; a click that follows typing is
+   refused until you do. When a read fails after a click loaded a new page,
+   or after five idle minutes, bind the window again (\`get_browser_state\`
+   with \`pid\` and \`window_id\`, then the \`browser_prepare\` call it
+   names if it asks) and use the new \`target_id\` and \`tab_id\`.
+3. Never type into a password or code field, and never click through a
+   password manager's save or fill offer. \`call\` refuses both (exit 4):
+   tell the person, or use the sign-in route below.
+4. Run \`${b} computer browser close\` when done (\`done\` and
+   \`lease release\` also do it). If it says the window stayed open, tell
+   the person. Pass \`--person-window\` only when the person asked you to
+   work in a window they opened.
 
 The browser tools never sign in. A sign-in page goes through "Signing in for
-the person" below. Never type into a password field with \`browser_type\`,
-and leave a password manager's save or fill offer alone: if one covers the
-control you need, tell the person instead of clicking it.
+the person" below.
 
 ## Signing in for the person
 

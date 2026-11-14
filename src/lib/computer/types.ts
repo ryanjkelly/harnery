@@ -97,6 +97,60 @@ export interface DaemonStatus {
    * origin.
    */
   browserAttach?: boolean;
+  /**
+   * The running daemon's own version, when the driver can tell. The command
+   * restarts a daemon whose version is not the pinned one (ADR 0250).
+   */
+  version?: string;
+}
+
+/**
+ * What one driver call does to a browser, for the browser guard (ADR 0250).
+ * `attach` joins the person's running browser; `launch` starts a
+ * driver-owned isolated one; `bind` mints a target for one window; `read`
+ * snapshots a tab; `type` enters text; `point` clicks or moves the pointer
+ * (what an overlay can intercept); `act` is any other change to a tab
+ * (navigate, select, dialog, download, file input); `opaque` is a program
+ * that names browser tools and cannot be checked call by call.
+ */
+export interface BrowserCall {
+  kind: "attach" | "launch" | "bind" | "read" | "type" | "point" | "act" | "opaque";
+  /** The driver tool, for messages. */
+  tool: string;
+  session?: string;
+  pid?: number;
+  window_id?: number;
+  target_id?: string;
+  tab_id?: string;
+  /** Page element ref the call acts on, e.g. "p7:0". */
+  ref?: string;
+  /** True for a navigation, which invalidates the tab's refs. */
+  navigates?: boolean;
+}
+
+/** What a browser call's result showed, for the browser guard to remember. */
+export interface BrowserObservation {
+  /** A successful bind: the target the driver minted for (pid, window_id). */
+  bound?: { target_id: string; pid?: number; window_id?: number };
+  /** A successful driver-owned launch: the browser process the driver started. */
+  launched_pid?: number;
+  /** A snapshot of one tab. */
+  snapshot?: {
+    target_id: string;
+    tab_id: string;
+    /** Refs of fields that take a password, passcode or one-time code. */
+    sensitive_refs: string[];
+    /** A password manager's save or fill offer is showing in the page. */
+    password_offer: boolean;
+  };
+  /** The call reached the page (typed, clicked, navigated) rather than being refused. */
+  delivered?: boolean;
+}
+
+/** One top-level window of a running program. */
+export interface WindowRef {
+  pid: number;
+  window_id: number;
 }
 
 /** How to start a driver's daemon. */
@@ -166,6 +220,21 @@ export interface DesktopDriver {
   attachesPersonBrowser?(tool: string, args: Record<string, unknown>): boolean;
   /** True when the driver can attach to the person's running browser at all. */
   readonly supportsBrowserAttach?: boolean;
+  /**
+   * The browser calls inside one driver call (itself, or its nested steps),
+   * for the browser guard. Empty when the call touches no browser.
+   */
+  browserCalls?(tool: string, args: Record<string, unknown>): BrowserCall[];
+  /** What one browser call's stdout showed. `call` is one entry of `browserCalls`. */
+  browserObservation?(call: BrowserCall, stdout: string): BrowserObservation;
+  /**
+   * Open a new window in the person's running browser and return it. `pid`
+   * picks the browser process; without it the driver picks the person's
+   * front-most supported browser. Brings that window forward.
+   */
+  openBrowserWindow?(host: HostInfo, options: { url?: string; pid?: number }): Promise<WindowRef>;
+  /** Close one window without bringing anything forward. False when it could not. */
+  closeWindow?(host: HostInfo, window: WindowRef): boolean;
   /** Background processes the driver left running on this host (see BackgroundProcess). */
   backgroundProcesses?(host: HostInfo): BackgroundProcess[];
   /** Stop every background process; returns the ones still running afterwards. */

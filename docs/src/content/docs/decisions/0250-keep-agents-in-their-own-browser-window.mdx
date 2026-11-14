@@ -1,0 +1,96 @@
+---
+title: "0250: Keep agents in their own browser window"
+description: "ADR: an agent that attaches to the person's running browser works in a window it opened itself. `computer browser open` and `computer browser close` manage that window, and `computer call` refuses browser calls that reach the person's own windows, type into a password or code field, click after typing without a fresh read, or click while a password manager's offer is showing."
+---
+
+**Status:** accepted (2026-11-14) · **Scope:** product tier (`commands/computer`, `lib/computer`, the opt-in skill)
+
+## Context
+
+[Decision 0249](/decisions/0249-attach-to-the-persons-running-browser/) let a
+person allow agents to attach to their running browser and act in its tabs.
+It relied on the skill text to keep agents in a tab of their own and away
+from password fields. A trial on a Windows desktop with Chrome showed that
+text alone was not enough:
+
+- The driver has no tool to open a tab, so an agent reused one of the
+  person's tabs instead of opening its own.
+- After the agent typed into a password field, the browser's password
+  manager showed a save offer over the form's submit button. A click by
+  element reference landed on the offer twice.
+
+The trial also showed what a guard has to work with:
+
+- The driver mints new target and tab ids on every bind, so an id alone
+  cannot tell the agent's tab from the person's. The window can.
+- Launching the running browser's own executable with `--new-window` opens a
+  window in the person's profile. A close message to that window's handle
+  closes it without a focus change. The driver's background hotkey route
+  could not close it and answered `background_unavailable`.
+- The semantic snapshot does not mark password inputs. The default DOM-ref
+  snapshot exposes `type=password`.
+- The driver ends a named session after 5 minutes idle and then rejects
+  calls that name it. An agent's default session label was rejected after
+  about ten idle minutes.
+- After the driver upgrade in 0249, the old daemon kept running until it was
+  stopped by hand, and it served the new client.
+
+## Alternatives considered
+
+- **Keep the rules in the skill only.** The trial broke both rules that
+  mattered while the skill stated them.
+- **Track ownership by tab id.** The ids change on every bind, so the record
+  would go stale after each one.
+- **Open a tab instead of a window.** The driver cannot open one, and a tab
+  opened through the default browser can land in a different browser from
+  the one the agent binds.
+- **Block every click after any typing.** It would stop ordinary forms. A
+  fresh read of the tab shows the agent what its typing changed, which is
+  the point of the rule.
+
+## Decision
+
+- **One command opens the agent's window.** `computer browser open [url]`
+  waits for a quiet keyboard and mouse, opens a new window in the person's
+  default browser when it is a running Chromium browser (else their
+  front-most one), attaches, binds it, and prints the ids the agent needs.
+  Harnery records the window as the agent's. The default browser comes
+  first because the front-most one may be a second browser the person keeps
+  for other accounts; a live check opened a window there before this rule.
+- **One command closes it.** `computer browser close` ends the agent's
+  driver browser sessions and closes the windows it opened. `done` and
+  `lease release` call it. Closing works on Windows, also from WSL; on macOS
+  and Linux the window stays open and the command names it.
+- **`call` guards browser calls.** It refuses with exit 4, and sends
+  nothing, a bind of a window the agent did not open
+  (`browser_window_not_yours`), a target it did not bind
+  (`browser_target_unknown`), typing into a password or code field
+  (`browser_sensitive_field`), a click after typing without a newer read of
+  that tab (`browser_read_back_required`), a click while a password
+  manager's offer shows (`browser_password_offer`), and a `run_script`
+  program that names browser tools (`browser_script_not_checked`). The
+  typing and click rules also cover a driver-owned isolated browser.
+- **`--person-window` is the one override.** It lets an agent bind a window
+  the person opened, only when the person asked for that, and Harnery logs
+  each use.
+- **`call` keeps sessions and daemons current.** It starts a rejected
+  session again and retries once, and it restarts a daemon whose version is
+  not the pinned one. `up` does the same for the daemon.
+- **`status` lists open agent windows.**
+
+## Result / Gotchas
+
+- The guard is cooperative. A client that talks to the daemon directly
+  skips it, and the attach grant still covers every agent on the machine
+  while the daemon runs, as in 0249.
+- Field and offer detection are heuristics. When an element reference is
+  not in the latest snapshot, the guard cannot classify it and lets the call
+  through.
+- A window opened by an agent that has gone away stays open until that
+  agent runs `browser close` or the person closes it. `status` lists it.
+- A click that loads a new page can end the driver's connection to that
+  tab. The next read is refused, and binding the window again gives ids for
+  the new page.
+- Each attach still brings the browser forward briefly.
+- Because the driver ends idle sessions, an idle attach closes itself after
+  5 minutes. The agent then binds and attaches its window again.

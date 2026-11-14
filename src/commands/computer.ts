@@ -34,6 +34,11 @@ import {
   writeComputerPreference,
   writeSignInPreference,
 } from "../core/config.ts";
+import {
+  type BrowserGuard,
+  createBrowserGuard,
+  type GuardOwner,
+} from "../lib/computer/browser-guard.ts";
 import type { Confirm } from "../lib/computer/confirm.ts";
 import { DRIVER_IDS } from "../lib/computer/drivers.ts";
 import type {
@@ -50,6 +55,7 @@ import {
 } from "../lib/computer/person-idle.ts";
 import type {
   BackgroundProcess,
+  BrowserCall,
   DaemonStatus,
   DesktopDriver,
   DesktopLease,
@@ -58,6 +64,7 @@ import type {
   LeaseApi,
   LeaseOptions,
   LeaseOwner,
+  WindowRef,
 } from "../lib/computer/types.ts";
 
 /** Exit code for a desktop held by another agent. */
@@ -130,6 +137,8 @@ export interface ComputerDeps {
   personIdleMs: (host: HostInfo) => number | null | Promise<number | null>;
   sleep: (ms: number) => Promise<void>;
   now: () => number;
+  /** Browser guard for one lease directory (ADR 0250); tests inject a fake. */
+  browserGuard: (dir: string) => BrowserGuard;
 }
 
 export type ComputerDepsInput = Pick<ComputerDeps, "emit" | "binName"> &
@@ -245,6 +254,9 @@ async function resolveDeps(input: ComputerDepsInput): Promise<ComputerDeps> {
     personIdleMs: input.personIdleMs ?? ((host) => probePersonIdleMs(host)),
     sleep: input.sleep ?? ((ms) => new Promise((done) => setTimeout(done, ms))),
     now: input.now ?? Date.now,
+    browserGuard:
+      input.browserGuard ??
+      ((dir) => createBrowserGuard({ dir, now: () => (input.now ?? Date.now)() })),
   };
 }
 
@@ -603,12 +615,36 @@ function printDriverResult(deps: ComputerDeps, result: DriverCallResult, stdout 
  * able to attach to the person's running browser (ADR 0249); `requireGrant`
  * also restarts a running daemon that lacks that grant.
  */
+/** A driver result that reports a refusal; drivers answer a refusal with exit 0. */
+function driverRefused(result: DriverCallResult): boolean {
+  try {
+    const value = JSON.parse(result.stdout) as { status?: unknown; refusal?: unknown };
+    return value?.status === "refused" || (value?.refusal !== undefined && value.refusal !== null);
+  } catch {
+    return false;
+  }
+}
+
 async function ensureDaemon(
   driver: DesktopDriver,
   host: HostInfo,
   options: { browserAttach?: boolean; requireGrant?: boolean } = {},
-): Promise<DaemonStatus> {
+): Promise<DaemonStatus & { restartedFrom?: string }> {
   let current = driver.daemonStatus(host);
+  // A daemon left running by an older (or newer) Harnery build speaks a
+  // different protocol than the pinned driver, so restart it (ADR 0250).
+  let restartedFrom: string | undefined;
+  if (current.running && current.version !== undefined && current.version !== driver.version) {
+    const old = current.version;
+    current = driver.stopDaemon(host);
+    if (current.running) {
+      throw new ComputerError(
+        "computer_daemon_failed",
+        `The ${driver.id} daemon is running version ${old}, not the pinned ${driver.version}, and did not stop for a restart${current.detail ? `: ${current.detail}` : "."}`,
+      );
+    }
+    restartedFrom = old;
+  }
   if (current.running && options.requireGrant && current.browserAttach !== true) {
     current = driver.stopDaemon(host);
     if (current.running) {
@@ -626,7 +662,7 @@ async function ensureDaemon(
       `The ${driver.id} daemon did not start${started.detail ? `: ${started.detail}` : "."}`,
     );
   }
-  return started;
+  return restartedFrom !== undefined ? { ...started, restartedFrom } : started;
 }
 
 function describeBackground(procs: BackgroundProcess[], stopHint?: string): string {
@@ -641,7 +677,7 @@ function describeDaemon(driver: DesktopDriver, daemon: DaemonStatus | null): str
   if (!driver.hasDaemon) return "not needed (runs per call)";
   if (!daemon) return "n/a";
   return daemon.running
-    ? `running${daemon.pid !== undefined ? ` (pid ${daemon.pid})` : ""}${daemon.browserAttach ? ", able to attach to your browser" : ""}`
+    ? `running${daemon.pid !== undefined ? ` (pid ${daemon.pid})` : ""}${daemon.browserAttach ? ", able to attach to your browser" : ""}${daemon.version !== undefined && daemon.version !== driver.version ? `, version ${daemon.version} (not the pinned ${driver.version}; the next call restarts it)` : ""}`
     : `stopped${daemon.detail ? ` (${daemon.detail})` : ""}`;
 }
 
@@ -794,6 +830,14 @@ export function createComputerCommand(
               nowMs,
             ) ?? null)
           : null;
+        let browserWindows: ReturnType<BrowserGuard["list"]> = [];
+        if (supported) {
+          try {
+            browserWindows = browserGuardFor(deps, host as SupportedHost).list();
+          } catch {
+            browserWindows = [];
+          }
+        }
         if (opts.json) {
           deps.emit.data({
             enabled: config.enabled,
@@ -828,6 +872,7 @@ export function createComputerCommand(
               background_processes: background,
             })),
             lease: lease ? { ...lease, expires_in_seconds: expiresInSeconds(lease, nowMs) } : null,
+            browser_windows: browserWindows,
           });
           return;
         }
@@ -868,6 +913,12 @@ export function createComputerCommand(
         }
         if (supported)
           lines.push(`lease:     ${lease ? `held by ${describeLease(lease, nowMs)}` : "free"}`);
+        if (browserWindows.length > 0)
+          lines.push(
+            `windows:   ${browserWindows.length} agent browser window${browserWindows.length === 1 ? "" : "s"} open: ${browserWindows
+              .map((w) => `${w.owner_label} (window ${w.window_id})`)
+              .join(", ")}`,
+          );
         emitLine(deps.emit, lines.join("\n"));
       }),
     );
@@ -972,7 +1023,9 @@ export function createComputerCommand(
             browserAttach: wantsBrowserAttach(deps.config(), driver),
           });
           lines.push(
-            `${driver.id}: daemon running${status.pid !== undefined ? ` (pid ${status.pid})` : ""}${status.browserAttach ? ", able to attach to your browser" : ""}.`,
+            status.restartedFrom !== undefined
+              ? `${driver.id}: restarted the daemon on the pinned ${driver.version} (was ${status.restartedFrom})${status.pid !== undefined ? `, pid ${status.pid}` : ""}${status.browserAttach ? ", able to attach to your browser" : ""}.`
+              : `${driver.id}: daemon running${status.pid !== undefined ? ` (pid ${status.pid})` : ""}${status.browserAttach ? ", able to attach to your browser" : ""}.`,
           );
         }
         emitLine(deps.emit, lines.join("\n"));
@@ -1132,6 +1185,10 @@ export function createComputerCommand(
       "How long to wait for another agent's lease (default: config wait_seconds or 30).",
     )
     .option("--keep-screenshot", "Print inline base64 screenshots instead of redacting them.")
+    .option(
+      "--person-window",
+      "The person asked you to work in a browser window they opened; lets a browser call act in a window you did not open.",
+    )
     .action(
       guarded(
         input,
@@ -1139,7 +1196,12 @@ export function createComputerCommand(
           deps,
           tool: string,
           rawJson: string | undefined,
-          opts: { driver?: string; wait?: string; keepScreenshot?: boolean },
+          opts: {
+            driver?: string;
+            wait?: string;
+            keepScreenshot?: boolean;
+            personWindow?: boolean;
+          },
         ) => {
           const config = requireEnabled(deps);
           const host = requireSupported(deps.host());
@@ -1162,6 +1224,39 @@ export function createComputerCommand(
             );
           }
           if (!("session" in args)) args.session = owner.label;
+
+          // The browser guard (ADR 0250) keeps an agent inside browser windows
+          // it opened for itself and away from password fields. It decides
+          // before the lease is taken, so a refused call sends nothing.
+          const personWindow = opts.personWindow === true;
+          const calls = driver.browserCalls?.(tool, args) ?? [];
+          const guard = browserGuardFor(deps, host);
+          for (const call of calls) {
+            const decision = guard.check(guardOwner(owner), call, { personWindow });
+            if (!decision.ok)
+              throw new ComputerError(
+                decision.code,
+                decision.message,
+                EXIT_APPROVAL_REQUIRED,
+                decision.hint,
+              );
+          }
+          if (personWindow) {
+            for (const call of calls) {
+              if (call.kind !== "attach" && call.kind !== "bind") continue;
+              deps.grants.log(
+                deps.leaseDir(host.desktopStateDir),
+                {
+                  event: "browser-attach-changed",
+                  owner_id: owner.id,
+                  owner_label: owner.label,
+                  ...(owner.project ? { project: owner.project } : {}),
+                  detail: `person window used: pid ${call.pid ?? "?"} window ${call.window_id ?? "?"} (${call.tool})`,
+                },
+                deps.now(),
+              );
+            }
+          }
 
           // Hold the lease for at least the driver's call timeout, so a slow
           // call never runs on after its lease lapsed and another agent took
@@ -1187,36 +1282,186 @@ export function createComputerCommand(
               browserAttach: wantsBrowserAttach(config, driver),
               requireGrant: attach,
             });
-          if (foreground) {
-            const waited = await waitForQuietDesktop({
-              ...quiet,
-              probe: () => deps.personIdleMs(host),
-              now: deps.now,
-              sleep: deps.sleep,
-            });
-            if (waited.status === "busy") {
-              await deps.lease.acquire(owner, leaseOptions(deps, host));
-              throw new ComputerError(
-                "person_active",
-                `The person is using the keyboard or mouse, so this foreground action was not sent ` +
-                  `(waited ${formatSeconds(waited.waitedMs)} for ${formatSeconds(quiet.quietMs)} of quiet).`,
-                EXIT_PERSON_ACTIVE,
-                "Nothing was sent. Do other work and try once more later, or use a background route. Do not retry in a loop.",
-              );
-            }
-            if (waited.waitedMs >= 1000)
-              deps.writeStderr(
-                `Waited ${formatSeconds(waited.waitedMs)} for the person's keyboard and mouse to go quiet before this foreground action.\n`,
-              );
-          }
+          if (foreground) await awaitQuietDesktop(deps, host, owner, quiet);
           const translated = driver.translateArgsPaths(host, tool, args);
           const result = driver.call(host, tool, translated);
           await deps.lease.acquire(owner, leaseOptions(deps, host));
+          observeBrowserCalls(deps, guard, owner, driver, tool, calls, result, personWindow);
           let stdout = driver.translateResultPaths(host, result.stdout);
           if (!opts.keepScreenshot) stdout = redactInlineScreenshots(stdout);
           printDriverResult(deps, result, stdout);
         },
       ),
+    );
+
+  // ----------------------------------------------------------------- browser
+  const browser = computer
+    .command("browser")
+    .description(
+      "Work in a browser window of your own inside the person's running browser (ADR 0250): open one, then close it when done.",
+    );
+
+  browser
+    .command("open [url]")
+    .description(
+      "Open a new window in the person's running browser, attach to it and bind it, holding the desktop lease. " +
+        "Prints the window, target and tab ids to act on with the driver's browser tools.",
+    )
+    .option(
+      "--browser-pid <pid>",
+      "The browser process to open the window in (default: the front-most supported browser).",
+    )
+    .option(DRIVER_OPTION, driverHelp("to use (default: the project's default driver)"))
+    .option("--json", "Emit the ids as JSON.")
+    .action(
+      guarded(
+        input,
+        async (
+          deps,
+          url: string | undefined,
+          opts: { browserPid?: string; driver?: string; json?: boolean },
+        ) => {
+          const config = requireEnabled(deps);
+          const host = requireSupported(deps.host());
+          const driver = selectDriver(deps, opts.driver);
+          if (!driver.openBrowserWindow) {
+            throw new ComputerError(
+              "browser_open_unsupported",
+              `The ${driver.id} driver cannot open a browser window.`,
+            );
+          }
+          let pid: number | undefined;
+          if (opts.browserPid !== undefined) {
+            pid = Number(opts.browserPid);
+            if (!Number.isInteger(pid) || pid <= 0)
+              throw new ComputerError("computer_usage", "--browser-pid must be a process id.");
+          }
+          requireInstalled(deps, driver, host);
+          const owner = deps.owner();
+          requireApproval(deps, config, host, owner);
+          if (!config.browser_attach) {
+            throw new ComputerError(
+              "browser_attach_off",
+              `Browser attach is ${describeBrowserAttach(config, deps.binName)}, so no window was opened in the person's running browser.`,
+              EXIT_APPROVAL_REQUIRED,
+              "Nothing was sent. Work in the browser window through the accessibility route instead (get_window_state or agent-desktop refs), or ask the person whether to turn browser attach on.",
+            );
+          }
+          const session = owner.label;
+          const quiet = foregroundQuiet(config);
+          const waitSeconds = config.wait_seconds ?? DEFAULT_CALL_WAIT_SECONDS;
+          const acquired = await deps.lease.acquire(
+            owner,
+            leaseOptions(
+              deps,
+              host,
+              Math.round(waitSeconds * 1000),
+              callLeaseIdleMs(deps, driver, "browser_prepare", { session }) +
+                (quiet.quietMs > 0 ? quiet.maxWaitMs : 0),
+            ),
+          );
+          if (!acquired.ok) throw heldError(deps, acquired.holder);
+          if (driver.hasDaemon)
+            await ensureDaemon(driver, host, { browserAttach: true, requireGrant: true });
+          // Opening a window and attaching both take the screen.
+          if (quiet.quietMs > 0) await awaitQuietDesktop(deps, host, owner, quiet);
+
+          let win: WindowRef;
+          try {
+            win = await driver.openBrowserWindow(host, {
+              ...(url !== undefined ? { url } : {}),
+              ...(pid !== undefined ? { pid } : {}),
+            });
+          } catch (err) {
+            await deps.lease.acquire(owner, leaseOptions(deps, host));
+            throw new ComputerError(
+              "browser_open_failed",
+              `Could not open a browser window: ${(err as Error).message ?? String(err)}`,
+            );
+          }
+          const guard = browserGuardFor(deps, host);
+          guard.recordWindow(guardOwner(owner), { ...win, session });
+
+          const send = (tool: string, args: Record<string, unknown>): DriverCallResult => {
+            const calls = driver.browserCalls?.(tool, args) ?? [];
+            const result = driver.call(host, tool, driver.translateArgsPaths(host, tool, args));
+            observeBrowserCalls(deps, guard, owner, driver, tool, calls, result, false);
+            return result;
+          };
+          const ids = { pid: win.pid, window_id: win.window_id, session };
+          // The window is of no use without the attach, so a failure closes it again.
+          const failed = (result: DriverCallResult) => {
+            printDriverResult(deps, result, driver.translateResultPaths(host, result.stdout));
+            const cleanup = closeBrowserWork(deps, host, owner);
+            const leftOpen = cleanup?.left_open.some((w) => w.window_id === win.window_id) ?? true;
+            deps.writeStderr(
+              leftOpen
+                ? `The browser did not attach. Window ${win.window_id} (pid ${win.pid}) is still open; tell the person.\n`
+                : `The browser did not attach, so the window opened for it was closed again.\n`,
+            );
+            deps.emit.setExitCode(1);
+          };
+          const prepared = send("browser_prepare", {
+            ...ids,
+            strategy: { kind: "existing_profile" },
+          });
+          if (prepared.exitCode !== 0 || driverRefused(prepared)) {
+            failed(prepared);
+            await deps.lease.acquire(owner, leaseOptions(deps, host));
+            return;
+          }
+          const bound = send("get_browser_state", { ...ids });
+          const bind = bound.exitCode === 0 ? parseBind(bound) : null;
+          await deps.lease.acquire(owner, leaseOptions(deps, host));
+          if (!bind) {
+            failed(bound);
+            return;
+          }
+          const out = {
+            ...ids,
+            target_id: bind.target_id,
+            tab_id: bind.tab_id ?? null,
+            url: bind.url ?? null,
+          };
+          if (opts.json) {
+            deps.emit.data(out);
+            return;
+          }
+          emitLine(
+            deps.emit,
+            [
+              `Opened browser window ${win.window_id} (pid ${win.pid}) for session ${session}.`,
+              `Bound target ${bind.target_id}${bind.tab_id ? `, tab ${bind.tab_id}` : ""}${bind.url ? ` at ${bind.url}` : ""}.`,
+              `Act in it with the driver's browser tools using these ids, and finish with \`${deps.binName} computer browser close\`.`,
+            ].join("\n"),
+          );
+        },
+      ),
+    );
+
+  browser
+    .command("close")
+    .description("End your browser sessions and close the browser windows you opened for yourself.")
+    .option("--json", "Emit what was ended and closed as JSON.")
+    .action(
+      guarded(input, (deps, opts: { json?: boolean }) => {
+        const host = requireSupported(deps.host());
+        const owner = deps.owner();
+        const cleanup = closeBrowserWork(deps, host, owner) ?? {
+          sessions: [],
+          closed: [],
+          left_open: [],
+        };
+        if (opts.json) {
+          deps.emit.data(cleanup);
+          return;
+        }
+        const lines = describeCleanup(cleanup);
+        emitLine(
+          deps.emit,
+          lines.length > 0 ? lines.join("\n") : "No browser work of yours to close.",
+        );
+      }),
     );
 
   // ------------------------------------------------------------------- lease
@@ -1278,16 +1523,21 @@ export function createComputerCommand(
         const host = requireSupported(deps.host());
         const owner = deps.owner();
         endOwnTaskApproval(deps, host, owner, "released the desktop");
+        const browser = describeCleanup(closeBrowserWork(deps, host, owner));
         const released = deps.lease.release(owner, leaseOptions(deps, host));
         if (released) {
-          emitLine(deps.emit, `Released the desktop lease held by ${owner.label}.`);
+          emitLine(
+            deps.emit,
+            [`Released the desktop lease held by ${owner.label}.`, ...browser].join("\n"),
+          );
           return;
         }
         const current = deps.lease.read(leaseOptions(deps, host));
         if (!current) {
-          emitLine(deps.emit, "The desktop was not leased.");
+          emitLine(deps.emit, ["The desktop was not leased.", ...browser].join("\n"));
           return;
         }
+        if (browser.length > 0) emitLine(deps.emit, browser.join("\n"));
         throw new ComputerError(
           "computer_lease_held",
           `Not released: the desktop is held by ${describeLease(current, deps.now())}, not ${owner.label}.`,
@@ -1402,10 +1652,14 @@ export function createComputerCommand(
         const host = requireSupported(deps.host());
         const owner = deps.owner();
         const ended = endOwnTaskApproval(deps, host, owner, "finished");
+        const browser = describeCleanup(closeBrowserWork(deps, host, owner));
         const released = deps.lease.release(owner, leaseOptions(deps, host));
         emitLine(
           deps.emit,
-          `${released ? "Released the desktop" : "You did not hold the desktop"}${ended ? " and ended your task approval" : ""}.`,
+          [
+            `${released ? "Released the desktop" : "You did not hold the desktop"}${ended ? " and ended your task approval" : ""}.`,
+            ...browser,
+          ].join("\n"),
         );
       }),
     );
@@ -1882,6 +2136,196 @@ function endOwnTaskApproval(
     );
   }
   return ended.length > 0;
+}
+
+/**
+ * Hold a foreground action until the person's keyboard and mouse have been
+ * quiet (ADR 0248). When they stay busy, return the lease to its normal
+ * length and refuse with `person_active`; nothing is sent.
+ */
+async function awaitQuietDesktop(
+  deps: ComputerDeps,
+  host: SupportedHost,
+  owner: LeaseOwner,
+  quiet: { quietMs: number; maxWaitMs: number },
+): Promise<void> {
+  const waited = await waitForQuietDesktop({
+    ...quiet,
+    probe: () => deps.personIdleMs(host),
+    now: deps.now,
+    sleep: deps.sleep,
+  });
+  if (waited.status === "busy") {
+    await deps.lease.acquire(owner, leaseOptions(deps, host));
+    throw new ComputerError(
+      "person_active",
+      `The person is using the keyboard or mouse, so this foreground action was not sent ` +
+        `(waited ${formatSeconds(waited.waitedMs)} for ${formatSeconds(quiet.quietMs)} of quiet).`,
+      EXIT_PERSON_ACTIVE,
+      "Nothing was sent. Do other work and try once more later, or use a background route. Do not retry in a loop.",
+    );
+  }
+  if (waited.waitedMs >= 1000)
+    deps.writeStderr(
+      `Waited ${formatSeconds(waited.waitedMs)} for the person's keyboard and mouse to go quiet before this foreground action.\n`,
+    );
+}
+
+function guardOwner(owner: LeaseOwner): GuardOwner {
+  return { id: owner.id, label: owner.label };
+}
+
+function browserGuardFor(deps: ComputerDeps, host: SupportedHost): BrowserGuard {
+  return deps.browserGuard(deps.leaseDir(host.desktopStateDir));
+}
+
+/**
+ * Tell the browser guard what one driver call did. A direct browser call is
+ * read through the driver's own observation; nested steps only report whether
+ * the whole call went through. A guard failure never fails the call.
+ */
+function observeBrowserCalls(
+  deps: ComputerDeps,
+  guard: BrowserGuard,
+  owner: LeaseOwner,
+  driver: DesktopDriver,
+  tool: string,
+  calls: BrowserCall[],
+  result: DriverCallResult,
+  personWindow: boolean,
+): void {
+  if (calls.length === 0) return;
+  const who = guardOwner(owner);
+  try {
+    const direct = calls.length === 1 && calls[0]?.tool === tool;
+    for (const call of calls) {
+      const observation = direct
+        ? (driver.browserObservation?.(call, result.stdout) ?? {})
+        : { delivered: result.exitCode === 0 };
+      guard.observe(who, call, observation, { personWindow });
+    }
+  } catch (err) {
+    deps.writeStderr(
+      `The browser guard could not record this call's result: ${(err as Error).message ?? String(err)}\n`,
+    );
+  }
+}
+
+/** The driver that does browser work: the first registered one that reports browser calls. */
+function browserDriver(deps: ComputerDeps): DesktopDriver | undefined {
+  return deps.drivers.find((d) => typeof d.browserCalls === "function");
+}
+
+export interface BrowserCleanup {
+  /** Driver sessions ended. */
+  sessions: string[];
+  /** Windows closed. */
+  closed: WindowRef[];
+  /** Windows that could not be closed; the person should be told. */
+  left_open: WindowRef[];
+}
+
+/**
+ * End the owner's browser sessions, close the windows it opened for itself,
+ * and forget them (ADR 0250). Best effort: never throws. Null when there is
+ * nothing to do here (unsupported host, no browser driver installed, or no
+ * recorded work).
+ */
+function closeBrowserWork(
+  deps: ComputerDeps,
+  host: HostInfo,
+  owner: LeaseOwner,
+): BrowserCleanup | null {
+  try {
+    if (host.kind === "unsupported" || !host.desktopStateDir) return null;
+    const driver = browserDriver(deps);
+    if (!driver?.installedExecutable(host)) return null;
+    const guard = browserGuardFor(deps, host as SupportedHost);
+    const who = guardOwner(owner);
+    const work = guard.work(who);
+    if (work.sessions.length === 0 && work.windows.length === 0) return null;
+    const cleanup: BrowserCleanup = { sessions: [], closed: [], left_open: [] };
+    for (const session of work.sessions) {
+      try {
+        const result = driver.call(host, "end_session", { session });
+        if (result.exitCode === 0) cleanup.sessions.push(session);
+      } catch {
+        // best effort
+      }
+    }
+    for (const window of work.windows) {
+      let closed = false;
+      try {
+        closed = driver.closeWindow?.(host, window) ?? false;
+      } catch {
+        closed = false;
+      }
+      (closed ? cleanup.closed : cleanup.left_open).push(window);
+    }
+    try {
+      guard.clear(who);
+    } catch {
+      // best effort
+    }
+    return cleanup;
+  } catch {
+    return null;
+  }
+}
+
+function describeWindow(w: WindowRef): string {
+  return `window ${w.window_id} (pid ${w.pid})`;
+}
+
+/** Plain lines for a cleanup, empty when nothing was ended, closed or left open. */
+function describeCleanup(cleanup: BrowserCleanup | null): string[] {
+  if (!cleanup) return [];
+  const lines: string[] = [];
+  const done: string[] = [];
+  if (cleanup.sessions.length > 0)
+    done.push(
+      `ended browser session${cleanup.sessions.length === 1 ? "" : "s"} ${cleanup.sessions.join(", ")}`,
+    );
+  if (cleanup.closed.length > 0)
+    done.push(`closed ${cleanup.closed.map(describeWindow).join(", ")}`);
+  if (done.length > 0) {
+    const text = done.join(" and ");
+    lines.push(`${text.charAt(0).toUpperCase()}${text.slice(1)}.`);
+  }
+  if (cleanup.left_open.length > 0)
+    lines.push(
+      `Could not close browser ${cleanup.left_open.map(describeWindow).join(", ")}; tell the person it is still open.`,
+    );
+  return lines;
+}
+
+/** The target and tab a bind (get_browser_state) returned, read leniently. */
+function parseBind(
+  result: DriverCallResult,
+): { target_id: string; tab_id?: string; url?: string } | null {
+  let json = result.json;
+  if (json === undefined) {
+    try {
+      json = JSON.parse(result.stdout);
+    } catch {
+      return null;
+    }
+  }
+  if (!json || typeof json !== "object" || Array.isArray(json)) return null;
+  const record = json as Record<string, unknown>;
+  if (typeof record.target_id !== "string") return null;
+  const tabs = Array.isArray(record.tabs)
+    ? record.tabs.filter(
+        (t): t is Record<string, unknown> => !!t && typeof t === "object" && !Array.isArray(t),
+      )
+    : [];
+  const tab = tabs.find((t) => t.active === true) ?? tabs[0];
+  const tabId = tab ? (tab.tab_id ?? tab.id) : undefined;
+  return {
+    target_id: record.target_id,
+    ...(typeof tabId === "string" ? { tab_id: tabId } : {}),
+    ...(tab && typeof tab.url === "string" ? { url: tab.url } : {}),
+  };
 }
 
 export function registerComputerCommand(

@@ -7,9 +7,17 @@ import { initializeV3Fixture, seedV3Session } from "../../tests/helpers/event-v3
 import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import type { EmitContext } from "../commander.ts";
 import type { ComputerMode, ComputerPreferences, ComputerProjectConfig } from "../core/config.ts";
+import type {
+  BrowserGuard,
+  GuardDecision,
+  GuardOwner,
+  GuardWindow,
+} from "../lib/computer/browser-guard.ts";
 import type { ConfirmRequest, ConfirmResult } from "../lib/computer/confirm.ts";
 import type { DesktopGrant, GrantLogEntry } from "../lib/computer/grants.ts";
 import type {
+  BrowserCall,
+  BrowserObservation,
   DaemonStatus,
   DesktopDriver,
   DesktopLease,
@@ -20,6 +28,7 @@ import type {
   LeaseApi,
   LeaseOptions,
   LeaseOwner,
+  WindowRef,
 } from "../lib/computer/types.ts";
 import {
   type ComputerDepsInput,
@@ -257,6 +266,133 @@ function fakeDriver(
   return driver;
 }
 
+/** A browser guard that records every call and answers from scripted state. */
+function fakeGuard(
+  opts: {
+    refuse?: (call: BrowserCall) => GuardDecision | undefined;
+    observeThrows?: boolean;
+    work?: { sessions: string[]; windows: WindowRef[] };
+    list?: GuardWindow[];
+  } = {},
+) {
+  const log = {
+    checks: [] as { owner: GuardOwner; call: BrowserCall; personWindow?: boolean }[],
+    observed: [] as {
+      call: BrowserCall;
+      observation: BrowserObservation;
+      personWindow?: boolean;
+    }[],
+    recorded: [] as (WindowRef & { session: string })[],
+    cleared: 0,
+    ops: [] as string[],
+  };
+  let work = opts.work ?? { sessions: [], windows: [] };
+  const guard: BrowserGuard & { log: typeof log } = {
+    log,
+    recordWindow(_owner, window) {
+      log.ops.push("record");
+      log.recorded.push(window);
+    },
+    check(owner, call, o) {
+      log.checks.push({ owner, call, personWindow: o?.personWindow });
+      return opts.refuse?.(call) ?? { ok: true };
+    },
+    observe(_owner, call, observation, o) {
+      log.ops.push(`observe:${call.tool}`);
+      if (opts.observeThrows) throw new Error("disk full");
+      log.observed.push({ call, observation, personWindow: o?.personWindow });
+    },
+    work: () => {
+      const recorded = log.recorded.map((w) => ({ pid: w.pid, window_id: w.window_id }));
+      return {
+        sessions: [...new Set([...work.sessions, ...log.recorded.map((w) => w.session)])],
+        windows: [...work.windows, ...recorded],
+      };
+    },
+    clear() {
+      log.cleared++;
+      work = { sessions: [], windows: [] };
+      log.recorded.length = 0;
+    },
+    list: () => opts.list ?? [],
+  };
+  return guard;
+}
+
+/** A driver with the browser-guard methods: `click`/`type_text` are browser calls, `run_steps` nests two. */
+function browserDriver(
+  opts: {
+    bindStdout?: string;
+    prepareExit?: number;
+    prepareStdout?: string;
+    closeable?: (w: WindowRef) => boolean;
+    openBrowserWindow?: boolean;
+  } = {},
+) {
+  const base = fakeDriver();
+  const order: string[] = [];
+  const closed: WindowRef[] = [];
+  const opened: { url?: string; pid?: number }[] = [];
+  const driver: FakeDriver = {
+    ...base,
+    supportsBrowserAttach: true,
+    attachesPersonBrowser: (tool) => tool === "browser_prepare",
+    browserCalls: (tool, args) => {
+      const one = (kind: BrowserCall["kind"], t: string): BrowserCall => ({
+        kind,
+        tool: t,
+        ...(typeof args.session === "string" ? { session: args.session } : {}),
+        ...(typeof args.pid === "number" ? { pid: args.pid } : {}),
+        ...(typeof args.window_id === "number" ? { window_id: args.window_id } : {}),
+        ...(typeof args.target_id === "string" ? { target_id: args.target_id } : {}),
+      });
+      if (tool === "browser_prepare") return [one("attach", tool)];
+      if (tool === "get_browser_state") return [one("bind", tool)];
+      if (tool === "type_text") return [one("type", tool)];
+      if (tool === "run_steps") return [one("point", "click"), one("type", "type_text")];
+      return [];
+    },
+    browserObservation: (call, stdout) =>
+      call.tool === "type_text" ? { delivered: stdout.includes("ok") } : {},
+    closeWindow: (_host, w) => {
+      order.push(`close:${w.window_id}`);
+      const ok = opts.closeable?.(w) ?? true;
+      if (ok) closed.push(w);
+      return ok;
+    },
+    call: (_host, tool, args) => {
+      order.push(`call:${tool}`);
+      base.calls.push({ tool, args });
+      if (tool === "browser_prepare" && opts.prepareExit)
+        return { exitCode: opts.prepareExit, stdout: "attach failed\n", stderr: "" };
+      if (tool === "browser_prepare" && opts.prepareStdout)
+        return { exitCode: 0, stdout: opts.prepareStdout, stderr: "" };
+      if (tool === "get_browser_state")
+        return {
+          exitCode: 0,
+          stdout:
+            opts.bindStdout ??
+            JSON.stringify({
+              target_id: "t-9",
+              tabs: [
+                { tab_id: "tab-1", url: "about:blank" },
+                { tab_id: "tab-2", url: "https://example.com/", active: true },
+              ],
+            }),
+          stderr: "",
+        };
+      return { exitCode: 0, stdout: '{"ok":true}\n', stderr: "" };
+    },
+  };
+  if (opts.openBrowserWindow !== false)
+    driver.openBrowserWindow = async (_host, o) => {
+      order.push("open");
+      opened.push(o);
+      return { pid: 700, window_id: 55 };
+    };
+  return { driver, order, closed, opened, calls: base.calls };
+}
+
 function fakeLease(holder: DesktopLease | null = null): LeaseApi & { acquired: LeaseOptions[] } {
   const api = {
     acquired: [] as LeaseOptions[],
@@ -299,6 +435,7 @@ async function run(
       projectRoot: () => "/proj",
       writeStderr: (s) => cap.stderr.push(s),
       now: () => NOW,
+      browserGuard: () => fakeGuard(),
       ...over,
     },
     program,
@@ -1359,5 +1496,379 @@ describe("redactInlineScreenshots for generic keys", () => {
     expect(out).not.toContain(b64);
     expect(out).toContain('"format":"png"');
     expect(redactInlineScreenshots('{"data":"short"}')).toBe('{"data":"short"}');
+  });
+});
+
+describe("computer browser guard (ADR 0250)", () => {
+  const attachOn = () => cfg("on", { browser_attach: true, project_browser_attach: true });
+  const owner = { id: "me-id", label: "agent-Me" };
+
+  test("a refused browser call sends nothing, takes no lease, and exits 4", async () => {
+    const { driver, calls } = browserDriver();
+    const leaseApi = fakeLease();
+    const guard = fakeGuard({
+      refuse: () => ({ ok: false, code: "browser_sensitive_field", message: "no", hint: "ask" }),
+    });
+    const cap = await run(["call", "type_text", '{"target_id":"t-1","text":"x"}'], {
+      driver,
+      lease: leaseApi,
+      browserGuard: () => guard,
+    });
+    expect(cap.errors[0]?.code).toBe("browser_sensitive_field");
+    expect(cap.exitCode()).toBe(EXIT_APPROVAL_REQUIRED);
+    expect(calls).toHaveLength(0);
+    expect(leaseApi.acquired).toHaveLength(0);
+    expect(guard.log.checks[0]?.owner).toEqual(owner);
+    expect(guard.log.checks[0]?.call.session).toBe("agent-Me");
+  });
+
+  test("a passing direct call is observed through the driver's observation", async () => {
+    const { driver, calls } = browserDriver();
+    const guard = fakeGuard();
+    const cap = await run(["call", "type_text", '{"target_id":"t-1","text":"x"}'], {
+      driver,
+      browserGuard: () => guard,
+    });
+    expect(cap.exitCode()).toBe(0);
+    expect(calls).toHaveLength(1);
+    expect(guard.log.observed).toEqual([
+      {
+        call: expect.objectContaining({ kind: "type", tool: "type_text" }),
+        observation: { delivered: true },
+        personWindow: false,
+      },
+    ]);
+  });
+
+  test("nested steps are each observed with whether the call went through", async () => {
+    const { driver } = browserDriver();
+    const guard = fakeGuard();
+    await run(["call", "run_steps", '{"steps":[]}'], { driver, browserGuard: () => guard });
+    expect(guard.log.observed.map((o) => [o.call.tool, o.observation])).toEqual([
+      ["click", { delivered: true }],
+      ["type_text", { delivered: true }],
+    ]);
+  });
+
+  test("a call that touches no browser never reaches the guard", async () => {
+    const { driver } = browserDriver();
+    const guard = fakeGuard();
+    await run(["call", "list_apps", "{}"], { driver, browserGuard: () => guard });
+    expect(guard.log.checks).toHaveLength(0);
+    expect(guard.log.observed).toHaveLength(0);
+  });
+
+  test("--person-window reaches check and observe, and an attach is logged", async () => {
+    const { driver } = browserDriver();
+    const guard = fakeGuard();
+    const grants = fakeGrants();
+    const cap = await run(
+      ["call", "browser_prepare", '{"pid":7,"window_id":8}', "--person-window"],
+      { driver, browserGuard: () => guard, grants, config: attachOn, personIdleMs: () => 60_000 },
+    );
+    expect(cap.exitCode()).toBe(0);
+    expect(guard.log.checks[0]?.personWindow).toBe(true);
+    expect(guard.log.observed[0]?.personWindow).toBe(true);
+    expect(grants.logged).toContainEqual(
+      expect.objectContaining({
+        event: "browser-attach-changed",
+        owner_id: "me-id",
+        detail: "person window used: pid 7 window 8 (browser_prepare)",
+      }),
+    );
+  });
+
+  test("a guard that fails to record does not fail the call", async () => {
+    const { driver, calls } = browserDriver();
+    const cap = await run(["call", "type_text", '{"target_id":"t-1"}'], {
+      driver,
+      browserGuard: () => fakeGuard({ observeThrows: true }),
+    });
+    expect(cap.exitCode()).toBe(0);
+    expect(calls).toHaveLength(1);
+    expect(cap.stderr.join("")).toContain("could not record this call's result: disk full");
+  });
+});
+
+describe("computer browser open", () => {
+  const attachOn = () => cfg("on", { browser_attach: true, project_browser_attach: true });
+
+  test("opens, records, attaches, binds and prints the ids as JSON", async () => {
+    const { driver, order, opened, calls } = browserDriver();
+    const guard = fakeGuard();
+    const leaseApi = fakeLease();
+    const cap = await run(
+      ["browser", "open", "https://example.com/", "--browser-pid", "700", "--json"],
+      {
+        driver,
+        lease: leaseApi,
+        browserGuard: () => guard,
+        config: attachOn,
+        personIdleMs: () => 60_000,
+      },
+    );
+    expect(cap.errors).toEqual([]);
+    expect(cap.exitCode()).toBe(0);
+    expect(opened).toEqual([{ url: "https://example.com/", pid: 700 }]);
+    expect(order).toEqual(["open", "call:browser_prepare", "call:get_browser_state"]);
+    expect(guard.log.ops).toEqual([
+      "record",
+      "observe:browser_prepare",
+      "observe:get_browser_state",
+    ]);
+    expect(guard.log.recorded).toEqual([{ pid: 700, window_id: 55, session: "agent-Me" }]);
+    expect(calls[0]?.args).toEqual({
+      pid: 700,
+      window_id: 55,
+      session: "agent-Me",
+      strategy: { kind: "existing_profile" },
+    });
+    expect(calls[1]?.args).toEqual({ pid: 700, window_id: 55, session: "agent-Me" });
+    expect(cap.data[0]).toEqual({
+      pid: 700,
+      window_id: 55,
+      session: "agent-Me",
+      target_id: "t-9",
+      tab_id: "tab-2",
+      url: "https://example.com/",
+    });
+    // Taken for the open, then refreshed to the idle period.
+    expect(leaseApi.acquired.length).toBe(2);
+  });
+
+  test("text output names the ids and the close command", async () => {
+    const { driver } = browserDriver({
+      bindStdout: JSON.stringify({ target_id: "t-1", tabs: [{ tab_id: "a", url: "about:blank" }] }),
+    });
+    const cap = await run(["browser", "open"], {
+      driver,
+      browserGuard: () => fakeGuard(),
+      config: attachOn,
+      personIdleMs: () => 60_000,
+    });
+    const out = cap.text.join("\n");
+    expect(out).toContain("window 55 (pid 700)");
+    expect(out).toContain("target t-1, tab a at about:blank");
+    expect(out).toContain("acme computer browser close");
+  });
+
+  test("is refused while browser attach is off, and nothing opens", async () => {
+    const { driver, order } = browserDriver();
+    const leaseApi = fakeLease();
+    const cap = await run(["browser", "open"], {
+      driver,
+      lease: leaseApi,
+      browserGuard: () => fakeGuard(),
+    });
+    expect(cap.errors[0]?.code).toBe("browser_attach_off");
+    expect(cap.exitCode()).toBe(EXIT_APPROVAL_REQUIRED);
+    expect(order).toEqual([]);
+    expect(leaseApi.acquired).toHaveLength(0);
+  });
+
+  test("a driver that cannot open a window is refused", async () => {
+    const { driver } = browserDriver({ openBrowserWindow: false });
+    const cap = await run(["browser", "open"], { driver, config: attachOn });
+    expect(cap.errors[0]?.code).toBe("browser_open_unsupported");
+    expect(cap.exitCode()).toBe(1);
+  });
+
+  test("a failed attach prints the driver's output, exits 1, and closes the window again", async () => {
+    const { driver, order } = browserDriver({ prepareExit: 2 });
+    const guard = fakeGuard();
+    const cap = await run(["browser", "open", "--json"], {
+      driver,
+      browserGuard: () => guard,
+      config: attachOn,
+      personIdleMs: () => 60_000,
+    });
+    expect(cap.exitCode()).toBe(1);
+    expect(cap.text.join("")).toContain("attach failed");
+    expect(cap.data).toEqual([]);
+    expect(order).toEqual(["open", "call:browser_prepare", "call:end_session", "close:55"]);
+    expect(guard.log.cleared).toBe(1);
+    expect(cap.stderr.join("")).toContain("was closed again");
+  });
+
+  test("a refused attach, which the driver answers with exit 0, is a failure too", async () => {
+    const { driver, order } = browserDriver({
+      prepareStdout: JSON.stringify({ status: "refused", refusal: { code: "nope" } }),
+    });
+    const cap = await run(["browser", "open", "--json"], {
+      driver,
+      browserGuard: () => fakeGuard(),
+      config: attachOn,
+      personIdleMs: () => 60_000,
+    });
+    expect(cap.exitCode()).toBe(1);
+    expect(cap.text.join("")).toContain("nope");
+    expect(order).not.toContain("call:get_browser_state");
+  });
+
+  test("a bind without a target counts as a failure", async () => {
+    const { driver } = browserDriver({ bindStdout: "not json" });
+    const cap = await run(["browser", "open"], {
+      driver,
+      browserGuard: () => fakeGuard(),
+      config: attachOn,
+      personIdleMs: () => 60_000,
+    });
+    expect(cap.exitCode()).toBe(1);
+    expect(cap.text.join("")).toContain("not json");
+  });
+
+  test("waits for the person to go quiet before opening", async () => {
+    const { driver, order } = browserDriver();
+    const cap = await run(["browser", "open"], {
+      driver,
+      browserGuard: () => fakeGuard(),
+      config: attachOn,
+      personIdleMs: () => 0,
+      sleep: async () => {},
+      now: (() => {
+        let t = NOW;
+        return () => (t += 1000);
+      })(),
+    });
+    expect(cap.errors[0]?.code).toBe("person_active");
+    expect(cap.exitCode()).toBe(EXIT_PERSON_ACTIVE);
+    expect(order).toEqual([]);
+  });
+});
+
+describe("computer browser cleanup", () => {
+  const work = {
+    sessions: ["agent-Me"],
+    windows: [
+      { pid: 700, window_id: 55 },
+      { pid: 700, window_id: 56 },
+    ],
+  };
+  const stuck = (w: WindowRef) => w.window_id !== 56;
+
+  test("browser close ends sessions, closes windows, clears, and names a window left open", async () => {
+    const { driver, order } = browserDriver({ closeable: stuck });
+    const guard = fakeGuard({ work });
+    const cap = await run(["browser", "close", "--json"], { driver, browserGuard: () => guard });
+    expect(order).toEqual(["call:end_session", "close:55", "close:56"]);
+    expect(guard.log.cleared).toBe(1);
+    expect(cap.data[0]).toEqual({
+      sessions: ["agent-Me"],
+      closed: [{ pid: 700, window_id: 55 }],
+      left_open: [{ pid: 700, window_id: 56 }],
+    });
+    const text = await run(["browser", "close"], {
+      driver,
+      browserGuard: () => fakeGuard({ work }),
+    });
+    const out = text.text.join("\n");
+    expect(out).toContain("Ended browser session agent-Me and closed window 55 (pid 700).");
+    expect(out).toContain("Could not close browser window 56 (pid 700); tell the person");
+  });
+
+  test("browser close with nothing recorded says so and writes nothing", async () => {
+    const { driver } = browserDriver();
+    const guard = fakeGuard();
+    const cap = await run(["browser", "close"], { driver, browserGuard: () => guard });
+    expect(cap.text.join("")).toContain("No browser work of yours to close.");
+    expect(guard.log.cleared).toBe(0);
+  });
+
+  test("done and lease release clean up too, and say so", async () => {
+    for (const argv of [["done"], ["lease", "release"]]) {
+      const { driver, order } = browserDriver({ closeable: stuck });
+      const guard = fakeGuard({ work });
+      const cap = await run(argv, { driver, browserGuard: () => guard });
+      expect(order).toEqual(["call:end_session", "close:55", "close:56"]);
+      expect(guard.log.cleared).toBe(1);
+      const out = cap.text.join("\n");
+      expect(out).toContain("closed window 55 (pid 700)");
+      expect(out).toContain("Could not close browser window 56");
+    }
+  });
+
+  test("done adds nothing when there is no browser work, or no browser driver", async () => {
+    const plain = await run(["done"], { browserGuard: () => fakeGuard({ work }) });
+    expect(plain.text.join("")).toBe("You did not hold the desktop.\n");
+    const { driver } = browserDriver();
+    const none = await run(["done"], { driver, browserGuard: () => fakeGuard() });
+    expect(none.text.join("")).toBe("You did not hold the desktop.\n");
+  });
+});
+
+describe("computer daemon version (ADR 0250)", () => {
+  function staleDriver() {
+    const driver = fakeDriver();
+    const state = { version: "1.0.0", running: true, stops: 0, starts: 0 };
+    driver.daemonStatus = () => ({
+      running: state.running,
+      detail: "x",
+      ...(state.running ? { pid: 42, version: state.version } : {}),
+    });
+    driver.stopDaemon = () => {
+      state.stops++;
+      state.running = false;
+      return { running: false, detail: "stopped" };
+    };
+    driver.startDaemon = async () => {
+      state.starts++;
+      state.running = true;
+      state.version = driver.version;
+      return { running: true, detail: "running", pid: 43, version: driver.version };
+    };
+    return { driver, state };
+  }
+
+  test("call restarts a daemon running another version", async () => {
+    const { driver, state } = staleDriver();
+    const cap = await run(["call", "click", "{}"], { driver });
+    expect(cap.exitCode()).toBe(0);
+    expect(state).toMatchObject({ stops: 1, starts: 1 });
+    await run(["call", "click", "{}"], { driver });
+    expect(state).toMatchObject({ stops: 1, starts: 1 });
+  });
+
+  test("up reports the restart and the old version", async () => {
+    const { driver, state } = staleDriver();
+    const cap = await run(["up"], { driver });
+    expect(state.stops).toBe(1);
+    expect(cap.text.join("")).toContain("restarted the daemon on the pinned 1.2.3 (was 1.0.0)");
+  });
+
+  test("status shows a daemon version that differs from the pinned one", async () => {
+    const { driver } = staleDriver();
+    const cap = await run(["status"], { driver });
+    expect(cap.text.join("")).toContain("version 1.0.0 (not the pinned 1.2.3");
+  });
+});
+
+describe("computer status browser windows", () => {
+  test("lists open agent browser windows in text and JSON", async () => {
+    const list: GuardWindow[] = [
+      {
+        owner_id: "a",
+        owner_label: "agent-A",
+        pid: 1,
+        window_id: 11,
+        session: "agent-A",
+        opened_at: new Date(NOW).toISOString(),
+      },
+      {
+        owner_id: "b",
+        owner_label: "agent-B",
+        pid: 1,
+        window_id: 12,
+        session: "agent-B",
+        opened_at: new Date(NOW).toISOString(),
+      },
+    ];
+    const cap = await run(["status"], { browserGuard: () => fakeGuard({ list }) });
+    expect(cap.text.join("")).toContain(
+      "windows:   2 agent browser windows open: agent-A (window 11), agent-B (window 12)",
+    );
+    const json = await run(["status", "--json"], { browserGuard: () => fakeGuard({ list }) });
+    expect((json.data[0] as { browser_windows: unknown }).browser_windows).toEqual(list);
+    const none = await run(["status"]);
+    expect(none.text.join("")).not.toContain("windows:");
   });
 });

@@ -267,7 +267,7 @@ describe("running the driver", () => {
 
   test("daemonStatus parses running, pid and not running", async () => {
     let out = "running\npid: 4242\nsocket: x\nextra\n";
-    const rec = recorder(() => ({ stdout: out }));
+    const rec = recorder((c) => (c.args[1] === "get_config" ? { status: 1 } : { stdout: out }));
     const { driver, host } = await installed({ spawnSync: rec.spawnSync });
     expect(driver.daemonStatus(host)).toEqual({
       running: true,
@@ -276,8 +276,79 @@ describe("running the driver", () => {
     });
     expect(rec.calls[0]?.args).toEqual(["status"]);
     expect(rec.calls[0]?.timeout).toBe(15_000);
+    // A failed version query leaves the version unknown.
+    expect(rec.calls[1]?.args).toEqual(["call", "get_config", "{}"]);
     out = "cua-driver daemon is not running\n";
+    rec.calls.length = 0;
     expect(driver.daemonStatus(host).running).toBe(false);
+    expect(rec.calls.map((c) => c.args[0])).toEqual(["status"]);
+  });
+
+  test("daemonStatus asks a daemon of unknown origin for its version once, then reads the record", async () => {
+    const rec = recorder((c) =>
+      c.args[1] === "get_config"
+        ? { stdout: '{"schema_version":1,"version":"0.49.9","platform":"windows"}\n' }
+        : { stdout: "running\npid: 4242\n" },
+    );
+    const { driver, host } = await installed({ spawnSync: rec.spawnSync });
+    const first = driver.daemonStatus(host);
+    expect(first.version).toBe("0.49.9");
+    expect(first.browserAttach).toBeUndefined();
+    expect(rec.calls.map((c) => c.args.slice(0, 2))).toEqual([["status"], ["call", "get_config"]]);
+    rec.calls.length = 0;
+    const second = driver.daemonStatus(host);
+    expect(second.version).toBe("0.49.9");
+    expect(second.browserAttach).toBeUndefined();
+    expect(rec.calls.map((c) => c.args[0])).toEqual(["status"]);
+    const record = JSON.parse(
+      readFileSync(
+        join(host.desktopStateDir as string, "tools/cua-driver/daemon-start.json"),
+        "utf8",
+      ),
+    );
+    expect(record).toEqual({ pid: 4242, version: "0.49.9" });
+  });
+
+  test("a daemon Harnery started reports the pinned version without a query", async () => {
+    let started = false;
+    let clock = 0;
+    const rec = recorder((c) => {
+      if (c.command.endsWith("powershell.exe")) {
+        started = true;
+        return {};
+      }
+      if (c.args[1] === "get_config") return { stdout: '{"version":"9.9.9"}' };
+      return { stdout: started ? "running\npid: 31\n" : "not running\n" };
+    });
+    const { driver, host } = await installed({
+      spawnSync: rec.spawnSync,
+      wslpath: () => "C:\\cua-driver.exe",
+      now: () => clock,
+      sleep: async (ms) => {
+        clock += ms;
+      },
+    });
+    const status = await driver.startDaemon(host, { browserAttach: true });
+    expect(status.version).toBe(CUA_DRIVER_VERSION);
+    rec.calls.length = 0;
+    const later = driver.daemonStatus(host);
+    expect(later).toMatchObject({ pid: 31, version: CUA_DRIVER_VERSION, browserAttach: true });
+    expect(rec.calls.map((c) => c.args[0])).toEqual(["status"]);
+  });
+
+  test("a version cached for another pid is not reused, and its grant is dropped", async () => {
+    let pid = 50;
+    const rec = recorder((c) =>
+      c.args[1] === "get_config"
+        ? { stdout: `{"version":"0.4${pid}"}` }
+        : { stdout: `running\npid: ${pid}\n` },
+    );
+    const { driver, host } = await installed({ spawnSync: rec.spawnSync });
+    expect(driver.daemonStatus(host).version).toBe("0.450");
+    pid = 51;
+    rec.calls.length = 0;
+    expect(driver.daemonStatus(host).version).toBe("0.451");
+    expect(rec.calls).toHaveLength(2);
   });
 
   test("startDaemon under WSL starts via powershell and polls until running", async () => {
@@ -390,11 +461,257 @@ describe("running the driver", () => {
     expect(rec.calls.every((c) => c.command !== "powershell.exe")).toBe(true);
   });
 
+  test("call starts an ended session again once and retries once", async () => {
+    const ended =
+      "session has ended; tool call 'health_report' was rejected. Call start_session with session 'agent-x' to start it again, or use a new session label.\n";
+    let rejected = 0;
+    const rec = recorder((c) => {
+      if (c.args[1] === "start_session") return { stdout: '{"ok":true}' };
+      if (rejected < 1) {
+        rejected++;
+        return { status: 1, stdout: ended };
+      }
+      return { stdout: '{"done":true}' };
+    });
+    const { driver, host } = await installed({ spawnSync: rec.spawnSync });
+    const result = driver.call(host, "list_apps", { session: "agent-x" });
+    expect(result.json).toEqual({ done: true });
+    expect(rec.calls.map((c) => c.args)).toEqual([
+      ["call", "list_apps", '{"session":"agent-x"}'],
+      ["call", "start_session", '{"session":"agent-x"}'],
+      ["call", "list_apps", '{"session":"agent-x"}'],
+    ]);
+  });
+
+  test("call does not revive twice, without a session label, or on other errors", async () => {
+    const ended = "session has ended; tool call 'click' was rejected. Call start_session ...";
+    const rec = recorder((c) =>
+      c.args[1] === "start_session" ? {} : { status: 1, stderr: ended },
+    );
+    const { driver, host } = await installed({ spawnSync: rec.spawnSync });
+    const result = driver.call(host, "click", { session: "s1" });
+    expect(result.stderr).toContain("session has ended");
+    expect(rec.calls.map((c) => c.args[1])).toEqual(["click", "start_session", "click"]);
+
+    rec.calls.length = 0;
+    driver.call(host, "click", { pid: 1 });
+    driver.call(host, "click", { session: "" });
+    expect(rec.calls.map((c) => c.args[1])).toEqual(["click", "click"]);
+
+    const other = recorder(() => ({ status: 1, stdout: "element token is stale" }));
+    const second = await installed({ spawnSync: other.spawnSync });
+    second.driver.call(second.host, "click", { session: "s1" });
+    expect(other.calls).toHaveLength(1);
+  });
+
   test("stopDaemon runs stop then reports status", async () => {
     const rec = recorder(() => ({ stdout: "not running\n" }));
     const { driver, host } = await installed({ spawnSync: rec.spawnSync });
     expect(driver.stopDaemon(host).running).toBe(false);
     expect(rec.calls.map((c) => c.args[0])).toEqual(["stop", "status"]);
+  });
+});
+
+describe("browser windows", () => {
+  const win = (pid: number, window_id: number, app_name: string, z_index: number | null) => ({
+    pid,
+    window_id,
+    app_name,
+    title: "t",
+    z_index,
+  });
+
+  async function opener(
+    respond: (c: Call, listCount: number) => Partial<SpawnResult> | undefined,
+    extra: Partial<CuaDeps> = {},
+  ) {
+    let lists = 0;
+    let clock = 0;
+    const rec = recorder((c) => {
+      if (c.args[1] === "list_windows") lists++;
+      return respond(c, lists) ?? {};
+    });
+    const setup = await installed({
+      spawnSync: rec.spawnSync,
+      now: () => clock,
+      sleep: async (ms) => {
+        clock += ms;
+      },
+      ...extra,
+    });
+    return { ...setup, rec, clock: () => clock };
+  }
+
+  test("opens a new window in the front-most browser and returns it", async () => {
+    const first = {
+      windows: [
+        win(10, 100, "chrome.exe", 3),
+        win(20, 200, "msedge.exe", 9),
+        win(30, 300, "notepad.exe", 15),
+      ],
+    };
+    const { driver, host, rec } = await opener((c, lists) => {
+      if (c.args[1] === "list_windows")
+        return {
+          stdout: JSON.stringify(
+            lists === 1
+              ? first
+              : lists < 3
+                ? [win(20, 200, "msedge.exe", 9)]
+                : [win(20, 200, "msedge.exe", 9), win(20, 201, "msedge.exe", 16)],
+          ),
+        };
+      if (c.command.endsWith("powershell.exe") && c.args[2]?.startsWith("(Get-Process"))
+        return { stdout: "C:\\Program Files\\Edge's\\msedge.exe\r\n" };
+      return undefined;
+    });
+    const opened = await driver.openBrowserWindow?.(host, { url: "https://example.com/a?b=1" });
+    expect(opened).toEqual({ pid: 20, window_id: 201 });
+    const ps = rec.calls.filter((c) => c.command.endsWith("powershell.exe")).map((c) => c.args[2]);
+    // The default-browser lookup comes first; it names no supported browser here, so the front-most wins.
+    expect(ps[0]).toContain("UrlAssociations");
+    expect(ps[1]).toBe("(Get-Process -Id 20).Path");
+    expect(ps[2]).toBe(
+      "Start-Process -FilePath 'C:\\Program Files\\Edge''s\\msedge.exe' -ArgumentList '--new-window','https://example.com/a?b=1'",
+    );
+    const lists = rec.calls.filter((c) => c.args[1] === "list_windows").map((c) => c.args[2]);
+    expect(lists).toEqual(["{}", '{"pid":20}', '{"pid":20}']);
+  });
+
+  test("opens the window in the default browser even when another browser is in front", async () => {
+    const { driver, host } = await opener((c, lists) => {
+      if (c.args[1] === "list_windows")
+        return {
+          stdout: JSON.stringify(
+            lists === 1
+              ? { windows: [win(10, 100, "chrome.exe", 3), win(20, 200, "brave.exe", 9)] }
+              : [win(10, 100, "chrome.exe", 3), win(10, 101, "chrome.exe", 12)],
+          ),
+        };
+      if (c.command.endsWith("powershell.exe") && c.args[2]?.includes("UrlAssociations"))
+        return { stdout: "ChromeHTML\r\n" };
+      if (c.command.endsWith("powershell.exe") && c.args[2]?.startsWith("(Get-Process"))
+        return { stdout: "C:\\chrome.exe\r\n" };
+      return undefined;
+    });
+    expect(await driver.openBrowserWindow?.(host, {})).toEqual({ pid: 10, window_id: 101 });
+  });
+
+  test("Linux: an explicit pid, about:blank by default, and a detached spawn of the browser", async () => {
+    const top = `cua-driver-rs-${CUA_DRIVER_VERSION}-linux-x86_64`;
+    const bytes = buildTarGz([
+      { name: `${top}/`, type: "5" },
+      { name: `${top}/cua-driver`, body: "bin", mode: 0o755 },
+    ]);
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    const pins = { ...CUA_PINS, "linux-x86_64": { ...CUA_PINS["linux-x86_64"], sha256 } };
+    const host: HostInfo = { kind: "linux", desktopStateDir: join(root, "state") };
+    const home = () => join(root, "home");
+    const setup = createCuaDriver({
+      arch: "x64",
+      env: {},
+      home,
+      pins,
+      fetch: async () => new Response(bytes),
+    });
+    await setup.install(setup.planInstall(host));
+    let lists = 0;
+    let clock = 0;
+    const spawned: string[][] = [];
+    const rec = recorder((c) => {
+      if (c.args[1] === "list_windows") {
+        lists++;
+        const windows = [win(7, 1, "chrome", null), win(8, 5, "brave", null)];
+        if (lists > 1) windows.push(win(7, 2, "chrome", null));
+        return { stdout: JSON.stringify({ windows }) };
+      }
+      if (c.command === "readlink") return { stdout: "/opt/google/chrome/chrome\n" };
+      return {};
+    });
+    const driver = createCuaDriver({
+      arch: "x64",
+      env: {},
+      home,
+      pins,
+      spawnSync: rec.spawnSync,
+      spawnDetached: (command, args) => spawned.push([command, ...args]),
+      now: () => clock,
+      sleep: async (ms) => {
+        clock += ms;
+      },
+    });
+    expect(await driver.openBrowserWindow?.(host, { pid: 7 })).toEqual({ pid: 7, window_id: 2 });
+    expect(rec.calls.find((c) => c.command === "readlink")?.args).toEqual(["/proc/7/exe"]);
+    expect(spawned).toEqual([["/opt/google/chrome/chrome", "--new-window", "about:blank"]]);
+    // Without a pid and without a stacking order, two browser processes are ambiguous.
+    lists = 0;
+    await expect(driver.openBrowserWindow?.(host, {})).rejects.toThrow(/pass the browser's pid/);
+  });
+
+  test("refuses a URL that is not http, https or about", async () => {
+    const { driver, host, rec } = await opener(() => undefined);
+    await expect(driver.openBrowserWindow?.(host, { url: "file:///etc/passwd" })).rejects.toThrow(
+      /only http:, https: and about:/,
+    );
+    await expect(driver.openBrowserWindow?.(host, { url: "javascript:alert(1)" })).rejects.toThrow(
+      /Refusing/,
+    );
+    await expect(driver.openBrowserWindow?.(host, { url: "not a url" })).rejects.toThrow(
+      /Not a valid URL/,
+    );
+    expect(rec.calls).toHaveLength(0);
+  });
+
+  test("no supported browser open is a clear error", async () => {
+    const { driver, host } = await opener((c) =>
+      c.args[1] === "list_windows"
+        ? { stdout: JSON.stringify([win(30, 300, "notepad.exe", 15)]) }
+        : undefined,
+    );
+    await expect(driver.openBrowserWindow?.(host, {})).rejects.toThrow(
+      /No window of a supported browser/,
+    );
+  });
+
+  test("gives up after eight seconds without a new window", async () => {
+    const { driver, host, clock } = await opener((c) => {
+      if (c.args[1] === "list_windows")
+        return { stdout: JSON.stringify([win(10, 100, "chrome.exe", 1)]) };
+      if (c.args[2]?.startsWith("(Get-Process")) return { stdout: "C:\\chrome.exe\n" };
+      return undefined;
+    });
+    await expect(driver.openBrowserWindow?.(host, { pid: 10 })).rejects.toThrow(
+      /did not open a new window/,
+    );
+    expect(clock()).toBe(8_000);
+  });
+
+  test("close posts WM_CLOSE only to a window the pid still owns", () => {
+    const rec = recorder(() => ({ stdout: "True\r\n" }));
+    const driver = createCuaDriver(baseDeps({ spawnSync: rec.spawnSync }));
+    expect(driver.closeWindow?.(wslHost(), { pid: 30536, window_id: 67656 })).toBe(true);
+    const script = rec.calls[0]?.args[2] ?? "";
+    expect(rec.calls[0]?.command.endsWith("powershell.exe")).toBe(true);
+    expect(script).toContain("[void][H.W]::GetWindowThreadProcessId([IntPtr]67656,[ref]$p);");
+    expect(script).toContain(
+      "if ($p -eq 30536) { [H.W]::PostMessage([IntPtr]67656,0x0010,[IntPtr]::Zero,[IntPtr]::Zero) }",
+    );
+    const quiet = recorder(() => ({ stdout: "" }));
+    const other = createCuaDriver(baseDeps({ spawnSync: quiet.spawnSync }));
+    expect(other.closeWindow?.(wslHost(), { pid: 1, window_id: 2 })).toBe(false);
+    expect(() => other.closeWindow?.(wslHost(), { pid: 1.5, window_id: 2 })).toThrow(/integer/);
+  });
+
+  test("close is a no-op off Windows", () => {
+    const rec = recorder();
+    const driver = createCuaDriver(baseDeps({ spawnSync: rec.spawnSync }));
+    expect(
+      driver.closeWindow?.({ kind: "macos", desktopStateDir: root }, { pid: 1, window_id: 2 }),
+    ).toBe(false);
+    expect(
+      driver.closeWindow?.({ kind: "linux", desktopStateDir: root }, { pid: 1, window_id: 2 }),
+    ).toBe(false);
+    expect(rec.calls).toHaveLength(0);
   });
 });
 
