@@ -149,9 +149,7 @@ URL with \`${b} files url <repo-relative-path>\` instead of guessing it. HTML op
 as a real page with working scripts and relative assets; other files open in the
 dashboard viewer. Use localhost links only when the operator shares this machine.
 
-**Machine facts.** \`${b} machine specs\` describes this machine: operating
-system, processor, memory, graphics, disks and displays. Read it instead of
-guessing what the machine can run.
+**Machine facts.** \`${b} machine specs\` describes this machine.
 
 **Decision docket.** When you would otherwise stop to ask a human a decision you
 can't resolve from the repo, file it instead. \`${b} decision file "<question>"\`

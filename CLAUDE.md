@@ -122,7 +122,7 @@ When more than one host checks out harnery (e.g. two separate monorepos each car
 
 This `AGENTS.md` is the canonical instructions file; `CLAUDE.md` is a verbatim mirror for Claude Code. Edit `AGENTS.md`, then copy it across.
 
-<!-- harnery:begin instructions v=9ee42162 -->
+<!-- harnery:begin instructions v=9f8757d7 -->
 ## harnery coordination
 
 This project runs [harnery](https://harnery.com) for multi-agent coordination.
@@ -189,9 +189,7 @@ URL with `harn files url <repo-relative-path>` instead of guessing it. HTML open
 as a real page with working scripts and relative assets; other files open in the
 dashboard viewer. Use localhost links only when the operator shares this machine.
 
-**Machine facts.** `harn machine specs` describes this machine: operating
-system, processor, memory, graphics, disks and displays. Read it instead of
-guessing what the machine can run.
+**Machine facts.** `harn machine specs` describes this machine.
 
 **Decision docket.** When you would otherwise stop to ask a human a decision you
 can't resolve from the repo, file it instead. `harn decision file "<question>"`
