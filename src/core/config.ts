@@ -28,7 +28,7 @@ import {
   type Corner,
   DEFAULT_PLACEMENT,
   type WindowPlacement,
-} from "../lib/computer/displays.ts";
+} from "../lib/computer/placement.ts";
 import { coordEnv } from "../lib/env.ts";
 import { DEFAULT_WEB_PORT } from "../lib/local-file-url.ts";
 import { AUTOUPDATE_DEFAULTS, type AutoUpdateConfig } from "./autoupdate/types.ts";
