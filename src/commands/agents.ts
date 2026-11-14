@@ -100,6 +100,8 @@ import { turnElapsedStatusRow } from "../core/agents/turn-elapsed.ts";
 import {
   agentsGitSyncCommand,
   coordFreshnessSeconds,
+  type PresenceRemoteDetail,
+  presenceRemoteDetail,
   resolveBinName,
   resolveTimeZone,
   sessionFinalizationConfig,
@@ -2419,7 +2421,14 @@ function runStatus(opts: {
   );
   // Cross-machine presence (ADR 0016): sessions on other machines, advisory.
   const remoteMachines = readRemoteMachines(root);
-  const peersStr = formatPeers(livePeers, 4, peersStale, remoteMachines, relations);
+  const peersStr = formatPeers(
+    livePeers,
+    4,
+    peersStale,
+    remoteMachines,
+    relations,
+    presenceRemoteDetail(root),
+  );
 
   const ctxUsage = readContextUsage(hb.native_session_id ?? hb.session_id, hb.platform);
   let ctxStr: string;
@@ -2654,7 +2663,10 @@ function formatPeers(
   staleCount: number,
   remoteMachines: RemoteMachine[] = [],
   relations: Map<string, string> = new Map(),
+  remoteDetail: PresenceRemoteDetail = "full",
 ): string {
+  // `off` hides other machines from the box; `summary` shows a count per machine.
+  if (remoteDetail === "off") remoteMachines = [];
   if (peers.length === 0 && staleCount === 0 && remoteMachines.length === 0) return "none";
   const labels = peers.map((p) => {
     const name = sanitizeStatusLabel(p.name ?? "") || "unnamed";
@@ -2673,6 +2685,12 @@ function formatPeers(
     main = `${labels.slice(0, cap).join(", ")}, +${labels.length - cap} more`;
   }
   if (staleCount > 0) main = `${main}; ${staleCount} stale`;
+  if (remoteMachines.length > 0 && remoteDetail === "summary") {
+    const counts = remoteMachines
+      .filter((m) => m.agents.length > 0)
+      .map((m) => `@${sanitizeStatusLabel(m.machine)} (${m.agents.length})`);
+    return counts.length > 0 ? `${main}; ${counts.join(", ")}` : main;
+  }
   // Remote machines (presence transport): `Name @machine` labels, capped.
   if (remoteMachines.length > 0) {
     const remote = remoteMachines
@@ -4868,9 +4886,13 @@ export function formatPeerRecipientReceipt(recipient: PeerRecipientResult): stri
         ? "Published to origin; recipient-machine import is not confirmed."
         : `Publication is not confirmed${recipient.publish_error ? ` (${recipient.publish_error})` : ""}.`)
     );
+  // A local delivery names this machine and any live namesake elsewhere, so the
+  // sender can see where the message went and how to reach the other one.
+  const where = recipient.target.local_machine ? ` on ${recipient.target.local_machine}` : "";
+  const note = recipient.target.routing_note ? ` ${recipient.target.routing_note}` : "";
   return recipient.state === "duplicate"
-    ? `Previously stored for ${address} as ${recipient.message_id}; current surface state is not established by this receipt.`
-    : `Stored for ${address} as ${recipient.message_id}; task attention is not confirmed.`;
+    ? `Previously stored for ${address}${where} as ${recipient.message_id}; current surface state is not established by this receipt.${note}`
+    : `Stored for ${address}${where} as ${recipient.message_id}; task attention is not confirmed.${note}`;
 }
 
 function runPing(

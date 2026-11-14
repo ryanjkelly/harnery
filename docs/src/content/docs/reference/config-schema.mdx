@@ -24,7 +24,7 @@ Settings resolve from these sources, lowest precedence first (later wins):
 3. `<project>/.harnery/config.local.jsonc`: this machine only, never committed. It overrides the project file field by field, so one machine can lower a value the project sets for everyone
 4. CLI flags + environment variables: per-invocation overrides (see each field's env note)
 
-The config reader (`src/core/config.ts`) merges the three files and owns `binName`, `timeZone`, `hooksSetupHint`, `hooks`, `agents`, `instructions`, `tools`, `doctor`, `workflow`, `skills`, `presence`, `coord`, `logs`, `storage`, `artifacts`, and `backup`; the web layer reads `files`. Nine values are project-only. The `binName` **pin** that `harn init` guards against re-stamping ignores the user file. So do `agents.finalizationRoots`, `agents.gitSyncCommand`, `instructions.promptReminder`, `hooks.promptContext`, `hooks.codexWindowsBridge`, `hooks.portableCommands`, `doctor.environmentFindings`, and `storage.sharing`. A global setting cannot grant filesystem authority, execute a project extension, or carry one project's wording into another. A user-global `binName` is a display fallback, never a project pin. The local file follows the same rule: the nine project-only values ignore it too, so a file nobody reviews cannot widen a trust boundary.
+The config reader (`src/core/config.ts`) merges the three files and owns `binName`, `timeZone`, `hooksSetupHint`, `hooks`, `agents`, `instructions`, `tools`, `doctor`, `workflow`, `skills`, `presence`, `coord`, `logs`, `storage`, `artifacts`, and `backup`; the web layer reads `files`. Ten values are project-only. The `binName` **pin** that `harn init` guards against re-stamping ignores the user file. So do `agents.finalizationRoots`, `agents.gitSyncCommand`, `instructions.promptReminder`, `hooks.promptContext`, `hooks.codexWindowsBridge`, `hooks.portableCommands`, `doctor.environmentFindings`, and `storage.sharing`. A global setting cannot grant filesystem authority, execute a project extension, or carry one project's wording into another. A user-global `binName` is a display fallback, never a project pin. The local file follows the same rule: the nine project-only values ignore it too, so a file nobody reviews cannot widen a trust boundary.
 
 ### The machine-local file
 
@@ -110,6 +110,7 @@ times in each viewer's own display preference, the browser zone by default.
 | `requireGitFinalization` | bool     | `false` | Require the guarded Git check at the end of tool-using turns |
 | `finalizationRoots`      | object[] | `[]`    | Extra project-owned roots with a `git` or `output` end-turn disposition |
 | `gitSyncCommand`         | string   | none    | The project's safe catch-up command, named when the end-turn check finds the checkout behind |
+| `gitSyncOnEndTurn`       | bool     | `false` | Run `gitSyncCommand` once when the only failing end-turn findings are repository freshness, then repeat the check |
 
 When enabled, automatic prompts and Stop remediation request
 `agents status --end-turn` instead of plain `agents status`. The Stop verdict also
@@ -570,8 +571,20 @@ Web file-viewer path-serving policy (the universal file viewer in `harn web`). T
 
 | Field             | Type      | Default | Description |
 | ----------------- | --------- | ------- | ----------- |
+| `start_command`   | string[]  | none    | Command (argv) that `files url` runs once when the dashboard does not answer; concurrent callers share one start |
+| `start_timeout_seconds` | integer | `600` | How long `files url` waits for the dashboard to answer after running `start_command` |
 | `deny_globs`      | string[]  | `[]`    | Extra `**/`-anchored deny patterns on top of the shipped floor (treated as hard-tier: never overridable) |
 | `allow_overrides` | string[]  | `[]`    | Rescue globs consulted only when a deny came from a soft-tier floor pattern; naming a hard secret family is dropped at load |
+
+## `decision`
+
+| Field   | Type | Default | Description |
+| ------- | ---- | ------- | ----------- |
+| `share` | bool | `false` | Publish this machine's waiting decisions, pending run approvals and recently changed decisions so other machines on the same origin can read them |
+
+Shared entries are read-only on other machines and carry the label of the
+machine that filed them. Only the filing machine can resolve a decision. See
+[decision record 0255](/decisions/0255-share-the-docket-across-machines/).
 
 ## How each section is resolved
 
