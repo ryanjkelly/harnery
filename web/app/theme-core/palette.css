@@ -1,0 +1,68 @@
+/* GENERATED theme core. Do not edit this copy: the host repository's theme
+   sync keeps it identical across apps, and a hand edit is overwritten. */
+/* Shared palette: the page, panel and text grays, tinted toward one hue, and
+   six status colors. Each app maps its own token names onto these (its page
+   background reads var(--gray-canvas), its body text var(--gray-ink), its
+   success text var(--status-positive), and so on), so these are identical
+   numbers everywhere while names, borders and the rest of each app's look stay
+   with that app. One accent token, the accent-colored text, is shared too.
+
+   Parameter: --theme-hue, the hue the grays lean toward (250, a cool blue,
+   when unset). Set it on the same element as these rules. A custom property
+   substitutes var() where it is declared, so an element that changes the hue
+   for its subtree must also carry data-theme-hue-scope; that re-declares the
+   grays there with the new hue instead of inheriting the ancestor's. The
+   status colors are hue-fixed and ignore --theme-hue.
+
+   Text pairs are held at 4.5:1 or above against canvas, surface and surface-2
+   in both modes. Change a lightness here only with the contrast tests green. */
+[data-theme-hue-scope],
+:root {
+  /* Page background behind every panel. */
+  --gray-canvas: light-dark(
+    oklch(0.981 0.006 var(--theme-hue, 250)),
+    oklch(0.18 0.017 var(--theme-hue, 250))
+  );
+  /* Panels, cards and popovers sitting on the canvas. */
+  --gray-surface: light-dark(
+    oklch(0.998 0.002 var(--theme-hue, 250)),
+    oklch(0.224 0.018 var(--theme-hue, 250))
+  );
+  /* The quiet fill one step off the surface: table headers, bands,
+     segmented controls, chips and secondary buttons. */
+  --gray-surface-2: light-dark(
+    oklch(0.947 0.015 var(--theme-hue, 250)),
+    oklch(0.285 0.025 var(--theme-hue, 250))
+  );
+  /* Body text. */
+  --gray-ink: light-dark(
+    oklch(0.26 0.025 var(--theme-hue, 250)),
+    oklch(0.95 0.01 var(--theme-hue, 250))
+  );
+  /* Secondary text: labels, metadata, descriptions. */
+  --gray-ink-muted: light-dark(
+    oklch(0.46 0.024 var(--theme-hue, 250)),
+    oklch(0.75 0.017 var(--theme-hue, 250))
+  );
+  /* Tertiary text, one step quieter: captions, empty-cell dashes and
+     placeholders. Still 4.5:1, never an alpha blend of the muted ink. */
+  --gray-ink-subtle: light-dark(
+    oklch(0.52 0.02 var(--theme-hue, 250)),
+    oklch(0.68 0.017 var(--theme-hue, 250))
+  );
+
+  /* Status colors. Hue-fixed: they ignore --theme-hue, so green, red and
+     amber mean the same thing under any tint. Each ink is text-safe (4.5:1)
+     on canvas, surface, surface-2 and on its own -soft fill; the -soft fill
+     is the quiet background behind a badge or banner of that status. */
+  --status-positive: light-dark(oklch(0.43 0.11 150), oklch(0.8 0.14 150));
+  --status-positive-soft: light-dark(oklch(0.953 0.025 150), oklch(0.29 0.042 150));
+  --status-negative: light-dark(oklch(0.48 0.17 25), oklch(0.79 0.13 25));
+  --status-negative-soft: light-dark(oklch(0.958 0.025 25), oklch(0.3 0.04 25));
+  --status-warning: light-dark(oklch(0.45 0.09 75), oklch(0.84 0.12 80));
+  --status-warning-soft: light-dark(oklch(0.964 0.035 80), oklch(0.3 0.04 75));
+
+  /* Accent-colored text and links. Follows --theme-hue; 4.5:1 on canvas,
+     surface and surface-2 in both modes. */
+  --theme-accent-ink: light-dark(oklch(0.47 0.15 var(--theme-hue, 250)), oklch(0.8 0.11 var(--theme-hue, 250)));
+}
