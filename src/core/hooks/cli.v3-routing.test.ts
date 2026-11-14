@@ -736,6 +736,215 @@ describe("agent-hook V3 hard cut", () => {
     expect(quiet.stdout).not.toContain('"hookEventName":"PostToolUse"');
   });
 
+  test("a T3 session is asked to rename its thread and the confirmed rename closes the title", () => {
+    const root = candidateRoot();
+    const owner = "t3-title-owner";
+    const name = "Agent Maya - Auth refactor";
+    const tool = "mcp__t3-code__t3_thread_update";
+    const runHook = (event: string, payload: Record<string, unknown>) =>
+      run(AGENT_HOOK, [event, "--adapter", "claude-code"], payload, root, {
+        HARNERY_AGENT_COORD_BYPASS_STOP: "1",
+      });
+    expect(
+      runHook("session-start", { session_id: owner, cwd: root, source: "startup" }).status,
+    ).toBe(0);
+    const instanceId = readLiveCoordinationRows(root)[0]?.instance_id;
+    if (!instanceId) throw new Error("session owner was not projected");
+    const cachePath = join(root, ".harnery", "active", `${instanceId}.json`);
+    const seed = (extra: Record<string, unknown>) =>
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          ...readLiveCoordinationRow(root, instanceId),
+          instance_id: instanceId,
+          suggested_session_name: name,
+          session_title_surface: "t3-code",
+          session_title_client_thread: "thread-1",
+          ...extra,
+        }),
+        "utf8",
+      );
+    seed({});
+
+    const mint = runHook("post-tool-use", {
+      session_id: owner,
+      cwd: root,
+      tool_name: "Bash",
+      tool_use_id: "set-task-tool",
+      tool_response: {
+        output: JSON.stringify({ suggested_session_name: name, first_of_session: true }),
+      },
+    });
+    expect(mint.stdout).toContain("Session title required.");
+    expect(mint.stdout).toContain(tool);
+    expect(mint.stdout).not.toContain("Session name display required.");
+
+    const pre = (id: string, toolName: string, toolInput: unknown) =>
+      runHook("pre-tool-use", {
+        session_id: owner,
+        cwd: root,
+        tool_name: toolName,
+        tool_use_id: id,
+        tool_input: toolInput,
+      });
+    const load = pre("load", "ToolSearch", { query: `select:${tool}` });
+    expect(load.stdout).not.toContain('"permissionDecision":"deny"');
+    const renameInput = { action: "rename", title: name };
+    expect(pre("rename", tool, renameInput).stdout).not.toContain('"permissionDecision":"deny"');
+
+    // Readable evidence that shows no name block: an unrelated tool is refused
+    // with the rename instruction.
+    const transcript = join(root, "transcript.jsonl");
+    writeFileSync(
+      transcript,
+      `${JSON.stringify({
+        type: "user",
+        message: {
+          content: [
+            {
+              type: "tool_result",
+              content: JSON.stringify({ first_of_session: true, suggested_session_name: name }),
+            },
+          ],
+        },
+      })}\n${JSON.stringify({
+        type: "assistant",
+        message: { content: [{ type: "text", text: "Starting before the title." }] },
+      })}\n`,
+    );
+    const denied = runHook("pre-tool-use", {
+      session_id: owner,
+      cwd: root,
+      transcript_path: transcript,
+      tool_name: "Bash",
+      tool_use_id: "too-soon",
+      tool_input: { command: "echo too-soon" },
+    });
+    expect(denied.stdout).toContain('"permissionDecision":"deny"');
+    expect(denied.stdout).toContain("Session title required.");
+    expect(denied.stdout).toContain("agents suggest-name --json");
+
+    const renamed = runHook("post-tool-use", {
+      session_id: owner,
+      cwd: root,
+      tool_name: tool,
+      tool_use_id: "rename-done",
+      tool_input: renameInput,
+      tool_response: JSON.stringify({ threadId: "thread-1", action: "rename", title: name }),
+    });
+    expect(renamed.status).toBe(0);
+    expect(renamed.stdout).not.toContain('"hookEventName":"PostToolUse"');
+    const row = readLiveCoordinationRow(root, instanceId);
+    expect(row?.session_title_applied_for).toBe(name);
+    expect(row?.session_name_seen_for).toBe(name);
+
+    // A mid-session name after the applied title is recorded as shown and
+    // nothing is asked of the agent.
+    const later = "Agent Maya - Something else";
+    seed({ suggested_session_name: later, session_title_applied_for: name });
+    const quiet = runHook("pre-tool-use", {
+      session_id: owner,
+      cwd: root,
+      transcript_path: transcript,
+      tool_name: "Bash",
+      tool_use_id: "after-applied",
+      tool_input: { command: "echo ok" },
+    });
+    expect(quiet.stdout).not.toContain('"permissionDecision":"deny"');
+    expect(quiet.stdout).not.toContain(later);
+    expect(readLiveCoordinationRow(root, instanceId)?.session_name_seen_for).toBe(later);
+  });
+
+  test("a failed T3 rename falls back to the name block, which then closes the title", () => {
+    const root = candidateRoot();
+    const owner = "t3-fallback-owner";
+    const name = "Agent Maya - Auth refactor";
+    const tool = "mcp__t3-code__t3_thread_update";
+    const runHook = (event: string, payload: Record<string, unknown>) =>
+      run(AGENT_HOOK, [event, "--adapter", "claude-code"], payload, root, {
+        HARNERY_AGENT_COORD_BYPASS_STOP: "1",
+      });
+    expect(
+      runHook("session-start", { session_id: owner, cwd: root, source: "startup" }).status,
+    ).toBe(0);
+    const instanceId = readLiveCoordinationRows(root)[0]?.instance_id;
+    if (!instanceId) throw new Error("session owner was not projected");
+    writeFileSync(
+      join(root, ".harnery", "active", `${instanceId}.json`),
+      JSON.stringify({
+        ...readLiveCoordinationRow(root, instanceId),
+        instance_id: instanceId,
+        suggested_session_name: name,
+        session_name_display_requested_for: name,
+        session_title_surface: "t3-code",
+        session_title_client_thread: "thread-1",
+      }),
+      "utf8",
+    );
+
+    const failed = runHook("post-tool-use-failure", {
+      session_id: owner,
+      cwd: root,
+      tool_name: tool,
+      tool_use_id: "rename-failed",
+      tool_input: { action: "rename", title: name },
+      error: "tool unavailable",
+    });
+    expect(failed.status).toBe(0);
+    expect(failed.stdout).toContain('"hookEventName":"PostToolUseFailure"');
+    expect(failed.stdout).toContain("Session name display required.");
+    expect(readLiveCoordinationRow(root, instanceId)?.session_title_fallback_for).toBe(name);
+
+    const transcript = join(root, "transcript.jsonl");
+    const mintResult = {
+      type: "user",
+      message: {
+        content: [
+          {
+            type: "tool_result",
+            content: JSON.stringify({ first_of_session: true, suggested_session_name: name }),
+          },
+        ],
+      },
+    };
+    writeFileSync(
+      transcript,
+      `${JSON.stringify(mintResult)}\n${JSON.stringify({
+        type: "assistant",
+        message: { content: [{ type: "text", text: "No block yet." }] },
+      })}\n`,
+    );
+    const denied = runHook("pre-tool-use", {
+      session_id: owner,
+      cwd: root,
+      transcript_path: transcript,
+      tool_name: "Bash",
+      tool_use_id: "too-soon",
+      tool_input: { command: "echo too-soon" },
+    });
+    expect(denied.stdout).toContain('"permissionDecision":"deny"');
+    expect(denied.stdout).toContain("Session name display required.");
+    expect(denied.stdout).not.toContain("Session title required.");
+
+    writeFileSync(
+      transcript,
+      `${JSON.stringify(mintResult)}\n${JSON.stringify({
+        type: "assistant",
+        message: { content: [{ type: "text", text: `\`\`\`\n${name}\n\`\`\`` }] },
+      })}\n`,
+    );
+    const allowed = runHook("pre-tool-use", {
+      session_id: owner,
+      cwd: root,
+      transcript_path: transcript,
+      tool_name: "Bash",
+      tool_use_id: "after-display",
+      tool_input: { command: "echo allowed" },
+    });
+    expect(allowed.stdout).not.toContain('"permissionDecision":"deny"');
+    expect(readLiveCoordinationRow(root, instanceId)?.session_name_seen_for).toBe(name);
+  });
+
   test("Cursor records response evidence and never treats later narration as an omission", () => {
     const root = candidateRoot("cursor");
     const owner = "cursor-session-name-owner";
@@ -2450,6 +2659,7 @@ function run(
     "HARNERY_AGENT_COORD_BRIDGE",
     "HARNERY_ADMISSION_SKIP",
     "HARNERY_ADMISSION_HELD",
+    "T3CODE_THREAD_ID",
   ]) {
     delete env[key];
   }

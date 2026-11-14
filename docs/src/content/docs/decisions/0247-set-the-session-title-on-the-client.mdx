@@ -1,0 +1,111 @@
+---
+title: "0247: Set the session title on the client where the client allows it"
+description: "ADR: deliver a session's title through a title surface, so a client that lets the agent rename its own thread gets the title directly and every other client keeps the copyable name block."
+---
+
+**Status:** accepted (2026-11-13); amends the "rename client tabs directly" rejection in [ADR 0085](/decisions/0085-gate-session-name-display-before-tools/) and keeps [ADR 0086](/decisions/0086-limit-session-name-changes-to-start-and-done/) · **Scope:** product tier (`core/agents`, `core/hooks`, `commands/agents`)
+
+## Context
+
+ADR 0085 made the copyable name block the one portable way to show a session
+name. It rejected renaming client tabs directly because Claude Code, Codex and
+Cursor "do not expose one common title mutation hook". A person therefore
+copies the block into the client's title field at the start of every session.
+
+T3 Code hosts Claude Code and Codex sessions as threads and gives each agent a
+tool, `t3_thread_update`, that renames the agent's own thread. A probe on
+2026-11-13 found:
+
+| Question | Answer |
+|---|---|
+| Does the rename work from an agent? | Yes, on a Claude Code thread and on a Codex thread. |
+| Do Harnery's hooks see the call? | Yes. Claude Code reports it as `mcp__t3-code__t3_thread_update` and Codex as `mcp__t3_code__t3_thread_update`. Both record the request and its success. |
+| How does a session know it runs in T3? | The agent's shell carries `T3CODE_THREAD_ID`. Claude Code also carries `CLAUDE_CODE_ENTRYPOINT=t3-code`. |
+| Can a hook process rely on that variable? | Not on Codex, where one shared app-server process serves every thread. |
+| What about delegated child threads? | Their id starts with `thread:delegated-task:`, and Harnery treats a child as a full session. T3 already titles a child from its brief. |
+| Can Harnery call T3 itself? | No. T3's local `/mcp` route answers 401 without credentials, and no token reaches the agent's process. |
+
+The operator also ruled that a title must not change in the middle of a
+session. A title minted mid-session describes one turn of work and is too
+narrow to name the whole session.
+
+## Alternatives
+
+**Call T3 from the hook process.** Rejected because the hook has no
+credentials for T3's server.
+
+**Write to T3's database files.** Rejected because they are the private store
+of a running app and can change in any release.
+
+**Branch on T3 inside the hook handlers.** Rejected because the next client
+would need the same branches taken apart. The interface below costs one more
+file now.
+
+**Rename and also print the name block.** Rejected because the block then
+repeats a title the client already shows, and nothing reads it.
+
+**Retitle whenever the declared focus changes.** Rejected by the operator's
+ruling above.
+
+## Decision
+
+A **title surface** is the place a session's title lives and the way Harnery
+gets a title onto it. Each surface declares one of three deliveries:
+
+| Delivery | How the title gets there | Surfaces |
+|---|---|---|
+| `display` | The agent prints the name block and a person copies it | `name-block`, the default for every client |
+| `agent-tool` | The agent calls a rename tool the client gave it, and a hook confirms the call | `t3-code` |
+| `direct` | Harnery's hook process calls a client command or API | None yet |
+
+`resolveTitleSurface()` returns the first registered surface whose `detect`
+passes. The name block is registered last and always matches, so a session
+with no better surface behaves as it did under ADR 0085.
+
+The surface is resolved when the name is minted, in the `set-task` command,
+which runs in the agent's shell and has the client's environment. Its id and
+the client's thread id are stored on the coordination row, and later hooks
+read them from there.
+
+The `t3-code` surface applies to Claude Code and Codex sessions whose
+`T3CODE_THREAD_ID` is not a delegated child's. It instructs the agent to call
+`t3_thread_update` with `action: "rename"` and the exact owed title. While a
+title is owed, the pending-title gate lets through that call and the
+`ToolSearch` call that loads the tool in Claude Code. PostToolUse confirms a
+successful call whose input and response both carry the owed title, then
+records the name as shown. A call with `action: "regenerate_title"`, a
+different title, or another thread's id confirms nothing.
+
+If the rename tool is missing or the call fails, Harnery asks for the name
+block instead. Either a confirmed rename or a correctly placed name block
+closes the request.
+
+A new row field, `session_title_applied_for`, records the title a writing
+surface confirmed. Once it is set, `titleChangeAllowed()` permits only the
+terminal `[DONE] ` title from ADR 0086. A stored name corrected after the
+title was applied is not pushed to the open thread; the corrected name is used
+at done. A pending title the policy does not permit is recorded as shown
+without asking the agent for anything.
+
+The rename instruction also tells the agent not to rename or regenerate its
+thread title on its own afterwards. This is guidance and not a gate,
+because a hook cannot tell a rename the operator asked for from one the agent
+chose.
+
+## Result
+
+In T3 Code, a new session's thread takes its Harnery name without a name block
+in the chat and without a person copying anything. Every other client is
+unchanged.
+
+Adding a client is one surface file, one registry line, its tests and a row in
+the docs table. Claude Desktop, Codex outside T3, and Cursor need a supported
+way to set a title before a surface can be written for them. Cursor threads
+hosted in T3 keep the name block until their hooks are probed.
+
+Two limits remain. The `[DONE]` rename replaces a title the operator typed by
+hand, because Harnery cannot read the client's current title. And the probe
+could not show whether T3's automatic first-message title can land after a
+first-turn rename, because an agent cannot create an untitled thread. If it
+does, the surface should ask for the rename on the first tool call of the
+second turn.

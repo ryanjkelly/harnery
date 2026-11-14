@@ -19,7 +19,7 @@ import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
-import type { Adapter } from "../core/adapter.ts";
+import { type Adapter, normalizeAdapter as titleAdapter } from "../core/adapter.ts";
 import { stripCoordRoot } from "../core/agents/claim-path.ts";
 import { coordBinPath, spawnCoordBinSync } from "../core/agents/coord-bin.ts";
 import {
@@ -57,16 +57,20 @@ import {
   requestSessionEndExplicitV3,
   type SessionFinalizationRequestV3,
 } from "../core/agents/session-finalizer-v3.ts";
+import { sessionNameDisplayPending } from "../core/agents/session-name-display.ts";
+import { titleChangeAllowed } from "../core/agents/session-title/policy.ts";
 import {
-  SESSION_NAME_DISPLAY_NOTE,
-  sessionNameDisplayPending,
-} from "../core/agents/session-name-display.ts";
+  resolveTitleSurface,
+  titleSurfaceContext,
+  titleSurfaceForRequest,
+} from "../core/agents/session-title/registry.ts";
 import { agentDisplayName } from "../core/agents/state/activity-log.ts";
 import {
   buildLifecycleSuggestedName,
   buildSuggestedName,
   type Heartbeat,
   readHeartbeat as readHeartbeatCache,
+  stampSessionTitleSurface,
 } from "../core/agents/state/heartbeat-writer.ts";
 import {
   describeLiveAuthorityBlockV3,
@@ -1882,6 +1886,20 @@ function runSetTask(task: string, opts?: { sessionId?: string }): void {
   const firstOfSession = firstSuggestedName !== null;
   const sessionNameRetry = false;
 
+  // The minting call resolves the title surface in the agent's own shell and
+  // stores it on the row before printing: the PostToolUse hook for this very
+  // command reads the row, and hook processes may lack the client's
+  // environment. Non-minting calls only report what is stored.
+  let titleSurfaceId: string | null = hb?.session_title_surface ?? null;
+  let titleNote: string | null = null;
+  if (suggestedName && hb) {
+    const ctx = titleSurfaceContext(titleAdapter(hb.platform), process.env, hb);
+    const surface = resolveTitleSurface(ctx, hb);
+    stampSessionTitleSurface(root, myOwner, surface.id, surface.clientThreadId?.(ctx));
+    titleSurfaceId = surface.id;
+    titleNote = surface.note;
+  }
+
   emit.data({
     instance_id: myOwner,
     name: hb?.name ?? null,
@@ -1890,14 +1908,11 @@ function runSetTask(task: string, opts?: { sessionId?: string }): void {
     first_of_session: firstOfSession,
     session_name_retry: sessionNameRetry,
     suggested_session_name: suggestedName,
+    title_surface: titleSurfaceId,
     ...(lifecycleWarning ? { warning: lifecycleWarning } : {}),
     // Right-time instruction: the UserPromptSubmit nudge fires before the name
     // exists; this result is the moment the model holds the string.
-    ...(suggestedName
-      ? {
-          note: SESSION_NAME_DISPLAY_NOTE,
-        }
-      : {}),
+    ...(titleNote ? { note: titleNote } : {}),
   });
 }
 
@@ -2083,6 +2098,19 @@ function runLifecycle(
 
   const suggestedName = buildLifecycleSuggestedName(hb.suggested_session_name, state);
   const nameReminted = suggestedName !== null && suggestedName !== hb.suggested_session_name;
+  const titleCtx = titleSurfaceContext(titleAdapter(hb.platform), process.env, hb);
+  const titleSurface =
+    nameReminted && suggestedName ? titleSurfaceForRequest(titleCtx, hb, suggestedName) : null;
+  if (titleSurface && !hb.session_title_surface) {
+    // A row minted before surfaces were recorded learns its surface here, so
+    // the hooks that deliver the done title read the same answer.
+    stampSessionTitleSurface(
+      root,
+      myOwner,
+      titleSurface.id,
+      titleSurface.clientThreadId?.(titleCtx),
+    );
+  }
   const emitted = emitEventV3({
     owner: myOwner,
     session: nativeSessionIdentity(hb, myOwner),
@@ -2111,12 +2139,9 @@ function runLifecycle(
     changed: true,
     name_reminted: nameReminted,
     suggested_session_name: nameReminted ? suggestedName : null,
+    title_surface: titleSurface?.id ?? hb.session_title_surface ?? null,
     git_finalization_checked: finalization !== null,
-    ...(nameReminted
-      ? {
-          note: SESSION_NAME_DISPLAY_NOTE,
-        }
-      : {}),
+    ...(titleSurface ? { note: titleSurface.note } : {}),
   });
 }
 
@@ -2153,7 +2178,16 @@ function runSuggestName(
   // from the current task. The task may have changed since the title was minted;
   // reconstructing it would produce a block the display latch can never accept.
   // An explicit description keeps the read-only re-suggest behavior.
-  const pendingName = sessionNameDisplayPending(hb);
+  // A title a writing surface already applied is not asked for again unless
+  // policy allows the change; the hooks record such a title as shown, so it
+  // is reported here as nothing pending.
+  const rawPending = sessionNameDisplayPending(hb);
+  const pendingName =
+    rawPending &&
+    hb?.session_title_applied_for &&
+    !titleChangeAllowed(hb.session_title_applied_for, rawPending)
+      ? null
+      : rawPending;
   const parts = descriptionParts.length > 0 ? descriptionParts : hb?.task ? [hb.task] : [];
   const built =
     descriptionParts.length === 0 && pendingName
@@ -2171,13 +2205,24 @@ function runSuggestName(
   const displayName = `agent-${agentName}`;
 
   if (opts.json) {
+    const retry = pendingName === suggestedName;
+    const titleSurface =
+      retry && pendingName
+        ? titleSurfaceForRequest(
+            titleSurfaceContext(titleAdapter(hb?.platform), process.env, hb),
+            hb,
+            pendingName,
+          )
+        : null;
     emit.config({ format: "json" });
     emit.data({
       name: displayName,
       suggested_session_name: suggestedName,
-      session_name_retry: pendingName === suggestedName,
+      session_name_retry: retry,
       agent_name: agentName,
       description,
+      title_surface: titleSurface?.id ?? hb?.session_title_surface ?? null,
+      ...(titleSurface ? { note: titleSurface.note } : {}),
     });
     return;
   }

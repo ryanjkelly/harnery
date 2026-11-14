@@ -7,7 +7,12 @@ import {
   recordLiveClaimChangeV3,
   recordLiveTaskChangeV3,
 } from "../../src/core/agents/live-authority-v3.ts";
-import { stampSessionNameSeen } from "../../src/core/agents/state/heartbeat-writer.ts";
+import { SESSION_NAME_DISPLAY_NOTE } from "../../src/core/agents/session-name-display.ts";
+import { t3CodeSurface } from "../../src/core/agents/session-title/surfaces/t3-code.ts";
+import {
+  stampSessionNameSeen,
+  stampSessionTitleApplied,
+} from "../../src/core/agents/state/heartbeat-writer.ts";
 import { ensureLiveCoordinationHeartbeat } from "../../src/core/agents/state/live-coordination-writer.ts";
 import { initializeEventLedgerV3 } from "../../src/core/events/v3/bootstrap.ts";
 import { sha256V3 } from "../../src/core/events/v3/canonical.ts";
@@ -29,6 +34,16 @@ const OWNER = "45f21628-043a-463d-a394-4128789f2276";
 const sandboxes: string[] = [];
 
 setDefaultTimeout(15_000);
+
+/**
+ * The CLI's environment without any client thread id the developer's own shell
+ * carries, so title-surface resolution sees only what a test passes in.
+ */
+function cliEnv(extra: Record<string, string> = {}): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = { ...process.env };
+  delete env.T3CODE_THREAD_ID;
+  return { ...env, ...extra };
+}
 
 interface RunResult {
   stdout: string;
@@ -78,7 +93,10 @@ function makeSandbox(): string {
   return root;
 }
 
-function makeMidFlightSandbox(materializeHeartbeat = true): string {
+function makeMidFlightSandbox(
+  materializeHeartbeat = true,
+  adapter: "codex" | "claude-code" = "codex",
+): string {
   const root = mkdtempSync(path.join(os.tmpdir(), "harn-lifecycle-mid-flight-"));
   sandboxes.push(root);
   const git = (args: string[]) => spawnSync("git", args, { cwd: root, stdio: "ignore" });
@@ -102,21 +120,21 @@ function makeMidFlightSandbox(materializeHeartbeat = true): string {
     route,
     eventName: "user-prompt-submit",
     payload: { session_id: OWNER, turn_id: "turn-1", prompt: "Start", raw: {} },
-    adapter: "codex",
+    adapter,
     instanceId: OWNER,
   });
   if (materializeHeartbeat) {
-    const hb = ensureLiveCoordinationHeartbeat(root, OWNER, OWNER, "codex", "gpt-5.6");
+    const hb = ensureLiveCoordinationHeartbeat(root, OWNER, OWNER, adapter, "gpt-5.6");
     if (!hb) throw new Error("expected mid-flight heartbeat");
   }
   return root;
 }
 
-function harn(root: string, args: string[]): RunResult {
+function harn(root: string, args: string[], extraEnv: Record<string, string> = {}): RunResult {
   const result = spawnSync(process.execPath, [HARN, ...args], {
     cwd: root,
     encoding: "utf8",
-    env: { ...process.env, HARNERY_COORD_ROOT_OVERRIDE: root },
+    env: cliEnv({ HARNERY_COORD_ROOT_OVERRIDE: root, ...extraEnv }),
   });
   return { stdout: result.stdout ?? "", stderr: result.stderr ?? "", status: result.status };
 }
@@ -125,7 +143,7 @@ function harnAsync(root: string, args: string[]): Promise<RunResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [HARN, ...args], {
       cwd: root,
-      env: { ...process.env, HARNERY_COORD_ROOT_OVERRIDE: root },
+      env: cliEnv({ HARNERY_COORD_ROOT_OVERRIDE: root }),
     });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
@@ -184,16 +202,87 @@ describe("harn agents lifecycle on the V3 ledger", () => {
       first_of_session: true,
       session_name_retry: false,
       suggested_session_name: "Agent Anna - Recovered focus",
+      title_surface: "name-block",
+      note: SESSION_NAME_DISPLAY_NOTE,
     });
     expect(heartbeat(root)).toMatchObject({
       name: "Anna",
       task: "Recovered focus",
       suggested_session_name: "Agent Anna - Recovered focus",
+      session_title_surface: "name-block",
     });
     expect(
       existsSync(path.join(root, ".harnery", "active", ".set-task-leases", `${OWNER}.lease`)),
     ).toBeTrue();
     expect(existsSync(path.join(root, ".harnery", "private", "agent-set-task-leases"))).toBeFalse();
+  });
+
+  test("the minting set-task resolves and stores the T3 Code title surface", () => {
+    const thread = "0f8c5c3e-6a3b-4c1e-9d43-2f0a7b9e1c55";
+    const root = makeMidFlightSandbox(true, "claude-code");
+    const result = harn(root, ["agents", "set-task", "Recovered focus", "--session-id", OWNER], {
+      T3CODE_THREAD_ID: thread,
+    });
+    expect(result.status).toBe(0);
+    expect(outputObject(result)).toMatchObject({
+      first_of_session: true,
+      suggested_session_name: "Agent Anna - Recovered focus",
+      title_surface: "t3-code",
+      note: t3CodeSurface.note,
+    });
+    expect(heartbeat(root)).toMatchObject({
+      session_title_surface: "t3-code",
+      session_title_client_thread: thread,
+    });
+
+    // Later calls report the stored surface without re-resolving or re-noting.
+    const routine = harn(root, ["agents", "set-task", "Next focus", "--session-id", OWNER]);
+    const routineOut = outputObject(routine);
+    expect(routineOut).toMatchObject({ first_of_session: false, title_surface: "t3-code" });
+    expect(routineOut.note).toBeUndefined();
+
+    const retry = harn(root, ["agents", "suggest-name", "--json", "--session-id", OWNER]);
+    expect(outputObject(retry)).toMatchObject({
+      session_name_retry: true,
+      title_surface: "t3-code",
+      note: t3CodeSurface.note,
+    });
+
+    // Once the title is applied, only the done title may be asked for.
+    stampSessionTitleApplied(root, OWNER, "Agent Anna - Recovered focus", "t3-code");
+    const reprint = harn(root, ["agents", "suggest-name", "--json", "--session-id", OWNER]);
+    const reprintOut = outputObject(reprint);
+    expect(reprintOut).toMatchObject({ session_name_retry: false, title_surface: "t3-code" });
+    expect(reprintOut.note).toBeUndefined();
+
+    const done = harn(root, ["agents", "lifecycle", "done", "--session-id", OWNER]);
+    expect(done.status).toBe(0);
+    expect(outputObject(done)).toMatchObject({
+      name_reminted: true,
+      title_surface: "t3-code",
+      note: t3CodeSurface.note,
+    });
+  });
+
+  test("a delegated T3 thread and a plain shell keep the name block", () => {
+    const envs: Record<string, string>[] = [{ T3CODE_THREAD_ID: "thread:delegated-task:x" }, {}];
+    for (const extra of envs) {
+      const root = makeMidFlightSandbox(true, "claude-code");
+      const result = harn(
+        root,
+        ["agents", "set-task", "Recovered focus", "--session-id", OWNER],
+        extra,
+      );
+      expect(result.status).toBe(0);
+      expect(outputObject(result)).toMatchObject({
+        first_of_session: true,
+        title_surface: "name-block",
+        note: SESSION_NAME_DISPLAY_NOTE,
+      });
+      const row = heartbeat(root);
+      expect(row.session_title_surface).toBe("name-block");
+      expect(row.session_title_client_thread).toBeUndefined();
+    }
   });
 
   test("overlapping first set-task calls name a mid-flight session before its heartbeat exists", async () => {
@@ -401,11 +490,10 @@ describe("harn agents lifecycle on the V3 ledger", () => {
       spawnSync(process.execPath, [HARN, "agents", "release-claim", ...args], {
         cwd: root,
         encoding: "utf8",
-        env: {
-          ...process.env,
+        env: cliEnv({
           HARNERY_COORD_ROOT_OVERRIDE: root,
           HARNERY_AGENT_COORD_SESSION_ID: OWNER,
-        },
+        }),
       });
     expect(release([]).status).not.toBe(0);
     expect(release(["owned.txt", "--all"]).status).not.toBe(0);
@@ -521,11 +609,10 @@ describe("harn agents lifecycle on the V3 ledger", () => {
       const result = spawnSync(process.execPath, [HARN, ...args], {
         cwd: root,
         encoding: "utf8",
-        env: {
-          ...process.env,
+        env: cliEnv({
           HARNERY_COORD_ROOT_OVERRIDE: root,
           HARNERY_AGENT_COORD_SESSION_ID: fork,
-        },
+        }),
       });
       return { stdout: result.stdout ?? "", stderr: result.stderr ?? "", status: result.status };
     };

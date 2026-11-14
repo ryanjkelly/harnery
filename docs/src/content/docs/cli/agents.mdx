@@ -180,8 +180,18 @@ the operator to set as their adapter's session/tab title:
 ```json
 { "task": "Auth Refactor", "first_of_session": true,
   "suggested_session_name": "Agent Hollis - Auth Refactor",
+  "title_surface": "name-block",
   "note": "Next, before any prose or another tool call, send suggested_session_name verbatim by itself in a fenced code block." }
 ```
+
+The `note` wording comes from the session's
+[title surface](/concepts/session-state/#title-surfaces), and `title_surface`
+carries that surface's id, such as `"name-block"` or `"t3-code"`. The example
+above shows the name block, which every client uses unless a better surface
+applies. In a T3 Code thread, `title_surface` is `"t3-code"` and the note tells
+the agent to rename its thread with `t3_thread_update` instead of printing the
+block. The display rules below describe the name block, which also serves as
+the fallback when that rename tool is missing or the call fails.
 
 `first_of_session: true` means exactly "this call produced the session name" —
 it is never true with a null name. A bare clear (`''`) as the first call does
@@ -286,6 +296,10 @@ blocked -> no title change
 done    -> [DONE] Agent Hollis - Auth Refactor
 ```
 
+As with `set-task`, the JSON carries `title_surface`, and the `note` wording
+comes from that surface. In a T3 Code thread the agent renames the thread to
+the `[DONE] ` title instead of printing the block.
+
 The per-prompt reminder and display latch remain active until that terminal
 name is observed. Reopening a done session does not ask the agent to print or
 restore another title. Titles are projections for people; editing a title
@@ -360,7 +374,9 @@ Agent Hollis - Auth Refactor
 It prints the bare name on stdout (not a drawn box, since a box would copy its
 borders and labels too). `--json` also returns `session_name_retry: true` when
 it reprints the exact pending suggestion. PostToolUse treats that explicit
-response as a fresh display boundary. Like `status`, it accepts
+response as a fresh display boundary. The `--json` output also carries
+`title_surface` and a `note` worded by that surface, so in a T3 Code thread the
+retry asks for a thread rename rather than the block. Like `status`, it accepts
 `--session-id <id>`. Mutates no state.
 
 ### show, trace

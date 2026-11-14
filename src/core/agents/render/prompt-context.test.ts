@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initializeV3Fixture, seedV3Session } from "../../../../tests/helpers/event-v3-runtime.ts";
@@ -9,6 +9,7 @@ import {
   recordLiveHookSignalV3,
   resolveLiveEventLedgerRouteV3,
 } from "../../events/v3/live-routing.ts";
+import { t3CodeSurface } from "../session-title/surfaces/t3-code.ts";
 import { readLiveCoordinationRows } from "../state/live-coordination-view.ts";
 import { markTurnRitualBounced, renderPeerTable, renderPromptContext } from "./prompt-context.ts";
 
@@ -192,6 +193,53 @@ describe("renderPromptContext on the V3 coordination projection", () => {
     expect(render({ sessionNameNudge: true })).toContain(reminted);
   });
 
+  test("the name block keeps today's exact wording", () => {
+    updateSelfRow({ suggested_session_name: undefined, session_name_seen_for: undefined });
+    expect(render({ sessionNameNudge: true })).toBe(
+      'This session has no name yet: run `harn agents set-task "<2-5 word session topic>"` as your first tool call. ' +
+        "When it returns `first_of_session: true`, send its `suggested_session_name` as the exact fenced block requested by the PostToolUse instruction before any prose or another tool call. " +
+        "Then continue with the task; that `set-task` also satisfies this turn's focus declaration.",
+    );
+    const name = "Agent Maya - Current focus";
+    updateSelfRow({ suggested_session_name: name, session_title_surface: "name-block" });
+    expect(render({ sessionNameNudge: true })).toBe(
+      `This session name is still pending display. Before any prose or another tool call, send this exact block as your next assistant text:\n\n\`\`\`\n${name}\n\`\`\``,
+    );
+  });
+
+  test("a T3 Code session is nudged toward the thread rename", () => {
+    const thread = "0f8c5c3e-6a3b-4c1e-9d43-2f0a7b9e1c55";
+    const env = { T3CODE_THREAD_ID: thread };
+    updateSelfRow({ suggested_session_name: undefined, session_name_seen_for: undefined });
+    const unminted = render({ sessionNameNudge: true, env });
+    expect(unminted).toContain("has no name yet");
+    expect(unminted).toContain(
+      "follow the title instruction in that command's result before any prose or another tool call.",
+    );
+    expect(unminted).not.toContain("exact fenced block");
+    // A delegated child thread keeps the name block.
+    expect(
+      render({ sessionNameNudge: true, env: { T3CODE_THREAD_ID: "thread:delegated-task:x" } }),
+    ).toContain("exact fenced block");
+
+    const name = "Agent Maya - Current focus";
+    updateSelfRow({
+      suggested_session_name: name,
+      session_title_surface: "t3-code",
+      session_title_client_thread: thread,
+    });
+    // The stored surface applies even when the hook process lacks the env.
+    const pending = render({ sessionNameNudge: true });
+    expect(pending).toBe(
+      t3CodeSurface.reminder(name, { adapter: "codex", env: {}, clientThreadId: thread }),
+    );
+
+    // After the rename failed, the name block is owed for that title.
+    clearNudgeHash();
+    updateSelfRow({ session_title_fallback_for: name });
+    expect(render({ sessionNameNudge: true })).toContain("still pending display");
+  });
+
   test("the peer hash retains no rendered identities", () => {
     seedV3Session(root, "peer", { name: "Adelaide", claims: ["docs/x.md"] });
     render();
@@ -200,6 +248,20 @@ describe("renderPromptContext on the V3 coordination projection", () => {
     expect(hash).not.toContain("Adelaide");
   });
 });
+
+function updateSelfRow(fields: Record<string, unknown>): void {
+  const cachePath = join(root, ".harnery", "active", "self.json");
+  const row = JSON.parse(readFileSync(cachePath, "utf8")) as Record<string, unknown>;
+  for (const [key, value] of Object.entries(fields)) {
+    if (value === undefined) delete row[key];
+    else row[key] = value;
+  }
+  writeFileSync(cachePath, JSON.stringify(row), "utf8");
+}
+
+function clearNudgeHash(): void {
+  rmSync(join(root, ".harnery", ".last-task-nudge-hash.self"), { force: true });
+}
 
 function peerActivity(id: string): string | undefined {
   return readLiveCoordinationRows(root).find((row) => row.instance_id === id)?.activity;
@@ -210,6 +272,8 @@ function render(extra: Record<string, unknown> = {}): string {
     coordRoot: root,
     instanceId: "self",
     sessionId: "self",
+    // Never inherit a client thread id from the developer's own shell.
+    env: {},
     ...extra,
   });
 }

@@ -120,6 +120,61 @@ Declaring a task `done` does not archive its Claude Desktop sidebar entry.
 The former desktop cleanup command was removed during the event-ledger
 migration. Titles remain an output of lifecycle, not an input to it.
 
+## Title surfaces
+
+A title surface is the place a session's title lives and the way Harnery gets
+a title onto it. Each surface declares one of three deliveries:
+
+| Delivery | How the title gets there | Surfaces |
+| --- | --- | --- |
+| `display` | The agent prints the copyable name block and a person copies it into the client's title field. | `name-block`, the default for every client |
+| `agent-tool` | The agent calls a rename tool the client gave it, and a hook confirms the call. | `t3-code`, for Claude Code and Codex sessions hosted as T3 Code threads, excluding delegated child threads |
+| `direct` | Harnery's hook process calls a client command or API itself. | None yet |
+
+Harnery resolves the surface when it mints the name, in `agents set-task`.
+That command runs in the agent's shell, so it sees the client's environment.
+Harnery checks the registered surfaces in order and takes the first one that
+applies. The name block is checked last and always applies, so a session with
+no better surface keeps the copyable block. The resolved surface id is stored
+on the coordination row as `session_title_surface`, and the client's thread id
+as `session_title_client_thread`. Later hooks read both from the row, because
+a hook process does not always inherit the client's environment.
+
+In a T3 Code thread the agent renames its own thread instead of printing the
+name block. It calls `t3_thread_update` with `action: "rename"` and the exact
+owed title. While a title is owed, the pending-title gate lets that call
+through, along with the tool-loading call some clients need first. PostToolUse
+confirms the rename only when the call succeeded and both its input and its
+response carry the owed title. A call that regenerates the title, sets a
+different title, or targets another thread confirms nothing. If the rename
+tool is missing or the call fails, Harnery asks for the name block instead,
+and either a confirmed rename or a correctly placed block closes the request.
+
+A title is written at the start of a session and when the session is marked
+done, and at no other time. A title minted in the middle of a session would
+describe one turn of work and be too narrow to name the whole session. When a
+writing surface confirms a title, Harnery records it on the row as
+`session_title_applied_for`. After that, the only title change allowed is the
+terminal one with `[DONE] ` prepended. A stored name corrected after the title
+was applied is not pushed to the open thread; the corrected name is used when
+the session is marked done.
+
+### Adding a client
+
+A new client needs a supported way for the agent or Harnery to set its title.
+With that in place, adding it takes four changes:
+
+1. Add one surface file in `src/core/agents/session-title/surfaces/` that
+   implements `SessionTitleSurface` from `types.ts`.
+2. Add one line for it to `TITLE_SURFACES` in `registry.ts`. Keep the name
+   block last, since it always applies.
+3. Add tests for detection, the instruction wording, and confirmation or
+   fallback.
+4. Add a row to the table above.
+
+[ADR 0247](/decisions/0247-set-the-session-title-on-the-client/) records the
+reasoning and the alternatives Harnery rejected.
+
 ## Live state and replay
 
 The heartbeat projector writes these fields to `.harnery/active/<id>.json`:

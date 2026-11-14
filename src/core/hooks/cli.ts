@@ -41,13 +41,11 @@ import {
   isSessionNameRemediationCommand,
   matchSessionNameDisplay,
   sessionNameDisplayAcceptedNames,
-  sessionNameDisplayInstruction,
   sessionNameDisplayPending,
-  sessionNameDisplayRecoveryInstruction,
-  sessionNameDisplayReminder,
   sessionNameDisplayReminderDue,
   toolResponseMintedSessionName,
 } from "../agents/session-name-display.ts";
+import { NAME_BLOCK_SURFACE_ID } from "../agents/session-title/types.ts";
 import type { Heartbeat } from "../agents/state/heartbeat-reader.ts";
 import {
   readHeartbeat,
@@ -55,6 +53,8 @@ import {
   stampSessionNameReminded,
   stampSessionNameRequested,
   stampSessionNameSeen,
+  stampSessionTitleApplied,
+  stampSessionTitleFallback,
 } from "../agents/state/heartbeat-writer.ts";
 import { readLiveCoordinationRow } from "../agents/state/live-coordination-view.ts";
 import { ensureLiveCoordinationHeartbeat } from "../agents/state/live-coordination-writer.ts";
@@ -155,6 +155,14 @@ import {
 } from "./resolve/transcript.ts";
 import { clearHookRunMarker, writeHookRunMarker } from "./run-markers.ts";
 import { sessionNamePresence } from "./session-name-presence.ts";
+import {
+  failedTitleAttempt,
+  pendingTitleRequest,
+  postToolTitleDecision,
+  preToolTitleDecision,
+  titleChangeSuppressed,
+  titleGateDenial,
+} from "./session-title-gate.ts";
 import { shellCommitTreeReason } from "./shell-commit-tree.ts";
 import { shellRmReason } from "./shell-rm.ts";
 import { shellWaiterReason } from "./shell-waiter.ts";
@@ -1077,7 +1085,7 @@ async function main(): Promise<number> {
   // Phase 7: PostToolUseFailure: release claim on failed Edit (the file
   // never landed; the claim is stale). Adapter-agnostic.
   if (norm.event_type === "tool.completed" && eventName === "post-tool-use-failure")
-    handlePostToolUseFailure(run);
+    await handlePostToolUseFailure(run);
 
   return 0;
 }
@@ -1811,16 +1819,58 @@ async function handlePostToolUse(run: HookRun): Promise<void> {
     // the authoritative check below.
     if (!sessionNameDisplayPending(readHeartbeat(coordRoot, owner.instance_id))) return;
     const row = readLiveCoordinationRow(coordRoot, owner.instance_id);
-    const name = sessionNameDisplayPending(row);
-    if (name && toolResponseMintedSessionName(payload?.tool_response, name)) {
+    const request = pendingTitleRequest(adapter, process.env, row);
+    if (!request) return;
+    const name = request.owed;
+    const minted = toolResponseMintedSessionName(payload?.tool_response, name);
+    const decision = postToolTitleDecision(
+      request,
+      row,
+      {
+        toolName: payload?.tool_name,
+        toolInput: payload?.tool_input,
+        toolResponse: payload?.tool_response,
+      },
+      minted,
+    );
+    if (decision.kind === "suppressed") {
+      // A client title changes only at session start and at done; a name
+      // minted in between is recorded as shown without asking for anything.
+      stampSessionNameSeen(coordRoot, owner.instance_id, name);
+      appendDebug(coordRoot, {
+        ts: new Date().toISOString(),
+        event_name: eventName,
+        adapter,
+        instance_id: owner.instance_id,
+        effect: "session-title-change-suppressed",
+        title_surface: request.surface.id,
+        session_title_applied_for: decision.applied,
+        session_name_pending: name,
+      });
+    } else if (decision.kind === "instruct") {
       // Record the title before asking for it. The suggestion can still
       // change afterwards (an assigned-name rewrite, a lifecycle re-mint, a
       // rebuilt cache), and the agent must not be stranded for displaying
       // exactly what it was handed.
       stampSessionNameRequested(coordRoot, owner.instance_id, name);
       const { emitContext } = await import("./adapter/output.ts");
-      emitContext(adapter, "PostToolUse", sessionNameDisplayInstruction(name));
-    } else if (name) {
+      emitContext(adapter, "PostToolUse", decision.text);
+    } else if (decision.kind === "applied") {
+      stampSessionTitleApplied(coordRoot, owner.instance_id, decision.title, request.surface.id);
+      appendDebug(coordRoot, {
+        ts: new Date().toISOString(),
+        event_name: eventName,
+        adapter,
+        instance_id: owner.instance_id,
+        effect: "session-title-applied",
+        title_surface: request.surface.id,
+        session_title_applied_for: decision.title,
+        session_name_pending: name,
+        ...(decision.drift ? { session_name_drift: true } : {}),
+      });
+    } else if (decision.kind === "fallback") {
+      await emitTitleFallback(run, request.surface.id, name, decision, "PostToolUse");
+    } else if (!decision.allowedWhilePending) {
       const due = sessionNameDisplayReminderDue(row);
       const command = extractBashCommand(payload?.tool_name, payload?.tool_input);
       if (due && !isSessionNameRemediationCommand(command, resolveBinName(coordRoot))) {
@@ -1835,7 +1885,7 @@ async function handlePostToolUse(run: HookRun): Promise<void> {
           reminders: (row?.session_name_display_reminders ?? 0) + 1,
         });
         const { emitContext } = await import("./adapter/output.ts");
-        emitContext(adapter, "PostToolUse", sessionNameDisplayReminder(due));
+        emitContext(adapter, "PostToolUse", request.surface.reminder(due, request.ctx));
       }
     }
   } catch (err) {
@@ -1843,13 +1893,85 @@ async function handlePostToolUse(run: HookRun): Promise<void> {
   }
 }
 
-function handlePostToolUseFailure(run: HookRun): void {
-  const { coordRoot, payload, owner, data } = run;
+async function handlePostToolUseFailure(run: HookRun): Promise<void> {
+  const { coordRoot, adapter, payload, owner, data } = run;
   try {
     releaseClaimOnFailure(coordRoot, owner.instance_id, data, payload?.raw);
   } catch (err) {
     logError(coordRoot, err, { phase: "post-tool-use-failure-release" });
   }
+  // A rename call that failed outright arrives here instead of PostToolUse.
+  // The name block is then owed for the same title.
+  try {
+    if (coordEnv("WORKFLOW_CHILD") === "1") return;
+    if (!sessionNameDisplayPending(readHeartbeat(coordRoot, owner.instance_id))) return;
+    const row = readLiveCoordinationRow(coordRoot, owner.instance_id);
+    const request = pendingTitleRequest(adapter, process.env, row);
+    if (!request || titleChangeSuppressed(row, request.owed)) return;
+    const fallback = failedTitleAttempt(request, row, {
+      toolName: payload?.tool_name,
+      toolInput: payload?.tool_input,
+      toolResponse: payload?.tool_response ?? payload?.raw.error,
+    });
+    if (fallback) {
+      await emitTitleFallback(
+        run,
+        request.surface.id,
+        request.owed,
+        fallback,
+        "PostToolUseFailure",
+      );
+    }
+  } catch (err) {
+    logError(coordRoot, err, { phase: "post-tool-use-failure-session-title" });
+  }
+}
+
+/**
+ * Record that the session's own title surface failed to deliver `owed`, and
+ * send the name-block instruction the first time. Later requests for the same
+ * title resolve to the name-block surface, so the gate and reminders use its
+ * wording from here on.
+ */
+async function emitTitleFallback(
+  run: HookRun,
+  surfaceId: string,
+  owed: string,
+  fallback: { text: string; reason: string; first: boolean },
+  hookEventName: "PostToolUse" | "PostToolUseFailure",
+): Promise<void> {
+  const { coordRoot, adapter, eventName, owner } = run;
+  stampSessionTitleFallback(coordRoot, owner.instance_id, owed);
+  appendDebug(coordRoot, {
+    ts: new Date().toISOString(),
+    event_name: eventName,
+    adapter,
+    instance_id: owner.instance_id,
+    effect: "session-title-fallback",
+    title_surface: surfaceId,
+    reason: fallback.reason,
+    session_name_pending: owed,
+    ...(fallback.first ? {} : { repeated: true }),
+  });
+  if (!fallback.first) return;
+  stampSessionNameRequested(coordRoot, owner.instance_id, owed);
+  if (hookEventName === "PostToolUse") {
+    const { emitContext } = await import("./adapter/output.ts");
+    emitContext(adapter, "PostToolUse", fallback.text);
+    return;
+  }
+  // The shared emitter covers only the events every adapter accepts context
+  // on; the failure event uses the same envelope with its own event name.
+  const json =
+    adapter === "cursor"
+      ? { additional_context: fallback.text }
+      : {
+          hookSpecificOutput: {
+            hookEventName: "PostToolUseFailure",
+            additionalContext: fallback.text,
+          },
+        };
+  process.stdout.write(`${JSON.stringify(json)}\n`);
 }
 
 async function handleCompletedResponse(run: CompletedResponseRun): Promise<number> {
@@ -2098,6 +2220,32 @@ async function enforcePendingSessionNameDisplay(
   const command = extractBashCommand(payload?.tool_name, payload?.tool_input);
   if (isSessionNameRemediationCommand(command, resolveBinName(coordRoot))) return true;
 
+  const request = pendingTitleRequest(adapter, process.env, coordination);
+  if (!request) return true;
+  const decision = preToolTitleDecision(request, coordination, {
+    toolName: payload?.tool_name,
+    toolInput: payload?.tool_input,
+  });
+  if (decision.kind === "suppressed") {
+    stampSessionNameSeen(coordRoot, instanceId, name);
+    appendDebug(coordRoot, {
+      ts: new Date().toISOString(),
+      event_name: "pre-tool-use",
+      adapter,
+      instance_id: instanceId,
+      effect: "session-title-change-suppressed",
+      title_surface: request.surface.id,
+      session_title_applied_for: decision.applied,
+      session_name_pending: name,
+    });
+    return true;
+  }
+  // The calls that deliver the title through the surface itself (loading and
+  // calling the rename tool) must pass, or the gate would block its own cure.
+  if (decision.kind === "allow") return true;
+
+  // A correctly placed name block closes the latch on every surface: it is
+  // the fallback when a surface's own delivery is unavailable.
   const inspection = inspectDisplayEvidence(instanceId, adapter, payload, coordination);
   if (inspection.state === "present") {
     stampSessionNameSeen(coordRoot, instanceId, name);
@@ -2125,9 +2273,10 @@ async function enforcePendingSessionNameDisplay(
     effect: "session-name-display-denied",
     session_name_pending: name,
     tool_name: payload?.tool_name,
+    ...(request.surface.id === NAME_BLOCK_SURFACE_ID ? {} : { title_surface: request.surface.id }),
   });
   const { emitDeny } = await import("./adapter/output.ts");
-  emitDeny(adapter, sessionNameDisplayRecoveryInstruction(name, resolveBinName(coordRoot)));
+  emitDeny(adapter, titleGateDenial(request, resolveBinName(coordRoot)));
   return false;
 }
 

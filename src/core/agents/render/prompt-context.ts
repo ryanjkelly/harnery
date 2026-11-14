@@ -39,6 +39,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync 
 import { join } from "node:path";
 
 import { coordEnv } from "../../../lib/env.ts";
+import { normalizeAdapter } from "../../adapter.ts";
 import {
   coordFreshnessSeconds,
   endOfTurnStatusCommand,
@@ -51,6 +52,12 @@ import { formatPeerInbox, peerInbox } from "../../inbox/peer-messages.ts";
 import { type RemoteMachine, readRemoteMachines } from "../../presence/index.ts";
 import { readResourceStatus } from "../../resources/status.ts";
 import { sessionNameDisplayBlock, sessionNameDisplayPending } from "../session-name-display.ts";
+import {
+  resolveTitleSurface,
+  titleSurfaceContext,
+  titleSurfaceForRequest,
+} from "../session-title/registry.ts";
+import { NAME_BLOCK_SURFACE_ID } from "../session-title/types.ts";
 import { heartbeatPath } from "../state/heartbeat-reader.ts";
 import {
   readLiveCoordinationRow,
@@ -75,6 +82,9 @@ interface HeartbeatRow {
   task_updated_at?: string | null;
   suggested_session_name?: string;
   session_name_seen_for?: string;
+  session_title_surface?: string;
+  session_title_client_thread?: string;
+  session_title_fallback_for?: string;
   workflow_run_id?: string;
 }
 
@@ -99,6 +109,9 @@ export interface PromptContextOpts {
    * session's first prompt, after a context compaction, and after a turn the
    * Stop hook bounced (see `markTurnRitualBounced`). */
   turnRitualNudge?: string;
+  /** The client environment used to pick the session's title surface.
+   * Defaults to this process's environment. */
+  env?: Readonly<Record<string, string | undefined>>;
   /** The emitter acknowledges exactly these IDs only after output succeeds. */
   onInboxPrepared?: (messageIds: readonly string[]) => void;
 }
@@ -145,6 +158,7 @@ export function renderPromptContext(opts: PromptContextOpts): string {
     const nudgeMsg = computeFocusNudgeIfChanged(coordRoot, instanceId, {
       sessionNameNudge: sessionNameNudge ?? false,
       taskNudge: taskNudge ?? false,
+      env: opts.env ?? process.env,
     });
     if (nudgeMsg) sections.push(nudgeMsg);
   }
@@ -319,7 +333,11 @@ function renderStatusFooterReminder(coordRoot: string, selfInstanceId: string): 
 function computeFocusNudgeIfChanged(
   coordRoot: string,
   selfInstanceId: string,
-  opts: { sessionNameNudge: boolean; taskNudge: boolean },
+  opts: {
+    sessionNameNudge: boolean;
+    taskNudge: boolean;
+    env: Readonly<Record<string, string | undefined>>;
+  },
 ): string {
   const hb = readLiveCoordinationRow(coordRoot, selfInstanceId);
   if (!hb) return "";
@@ -344,11 +362,26 @@ function computeFocusNudgeIfChanged(
     // as the first declaration must not end the naming window.
     needsNudge = true;
     nudgeKind = pendingSessionName ? "session-name-pending" : "session-name-unminted";
-    message = pendingSessionName
-      ? `This session name is still pending display. Before any prose or another tool call, send this exact block as your next assistant text:\n\n${sessionNameDisplayBlock(pendingSessionName)}`
-      : `This session has no name yet: run \`${bin} agents set-task "<2-5 word session topic>"\` as your first tool call. ` +
-        "When it returns `first_of_session: true`, send its `suggested_session_name` as the exact fenced block requested by the PostToolUse instruction before any prose or another tool call. " +
+    // The row's stored surface wins; before the mint, the adapter and the
+    // client environment decide which surface the mint will choose.
+    const titleCtx = titleSurfaceContext(normalizeAdapter(hb.platform), opts.env, hb);
+    if (pendingSessionName) {
+      const surface = titleSurfaceForRequest(titleCtx, hb, pendingSessionName);
+      message =
+        surface.id === NAME_BLOCK_SURFACE_ID
+          ? `This session name is still pending display. Before any prose or another tool call, send this exact block as your next assistant text:\n\n${sessionNameDisplayBlock(pendingSessionName)}`
+          : surface.reminder(pendingSessionName, titleCtx);
+    } else {
+      const surface = resolveTitleSurface(titleCtx, hb);
+      const displayClause =
+        surface.id === NAME_BLOCK_SURFACE_ID
+          ? "When it returns `first_of_session: true`, send its `suggested_session_name` as the exact fenced block requested by the PostToolUse instruction before any prose or another tool call. "
+          : "When it returns `first_of_session: true`, follow the title instruction in that command's result before any prose or another tool call. ";
+      message =
+        `This session has no name yet: run \`${bin} agents set-task "<2-5 word session topic>"\` as your first tool call. ` +
+        displayClause +
         "Then continue with the task; that `set-task` also satisfies this turn's focus declaration.";
+    }
   } else if (opts.taskNudge && !taskValue) {
     needsNudge = true;
     nudgeKind = "task-unset";

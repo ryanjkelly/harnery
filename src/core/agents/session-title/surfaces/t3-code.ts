@@ -141,6 +141,7 @@ function instruction(title: string, ctx: TitleSurfaceContext): string {
     sessionNameDisplayBlock(title),
     "",
     'Never use `action: "regenerate_title"`. Harnery will reject other tool calls until the title is delivered.',
+    "After this rename, leave the thread title alone for the rest of the session. Do not rename or regenerate it yourself unless the operator asks for it, or Harnery asks again when the session is marked done.",
   );
   return lines.join("\n");
 }
