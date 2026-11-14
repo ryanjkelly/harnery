@@ -1,0 +1,13 @@
+/* GENERATED theme core. Do not edit this copy: the host repository's theme
+   sync keeps it identical across apps, and a hand edit is overwritten. */
+/* Thin scrollbars with a thumb mixed from the surface's own muted-foreground
+   on a clear track, so scroll panes match the page in both colour schemes
+   instead of showing the wide OS default. The colour is declared on every
+   element, not inherited, so a light region inside a dark page mixes from its
+   own tokens. --theme-scrollbar-strength sets how much of the text colour the
+   thumb takes (45% when unset). Standard properties only: a
+   ::-webkit-scrollbar rule turns macOS overlay scrollbars into permanent ones. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklab, var(--muted-foreground) var(--theme-scrollbar-strength, 45%), transparent) transparent;
+}

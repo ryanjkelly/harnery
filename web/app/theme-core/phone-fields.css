@@ -1,0 +1,15 @@
+/* GENERATED theme core. Do not edit this copy: the host repository's theme
+   sync keeps it identical across apps, and a hand edit is overwritten. */
+/* iOS Safari zooms the page when a focused form control's text is under 16px
+   and never zooms back out on blur. Forcing 16px on every native control at
+   phone widths removes the trigger; from 768px up the dense sizes are
+   untouched. The !important is load-bearing: it outranks utility classes and
+   inline font sizes. Do not replace this with a viewport maximum-scale or
+   user-scalable=no, which would disable pinch-zoom. */
+@media (max-width: 767px) {
+  input,
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}

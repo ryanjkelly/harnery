@@ -1,6 +1,15 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
+/* Theme core: generated rules shared across apps (app/theme-core/, never
+ * edited here). Each import picks its cascade layer. The pointer cursor sits
+ * in the base layer so a cursor utility on a help trigger, drag handle or
+ * resize grip still wins. */
+@import "./theme-core/pointer-cursor.css" layer(base);
+@import "./theme-core/phone-fields.css";
+@import "./theme-core/reduced-motion.css";
+@import "./theme-core/scrollbars.css";
+
 @custom-variant dark (&:is(.dark *));
 
 /* Design tokens. --primary is intentionally a NEUTRAL strong colour
@@ -78,6 +87,7 @@
   --negative: oklch(0.55 0.22 27);
   --negative-soft: oklch(0.95 0.05 22);
   --radius: 0.625rem;
+  --theme-scrollbar-strength: 35%;
   /* Log-flow lane colours: darker on white so pale hues stay visible. */
   --lane-lightness: 44%;
 }
@@ -130,55 +140,9 @@
   }
 }
 
-/* Every clickable control shows the pointer. Browsers give buttons the
- * default arrow, so without this an action looks inert until clicked. In the
- * base layer with :where() (no specificity), so a cursor utility on a help
- * trigger, drag handle or resize grip still wins. */
-@layer base {
-  :where(a[href], button, summary, select, label[for], input[type="button"], input[type="submit"], input[type="reset"], input[type="checkbox"], input[type="radio"], [role="button"], [role="link"], [role="tab"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="checkbox"], [role="radio"], [role="switch"], [role="option"]):not(:disabled):not([aria-disabled="true"]):not([data-disabled]) {
-    cursor: pointer;
-  }
-  :where(button, select, input, [role="button"], [role="tab"], [role="menuitem"], [role="option"]):is(:disabled, [aria-disabled="true"], [data-disabled]) {
-    cursor: not-allowed;
-  }
-}
-
-/* iOS Safari zooms the page when a focused form control's text is under 16px
- * and never zooms back out. Forcing 16px at phone widths removes the trigger;
- * desktop keeps the dense sizes. Unlayered and !important on purpose: it must
- * outrank Tailwind's utility layer and inline styles. Pinch-zoom stays on. */
-@media (max-width: 767px) {
-  input,
-  textarea,
-  select {
-    font-size: 16px !important;
-  }
-}
-
-/* Reduced motion, app-wide. Every transition and smooth scroll is cut here, so
- * a component needs no guard of its own for them. Keyframe animations are not
- * cut: each one that moves (attention, log flow) carries its own guard, and a
- * spinner keeps turning because it is the only sign that work is in flight. */
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    transition-duration: 0s !important;
-    transition-delay: 0s !important;
-    scroll-behavior: auto !important;
-  }
-}
-
-/* Themed scrollbars: thin, token-coloured thumb on a transparent track so
- * scrollable panes (file tree, viewer panes, tables) match the page in both
- * themes instead of showing the chunky OS default. `scrollbar-color` covers
- * Firefox + modern Chromium (which then ignores the ::-webkit-* rules); the
- * ::-webkit-scrollbar rules cover Safari. */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in oklab, var(--muted-foreground) 35%, transparent) transparent;
-}
-
+/* Scrollbars come from theme-core/scrollbars.css, at the quieter strength set
+ * by --theme-scrollbar-strength on :root. These ::-webkit-scrollbar rules give
+ * older Safari the same thin, token-coloured thumb. */
 *::-webkit-scrollbar {
   width: 10px;
   height: 10px;

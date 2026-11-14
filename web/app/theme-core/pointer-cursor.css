@@ -1,0 +1,18 @@
+/* GENERATED theme core. Do not edit this copy: the host repository's theme
+   sync keeps it identical across apps, and a hand edit is overwritten. */
+/* Every clickable control shows the pointer, and a disabled one shows
+   not-allowed. Browsers and CSS resets give buttons the default arrow, so
+   without this an action looks inert until it is clicked. Text fields keep
+   their text cursor. :where() adds no specificity. An explain-only trigger
+   ([data-explain]) is a focusable button that only explains, so it is left out
+   of the action list and shows the help cursor. The importing stylesheet
+   chooses the cascade layer. */
+:where(a[href], button, summary, select, label[for], input[type="button"], input[type="submit"], input[type="reset"], input[type="checkbox"], input[type="radio"], [role="button"], [role="link"], [role="tab"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="checkbox"], [role="radio"], [role="switch"], [role="option"]):not(:disabled):not([aria-disabled="true"]):not([data-disabled]):not([data-explain]) {
+  cursor: pointer;
+}
+[data-explain] {
+  cursor: help;
+}
+:where(button, select, input, [role="button"], [role="tab"], [role="menuitem"], [role="option"]):is(:disabled, [aria-disabled="true"], [data-disabled]) {
+  cursor: not-allowed;
+}

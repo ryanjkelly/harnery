@@ -1,0 +1,16 @@
+/* GENERATED theme core. Do not edit this copy: the host repository's theme
+   sync keeps it identical across apps, and a hand edit is overwritten. */
+/* Reduced motion: every transition and smooth scroll is cut here, so a
+   component needs no guard of its own for them. Keyframe animations are not
+   cut: one that moves carries its own prefers-reduced-motion guard, and a
+   loading spinner keeps turning because it is the only sign that work is in
+   flight. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0s !important;
+    transition-delay: 0s !important;
+    scroll-behavior: auto !important;
+  }
+}
