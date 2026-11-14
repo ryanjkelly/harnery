@@ -196,3 +196,75 @@ describe("titleGateDenial", () => {
     );
   });
 });
+
+describe("done request that keeps the operator's own title", () => {
+  const START = "Agent A - x";
+  const DONE = "[DONE] Agent A - x";
+  const OWN = "[DONE] My own title";
+  const READ = "mcp__t3-code__t3_thread_read";
+  const row = t3Row({ suggested_session_name: DONE, session_title_applied_for: START });
+
+  test("loading both tools and reading this thread pass the gate", () => {
+    expect(
+      preToolTitleDecision(request(row), row, {
+        toolName: "ToolSearch",
+        toolInput: { query: `select:${READ},${TOOL}` },
+      }),
+    ).toEqual({ kind: "allow" });
+    expect(
+      preToolTitleDecision(request(row), row, {
+        toolName: READ,
+        toolInput: { threadId: THREAD, limit: 1, maxCharsPerItem: 1 },
+      }),
+    ).toEqual({ kind: "allow" });
+    expect(
+      preToolTitleDecision(request(row), row, { toolName: TOOL, toolInput: rename(OWN) }),
+    ).toEqual({ kind: "allow" });
+  });
+  test("an unrelated call is inspected and denied with the done instruction", () => {
+    const req = request(row);
+    expect(
+      preToolTitleDecision(req, row, { toolName: "Bash", toolInput: { command: "ls" } }),
+    ).toEqual({ kind: "inspect" });
+    const text = titleGateDenial(req, "acme");
+    expect(text).toContain("t3_thread_read");
+    expect(text).toContain(`\`threadId: "${THREAD}"\``);
+    expect(text).toContain(`\n${DONE}\n`);
+  });
+  test("the read is not reminded and a rename to the operator's title applies as drift", () => {
+    expect(
+      postToolTitleDecision(
+        request(row),
+        row,
+        { toolName: READ, toolInput: { threadId: THREAD }, toolResponse: "{}" },
+        false,
+      ),
+    ).toEqual({ kind: "remind", allowedWhilePending: true });
+    expect(
+      postToolTitleDecision(
+        request(row),
+        row,
+        { toolName: TOOL, toolInput: rename(OWN), toolResponse: renamed(OWN) },
+        false,
+      ),
+    ).toEqual({ kind: "applied", title: OWN, drift: true });
+  });
+  test("a failed done rename falls back to the owed name block", () => {
+    const decision = postToolTitleDecision(
+      request(row),
+      row,
+      {
+        toolName: TOOL,
+        toolInput: rename(OWN),
+        toolResponse: { isError: true, content: [{ type: "text", text: "boom" }] },
+      },
+      false,
+    );
+    expect(decision).toEqual({
+      kind: "fallback",
+      text: sessionNameDisplayInstruction(DONE),
+      reason: "t3-code-rename-failed",
+      first: true,
+    });
+  });
+});

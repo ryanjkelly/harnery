@@ -1,4 +1,5 @@
 import { sessionNameDisplayBlock } from "../../session-name-display.ts";
+import { DONE_TITLE_PREFIX } from "../policy.ts";
 import {
   type CompletedToolCall,
   type SessionTitleSurface,
@@ -12,6 +13,13 @@ import {
  * a `t3_thread_update` tool that renames its own thread (ADR 0247). Harnery
  * cannot call T3 itself, so this surface instructs the agent to make the call
  * and confirms it from the PostToolUse payload.
+ *
+ * At done, the operator may have typed their own title into the thread during
+ * the session. Harnery's hooks cannot read the client's title, but the agent
+ * can, so the done request asks the agent to read the current title with
+ * `t3_thread_read` and prefix that, rather than overwrite it with the title
+ * Harnery applied at start. The rename that results is confirmed as written
+ * even when its text is not the owed title.
  */
 
 /**
@@ -25,10 +33,14 @@ export const T3_THREAD_ID_ENV = "T3CODE_THREAD_ID";
 
 /** Claude Code reports `mcp__t3-code__…`, Codex `mcp__t3_code__…`. */
 const T3_THREAD_UPDATE_TOOL = /^mcp__t3[-_]code__t3_thread_update$/;
+const T3_THREAD_READ_TOOL = /^mcp__t3[-_]code__t3_thread_read$/;
 
 const CLAUDE_CODE_TOOL_NAME = "mcp__t3-code__t3_thread_update";
 const CODEX_TOOL_NAME = "mcp__t3_code__t3_thread_update";
+const CLAUDE_CODE_READ_TOOL_NAME = "mcp__t3-code__t3_thread_read";
+const CODEX_READ_TOOL_NAME = "mcp__t3_code__t3_thread_read";
 const TOOL_SEARCH_QUERY = `select:${CLAUDE_CODE_TOOL_NAME}`;
+const DONE_TOOL_SEARCH_QUERY = `select:${CLAUDE_CODE_READ_TOOL_NAME},${CLAUDE_CODE_TOOL_NAME}`;
 
 /** Bounds the response walk; real payloads nest two or three levels deep. */
 const MAX_RESPONSE_DEPTH = 8;
@@ -50,6 +62,35 @@ function detect(ctx: TitleSurfaceContext): boolean {
 
 function toolNameFor(ctx: TitleSurfaceContext): string {
   return ctx.adapter === "codex" ? CODEX_TOOL_NAME : CLAUDE_CODE_TOOL_NAME;
+}
+
+function readToolNameFor(ctx: TitleSurfaceContext): string {
+  return ctx.adapter === "codex" ? CODEX_READ_TOOL_NAME : CLAUDE_CODE_READ_TOOL_NAME;
+}
+
+function isDoneTitle(title: string): boolean {
+  return title.startsWith(DONE_TITLE_PREFIX);
+}
+
+/** The current request is the terminal one: some accepted title is a done title. */
+function isDoneRequest(accepted: readonly string[]): boolean {
+  return accepted.some(isDoneTitle);
+}
+
+/**
+ * A title the agent may write at done: the prefix followed by whatever the
+ * thread was called, which Harnery cannot know in advance.
+ */
+function isWritableDoneTitle(title: string): boolean {
+  return isDoneTitle(title) && title.slice(DONE_TITLE_PREFIX.length).trim().length > 0;
+}
+
+/** A `t3_thread_read` call aimed at this session's own thread. */
+function readsOwnThread(call: ToolCall, ctx: TitleSurfaceContext): boolean {
+  if (typeof call.toolName !== "string" || !T3_THREAD_READ_TOOL.test(call.toolName)) return false;
+  const target = asRecord(call.toolInput)?.threadId;
+  const own = threadIdFor(ctx);
+  return own !== undefined && target === own;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -117,7 +158,7 @@ function renameSucceeded(response: unknown, title: string): boolean {
   return responseCarriesRename(response, title, new Set<object>(), 0);
 }
 
-function instruction(title: string, ctx: TitleSurfaceContext): string {
+function startInstruction(title: string, ctx: TitleSurfaceContext): string {
   const toolName = toolNameFor(ctx);
   const lines = [
     "Session title required.",
@@ -146,7 +187,62 @@ function instruction(title: string, ctx: TitleSurfaceContext): string {
   return lines.join("\n");
 }
 
+function threadIdPhrase(ctx: TitleSurfaceContext): string {
+  const id = threadIdFor(ctx);
+  return id === undefined
+    ? `\`threadId\` set to this thread's id (the \`${T3_THREAD_ID_ENV}\` environment variable)`
+    : `\`threadId: ${JSON.stringify(id)}\``;
+}
+
+function doneInstruction(title: string, ctx: TitleSurfaceContext): string {
+  const readTool = readToolNameFor(ctx);
+  const updateTool = toolNameFor(ctx);
+  const startTitle = title.slice(DONE_TITLE_PREFIX.length);
+  const lines = [
+    "Session title required.",
+    "This session is marked done. Rename this thread now, before any prose and before any other tool call, in two steps.",
+    `1. Read this thread's current title. Call the T3 Code tool \`t3_thread_read\` with ${threadIdPhrase(ctx)}, \`limit: 1\` and \`maxCharsPerItem: 1\`, and take \`thread.title\` from the result.`,
+    `2. Call the T3 Code tool \`t3_thread_update\` with \`action: "rename"\` and \`title\` set to \`${DONE_TITLE_PREFIX}\` followed by that current title, and do not pass a \`threadId\`. If the current title already starts with \`${DONE_TITLE_PREFIX}\`, pass it unchanged.`,
+    `If nobody edited the title during the session, the current title is \`${startTitle}\`, so the new title is exactly:`,
+    "",
+    title,
+    "",
+  ];
+  if (ctx.adapter === "claude-code") {
+    lines.push(
+      `In Claude Code the tools are listed as \`${readTool}\` and \`${updateTool}\`. If their schemas are not loaded yet, load them first with ToolSearch using the query \`${DONE_TOOL_SEARCH_QUERY}\`, then make the two calls.`,
+    );
+  } else {
+    lines.push(`The tools are listed as \`${readTool}\` and \`${updateTool}\`.`);
+  }
+  lines.push(
+    "When the rename succeeds, do not print a name block.",
+    "If either tool is unavailable or the rename fails, send this exact fenced block as your next assistant text instead:",
+    "",
+    sessionNameDisplayBlock(title),
+    "",
+    'Never use `action: "regenerate_title"`. Harnery will reject other tool calls until the title is delivered.',
+  );
+  return lines.join("\n");
+}
+
+function instruction(title: string, ctx: TitleSurfaceContext): string {
+  return isDoneTitle(title) ? doneInstruction(title, ctx) : startInstruction(title, ctx);
+}
+
+function doneReminder(title: string, ctx: TitleSurfaceContext): string {
+  return [
+    "Session title still pending.",
+    `This session is marked done. Before any prose or another tool call, read this thread's current title with \`${readToolNameFor(ctx)}\` (${threadIdPhrase(ctx)}, \`limit: 1\`, \`maxCharsPerItem: 1\`), then call \`${toolNameFor(ctx)}\` with \`action: "rename"\` and \`${DONE_TITLE_PREFIX}\` followed by that title. If nobody edited the title, the new title is exactly:`,
+    "",
+    title,
+    "",
+    "If you already renamed the thread this way, do nothing.",
+  ].join("\n");
+}
+
 function reminder(title: string, ctx: TitleSurfaceContext): string {
+  if (isDoneTitle(title)) return doneReminder(title, ctx);
   return [
     "Session title still pending.",
     `If this thread's title is not already exactly the title below, call \`${toolNameFor(ctx)}\` with \`action: "rename"\` and that title now, before any prose or another tool call:`,
@@ -166,16 +262,23 @@ export const t3CodeSurface: SessionTitleSurface = {
   reminder,
   note: "Next, before any prose or another tool call, rename this thread to suggested_session_name with the T3 Code tool t3_thread_update (action: rename). If that tool is unavailable, send suggested_session_name verbatim by itself in a fenced code block.",
   allowsWhilePending(call: ToolCall, accepted: readonly string[], ctx: TitleSurfaceContext) {
+    const done = isDoneRequest(accepted);
     if (call.toolName === "ToolSearch") {
       const query = asRecord(call.toolInput)?.query;
-      return typeof query === "string" && query.includes("t3_thread_update");
+      if (typeof query !== "string") return false;
+      return query.includes("t3_thread_update") || (done && query.includes("t3_thread_read"));
     }
+    if (done && readsOwnThread(call, ctx)) return true;
     const title = renameTitleFor(call, ctx);
-    return title !== null && accepted.includes(title);
+    if (title === null) return false;
+    return accepted.includes(title) || (done && isWritableDoneTitle(title));
   },
   confirmFromTool(done: CompletedToolCall, accepted: readonly string[], ctx: TitleSurfaceContext) {
     const title = renameTitleFor(done, ctx);
-    if (title === null || !accepted.includes(title)) return null;
+    if (title === null) return null;
+    const expected =
+      accepted.includes(title) || (isDoneRequest(accepted) && isWritableDoneTitle(title));
+    if (!expected) return null;
     return renameSucceeded(done.toolResponse, title) ? title : null;
   },
   failedAttempt(done: CompletedToolCall) {

@@ -140,13 +140,25 @@ on the coordination row as `session_title_surface`, and the client's thread id
 as `session_title_client_thread`. Later hooks read both from the row, because
 a hook process does not always inherit the client's environment.
 
+Cursor threads hosted in T3 Code stay on the name block. Their rename call
+works, but their environment carries no `T3CODE_THREAD_ID`. Without the thread
+id Harnery cannot tell that a Cursor session runs in T3, and cannot tell a
+delegated child thread from a top-level one, so it would rename children whose
+titles T3 already set from their brief. Cursor in T3 keeps the name block until
+its environment carries the thread id.
+
 In a T3 Code thread the agent renames its own thread instead of printing the
 name block. It calls `t3_thread_update` with `action: "rename"` and the exact
 owed title. While a title is owed, the pending-title gate lets that call
-through, along with the tool-loading call some clients need first. PostToolUse
-confirms the rename only when the call succeeded and both its input and its
-response carry the owed title. A call that regenerates the title, sets a
-different title, or targets another thread confirms nothing. If the rename
+through, along with the tool-loading call some clients need first. At the
+start of a session, PostToolUse confirms the rename only when the call succeeded and
+both its input and its response carry the owed title. When the session is
+marked done, the agent first reads the thread's current title with
+`t3_thread_read`, which the gate also lets through, and renames the thread to
+`[DONE] ` followed by that title. PostToolUse confirms a successful rename of
+the session's own thread to any non-empty title that starts with `[DONE] `.
+A call that regenerates the title, sets any other title, or targets another
+thread confirms nothing. If the rename
 tool is missing or the call fails, Harnery asks for the name block instead,
 and either a confirmed rename or a correctly placed block closes the request.
 
@@ -155,9 +167,13 @@ done, and at no other time. A title minted in the middle of a session would
 describe one turn of work and be too narrow to name the whole session. When a
 writing surface confirms a title, Harnery records it on the row as
 `session_title_applied_for`. After that, the only title change allowed is the
-terminal one with `[DONE] ` prepended. A stored name corrected after the title
-was applied is not pushed to the open thread; the corrected name is used when
-the session is marked done.
+terminal one with `[DONE] ` prepended, and `session_title_applied_for` then
+holds the done title actually written. In a T3 Code thread the done title keeps
+the thread's current wording, so a title the person edited by hand during the
+session only gains the prefix. This costs one extra read call when the session
+is marked done. A stored name corrected after the title was applied is not
+pushed to the open thread. The name block uses the corrected name when the
+session is marked done.
 
 ### Adding a client
 

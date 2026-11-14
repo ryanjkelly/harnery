@@ -5,6 +5,8 @@ description: "ADR: deliver a session's title through a title surface, so a clien
 
 **Status:** accepted (2026-11-13); amends the "rename client tabs directly" rejection in [ADR 0085](/decisions/0085-gate-session-name-display-before-tools/) and keeps [ADR 0086](/decisions/0086-limit-session-name-changes-to-start-and-done/) · **Scope:** product tier (`core/agents`, `core/hooks`, `commands/agents`)
 
+Revised 2026-11-13 after follow-up probes.
+
 ## Context
 
 ADR 0085 made the copyable name block the one portable way to show a session
@@ -24,6 +26,8 @@ tool, `t3_thread_update`, that renames the agent's own thread. A probe on
 | Can a hook process rely on that variable? | Not on Codex, where one shared app-server process serves every thread. |
 | What about delegated child threads? | Their id starts with `thread:delegated-task:`, and Harnery treats a child as a full session. T3 already titles a child from its brief. |
 | Can Harnery call T3 itself? | No. T3's local `/mcp` route answers 401 without credentials, and no token reaches the agent's process. |
+| Does a first-turn rename survive T3's automatic title? | Yes. A follow-up probe created a thread with no title. T3 gave it a placeholder taken from the first words of the prompt, the agent's first-turn rename replaced it, and the thread still had the Harnery name after the run ended, with no title regeneration recorded. |
+| Can a Cursor thread hosted in T3 rename itself? | The call works: Cursor's hooks report it as `MCP:t3_thread_update` and it succeeds. But the agent's environment carries no `T3CODE_THREAD_ID`. |
 
 The operator also ruled that a title must not change in the middle of a
 session. A title minted mid-session describes one turn of work and is too
@@ -76,6 +80,16 @@ successful call whose input and response both carry the owed title, then
 records the name as shown. A call with `action: "regenerate_title"`, a
 different title, or another thread's id confirms nothing.
 
+When the session is marked done, the title keeps the client's current
+wording. The rename instruction tells the agent to read the thread's current
+title with `t3_thread_read` and rename the thread to `[DONE] ` followed by
+that title. A title the operator typed by hand during the session therefore
+keeps its wording and only gains the prefix. While a done title is owed, the
+pending-title gate also lets the read through, and a successful rename of the
+session's own thread to any non-empty title that starts with `[DONE] ` is
+confirmed. `session_title_applied_for` then holds the title actually written.
+This costs one extra read call when a session is marked done.
+
 If the rename tool is missing or the call fails, Harnery asks for the name
 block instead. Either a confirmed rename or a correctly placed name block
 closes the request.
@@ -83,9 +97,10 @@ closes the request.
 A new row field, `session_title_applied_for`, records the title a writing
 surface confirmed. Once it is set, `titleChangeAllowed()` permits only the
 terminal `[DONE] ` title from ADR 0086. A stored name corrected after the
-title was applied is not pushed to the open thread; the corrected name is used
-at done. A pending title the policy does not permit is recorded as shown
-without asking the agent for anything.
+title was applied is not pushed to the open thread. A T3 thread's done title
+is built from the thread's current title, and the name block uses the
+corrected name at done. A pending title the policy does not permit is recorded
+as shown without asking the agent for anything.
 
 The rename instruction also tells the agent not to rename or regenerate its
 thread title on its own afterwards. This is guidance and not a gate,
@@ -101,11 +116,14 @@ unchanged.
 Adding a client is one surface file, one registry line, its tests and a row in
 the docs table. Claude Desktop, Codex outside T3, and Cursor need a supported
 way to set a title before a surface can be written for them. Cursor threads
-hosted in T3 keep the name block until their hooks are probed.
+hosted in T3 also keep the name block. Their rename call works, but their
+environment carries no `T3CODE_THREAD_ID`. Without the thread id Harnery
+cannot tell that a Cursor session runs in T3, and cannot tell a delegated
+child thread from a top-level one, so it would rename children whose titles T3
+already set from their brief. Cursor in T3 keeps the name block until its
+environment carries the thread id.
 
-Two limits remain. The `[DONE]` rename replaces a title the operator typed by
-hand, because Harnery cannot read the client's current title. And the probe
-could not show whether T3's automatic first-message title can land after a
-first-turn rename, because an agent cannot create an untitled thread. If it
-does, the surface should ask for the rename on the first tool call of the
-second turn.
+The first-turn rename holds. In the follow-up probe, the rename replaced T3's
+placeholder title and T3 did not regenerate the title afterwards. That probe
+thread was created through T3's tools, and a thread started in the T3 window
+was not tested separately.

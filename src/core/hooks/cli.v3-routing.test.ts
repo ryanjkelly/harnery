@@ -855,6 +855,117 @@ describe("agent-hook V3 hard cut", () => {
     expect(readLiveCoordinationRow(root, instanceId)?.session_name_seen_for).toBe(later);
   });
 
+  test("a T3 done rename keeps the thread's current title and stamps what was written", () => {
+    const root = candidateRoot();
+    const owner = "t3-done-owner";
+    const start = "Agent A - x";
+    const owed = "[DONE] Agent A - x";
+    const own = "[DONE] My own title";
+    const read = "mcp__t3-code__t3_thread_read";
+    const tool = "mcp__t3-code__t3_thread_update";
+    const runHook = (event: string, payload: Record<string, unknown>) =>
+      run(AGENT_HOOK, [event, "--adapter", "claude-code"], payload, root, {
+        HARNERY_AGENT_COORD_BYPASS_STOP: "1",
+      });
+    expect(
+      runHook("session-start", { session_id: owner, cwd: root, source: "startup" }).status,
+    ).toBe(0);
+    const instanceId = readLiveCoordinationRows(root)[0]?.instance_id;
+    if (!instanceId) throw new Error("session owner was not projected");
+    writeFileSync(
+      join(root, ".harnery", "active", `${instanceId}.json`),
+      JSON.stringify({
+        ...readLiveCoordinationRow(root, instanceId),
+        instance_id: instanceId,
+        suggested_session_name: owed,
+        session_name_display_requested_for: owed,
+        session_title_surface: "t3-code",
+        session_title_client_thread: "thread-1",
+        session_title_applied_for: start,
+      }),
+      "utf8",
+    );
+    const pre = (id: string, toolName: string, toolInput: unknown, extra = {}) =>
+      runHook("pre-tool-use", {
+        session_id: owner,
+        cwd: root,
+        tool_name: toolName,
+        tool_use_id: id,
+        tool_input: toolInput,
+        ...extra,
+      });
+    const post = (id: string, toolName: string, toolInput: unknown, toolResponse: unknown) =>
+      runHook("post-tool-use", {
+        session_id: owner,
+        cwd: root,
+        tool_name: toolName,
+        tool_use_id: id,
+        tool_input: toolInput,
+        tool_response: toolResponse,
+      });
+
+    const load = pre("load", "ToolSearch", { query: `select:${read},${tool}` });
+    expect(load.stdout).not.toContain('"permissionDecision":"deny"');
+    const readInput = { threadId: "thread-1", limit: 1, maxCharsPerItem: 1 };
+    expect(pre("read", read, readInput).stdout).not.toContain('"permissionDecision":"deny"');
+
+    // The allowed read carries no bounded reminder; an ordinary tool does.
+    const readResult = JSON.stringify({ thread: { id: "thread-1", title: "My own title" } });
+    const afterRead = post("read", read, readInput, readResult);
+    expect(afterRead.status).toBe(0);
+    expect(afterRead.stdout).not.toContain('"hookEventName":"PostToolUse"');
+    const ordinary = post("work", "Bash", { command: "ls" }, "ok");
+    expect(ordinary.stdout).toContain("Session title still pending.");
+    expect(ordinary.stdout).toContain(read);
+
+    const transcript = join(root, "transcript.jsonl");
+    writeFileSync(
+      transcript,
+      `${JSON.stringify({
+        type: "user",
+        message: {
+          content: [
+            {
+              type: "tool_result",
+              content: JSON.stringify({ name_reminted: true, suggested_session_name: owed }),
+            },
+          ],
+        },
+      })}\n${JSON.stringify({
+        type: "assistant",
+        message: { content: [{ type: "text", text: "Wrapping up." }] },
+      })}\n`,
+    );
+    const denied = pre(
+      "too-soon",
+      "Bash",
+      { command: "echo too-soon" },
+      { transcript_path: transcript },
+    );
+    expect(denied.stdout).toContain('"permissionDecision":"deny"');
+    expect(denied.stdout).toContain("t3_thread_read");
+    expect(denied.stdout).toContain(owed);
+
+    const renameInput = { action: "rename", title: own };
+    expect(pre("rename", tool, renameInput).stdout).not.toContain('"permissionDecision":"deny"');
+    const renamed = post(
+      "rename",
+      tool,
+      renameInput,
+      JSON.stringify({ threadId: "thread-1", action: "rename", title: own }),
+    );
+    expect(renamed.status).toBe(0);
+    expect(renamed.stdout).not.toContain('"hookEventName":"PostToolUse"');
+    const row = readLiveCoordinationRow(root, instanceId);
+    expect(row?.session_title_applied_for).toBe(own);
+    expect(row?.session_name_seen_for).toBe(owed);
+
+    const after = pre("after", "Bash", { command: "echo ok" }, { transcript_path: transcript });
+    expect(after.stdout).not.toContain('"permissionDecision":"deny"');
+    const quiet = post("after", "Bash", { command: "echo ok" }, "ok");
+    expect(quiet.stdout).not.toContain('"hookEventName":"PostToolUse"');
+  });
+
   test("a failed T3 rename falls back to the name block, which then closes the title", () => {
     const root = candidateRoot();
     const owner = "t3-fallback-owner";

@@ -206,3 +206,112 @@ describe("failedAttempt", () => {
     ).toBe(false);
   });
 });
+
+describe("done request", () => {
+  const DONE = `[DONE] ${TITLE}`;
+  const CC_READ = "mcp__t3-code__t3_thread_read";
+  const CODEX_READ = "mcp__t3_code__t3_thread_read";
+  const OWN = "[DONE] My own title";
+  const stored: TitleSurfaceContext = { adapter: "claude-code", env: {}, clientThreadId: "T" };
+  const allows = (toolName: string, input: unknown, accepted = [DONE], ctx = claude) =>
+    t3CodeSurface.allowsWhilePending?.({ toolName, toolInput: input }, accepted, ctx);
+  const confirm = (call: CompletedToolCall, accepted = [DONE], ctx = claude) =>
+    t3CodeSurface.confirmFromTool?.(call, accepted, ctx) ?? null;
+
+  test("the start instruction is unchanged by the done variant", () => {
+    const text = t3CodeSurface.instruction(TITLE, claude);
+    expect(text).not.toContain("t3_thread_read");
+    expect(text).toContain("leave the thread title alone");
+  });
+  test("the done instruction reads the current title, then prefixes it", () => {
+    const text = t3CodeSurface.instruction("[DONE] Agent A - x", stored);
+    const read = text.indexOf(
+      '`t3_thread_read` with `threadId: "T"`, `limit: 1` and `maxCharsPerItem: 1`',
+    );
+    const update = text.indexOf('`t3_thread_update` with `action: "rename"`');
+    expect(read).toBeGreaterThan(0);
+    expect(update).toBeGreaterThan(read);
+    expect(text).toContain("`thread.title`");
+    expect(text).toContain("already starts with `[DONE] `, pass it unchanged");
+    expect(text).toContain("the current title is `Agent A - x`, so the new title is exactly:");
+    expect(text).toContain("\n[DONE] Agent A - x\n");
+    expect(text).toContain("`select:mcp__t3-code__t3_thread_read,mcp__t3-code__t3_thread_update`");
+    expect(text).toContain(sessionNameDisplayBlock("[DONE] Agent A - x"));
+    expect(text).toContain("regenerate_title");
+    expect(text).not.toContain("leave the thread title alone");
+  });
+  test("the done instruction takes the env thread id and Codex tool names", () => {
+    const text = t3CodeSurface.instruction(DONE, codex);
+    expect(text).toContain(`\`threadId: "${THREAD}"\``);
+    expect(text).toContain(CODEX_READ);
+    expect(text).toContain(CODEX_TOOL);
+    expect(text).not.toContain("ToolSearch");
+  });
+  test("the done reminder names both calls and the expected title", () => {
+    const text = t3CodeSurface.reminder(DONE, claude);
+    expect(text).toContain(CC_READ);
+    expect(text).toContain(CC_TOOL);
+    expect(text).toContain(`\n${DONE}\n`);
+    expect(t3CodeSurface.reminder(TITLE, claude)).not.toContain("t3_thread_read");
+  });
+  test("allows loading both tools, reading this thread, and any done rename here", () => {
+    expect(allows("ToolSearch", { query: `select:${CC_READ},${CC_TOOL}` })).toBe(true);
+    expect(allows("ToolSearch", { query: `select:${CC_READ}` })).toBe(true);
+    expect(allows(CC_READ, { threadId: THREAD, limit: 1, maxCharsPerItem: 1 })).toBe(true);
+    expect(allows(CODEX_READ, { threadId: THREAD }, [DONE], codex)).toBe(true);
+    expect(allows(CC_READ, { threadId: "T" }, [DONE], stored)).toBe(true);
+    expect(allows(CC_TOOL, { action: "rename", title: OWN })).toBe(true);
+    expect(allows(CC_TOOL, { action: "rename", title: OWN, threadId: THREAD })).toBe(true);
+    expect(allows(CC_TOOL, { action: "rename", title: DONE })).toBe(true);
+  });
+  test("refuses another thread, an empty done title, and unrelated calls", () => {
+    expect(allows(CC_READ, { threadId: "other" })).toBe(false);
+    expect(allows(CC_READ, {})).toBe(false);
+    expect(allows(CC_TOOL, { action: "rename", title: OWN, threadId: "other" })).toBe(false);
+    expect(allows(CC_TOOL, { action: "rename", title: "[DONE] " })).toBe(false);
+    expect(allows(CC_TOOL, { action: "rename", title: "[DONE]   " })).toBe(false);
+    expect(allows(CC_TOOL, { action: "rename", title: "My own title" })).toBe(false);
+    expect(allows(CC_TOOL, { action: "regenerate_title" })).toBe(false);
+    expect(allows("Bash", { command: "ls" })).toBe(false);
+  });
+  test("outside a done request the read tool and a done rename stay gated", () => {
+    expect(allows("ToolSearch", { query: `select:${CC_READ}` }, [TITLE])).toBe(false);
+    expect(allows(CC_READ, { threadId: THREAD }, [TITLE])).toBe(false);
+    expect(allows(CC_TOOL, { action: "rename", title: OWN }, [TITLE])).toBe(false);
+  });
+  test("confirms the title actually written at done", () => {
+    const input = { action: "rename", title: OWN };
+    const result = JSON.stringify({ threadId: THREAD, action: "rename", title: OWN });
+    expect(confirm(done(CC_TOOL, input, result))).toBe(OWN);
+    expect(confirm(done(CODEX_TOOL, input, codexEnvelope(OWN)), [DONE], codex)).toBe(OWN);
+    expect(confirm(done(CC_TOOL, { action: "rename", title: DONE }, renamedTo(DONE)))).toBe(DONE);
+  });
+  test("does not confirm a failed, foreign, or empty done rename, or a read", () => {
+    const input = { action: "rename", title: OWN };
+    expect(confirm(done(CODEX_TOOL, input, codexEnvelope(OWN, true)), [DONE], codex)).toBeNull();
+    expect(confirm(done(CC_TOOL, { ...input, threadId: "other" }, renamedTo(OWN)))).toBeNull();
+    expect(
+      confirm(done(CC_TOOL, { action: "rename", title: "[DONE] " }, renamedTo("[DONE] "))),
+    ).toBeNull();
+    expect(confirm(done(CC_READ, { threadId: THREAD }, renamedTo(OWN)))).toBeNull();
+    // Outside a done request a done-looking rename confirms nothing.
+    expect(confirm(done(CC_TOOL, input, renamedTo(OWN)), [TITLE])).toBeNull();
+  });
+  test("a failed done rename is a failed attempt; a read never is", () => {
+    const input = { action: "rename", title: OWN };
+    expect(
+      t3CodeSurface.failedAttempt?.(done(CODEX_TOOL, input, codexEnvelope(OWN, true)), codex),
+    ).toBe(true);
+    expect(t3CodeSurface.failedAttempt?.(done(CC_TOOL, input, renamedTo(OWN)), claude)).toBe(false);
+    expect(
+      t3CodeSurface.failedAttempt?.(
+        done(CC_READ, { threadId: THREAD }, { isError: true, content: [] }),
+        claude,
+      ),
+    ).toBe(false);
+  });
+});
+
+function renamedTo(title: string): string {
+  return JSON.stringify({ threadId: THREAD, action: "rename", title });
+}
