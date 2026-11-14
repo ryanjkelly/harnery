@@ -11,6 +11,7 @@ import {
   CUA_PINS,
   type CuaDeps,
   createCuaDriver,
+  cuaAttachesPersonBrowser,
   cuaTakesForeground,
   INSTALL_MARKER,
   type SpawnResult,
@@ -114,7 +115,7 @@ describe("planInstall", () => {
     expect(plan.preferences).toEqual({ telemetry_enabled: false });
     expect(plan.artifact).toEqual(CUA_PINS["windows-x86_64"]);
     expect(plan.artifact.url).toBe(
-      `https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.38.0/${TOP}.zip`,
+      `https://github.com/trycua/cua/releases/download/cua-driver-rs-v${CUA_DRIVER_VERSION}/${TOP}.zip`,
     );
     expect(plan.alreadyInstalled).toBe(false);
     expect(plan.driver).toBe("cua");
@@ -305,6 +306,61 @@ describe("running the driver", () => {
     expect(ps?.args[2]).toContain("Start-Process -FilePath 'C:\\Users\\o''neil\\cua-driver.exe'");
     expect(ps?.args[2]).toContain("-ArgumentList 'serve' -WindowStyle Hidden");
     expect(ps?.args[2]).not.toContain("RunAs");
+  });
+
+  test("startDaemon with browser attach passes the grant and records it for status", async () => {
+    let started = false;
+    let clock = 0;
+    const rec = recorder((c) => {
+      if (c.command.endsWith("powershell.exe")) {
+        started = true;
+        return {};
+      }
+      return { stdout: started ? "running\npid: 77\n" : "not running\n" };
+    });
+    const { driver, host } = await installed({
+      spawnSync: rec.spawnSync,
+      wslpath: () => "C:\\cua-driver.exe",
+      now: () => clock,
+      sleep: async (ms) => {
+        clock += ms;
+      },
+    });
+    const status = await driver.startDaemon(host, { browserAttach: true });
+    expect(status.browserAttach).toBe(true);
+    const ps = rec.calls.find((c) => c.command.endsWith("powershell.exe"));
+    expect(ps?.args[2]).toContain(
+      "-ArgumentList 'serve','--grant','existing-profile' -WindowStyle Hidden",
+    );
+    // A later status read finds the record for the same pid.
+    expect(driver.daemonStatus(host).browserAttach).toBe(true);
+  });
+
+  test("daemonStatus ignores a start record for another pid", async () => {
+    let pid = 5;
+    let clock = 0;
+    let started = false;
+    const rec = recorder((c) => {
+      if (c.command.endsWith("powershell.exe")) {
+        started = true;
+        return {};
+      }
+      return { stdout: started ? `running\npid: ${pid}\n` : "not running\n" };
+    });
+    const { driver, host } = await installed({
+      spawnSync: rec.spawnSync,
+      wslpath: () => "C:\\cua-driver.exe",
+      now: () => clock,
+      sleep: async (ms) => {
+        clock += ms;
+      },
+    });
+    const plain = await driver.startDaemon(host);
+    expect(plain.browserAttach).toBe(false);
+    const ps = rec.calls.find((c) => c.command.endsWith("powershell.exe"));
+    expect(ps?.args[2]).toContain("-ArgumentList 'serve' -WindowStyle Hidden");
+    pid = 6;
+    expect(driver.daemonStatus(host).browserAttach).toBeUndefined();
   });
 
   test("startDaemon gives up after its deadline", async () => {
@@ -541,6 +597,41 @@ describe("Cua Driver on macOS and Linux", () => {
       expect(pin.sha256).toMatch(/^[0-9a-f]{64}$/);
       expect(pin.format).toBe(key.startsWith("windows-") ? "zip" : "tar.gz");
     }
+  });
+});
+
+describe("cuaAttachesPersonBrowser", () => {
+  const existing = { kind: "existing_profile" };
+  test("an existing-profile attach, directly or nested, counts", () => {
+    expect(
+      cuaAttachesPersonBrowser("browser_prepare", { pid: 1, window_id: 2, strategy: existing }),
+    ).toBe(true);
+    expect(
+      cuaAttachesPersonBrowser("run_steps", {
+        steps: [{ tool: "browser_prepare", args: { strategy: existing } }],
+      }),
+    ).toBe(true);
+    expect(
+      cuaAttachesPersonBrowser("run_script", {
+        script: 'await browser_prepare({strategy:{kind:"existing_profile"}})',
+      }),
+    ).toBe(true);
+  });
+  test("an isolated browser, a read, or a string value does not", () => {
+    expect(
+      cuaAttachesPersonBrowser("browser_prepare", {
+        allow_launch: true,
+        profile: { mode: "isolated_new" },
+      }),
+    ).toBe(false);
+    expect(cuaAttachesPersonBrowser("get_browser_state", { pid: 1, window_id: 2 })).toBe(false);
+    expect(cuaAttachesPersonBrowser("type_text", { text: "existing_profile" })).toBe(false);
+  });
+  test("the attach also waits for a quiet desktop", () => {
+    expect(
+      cuaTakesForeground("browser_prepare", { pid: 1, window_id: 2, strategy: existing }),
+    ).toBe(true);
+    expect(cuaTakesForeground("run_script", { script: "existing_profile" })).toBe(true);
   });
 });
 

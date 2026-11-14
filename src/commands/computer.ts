@@ -30,6 +30,7 @@ import {
   isComputerMode,
   readComputerConfig,
   readComputerPreferences,
+  writeBrowserAttachPreference,
   writeComputerPreference,
   writeSignInPreference,
 } from "../core/config.ts";
@@ -112,6 +113,7 @@ export interface ComputerDeps {
     read: () => ComputerPreferences;
     write: (root: string | null, mode: ComputerMode | null) => ComputerPreferences;
     writeSignIn: (root: string | null, on: boolean | null) => ComputerPreferences;
+    writeBrowserAttach: (root: string | null, on: boolean | null) => ComputerPreferences;
   };
   /** The project root personal choices are keyed by. */
   projectRoot: () => string | null;
@@ -233,6 +235,7 @@ async function resolveDeps(input: ComputerDepsInput): Promise<ComputerDeps> {
       read: () => readComputerPreferences(),
       write: (root, mode) => writeComputerPreference(root, mode),
       writeSignIn: (root, on) => writeSignInPreference(root, on),
+      writeBrowserAttach: (root, on) => writeBrowserAttachPreference(root, on),
       ...input.prefs,
     },
     projectRoot: input.projectRoot ?? (() => resolveCoordRoot()),
@@ -305,9 +308,7 @@ function describeMode(mode: ComputerMode): string {
 }
 
 function describeSignInSource(config: ComputerProjectConfig): string {
-  if (config.sign_in_source === "user-project") return "your setting for this project";
-  if (config.sign_in_source === "user-default") return "your setting for all projects";
-  return "the default";
+  return describeSourceOf(config.sign_in_source);
 }
 
 /** The person's own sign-in choice for one project, before the project's and the desktop's gates. */
@@ -327,6 +328,37 @@ function describeSignIn(config: ComputerProjectConfig, bin: string): string {
       : "off (desktop control is off)";
   }
   return `off: you sign in yourself (${describeSignInSource(config)}; \`${bin} computer sign-in on\` lets agents do it)`;
+}
+
+function describeSourceOf(source: ComputerProjectConfig["browser_attach_source"]): string {
+  if (source === "user-project") return "your setting for this project";
+  if (source === "user-default") return "your setting for all projects";
+  return "the default";
+}
+
+/** The person's own browser-attach choice for one project, before the project's and the desktop's gates. */
+function personBrowserAttach(prefs: ComputerPreferences, root: string): boolean {
+  return prefs.browser_attach_projects?.[root] ?? prefs.browser_attach ?? false;
+}
+
+/** The `browser:` status line: whether agents may attach to this person's running browser (ADR 0249). */
+function describeBrowserAttach(config: ComputerProjectConfig, bin: string): string {
+  const source = describeSourceOf(config.browser_attach_source);
+  if (!config.project_browser_attach)
+    return "off (this project does not allow agents to attach to your browser)";
+  if (config.browser_attach)
+    return `on: agents may attach to your running browser and work in its tabs (${source})`;
+  if (!config.enabled) {
+    return config.person_browser_attach
+      ? `off while your desktop control is off (you turned it on, ${source}; \`${bin} computer browser-attach off\` removes it)`
+      : "off (desktop control is off)";
+  }
+  return `off (${source}; \`${bin} computer browser-attach on\` lets agents attach to your running browser)`;
+}
+
+/** Whether this driver's daemon should start able to attach to the person's browser. */
+function wantsBrowserAttach(config: ComputerProjectConfig, driver: DesktopDriver): boolean {
+  return config.browser_attach && driver.supportsBrowserAttach === true;
 }
 
 function grantKindFor(mode: ComputerMode): GrantKind | null {
@@ -566,10 +598,28 @@ function printDriverResult(deps: ComputerDeps, result: DriverCallResult, stdout 
   if (result.exitCode !== 0) deps.emit.setExitCode(result.exitCode);
 }
 
-async function ensureDaemon(driver: DesktopDriver, host: HostInfo): Promise<DaemonStatus> {
-  const current = driver.daemonStatus(host);
+/**
+ * Start the driver's daemon if it is not running. `browserAttach` starts it
+ * able to attach to the person's running browser (ADR 0249); `requireGrant`
+ * also restarts a running daemon that lacks that grant.
+ */
+async function ensureDaemon(
+  driver: DesktopDriver,
+  host: HostInfo,
+  options: { browserAttach?: boolean; requireGrant?: boolean } = {},
+): Promise<DaemonStatus> {
+  let current = driver.daemonStatus(host);
+  if (current.running && options.requireGrant && current.browserAttach !== true) {
+    current = driver.stopDaemon(host);
+    if (current.running) {
+      throw new ComputerError(
+        "computer_daemon_failed",
+        `The ${driver.id} daemon is running without browser attach and did not stop for a restart${current.detail ? `: ${current.detail}` : "."}`,
+      );
+    }
+  }
   if (current.running) return current;
-  const started = await driver.startDaemon(host);
+  const started = await driver.startDaemon(host, { browserAttach: options.browserAttach === true });
   if (!started.running) {
     throw new ComputerError(
       "computer_daemon_failed",
@@ -591,7 +641,7 @@ function describeDaemon(driver: DesktopDriver, daemon: DaemonStatus | null): str
   if (!driver.hasDaemon) return "not needed (runs per call)";
   if (!daemon) return "n/a";
   return daemon.running
-    ? `running${daemon.pid !== undefined ? ` (pid ${daemon.pid})` : ""}`
+    ? `running${daemon.pid !== undefined ? ` (pid ${daemon.pid})` : ""}${daemon.browserAttach ? ", able to attach to your browser" : ""}`
     : `stopped${daemon.detail ? ` (${daemon.detail})` : ""}`;
 }
 
@@ -755,6 +805,10 @@ export function createComputerCommand(
             project_sign_in: config.project_sign_in,
             sign_in_source: config.sign_in_source,
             person_sign_in: config.person_sign_in,
+            browser_attach: config.browser_attach,
+            project_browser_attach: config.project_browser_attach,
+            browser_attach_source: config.browser_attach_source,
+            person_browser_attach: config.person_browser_attach,
             foreground_quiet_seconds: foregroundQuiet(config).quietMs / 1000,
             foreground_wait_seconds: foregroundQuiet(config).maxWaitMs / 1000,
             approval: grant,
@@ -795,6 +849,7 @@ export function createComputerCommand(
               ]
             : []),
           `sign-in:   ${describeSignIn(config, deps.binName)}`,
+          `browser:   ${describeBrowserAttach(config, deps.binName)}`,
           `quiet:     a foreground action ${describeForegroundQuiet(config)}`,
           `host:      ${host.kind}${host.reason ? ` (${host.reason})` : ""}${host.note ? ` (${host.note})` : ""}`,
         ];
@@ -913,9 +968,11 @@ export function createComputerCommand(
             lines.push(`${driver.id}: no daemon needed.`);
             continue;
           }
-          const status = await ensureDaemon(driver, host);
+          const status = await ensureDaemon(driver, host, {
+            browserAttach: wantsBrowserAttach(deps.config(), driver),
+          });
           lines.push(
-            `${driver.id}: daemon running${status.pid !== undefined ? ` (pid ${status.pid})` : ""}.`,
+            `${driver.id}: daemon running${status.pid !== undefined ? ` (pid ${status.pid})` : ""}${status.browserAttach ? ", able to attach to your browser" : ""}.`,
           );
         }
         emitLine(deps.emit, lines.join("\n"));
@@ -1093,6 +1150,17 @@ export function createComputerCommand(
             parseSeconds(opts.wait, "--wait") ?? config.wait_seconds ?? DEFAULT_CALL_WAIT_SECONDS;
           const owner = deps.owner();
           requireApproval(deps, config, host, owner);
+          // Attaching to the person's running browser reaches every site they
+          // are signed in to, so it needs their own opt-in (ADR 0249).
+          const attach = driver.attachesPersonBrowser?.(tool, args) ?? false;
+          if (attach && !config.browser_attach) {
+            throw new ComputerError(
+              "browser_attach_off",
+              `Attaching to the person's running browser is off: ${describeBrowserAttach(config, deps.binName)}.`,
+              EXIT_APPROVAL_REQUIRED,
+              "Nothing was sent. Work in the browser window through the accessibility route instead (get_window_state or agent-desktop refs), or ask the person whether to turn browser attach on.",
+            );
+          }
           if (!("session" in args)) args.session = owner.label;
 
           // Hold the lease for at least the driver's call timeout, so a slow
@@ -1114,7 +1182,11 @@ export function createComputerCommand(
           );
           if (!acquired.ok) throw heldError(deps, acquired.holder);
 
-          if (driver.hasDaemon) await ensureDaemon(driver, host);
+          if (driver.hasDaemon)
+            await ensureDaemon(driver, host, {
+              browserAttach: wantsBrowserAttach(config, driver),
+              requireGrant: attach,
+            });
           if (foreground) {
             const waited = await waitForQuietDesktop({
               ...quiet,
@@ -1607,7 +1679,177 @@ export function createComputerCommand(
       ),
     );
 
+  // ---------------------------------------------------------- browser-attach
+  computer
+    .command("browser-attach [state]")
+    .description(
+      "Show or set whether agents may attach to your running browser and work in its tabs " +
+        "(on | off), where the project allows it (ADR 0249). Off by default; turning it on asks " +
+        "the person at this computer first and restarts the driver daemon with the grant.",
+    )
+    .option("--all-projects", "Set it for every project instead of just this one.")
+    .option(
+      "--clear",
+      "Remove your own choice, so the default (off) or your all-projects choice applies.",
+    )
+    .option("--json", "Emit the result as JSON.")
+    .action(
+      guarded(
+        input,
+        async (
+          deps,
+          raw: string | undefined,
+          opts: { allProjects?: boolean; clear?: boolean; json?: boolean },
+        ) => {
+          const current = deps.config();
+          const report = (
+            config: ComputerProjectConfig,
+            scope?: "project" | "all-projects",
+            daemon?: string[],
+          ) =>
+            opts.json
+              ? deps.emit.data({
+                  browser_attach: config.browser_attach,
+                  project_browser_attach: config.project_browser_attach,
+                  browser_attach_source: config.browser_attach_source,
+                  person_browser_attach: config.person_browser_attach,
+                  ...(scope ? { scope } : {}),
+                  ...(daemon ? { daemon } : {}),
+                })
+              : emitLine(
+                  deps.emit,
+                  [
+                    `Browser attach: ${describeBrowserAttach(config, deps.binName)}.`,
+                    ...(daemon ?? []),
+                  ].join("\n"),
+                );
+          if (raw === undefined && !opts.clear) {
+            report(current);
+            return;
+          }
+          if (raw !== undefined && opts.clear) {
+            throw new ComputerError(
+              "computer_usage",
+              "Pass on, off or --clear, not more than one.",
+            );
+          }
+          if (raw !== undefined && raw !== "on" && raw !== "off") {
+            throw new ComputerError("computer_usage", "Browser attach must be on or off.");
+          }
+          if (!current.project_browser_attach) {
+            throw new ComputerError(
+              "browser_attach_not_allowed",
+              current.project_enabled
+                ? "This project does not let agents attach to people's browsers (`computer.browser_attach` in .harnery/config.jsonc), and a personal choice cannot turn it on."
+                : `This project has desktop control off, so agents cannot attach to anyone's browser. ${enableHint()}`,
+            );
+          }
+          const root = opts.allProjects ? null : deps.projectRoot();
+          if (!opts.allProjects && !root) {
+            throw new ComputerError("computer_usage", "Not inside a project; pass --all-projects.");
+          }
+          const on = raw === undefined ? null : raw === "on";
+          const prefs = deps.prefs.read();
+          const next: ComputerPreferences = {
+            ...prefs,
+            browser_attach_projects: { ...(prefs.browser_attach_projects ?? {}) },
+          };
+          if (root === null) {
+            if (on === null) delete next.browser_attach;
+            else next.browser_attach = on;
+          } else if (next.browser_attach_projects) {
+            if (on === null) delete next.browser_attach_projects[root];
+            else next.browser_attach_projects[root] = on;
+          }
+          const after = deps.config(next);
+          const scope = root === null ? "all your projects" : "this project";
+          const here = deps.projectRoot();
+          const previous =
+            root === null ? prefs.browser_attach : prefs.browser_attach_projects?.[root];
+          const loosens =
+            (on === true && previous !== true) ||
+            (here !== null && personBrowserAttach(next, here) && !personBrowserAttach(prefs, here));
+          if (loosens) {
+            const answer = await deps.confirm({
+              title: "Let agents work in your browser?",
+              message: [
+                `Let AI agents attach to your running browser in ${scope} and work in its tabs: read pages, type and click, without moving your mouse.`,
+                "",
+                "They act inside the sites you are already signed in to. Attaching the first time briefly brings the browser forward. Agents still never sign in or type passwords through this route.",
+              ].join("\n"),
+              timeoutMs: DEFAULT_CONFIRM_SECONDS * 1000,
+            });
+            if (answer.answer !== "approved") {
+              throw new ComputerError(
+                "computer_approval_declined",
+                `Not changed: turning browser attach on needs the person's approval, and ${answer.answer === "unavailable" ? `there was no way to ask (${answer.detail ?? "no prompt"})` : "it was not given"}.`,
+                EXIT_APPROVAL_REQUIRED,
+              );
+            }
+          }
+          deps.prefs.writeBrowserAttach(root, on);
+          const host = deps.host();
+          let daemon: string[] | undefined;
+          if (host.kind !== "unsupported" && host.desktopStateDir) {
+            deps.grants.log(
+              deps.leaseDir(host.desktopStateDir),
+              {
+                event: "browser-attach-changed",
+                ...(root ? { project: root } : {}),
+                detail: `${on === null ? "cleared" : on ? "on" : "off"} (${scope})`,
+              },
+              deps.now(),
+            );
+            daemon = await alignBrowserAttachDaemons(deps, host as SupportedHost, after);
+          }
+          report(after, root === null ? "all-projects" : "project", daemon);
+        },
+      ),
+    );
+
   return computer;
+}
+
+/**
+ * Restart each running daemon whose browser-attach grant no longer matches
+ * the setting, so turning it off takes the grant away at once (ADR 0249).
+ * A daemon is left alone while another agent holds the desktop.
+ */
+async function alignBrowserAttachDaemons(
+  deps: ComputerDeps,
+  host: SupportedHost,
+  config: ComputerProjectConfig,
+): Promise<string[]> {
+  const lines: string[] = [];
+  const holder = deps.lease.read(leaseOptions(deps, host));
+  const heldByOther = holder && holder.owner_id !== deps.owner().id ? holder : null;
+  for (const driver of deps.drivers) {
+    if (!driver.supportsBrowserAttach || !driver.hasDaemon || !driver.installedExecutable(host))
+      continue;
+    const want = wantsBrowserAttach(config, driver);
+    const status = driver.daemonStatus(host);
+    if (!status.running || (status.browserAttach === true) === want) continue;
+    if (heldByOther) {
+      lines.push(
+        `${driver.id}: the running daemon was not restarted because the desktop is held by ${describeLease(heldByOther, deps.now())}; ` +
+          `run \`${deps.binName} computer down\` and \`${deps.binName} computer up\` once it is free.`,
+      );
+      continue;
+    }
+    const stopped = driver.stopDaemon(host);
+    if (stopped.running) {
+      lines.push(`${driver.id}: the running daemon did not stop: ${stopped.detail}`);
+      deps.emit.setExitCode(1);
+      continue;
+    }
+    const started = await driver.startDaemon(host, { browserAttach: want });
+    lines.push(
+      started.running
+        ? `${driver.id}: restarted the daemon ${want ? "with" : "without"} browser attach.`
+        : `${driver.id}: the daemon stopped but did not start again; \`${deps.binName} computer up\` starts it.`,
+    );
+  }
+  return lines;
 }
 
 /** End the owner's task approval in this project, logging it. True when one ended. */

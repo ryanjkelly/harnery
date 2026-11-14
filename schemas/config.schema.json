@@ -395,6 +395,11 @@
           "type": "boolean",
           "default": false,
           "description": "Let each person allow agents to sign in to websites for them, in their own browser through their password manager's extension. Even when true, it stays off for each person until they turn it on with `computer sign-in on` or the dashboard's Permissions page. Needs a mode other than `off`."
+        },
+        "browser_attach": {
+          "type": "boolean",
+          "default": false,
+          "description": "Lets each person allow agents to attach to their running browser and work in its tabs through the desktop driver (computer browser-attach). Each person's choice still starts off. ADR 0249."
         }
       }
     },

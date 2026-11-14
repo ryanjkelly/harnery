@@ -90,6 +90,19 @@ export interface DaemonStatus {
   /** Raw first line(s) from the driver's status output, for display. */
   detail: string;
   pid?: number;
+  /**
+   * Whether this daemon was started with the grant that lets it attach to the
+   * person's running browser (ADR 0249). Known only for a daemon Harnery
+   * started; absent for a driver without that grant or a daemon of unknown
+   * origin.
+   */
+  browserAttach?: boolean;
+}
+
+/** How to start a driver's daemon. */
+export interface DaemonStartOptions {
+  /** Start it able to attach to the person's running browser (ADR 0249). */
+  browserAttach?: boolean;
 }
 
 /**
@@ -145,6 +158,14 @@ export interface DesktopDriver {
    * the driver never does that.
    */
   takesForeground?(tool: string, args: Record<string, unknown>): boolean;
+  /**
+   * True when this call attaches the driver to the person's running browser
+   * profile (ADR 0249), which the command allows only where browser attach
+   * is on. Absent means the driver has no such route.
+   */
+  attachesPersonBrowser?(tool: string, args: Record<string, unknown>): boolean;
+  /** True when the driver can attach to the person's running browser at all. */
+  readonly supportsBrowserAttach?: boolean;
   /** Background processes the driver left running on this host (see BackgroundProcess). */
   backgroundProcesses?(host: HostInfo): BackgroundProcess[];
   /** Stop every background process; returns the ones still running afterwards. */
@@ -157,7 +178,7 @@ export interface DesktopDriver {
   installedExecutable(host: HostInfo): string | undefined;
   daemonStatus(host: HostInfo): DaemonStatus;
   /** Start the daemon unelevated if it is not running. Returns the new status. */
-  startDaemon(host: HostInfo): Promise<DaemonStatus>;
+  startDaemon(host: HostInfo, options?: DaemonStartOptions): Promise<DaemonStatus>;
   stopDaemon(host: HostInfo): DaemonStatus;
   /** One tool call. `args` is the JSON object passed to the tool. */
   call(host: HostInfo, tool: string, args: Record<string, unknown>): DriverCallResult;

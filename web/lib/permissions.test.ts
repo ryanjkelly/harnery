@@ -3,15 +3,18 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { COMPUTER_MODES as CLI_MODES } from "../../src/core/config";
 import {
+  browserAttachChangeArgs,
   COMPUTER_MODES,
   CONFIRM_SECONDS,
   checkLocalWrite,
+  interpretBrowserAttachChange,
   interpretModeChange,
   interpretSignInChange,
   isLoopbackHost,
   type ModeChangeOutcome,
   modeChangeArgs,
   oneChangeAtATime,
+  parseBrowserAttachChangeRequest,
   parseModeChangeRequest,
   parseSignInChangeRequest,
   requestLocality,
@@ -201,6 +204,71 @@ describe("agent sign-in changes", () => {
     );
     expect(refused).toMatchObject({ outcome: "refused" });
     expect(refused.message).toContain("does not let agents sign in");
+  });
+});
+
+describe("browser attach changes", () => {
+  test("accepts on, off and default, and nothing else", () => {
+    for (const choice of ["on", "off", "default"]) {
+      expect(parseBrowserAttachChangeRequest({ browser_attach: choice })).toEqual({
+        ok: true,
+        choice: choice as never,
+      });
+    }
+    expect(parseBrowserAttachChangeRequest({ browser_attach: true }).ok).toBe(false);
+    expect(parseBrowserAttachChangeRequest({ browser_attach: "on", extra: 1 }).ok).toBe(false);
+    expect(parseBrowserAttachChangeRequest({ sign_in: "on" }).ok).toBe(false);
+  });
+
+  test("always changes this project only", () => {
+    expect(browserAttachChangeArgs("on")).toEqual(["computer", "browser-attach", "on", "--json"]);
+    expect(browserAttachChangeArgs("off")).toEqual(["computer", "browser-attach", "off", "--json"]);
+    expect(browserAttachChangeArgs("default")).toEqual([
+      "computer",
+      "browser-attach",
+      "--clear",
+      "--json",
+    ]);
+  });
+
+  test("reports the change with the daemon restart, a No, and a project that does not allow it", () => {
+    const changed = interpretBrowserAttachChange(
+      result({
+        ok: true,
+        exitCode: 0,
+        stdout:
+          '{"browser_attach":true,"scope":"project","daemon":["cua: restarted the daemon with browser attach."]}',
+      }),
+      3_000,
+    );
+    expect(changed.outcome).toBe("changed");
+    expect(changed.message).toContain("without moving your mouse");
+    expect(changed.message).toContain("restarted the daemon with browser attach");
+    expect(
+      interpretBrowserAttachChange(declined("Not changed: ... it was not given."), 5_000).outcome,
+    ).toBe("declined");
+    const refused = interpretBrowserAttachChange(
+      result({
+        stderr: '{"error":{"code":"browser_attach_not_allowed","message":"not allowed"}}\n',
+      }),
+      100,
+    );
+    expect(refused).toMatchObject({ outcome: "refused" });
+    expect(refused.message).toContain("does not let agents attach");
+  });
+
+  test("a saved choice whose daemon would not restart still reads as changed, with the note", () => {
+    const out = interpretBrowserAttachChange(
+      result({
+        exitCode: 1,
+        stdout:
+          '{"browser_attach":false,"scope":"project","daemon":["cua: the running daemon did not stop: busy"]}',
+      }),
+      2_000,
+    );
+    expect(out.outcome).toBe("changed");
+    expect(out.message).toContain("do not work inside your own browser");
+    expect(out.message).toContain("did not stop");
   });
 });
 

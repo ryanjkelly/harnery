@@ -79,7 +79,7 @@ export function computerSummary(status?: ComputerStatus, error?: string): ToolSu
     return {
       level: "Off",
       tone: "neutral",
-      sentence: `You turned computer use off for yourself. ${MEANINGS.computerMode.off}${status.person_sign_in ? " Your agent sign-in choice is saved but has no effect while it is off." : ""}`,
+      sentence: `You turned computer use off for yourself. ${MEANINGS.computerMode.off}${status.person_sign_in ? " Your agent sign-in choice is saved but has no effect while it is off." : ""}${status.person_browser_attach ? " Your choice to let agents work in your browser tabs is saved but has no effect while it is off." : ""}`,
       raw: `mode: off (from ${status.mode_source}), project default: ${status.project_mode}`,
     };
   }
@@ -87,8 +87,8 @@ export function computerSummary(status?: ComputerStatus, error?: string): ToolSu
   return {
     level: known?.level ?? status.mode,
     tone: known?.tone ?? "neutral",
-    sentence: `${MEANINGS.computerMode[status.mode] ?? `Mode: ${status.mode}.`}${status.sign_in ? " Agents may also sign in to websites for you." : ""}`,
-    raw: `mode: ${status.mode} (from ${status.mode_source}), project default: ${status.project_mode}${status.project_sign_in ? `, sign-in: ${status.sign_in ? "on" : "off"}` : ""}`,
+    sentence: `${MEANINGS.computerMode[status.mode] ?? `Mode: ${status.mode}.`}${status.sign_in ? " Agents may also sign in to websites for you." : ""}${status.browser_attach ? " Agents may also work in your browser tabs." : ""}`,
+    raw: `mode: ${status.mode} (from ${status.mode_source}), project default: ${status.project_mode}${status.project_sign_in ? `, sign-in: ${status.sign_in ? "on" : "off"}` : ""}${status.project_browser_attach ? `, browser attach: ${status.browser_attach ? "on" : "off"}` : ""}`,
   };
 }
 

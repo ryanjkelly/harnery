@@ -61,7 +61,7 @@ import type {
 } from "./types.ts";
 
 export const AGENT_DESKTOP_DRIVER_ID = "agent-desktop";
-export const AGENT_DESKTOP_VERSION = "1.0.2";
+export const AGENT_DESKTOP_VERSION = "1.3.1";
 
 const RELEASE_BASE = `https://github.com/vercel-labs/agent-desktop/releases/download/v${AGENT_DESKTOP_VERSION}`;
 
@@ -106,27 +106,27 @@ export const AGENT_DESKTOP_PINS: Readonly<Record<AgentDesktopPlatform, PinnedArt
   Object.freeze({
     "windows-x86_64": pin(
       "windows-x86_64",
-      "2186c76e7df197c0e67365e45d36d869f74714c56bb8a73817e2a66f3e18e222",
+      "6ee4b1e078f4e78792e79f16e32e4a78b9919464aa3c55629b7e27ed53a08c13",
     ),
     "windows-arm64": pin(
       "windows-arm64",
-      "a0ecd6e17e60a0bcfbb45533a72f2d3a7a73508769588273ef08b0477d2b9687",
+      "805f1f61890f9983fceaf38cda94a37a049c379435d65607db5cedd22c8ef97b",
     ),
     "darwin-x86_64": pin(
       "darwin-x86_64",
-      "8edda6df17eafc042395502a823dbb8415bc8ac14835a6731e4d8becc9cb4121",
+      "469da10cfb68928c58caff88b92b30526e0ca895ac06bc86b7f533b1d9b309b3",
     ),
     "darwin-arm64": pin(
       "darwin-arm64",
-      "7bee385196d7b478de80cf05ca4304aaa38f0eba593b3406ad3c247c1773be19",
+      "9b7b7cfc74892eab46c2c85d6cb7dc4863bf8dab0a222cfcfb8ae4604c69c86c",
     ),
     "linux-x86_64": pin(
       "linux-x86_64",
-      "ad661b7a3fd8f990a769243f4889a240ca0e2c8dab3ef5bddd6019086c71e0b4",
+      "ca77b6b75034eeb12e537dd8c0a4f2a3424119253f38b7e6bd79ba0d2fef1264",
     ),
     "linux-arm64": pin(
       "linux-arm64",
-      "864cb782e0afc8bf0df19622016b24bdbd1a83fc7749f784ee82aa49a7f845eb",
+      "438990a703fbeb19775596c341c3701435e80adbfa1b2f64b82ff17567d5573b",
     ),
   });
 

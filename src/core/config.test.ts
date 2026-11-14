@@ -29,6 +29,7 @@ import {
   resolveBinName,
   sessionFinalizationConfig,
   stripJsonComments,
+  writeBrowserAttachPreference,
   writeComputerPreference,
   writeSignInPreference,
 } from "./config.ts";
@@ -965,5 +966,47 @@ describe("readComputerConfig", () => {
     writeSignInPreference("/p", null, file);
     writeSignInPreference(null, null, file);
     expect(readComputerPreferences(file)).toEqual({ mode: "on" });
+  });
+
+  test("browser attach is off unless the project allows it and the person turns it on", () => {
+    const root = makeRoot('{"computer":{"mode":"on","browser_attach":true}}');
+    expect(readComputerConfig(root, none)).toMatchObject({
+      browser_attach: false,
+      project_browser_attach: true,
+      browser_attach_source: "default",
+    });
+    expect(readComputerConfig(root, { browser_attach: true })).toMatchObject({
+      browser_attach: true,
+      browser_attach_source: "user-default",
+    });
+    expect(
+      readComputerConfig(root, {
+        browser_attach: true,
+        browser_attach_projects: { [root]: false },
+      }),
+    ).toMatchObject({ browser_attach: false, browser_attach_source: "user-project" });
+    expect(readComputerConfig(root, { mode: "off", browser_attach: true })).toMatchObject({
+      browser_attach: false,
+      person_browser_attach: true,
+    });
+    // Agent sign-in and browser attach are separate choices.
+    expect(readComputerConfig(root, { sign_in: true }).browser_attach).toBe(false);
+    const notAllowed = makeRoot('{"computer":{"mode":"on","sign_in":true}}');
+    expect(readComputerConfig(notAllowed, { browser_attach: true })).toMatchObject({
+      browser_attach: false,
+      project_browser_attach: false,
+    });
+  });
+
+  test("browser-attach choices round-trip beside the other choices", () => {
+    const file = join(mkdtempSync(join(tmpdir(), "harnery-computer-prefs-")), "computer.json");
+    writeSignInPreference(null, true, file);
+    writeBrowserAttachPreference("/p", true, file);
+    expect(readComputerPreferences(file)).toEqual({
+      sign_in: true,
+      browser_attach_projects: { "/p": true },
+    });
+    writeBrowserAttachPreference("/p", null, file);
+    expect(readComputerPreferences(file)).toEqual({ sign_in: true });
   });
 });

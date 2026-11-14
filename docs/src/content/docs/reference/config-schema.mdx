@@ -502,6 +502,7 @@ Precedence is `--port`, then `HARNERY_WEB_PORT`, then this config value, then `4
 | `foreground_quiet_seconds` | number | `3` | How long the person's keyboard and mouse must have been quiet before `computer call` sends a foreground action. `0` turns the wait off; see [foreground actions](/cli/computer/#foreground-actions-wait-for-the-person) |
 | `foreground_wait_seconds`  | number | `60` | How long `computer call` waits for that quiet period before exiting 5 with nothing sent |
 | `sign_in`       | bool   | `false` | Lets each person allow agents to sign in to websites for them through their password manager's extension. Each person's choice still starts off; see [agent sign-in](/cli/computer/#agent-sign-in) |
+| `browser_attach` | bool | `false` | Lets each person allow agents to attach to their running browser and work in its tabs through the desktop driver. Each person's choice still starts off; see [browser attach](/cli/computer/#browser-attach) |
 
 Project config only: a user-global `computer` section is ignored, because enabling desktop control is a decision for each project. Where the project is not `off`, each person may pick their own mode with `harn computer mode`, stored in `~/.config/harnery/computer.json`. A malformed or contradictory `mode` counts as `off`; malformed tunables fall back to the defaults one by one. See [`harn computer`](/cli/computer/), [decision record 0228](/decisions/0228-computer-use-through-a-pinned-desktop-driver/), [decision record 0230](/decisions/0230-desktop-control-approval-modes/), and [decision record 0231](/decisions/0231-two-desktop-drivers-on-every-desktop/).
 
@@ -570,7 +571,7 @@ vars and CLI flags override other config values per invocation:
 | `backup` | `repo`, `password_file`, `keep_*` | `HARNERY_RESTIC_REPO`, `HARNERY_RESTIC_PASSWORD_FILE` | `--keep-*` flags override the prune policy per run |
 | `files` | `deny_globs`, `allow_overrides` | (none) | read by the web layer, not the core reader |
 | `agents` | `requireGitFinalization`, `finalizationRoots` | `HARNERY_AGENTS_REQUIRE_GIT_FINALIZATION` | `finalizationRoots` is project-only and has no env override |
-| `computer` | `mode`, `enabled`, `driver`, `grant_minutes`, `idle_seconds`, `wait_seconds`, `foreground_quiet_seconds`, `foreground_wait_seconds`, `sign_in` | (none) | project file only; a personal mode and sign-in choice in `computer.json` apply where the project allows them; `computer call --wait` overrides `wait_seconds` |
+| `computer` | `mode`, `enabled`, `driver`, `grant_minutes`, `idle_seconds`, `wait_seconds`, `foreground_quiet_seconds`, `foreground_wait_seconds`, `sign_in`, `browser_attach` | (none) | project file only; a personal mode, sign-in and browser-attach choice in `computer.json` apply where the project allows them; `computer call --wait` overrides `wait_seconds` |
 | `autoUpdate` | `enabled`, `steps`, `dailySteps`, `watch`, `checkMinutes`, `timeoutMinutes`, `cleanup` | `HARNERY_AUTOUPDATE_CHILD=1` skips the tick | project file only |
 
 ## Example config

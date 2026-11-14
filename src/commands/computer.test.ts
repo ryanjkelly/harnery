@@ -50,6 +50,10 @@ function cfg(
     project_sign_in: false,
     sign_in_source: "default",
     person_sign_in: false,
+    browser_attach: false,
+    project_browser_attach: false,
+    browser_attach_source: "default",
+    person_browser_attach: false,
     ...extra,
   };
 }
@@ -111,6 +115,7 @@ function fakePrefs(initial: ComputerPreferences = {}) {
     prefs: initial,
     writes: [] as { root: string | null; mode: ComputerMode | null }[],
     signInWrites: [] as { root: string | null; on: boolean | null }[],
+    attachWrites: [] as { root: string | null; on: boolean | null }[],
   };
   return {
     state,
@@ -121,6 +126,10 @@ function fakePrefs(initial: ComputerPreferences = {}) {
     },
     writeSignIn: (root: string | null, on: boolean | null) => {
       state.signInWrites.push({ root, on });
+      return state.prefs;
+    },
+    writeBrowserAttach: (root: string | null, on: boolean | null) => {
+      state.attachWrites.push({ root, on });
       return state.prefs;
     },
   };
@@ -1046,6 +1055,153 @@ describe("computer sign-in", () => {
   test("rejects anything but on or off", async () => {
     const cap = await run(["sign-in", "yes"], { config: allowing() });
     expect(cap.errors[0]?.code).toBe("computer_usage");
+  });
+});
+
+describe("computer browser-attach", () => {
+  /** A project that allows browser attach; the person's choice comes from `prefs`. */
+  const allowing =
+    (projectAttach = true, mode: ComputerMode = "on") =>
+    (prefs?: ComputerPreferences) => {
+      const personal = prefs?.browser_attach_projects?.["/proj"] ?? prefs?.browser_attach;
+      return cfg(mode, {
+        project_browser_attach: projectAttach && mode !== "off",
+        browser_attach: projectAttach && mode !== "off" && personal === true,
+        person_browser_attach: personal === true,
+        browser_attach_source:
+          prefs?.browser_attach_projects?.["/proj"] !== undefined
+            ? "user-project"
+            : prefs?.browser_attach !== undefined
+              ? "user-default"
+              : "default",
+      });
+    };
+
+  /** A fake driver that can attach to the person's browser and remembers its daemon's grant. */
+  function attachDriver(granted = false) {
+    const base = fakeDriver();
+    const state = { granted, starts: [] as (boolean | undefined)[], stops: 0 };
+    let running = true;
+    const driver = {
+      ...base,
+      supportsBrowserAttach: true,
+      attachesPersonBrowser: (tool: string) => tool === "browser_prepare",
+      daemonStatus: (): DaemonStatus => ({
+        running,
+        detail: running ? "running" : "stopped",
+        ...(running ? { pid: 42, browserAttach: state.granted } : {}),
+      }),
+      startDaemon: async (_host: HostInfo, options?: { browserAttach?: boolean }) => {
+        state.starts.push(options?.browserAttach);
+        state.granted = options?.browserAttach === true;
+        running = true;
+        return { running, detail: "running", pid: 43, browserAttach: state.granted };
+      },
+      stopDaemon: () => {
+        state.stops++;
+        running = false;
+        return { running, detail: "stopped" };
+      },
+    };
+    return { driver, state, calls: base.calls };
+  }
+
+  test("is off by default, and status says so", async () => {
+    const status = await run(["status"], { config: allowing() });
+    expect(status.text.join("\n")).toContain("browser:   off (the default;");
+    const notAllowed = await run(["status"], { config: allowing(false) });
+    expect(notAllowed.text.join("\n")).toContain(
+      "browser:   off (this project does not allow agents to attach to your browser)",
+    );
+  });
+
+  test("an attach call is refused while it is off, and nothing is sent", async () => {
+    const { driver, calls } = attachDriver();
+    const cap = await run(["call", "browser_prepare", '{"strategy":{"kind":"existing_profile"}}'], {
+      driver,
+      config: allowing(),
+    });
+    expect(cap.errors[0]?.code).toBe("browser_attach_off");
+    expect(cap.exitCode()).toBe(EXIT_APPROVAL_REQUIRED);
+    expect(calls).toHaveLength(0);
+  });
+
+  test("with it on, an attach call restarts a daemon that lacks the grant", async () => {
+    const { driver, state, calls } = attachDriver(false);
+    const prefs = fakePrefs({ browser_attach_projects: { "/proj": true } });
+    const config = () => allowing()(prefs.state.prefs);
+    const cap = await run(["call", "browser_prepare", '{"strategy":{"kind":"existing_profile"}}'], {
+      driver,
+      prefs,
+      config,
+      personIdleMs: () => 60_000,
+    });
+    expect(cap.exitCode()).toBe(0);
+    expect(state.stops).toBe(1);
+    expect(state.starts).toEqual([true]);
+    expect(calls.map((c) => c.tool)).toEqual(["browser_prepare"]);
+    // An ordinary call leaves a granted daemon alone.
+    await run(["call", "click", "{}"], { driver, prefs, config });
+    expect(state.stops).toBe(1);
+  });
+
+  test("turning it on asks first and restarts the daemon with the grant", async () => {
+    const { driver, state } = attachDriver(false);
+    const confirm = fakeConfirm();
+    const prefs = fakePrefs();
+    const cap = await run(["browser-attach", "on"], {
+      driver,
+      confirm,
+      prefs,
+      config: allowing(),
+    });
+    expect(cap.exitCode()).toBe(0);
+    expect(confirm.asked[0]?.title).toBe("Let agents work in your browser?");
+    expect(prefs.state.attachWrites).toEqual([{ root: "/proj", on: true }]);
+    expect(state.starts).toEqual([true]);
+    expect(cap.text.join("\n")).toContain("restarted the daemon with browser attach");
+  });
+
+  test("turning it off restarts a granted daemon without the grant, and does not ask", async () => {
+    const { driver, state } = attachDriver(true);
+    const confirm = fakeConfirm();
+    const prefs = fakePrefs({ browser_attach_projects: { "/proj": true } });
+    const cap = await run(["browser-attach", "off"], {
+      driver,
+      confirm,
+      prefs,
+      config: allowing(),
+    });
+    expect(cap.exitCode()).toBe(0);
+    expect(confirm.asked).toHaveLength(0);
+    expect(state.starts).toEqual([false]);
+  });
+
+  test("a daemon is not restarted while another agent holds the desktop", async () => {
+    const { driver, state } = attachDriver(true);
+    const cap = await run(["browser-attach", "off"], {
+      driver,
+      prefs: fakePrefs({ browser_attach_projects: { "/proj": true } }),
+      config: allowing(),
+      lease: fakeLease(lease()),
+    });
+    expect(state.stops).toBe(0);
+    expect(cap.text.join("\n")).toContain(
+      "was not restarted because the desktop is held by agent-Other",
+    );
+  });
+
+  test("a declined pop-up changes nothing, and a project that does not allow it refuses", async () => {
+    const prefs = fakePrefs();
+    const declined = await run(["browser-attach", "on"], {
+      confirm: fakeConfirm({ answer: "denied", via: "dialog" }),
+      prefs,
+      config: allowing(),
+    });
+    expect(declined.exitCode()).toBe(EXIT_APPROVAL_REQUIRED);
+    const refused = await run(["browser-attach", "on"], { prefs, config: allowing(false) });
+    expect(refused.errors[0]?.code).toBe("browser_attach_not_allowed");
+    expect(prefs.state.attachWrites).toHaveLength(0);
   });
 });
 

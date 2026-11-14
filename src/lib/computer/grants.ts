@@ -72,7 +72,8 @@ export type GrantEvent =
   | "ended"
   | "revoked"
   | "mode-changed"
-  | "sign-in-changed";
+  | "sign-in-changed"
+  | "browser-attach-changed";
 
 export interface GrantLogEntry {
   at: string;

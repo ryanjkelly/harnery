@@ -4,11 +4,16 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { Tooltip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/cn";
-import type { ComputerModeChoice, ModeChangeOutcome, SignInChoice } from "@/lib/permissions";
+import type {
+  BrowserAttachChoice,
+  ComputerModeChoice,
+  ModeChangeOutcome,
+  SignInChoice,
+} from "@/lib/permissions";
 import { TONE } from "@/lib/tone";
 
 export interface ComputerModeOption {
-  value: ComputerModeChoice | SignInChoice;
+  value: ComputerModeChoice | SignInChoice | BrowserAttachChoice;
   label: string;
   meaning: string;
   /** True when choosing it gives agents more freedom than now, so the CLI asks first. */

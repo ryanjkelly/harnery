@@ -23,7 +23,7 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { posix, win32 } from "node:path";
 import { windowsExecutable } from "../windows-executable.ts";
@@ -45,6 +45,7 @@ import {
   wslPaths,
 } from "./driver-support.ts";
 import type {
+  DaemonStartOptions,
   DaemonStatus,
   DesktopDriver,
   DriverCallResult,
@@ -58,7 +59,7 @@ export type { SpawnResult, SpawnSyncFn };
 export { INSTALL_MARKER };
 
 export const CUA_DRIVER_ID = "cua";
-export const CUA_DRIVER_VERSION = "0.38.0";
+export const CUA_DRIVER_VERSION = "0.49.9";
 
 const RELEASE_BASE = `https://github.com/trycua/cua/releases/download/cua-driver-rs-v${CUA_DRIVER_VERSION}`;
 
@@ -101,23 +102,23 @@ function pin(platform: CuaPlatform, sha256: string): PinnedArtifact {
 export const CUA_PINS: Readonly<Record<CuaPlatform, PinnedArtifact>> = Object.freeze({
   "windows-x86_64": pin(
     "windows-x86_64",
-    "997f20114ad3db227a854e1e5a886234f76405b155f4af70605d4b7ca4a436a1",
+    "081aaa4b303e8034c2f53481715c27f3a6a89d739c8e60b1f2bd29e24701a19e",
   ),
   "windows-arm64": pin(
     "windows-arm64",
-    "c442872360cbb819e288b9f30daa7e3d2693d5945495d1400bcd90af5bd16402",
+    "149ec17c91855fe1e8c815c8ead5670a7872b2a04faf8999dcbe715d9057524c",
   ),
   "darwin-universal": pin(
     "darwin-universal",
-    "121cf20cafd2cfa69dd720e8967350c6406b22e558be6889de7a1ae3343b6d4b",
+    "329cc342d364c7efa1b5e25a2d9c4795805e9a92550dcab23234479ff7efe8b2",
   ),
   "linux-x86_64": pin(
     "linux-x86_64",
-    "a305cbd531f94d6413c5db300c33df68e3adbe8b92b9604cf8e645c5f6cb1fa3",
+    "8c9310ac6c08fb9d927bda7057bbbacd39a56057dd33fe6907a20f66f5328989",
   ),
   "linux-arm64": pin(
     "linux-arm64",
-    "ed8a51125ade8807c7717c3dde13d62bd31e6275e6b5e2446cf018d0b01d93b3",
+    "ab61732bd72c5f3b807225cc115b02b5f68c4123b3495efaa0fa4ffb87669b51",
   ),
 });
 
@@ -167,11 +168,31 @@ export interface CuaDeps {
   now?: () => number;
 }
 
-/** The pin key for this host, or undefined when no build covers it. */
 /** Tools that always bring a window to the front. */
 const CUA_FOREGROUND_TOOLS: ReadonlySet<string> = new Set(["bring_to_front"]);
 /** A `run_script` program that asks for foreground delivery anywhere in its source. */
-const CUA_FOREGROUND_SCRIPT = /\bforeground\b|\bbring_to_front\b/;
+const CUA_FOREGROUND_SCRIPT = /\bforeground\b|\bbring_to_front\b|\bexisting_profile\b/;
+/** The `browser_prepare` strategy that attaches to the person's running browser profile. */
+const EXISTING_PROFILE = "existing_profile";
+/** The `serve` flag that lets the daemon attach to the person's running browser. */
+export const CUA_BROWSER_ATTACH_GRANT = ["--grant", "existing-profile"] as const;
+
+function isExistingProfileStrategy(value: unknown): boolean {
+  return (
+    !!value &&
+    typeof value === "object" &&
+    (value as Record<string, unknown>).kind === EXISTING_PROFILE
+  );
+}
+
+/** Any object in `value` (the call itself or a nested step) with an existing-profile strategy. */
+function asksForExistingProfile(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(asksForExistingProfile);
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  if (isExistingProfileStrategy(record.strategy)) return true;
+  return Object.values(record).some(asksForExistingProfile);
+}
 
 function asksForForeground(value: unknown): boolean {
   if (Array.isArray(value)) return value.some(asksForForeground);
@@ -183,17 +204,32 @@ function asksForForeground(value: unknown): boolean {
 }
 
 /**
+ * Whether one call attaches to the person's running browser profile
+ * (`browser_prepare` with `strategy: {"kind": "existing_profile"}`, directly,
+ * as a nested step, or named in a `run_script` program). ADR 0249.
+ */
+export function cuaAttachesPersonBrowser(tool: string, args: Record<string, unknown>): boolean {
+  if (tool === "run_script" && typeof args.script === "string")
+    return args.script.includes(EXISTING_PROFILE);
+  return asksForExistingProfile(args);
+}
+
+/**
  * Whether one call may take the foreground: an explicit
  * `delivery_mode: "foreground"` (on the call, or on any step of `run_steps`),
- * `run_steps`' `foreground_fallback`, `bring_to_front`, or a `run_script`
- * program that names either. Background delivery, the default, never does.
+ * `run_steps`' `foreground_fallback`, `bring_to_front`, an attach to the
+ * person's running browser (its one-time setup brings the browser forward
+ * and sends real input, ADR 0249), or a `run_script` program that names any
+ * of them. Background delivery, the default, never does.
  */
 export function cuaTakesForeground(tool: string, args: Record<string, unknown>): boolean {
   if (CUA_FOREGROUND_TOOLS.has(tool)) return true;
   if (tool === "run_script" && typeof args.script === "string")
     return CUA_FOREGROUND_SCRIPT.test(args.script);
-  return asksForForeground(args);
+  return asksForForeground(args) || asksForExistingProfile(args);
 }
+
+/** The pin key for this host, or undefined when no build covers it. */
 
 export function cuaPlatform(host: HostInfo, arch: string): CuaPlatform | undefined {
   if (host.kind === "macos") return "darwin-universal";
@@ -376,6 +412,40 @@ export function createCuaDriver(deps: CuaDeps = {}): DesktopDriver {
     return toCallResult(`cua-driver ${args[0]}`, timeout, result);
   }
 
+  /**
+   * Where Harnery records how it started the daemon. The driver's own status
+   * does not report its launch grants, so the record (keyed by the daemon's
+   * pid) is how status and `call` know whether the running daemon can attach
+   * to the person's browser.
+   */
+  function startRecordPath(host: HostInfo): string {
+    return pathApi(host).join(requireStateDir(host), "tools", "cua-driver", "daemon-start.json");
+  }
+
+  function readStartRecord(host: HostInfo): { pid?: number; browser_attach?: boolean } {
+    try {
+      const value = JSON.parse(readFileSync(startRecordPath(host), "utf8")) as unknown;
+      return value && typeof value === "object" ? (value as Record<string, never>) : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function writeStartRecord(host: HostInfo, record: { pid: number; browser_attach: boolean }) {
+    const path = startRecordPath(host);
+    try {
+      mkdirSync(pathApi(host).dirname(path), { recursive: true });
+      const tmp = `${path}.${process.pid}.tmp`;
+      writeFileSync(
+        tmp,
+        `${JSON.stringify({ ...record, started_at: new Date(now()).toISOString() })}\n`,
+      );
+      renameSync(tmp, path);
+    } catch {
+      // Best effort: without the record the daemon's grant reads as unknown.
+    }
+  }
+
   function daemonStatus(host: HostInfo): DaemonStatus {
     const result = exec(host, ["status"], STATUS_TIMEOUT_MS);
     const text = result.stdout.trim() || result.stderr.trim();
@@ -383,7 +453,12 @@ export function createCuaDriver(deps: CuaDeps = {}): DesktopDriver {
     const running = result.exitCode === 0 && !/not running/i.test(result.stdout);
     const status: DaemonStatus = { running, detail };
     const pid = /pid:\s*(\d+)/i.exec(result.stdout);
-    if (running && pid) status.pid = Number(pid[1]);
+    if (running && pid) {
+      status.pid = Number(pid[1]);
+      const record = readStartRecord(host);
+      if (record.pid === status.pid && typeof record.browser_attach === "boolean")
+        status.browserAttach = record.browser_attach;
+    }
     return status;
   }
 
@@ -484,14 +559,20 @@ export function createCuaDriver(deps: CuaDeps = {}): DesktopDriver {
     return { ...plan, alreadyInstalled: !installed, installed };
   }
 
-  async function startDaemon(host: HostInfo): Promise<DaemonStatus> {
+  async function startDaemon(
+    host: HostInfo,
+    options: DaemonStartOptions = {},
+  ): Promise<DaemonStatus> {
     const exe = requireExecutable(host);
     const current = daemonStatus(host);
     if (current.running) return current;
     const env = driverEnv(host);
+    const browserAttach = options.browserAttach === true;
+    const serveArgs = ["serve", ...(browserAttach ? CUA_BROWSER_ATTACH_GRANT : [])];
     if (host.kind === "wsl") {
       const windowsExe = paths.toWindows(exe).replace(/'/g, "''");
-      const command = `Start-Process -FilePath '${windowsExe}' -ArgumentList 'serve' -WindowStyle Hidden`;
+      const argumentList = serveArgs.map((arg) => `'${arg}'`).join(",");
+      const command = `Start-Process -FilePath '${windowsExe}' -ArgumentList ${argumentList} -WindowStyle Hidden`;
       const result = run(windowsExecutable("powershell.exe"), ["-NoProfile", "-Command", command], {
         timeout: 30_000,
         env,
@@ -505,14 +586,20 @@ export function createCuaDriver(deps: CuaDeps = {}): DesktopDriver {
             .slice(0, 400)}`,
         );
     } else {
-      (deps.spawnDetached ?? defaultSpawnDetached)(exe, ["serve"], env);
+      (deps.spawnDetached ?? defaultSpawnDetached)(exe, serveArgs, env);
     }
     const deadline = now() + START_DEADLINE_MS;
     let status = current;
     while (now() < deadline) {
       await sleep(START_POLL_MS);
       status = daemonStatus(host);
-      if (status.running) return status;
+      if (status.running) {
+        if (status.pid !== undefined) {
+          writeStartRecord(host, { pid: status.pid, browser_attach: browserAttach });
+          status.browserAttach = browserAttach;
+        }
+        return status;
+      }
     }
     return status;
   }
@@ -584,6 +671,8 @@ export function createCuaDriver(deps: CuaDeps = {}): DesktopDriver {
     hasDaemon: true,
     callTimeoutMs: CALL_TIMEOUT_MS,
     takesForeground: cuaTakesForeground,
+    attachesPersonBrowser: cuaAttachesPersonBrowser,
+    supportsBrowserAttach: true,
     planInstall,
     install,
     installedExecutable,

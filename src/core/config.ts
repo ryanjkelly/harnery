@@ -269,6 +269,13 @@ interface HarneryConfig {
      * (`computer sign-in on`).
      */
     sign_in?: boolean;
+    /**
+     * Whether each person may let agents attach to their running browser and
+     * work in its tabs through the driver's browser tools (ADR 0249). Off
+     * unless true; even then each person turns it on for themselves
+     * (`computer browser-attach on`).
+     */
+    browser_attach?: boolean;
   };
   /**
    * Activity-fired project self-update (ADR 0229). Inert unless `enabled` is
@@ -1038,9 +1045,21 @@ export interface ComputerProjectConfig {
    * off), and then takes effect again when desktop control comes back.
    */
   person_sign_in: boolean;
+  /**
+   * Agents may attach to this person's running browser and act in its tabs
+   * (ADR 0249): the project allows it (`computer.browser_attach`), desktop
+   * control is not `off`, and the person turned it on. Off by default.
+   */
+  browser_attach: boolean;
+  /** The project lets each person turn browser attach on for themselves. */
+  project_browser_attach: boolean;
+  /** Where the person's browser-attach choice came from; `default` means they made none (off). */
+  browser_attach_source: SignInSource;
+  /** The person's saved browser-attach choice before the project's and the desktop's gates. */
+  person_browser_attach: boolean;
 }
 
-/** Where a person's agent sign-in choice came from. */
+/** Where a person's own on/off choice (agent sign-in, browser attach) came from. */
 export type SignInSource = "default" | "user-project" | "user-default";
 
 /** One person's own desktop-control choices, kept outside every project. */
@@ -1053,6 +1072,10 @@ export interface ComputerPreferences {
   sign_in?: boolean;
   /** Agent sign-in for one project, keyed by its absolute root. Wins over `sign_in`. */
   sign_in_projects?: Record<string, boolean>;
+  /** Browser attach for every project that allows it. */
+  browser_attach?: boolean;
+  /** Browser attach for one project, keyed by its absolute root. Wins over `browser_attach`. */
+  browser_attach_projects?: Record<string, boolean>;
 }
 
 export interface ResolvedHelperLimit extends EffectiveHelperLimit {
@@ -1123,14 +1146,22 @@ export function readComputerPreferences(path = computerPreferencesPath()): Compu
     if (Object.keys(projects).length > 0) out.projects = projects;
   }
   if (typeof value.sign_in === "boolean") out.sign_in = value.sign_in;
-  if (isPlainObject(value.sign_in_projects)) {
-    const signIn: Record<string, boolean> = {};
-    for (const [root, on] of Object.entries(value.sign_in_projects)) {
-      if (typeof on === "boolean") signIn[root] = on;
-    }
-    if (Object.keys(signIn).length > 0) out.sign_in_projects = signIn;
-  }
+  const signIn = booleanMap(value.sign_in_projects);
+  if (signIn) out.sign_in_projects = signIn;
+  if (typeof value.browser_attach === "boolean") out.browser_attach = value.browser_attach;
+  const attach = booleanMap(value.browser_attach_projects);
+  if (attach) out.browser_attach_projects = attach;
   return out;
+}
+
+/** The boolean entries of a `{ root: boolean }` map, or undefined when none. */
+function booleanMap(value: unknown): Record<string, boolean> | undefined {
+  if (!isPlainObject(value)) return undefined;
+  const out: Record<string, boolean> = {};
+  for (const [root, on] of Object.entries(value)) {
+    if (typeof on === "boolean") out[root] = on;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 function savePreferences(prefs: ComputerPreferences, path: string): void {
@@ -1159,6 +1190,30 @@ export function writeSignInPreference(
     else projects[root] = on;
     if (Object.keys(projects).length > 0) prefs.sign_in_projects = projects;
     else delete prefs.sign_in_projects;
+  }
+  savePreferences(prefs, path);
+  return prefs;
+}
+
+/**
+ * Save the person's browser-attach choice for one project (`root`) or for
+ * every project (`root` null). `on` null clears that choice.
+ */
+export function writeBrowserAttachPreference(
+  root: string | null,
+  on: boolean | null,
+  path = computerPreferencesPath(),
+): ComputerPreferences {
+  const prefs = readComputerPreferences(path);
+  if (root === null) {
+    if (on === null) delete prefs.browser_attach;
+    else prefs.browser_attach = on;
+  } else {
+    const projects = { ...(prefs.browser_attach_projects ?? {}) };
+    if (on === null) delete projects[root];
+    else projects[root] = on;
+    if (Object.keys(projects).length > 0) prefs.browser_attach_projects = projects;
+    else delete prefs.browser_attach_projects;
   }
   savePreferences(prefs, path);
   return prefs;
@@ -1248,6 +1303,10 @@ export function readComputerConfig(
     project_sign_in: false,
     sign_in_source: "default",
     person_sign_in: false,
+    browser_attach: false,
+    project_browser_attach: false,
+    browser_attach_source: "default",
+    person_browser_attach: false,
   };
   if (!root) return off;
   const raw = readProjectConfig(root).computer;
@@ -1283,6 +1342,17 @@ export function readComputerConfig(
         ? "user-default"
         : "default";
   const personSignIn = personalSignIn ?? prefs.sign_in ?? false;
+  // Browser attach follows the same two gates: the project allows it and the
+  // person turned it on, and desktop control is not off.
+  const projectAttach = project.mode !== "off" && record.browser_attach === true;
+  const personalAttach = prefs.browser_attach_projects?.[root];
+  const attachSource: SignInSource =
+    personalAttach !== undefined
+      ? "user-project"
+      : prefs.browser_attach !== undefined
+        ? "user-default"
+        : "default";
+  const personAttach = personalAttach ?? prefs.browser_attach ?? false;
   return {
     enabled: mode !== "off",
     mode,
@@ -1293,6 +1363,10 @@ export function readComputerConfig(
     project_sign_in: projectSignIn,
     sign_in_source: signInSource,
     person_sign_in: personSignIn,
+    browser_attach: projectAttach && mode !== "off" && personAttach,
+    project_browser_attach: projectAttach,
+    browser_attach_source: attachSource,
+    person_browser_attach: personAttach,
     ...(project.error ? { config_error: project.error } : {}),
     ...(idle !== undefined ? { idle_seconds: idle } : {}),
     ...(waitOk ? { wait_seconds: wait } : {}),

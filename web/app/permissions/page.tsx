@@ -25,6 +25,7 @@ import { KeyValueList } from "@/components/ui/table";
 import { Tooltip } from "@/components/ui/tooltip";
 import { hostInfo } from "@/lib/config";
 import {
+  BROWSER_ATTACH_MEANINGS,
   COMPUTER_MODE_LABELS,
   COMPUTER_MODES,
   CONFIRM_SECONDS,
@@ -106,6 +107,7 @@ function resetOption(status: ComputerStatus): ComputerModeOption | undefined {
   };
 }
 
+/** Where an off-by-default personal choice (sign-in, browser attach) comes from. */
 const SIGN_IN_SOURCE: Record<string, string> = {
   default: "Off unless you turn it on.",
   "user-project": "You chose this for this project.",
@@ -175,6 +177,76 @@ function SignInSetting({
         {SIGN_IN_SOURCE[status.sign_in_source ?? "default"] ?? ""}
         {" Turning it on asks you to confirm in a pop-up on this computer's screen. Or run "}
         <Code>{`${bin} computer sign-in --help`}</Code>
+        {"."}
+      </p>
+    </div>
+  );
+}
+
+/**
+ * Whether agents may attach to this person's running browser and work in its
+ * tabs. Shown only where the project allows it; off until the person turns it
+ * on. Separate from signing in.
+ */
+function BrowserAttachSetting({
+  status,
+  bin,
+  local,
+}: {
+  status: ComputerStatus;
+  bin: string;
+  local: boolean;
+}) {
+  const on = status.browser_attach === true;
+  // The person's saved choice, which stays on while their own desktop mode is
+  // off; they can still turn it off then, but not on.
+  const saved = status.person_browser_attach ?? on;
+  const desktopOff = !computerAllowed(status) || status.mode === "off";
+  const options: ComputerModeOption[] = [
+    { value: "off", label: "Off", meaning: BROWSER_ATTACH_MEANINGS.off, looser: false },
+    {
+      value: "on",
+      label: "On",
+      meaning: BROWSER_ATTACH_MEANINGS.on,
+      looser: !saved,
+      ...(desktopOff ? { unavailable: "Turn computer use on first." } : {}),
+    },
+  ];
+  return (
+    <div className="space-y-1.5 border-t border-border pt-3">
+      <p className="text-sm font-medium">Working in your browser tabs</p>
+      <ComputerModeControl
+        options={options}
+        selected={saved ? "on" : "off"}
+        reset={
+          status.browser_attach_source === "user-project"
+            ? {
+                value: PROJECT_DEFAULT_CHOICE,
+                label: "Remove your choice for this project.",
+                meaning:
+                  "Your choice for all your projects applies if you made one; otherwise working in your browser tabs is off.",
+                looser: false,
+              }
+            : undefined
+        }
+        disabledReason={
+          local ? undefined : "This can be changed only from a browser on this computer."
+        }
+        confirmSeconds={CONFIRM_SECONDS}
+        endpoint="/api/permissions/browser-attach"
+        field="browser_attach"
+        legend="Whether agents may work in your running browser's tabs in this project"
+        keepWords="keeps it off"
+      />
+      <p className="text-xs text-muted-foreground">
+        {desktopOff && saved
+          ? "You turned this on, but it has no effect while your computer use is off; it comes back when you turn computer use on. Choose Off to remove it."
+          : on
+            ? BROWSER_ATTACH_MEANINGS.on
+            : BROWSER_ATTACH_MEANINGS.off}{" "}
+        {SIGN_IN_SOURCE[status.browser_attach_source ?? "default"] ?? ""}
+        {" Turning it on asks you to confirm in a pop-up on this computer's screen. Or run "}
+        <Code>{`${bin} computer browser-attach --help`}</Code>
         {"."}
       </p>
     </div>
@@ -261,6 +333,9 @@ function ComputerRow({
         </div>
       ) : null}
       {status.project_sign_in ? <SignInSetting status={status} bin={bin} local={local} /> : null}
+      {status.project_browser_attach ? (
+        <BrowserAttachSetting status={status} bin={bin} local={local} />
+      ) : null}
       <KeyValueList
         className="text-xs"
         items={[

@@ -65,6 +65,12 @@ describe("tool summaries", () => {
       person_sign_in: true,
     });
     expect(computerSummary(saved).sentence).toContain("sign-in choice is saved");
+    const savedAttach = computer("off", {
+      enabled: false,
+      mode_source: "user-project",
+      person_browser_attach: true,
+    });
+    expect(computerSummary(savedAttach).sentence).toContain("browser tabs is saved");
     const projectOff = computer("off", { enabled: false, project_mode: "off" });
     expect(computerAllowed(projectOff)).toBe(false);
     expect(computerSummary(projectOff).sentence).toContain("This project does not let agents");

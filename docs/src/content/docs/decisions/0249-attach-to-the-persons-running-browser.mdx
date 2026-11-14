@@ -1,0 +1,97 @@
+---
+title: "0249: Attach to the person's running browser"
+description: "ADR: a person may let agents attach to their running browser and work in its tabs through the desktop driver's browser tools. It is off unless both the project and the person turn it on, Harnery starts the driver with the attach grant only then, `call` refuses an attach while it is off, and the attach waits for a quiet keyboard and mouse."
+---
+
+**Status:** accepted (2026-11-14) · **Scope:** product tier (`commands/computer`, `lib/computer`, `core/config`, the opt-in skill)
+
+## Context
+
+Most of an agent's desktop work is in a web page, and most pages it needs
+are ones the person is already signed in to. Until now an agent had two ways
+to act in the person's own browser: drive the window through the
+accessibility tree, or fall back to foreground delivery when the page
+dropped background input. Web content is where background input fails most
+often, so web pages caused most of the foreground swaps that
+[decision 0248](/decisions/0248-hold-foreground-actions-until-the-person-is-quiet/)
+had to guard.
+
+The Cua driver can instead attach to the person's running Chrome, Edge or
+Brave through the browser's own DevTools endpoint and act inside one tab:
+read a semantic snapshot, navigate, type and click, all without focus or the
+real pointer. The driver allows that only when its daemon was started with
+`--grant existing-profile`, and that grant then covers every client of the
+daemon, which is every agent on the machine, until the daemon stops. The
+skill therefore told agents never to ask for it.
+
+A trial on a Windows desktop with Chrome showed:
+
+- Reading, navigating, typing and clicking all worked in a tab the person
+  was not looking at, with every action delivered in the background.
+- Two public fingerprinting tests saw an ordinary browser: no automation
+  flags, `isAutomatedWithCDP: false`.
+- The first attach was not quiet. The driver brought the browser forward,
+  opened and closed a setup tab, answered the browser's consent prompt, and
+  sent real input. In background mode, and without counting as a foreground
+  action, it bypassed the quiet wait.
+- Ending the driver session closed the browser's debugging port again.
+- A password manager's save offer covered a form's submit button, and a
+  click by element reference landed on the offer instead.
+
+## Alternatives considered
+
+- **Keep it forbidden.** Leaves web work on the accessibility route and
+  foreground fallbacks, the source of most focus swaps.
+- **Turn the grant on for everyone.** One switch in the project would let
+  every agent act in every site the person is signed in to, without the
+  person ever choosing it.
+- **A browser extension of Harnery's own.** It could act per tab without a
+  debugging endpoint, but it is a new product to build, sign and maintain,
+  and an extension with access to every site is its own exposure. The
+  driver's route already exists.
+- **A per-call grant.** The driver fixes its permission mode and grants for
+  the daemon's lifetime; a tool call cannot change them.
+
+## Decision
+
+- **Two gates, like agent sign-in.** `computer.browser_attach: true` in the
+  project lets each person choose; `computer browser-attach on` (this project
+  or `--all-projects`) is that person's choice, asked through a Yes/No
+  prompt and stored in `computer.json`. Desktop control `off` turns it off.
+  It is separate from agent sign-in.
+- **The daemon carries the grant only when the setting is on.** `up` and
+  `call` start Cua with `--grant existing-profile` when browser attach is on
+  for the caller. Harnery records how it started the daemon, keyed by pid,
+  because the driver's status does not report its grants; `status` reads the
+  record. Changing the setting restarts a running daemon whose grant no
+  longer matches, unless another agent holds the desktop.
+- **`call` gates the attach itself.** A `browser_prepare` with an
+  existing-profile strategy (directly, nested in a step, or named in a
+  `run_script` program) is refused with exit 4 while browser attach is off.
+  With it on, a daemon without the grant is restarted first.
+- **The attach is a foreground action.** It waits for the person's keyboard
+  and mouse to go quiet, like any other action that can take the screen.
+- **The skill describes one route.** Open a fresh tab with `open`, bind it,
+  attach only when the driver asks, act only in that tab and read each
+  action back. The browser tools never sign in, never type into a password
+  field, and leave a password manager's offers alone.
+
+## Result / Gotchas
+
+- The grant still covers every agent on the machine while the daemon runs.
+  Harnery's own gate refuses the attach for anyone whose setting is off, but
+  a client that bypasses `computer call` and talks to the daemon directly is
+  not stopped. Turning the setting off restarts the daemon without it.
+- A project whose setting is off can share a machine with one whose setting
+  is on. The daemon then holds the grant, and only the `call` gate keeps the
+  first project's agents from attaching.
+- The first attach in a browser still brings it forward briefly and answers
+  its consent prompt. Driver 0.49 keeps one approved connection per browser
+  for up to 30 minutes idle, so later sessions do not repeat it.
+- The driver has no tool to open a tab, so agents open one through the
+  person's default browser; if that is not the browser they bind, the tab
+  appears elsewhere.
+- This change also moves the pins to Cua Driver 0.49.9 and agent-desktop
+  1.3.1. Cua 0.49 removes two deprecated session tools Harnery never called.
+  agent-desktop has no attach route of its own: its browser path relaunches
+  the app with an open debugging port that every local account can reach.

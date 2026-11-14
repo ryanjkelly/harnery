@@ -504,9 +504,9 @@ lists them.
   refs, or cua element tokens from \`get_window_state\` on that window. That
   route attaches nothing, so sites see the person's own browser. Open a new
   tab rather than taking over theirs, and if a page needs a sign-in, the person
-  signs in there unless they let agents do it (below). cua's \`browser_prepare\` with
-  \`strategy: {"kind": "existing_profile"}\` needs a driver-level grant that
-  covers every agent on the machine, so do not ask for it to save a step.
+  signs in there unless they let agents do it (below). When
+  \`${b} computer status\` shows \`browser: on\`, work in their tabs through
+  cua's browser tools instead (below); never attach any other way.
 - Never type a password, username, or one-time code into a sign-in page
   yourself.
 - An approval to use the desktop is not approval to communicate. Never click
@@ -518,6 +518,33 @@ lists them.
   sign-in form), ask them to close it first. Prefer one window over the
   full screen.
 - Only close apps you launched (cua \`kill_app\`, agent-desktop \`close-app\`).
+
+## Working in the person's browser tabs
+
+Off by default. When \`${b} computer status\` shows \`browser: on\`, the
+person lets agents attach to their running browser and act inside its tabs
+without moving their mouse (\`${b} computer browser-attach\`). \`call\`
+refuses an attach otherwise; do not ask them to turn it on to save a step.
+
+1. Open your own tab with \`${b} open <url>\`, so you never take over a tab
+   they are using.
+2. Bind the window: cua's \`get_browser_state\` with its \`pid\` and
+   \`window_id\` (from \`list_windows\`). If it refuses with
+   \`browser_consent_required\`, make the \`browser_prepare\` call it names
+   (\`strategy: {"kind": "existing_profile"}\`). That first attach briefly
+   brings the browser forward and answers its consent prompt, so \`call\`
+   waits for a quiet keyboard and mouse first.
+3. Act only in your tab: \`get_browser_state\` with \`target_id\`, \`tab_id\`
+   and \`snapshot_format: "semantic_v2"\` (a \`query\` narrows it), then
+   \`browser_navigate\`, \`browser_type\`, \`browser_click\`. Read the page back
+   after each action; the result says \`unverifiable\` until you do.
+4. Leave the tab on \`about:blank\` or tell the person it is open, and end
+   your driver session (\`end_session\`) when you finish.
+
+The browser tools never sign in. A sign-in page goes through "Signing in for
+the person" below. Never type into a password field with \`browser_type\`,
+and leave a password manager's save or fill offer alone: if one covers the
+control you need, tell the person instead of clicking it.
 
 ## Signing in for the person
 

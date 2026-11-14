@@ -3,10 +3,11 @@
  * agents on this computer may do. Read through `harn permissions --json` and
  * `harn computer status --json`, so the page shows what the CLI reports.
  *
- * The page's writes, the person's own computer-use mode and agent sign-in
- * choice for this project, also go through the CLI (`harn computer mode`,
- * `harn computer sign-in`), and only from a request made on this computer:
- * see `requestLocality`.
+ * The page's writes, the person's own computer-use mode, agent sign-in and
+ * browser-attach choices for this project, also go through the CLI
+ * (`harn computer mode`, `harn computer sign-in`, `harn computer
+ * browser-attach`), and only from a request made on this computer: see
+ * `requestLocality`.
  */
 
 import type { PermissionsReport } from "../../src/core/permissions";
@@ -27,6 +28,12 @@ export interface ComputerStatus {
   sign_in_source?: string;
   /** The person's saved sign-in choice, which may be on while their desktop mode is off. */
   person_sign_in?: boolean;
+  /** Agents may attach to this person's running browser and work in its tabs (older CLIs omit these). */
+  browser_attach?: boolean;
+  project_browser_attach?: boolean;
+  browser_attach_source?: string;
+  /** The person's saved browser-attach choice, which may be on while their desktop mode is off. */
+  person_browser_attach?: boolean;
   host: { kind: string; reason?: string; note?: string };
   default_driver: string | null;
   drivers: Array<{
@@ -201,6 +208,43 @@ export function signInChangeArgs(choice: SignInChoice): string[] {
     : ["computer", "sign-in", choice, "--json"];
 }
 
+/** The browser-attach choices: off, on, or back to the default (off). */
+export const BROWSER_ATTACH_CHOICES = ["off", "on", PROJECT_DEFAULT_CHOICE] as const;
+export type BrowserAttachChoice = (typeof BROWSER_ATTACH_CHOICES)[number];
+
+export const BROWSER_ATTACH_MEANINGS: Record<"off" | "on", string> = {
+  off: "Agents do not work inside your own browser's tabs.",
+  on: "Agents may attach to your running browser and read, type and click inside its tabs without moving your mouse. The first attach briefly brings the browser forward. They still never sign in through it.",
+};
+
+/** Validate a browser-attach change request body: exactly `{ "browser_attach": "on" | "off" | "default" }`. */
+export function parseBrowserAttachChangeRequest(
+  body: unknown,
+): { ok: true; choice: BrowserAttachChoice } | { ok: false; message: string } {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return { ok: false, message: 'Send the new choice as { "browser_attach": "..." }.' };
+  }
+  const keys = Object.keys(body);
+  if (keys.length !== 1 || keys[0] !== "browser_attach") {
+    return { ok: false, message: "Send only the new choice." };
+  }
+  const value = (body as { browser_attach: unknown }).browser_attach;
+  if ((BROWSER_ATTACH_CHOICES as readonly unknown[]).includes(value)) {
+    return { ok: true, choice: value as BrowserAttachChoice };
+  }
+  return {
+    ok: false,
+    message: `The choice must be one of ${BROWSER_ATTACH_CHOICES.join(", ")}.`,
+  };
+}
+
+/** The CLI arguments for one validated browser-attach choice. Always this project, never every project. */
+export function browserAttachChangeArgs(choice: BrowserAttachChoice): string[] {
+  return choice === PROJECT_DEFAULT_CHOICE
+    ? ["computer", "browser-attach", "--clear", "--json"]
+    : ["computer", "browser-attach", choice, "--json"];
+}
+
 /** Validate a change request body: exactly `{ "mode": <mode or "default"> }`. */
 export function parseModeChangeRequest(
   body: unknown,
@@ -310,6 +354,52 @@ export function interpretSignInChange(result: HarnResult, elapsedMs: number): Mo
   });
 }
 
+/** The CLI's browser-attach answer, when its stdout carries one. */
+function browserAttachAnswer(stdout: string): { on: boolean; daemon: string[] } | undefined {
+  try {
+    const parsed = JSON.parse(stdout) as { browser_attach?: unknown; daemon?: unknown };
+    if (typeof parsed.browser_attach !== "boolean") return undefined;
+    const daemon = Array.isArray(parsed.daemon)
+      ? parsed.daemon.filter((d): d is string => typeof d === "string")
+      : [];
+    return { on: parsed.browser_attach, daemon };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Turn `harn computer browser-attach`'s answer into plain words; see
+ * `interpretModeChange`. The CLI saves the choice before it restarts the
+ * driver's daemon, so a daemon that would not restart still reports the saved
+ * choice (with a failing exit); that reads as changed, with the daemon's note.
+ */
+export function interpretBrowserAttachChange(
+  result: HarnResult,
+  elapsedMs: number,
+): ModeChangeOutcome {
+  const changed = (answer: { on: boolean; daemon: string[] } | undefined): ModeChangeOutcome => ({
+    outcome: "changed",
+    message: [
+      answer === undefined
+        ? "Changed."
+        : `Changed. ${answer.on ? BROWSER_ATTACH_MEANINGS.on : BROWSER_ATTACH_MEANINGS.off}`,
+      ...(answer?.daemon ?? []),
+    ].join(" "),
+  });
+  if (!result.ok && !result.timedOut) {
+    const saved = browserAttachAnswer(result.stdout);
+    if (saved) return changed(saved);
+  }
+  return interpretChange(result, elapsedMs, {
+    changed: (stdout) => changed(browserAttachAnswer(stdout)),
+    refusedCode: "browser_attach_not_allowed",
+    refused:
+      "Not changed: this project does not let agents attach to people's browsers, and your own choice cannot turn it on.",
+    command: "harn computer browser-attach",
+  });
+}
+
 function interpretChange(
   result: HarnResult,
   elapsedMs: number,
@@ -394,6 +484,19 @@ export async function changeSignIn(choice: SignInChoice): Promise<ModeChangeOutc
   const started = Date.now();
   const result = await runHarn(signInChangeArgs(choice), { timeoutMs: MODE_CHANGE_TIMEOUT_MS });
   return interpretSignInChange(result, Date.now() - started);
+}
+
+/**
+ * Change the person's own browser-attach choice for this project. The CLI
+ * also restarts the driver's daemon with or without the grant. Call only
+ * after `checkLocalWrite`.
+ */
+export async function changeBrowserAttach(choice: BrowserAttachChoice): Promise<ModeChangeOutcome> {
+  const started = Date.now();
+  const result = await runHarn(browserAttachChangeArgs(choice), {
+    timeoutMs: MODE_CHANGE_TIMEOUT_MS,
+  });
+  return interpretBrowserAttachChange(result, Date.now() - started);
 }
 
 // ------------------------------------------------------------------ local requests only
