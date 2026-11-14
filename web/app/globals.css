@@ -9,6 +9,9 @@
 @import "./theme-core/phone-fields.css";
 @import "./theme-core/reduced-motion.css";
 @import "./theme-core/scrollbars.css";
+/* Shared palette: only its four status colors are read below; the grays stay
+ * unused because the dashboard keeps its own. */
+@import "./theme-core/palette.css";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -52,6 +55,8 @@
 }
 
 :root {
+  /* light-dark() in the palette follows this; .dark switches it. */
+  color-scheme: light;
   /* One hue tints every neutral, so greys read as one family instead of flat
    * black-and-white. 250 is the hue of the brand charcoal. Chroma stays low
    * (0.003 to 0.02): the tint should be felt, not seen. */
@@ -82,10 +87,12 @@
   /* The focus indicator colour. Drawn solid, it holds 3:1 against every
    * surface in both themes (WCAG 1.4.11). */
   --ring: oklch(0.52 0.02 var(--theme-hue));
-  --positive: oklch(0.55 0.16 150);
-  --positive-soft: oklch(0.94 0.07 150);
-  --negative: oklch(0.55 0.22 27);
-  --negative-soft: oklch(0.95 0.05 22);
+  /* Status colors come from the shared palette (theme-core/palette.css), which
+   * picks the light or dark value through light-dark() and color-scheme. */
+  --positive: var(--status-positive);
+  --positive-soft: var(--status-positive-soft);
+  --negative: var(--status-negative);
+  --negative-soft: var(--status-negative-soft);
   --radius: 0.625rem;
   --theme-scrollbar-strength: 35%;
   /* Log-flow lane colours: darker on white so pale hues stay visible. */
@@ -93,6 +100,7 @@
 }
 
 .dark {
+  color-scheme: dark;
   --background: oklch(0.145 0.008 var(--theme-hue));
   --foreground: oklch(0.985 0.004 var(--theme-hue));
   --card: oklch(0.205 0.011 var(--theme-hue));
@@ -110,10 +118,6 @@
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.7 0.02 var(--theme-hue));
-  --positive: oklch(0.74 0.17 150);
-  --positive-soft: oklch(0.3 0.05 150);
-  --negative: oklch(0.72 0.19 22);
-  --negative-soft: oklch(0.3 0.06 20);
   --lane-lightness: 60%;
 }
 
