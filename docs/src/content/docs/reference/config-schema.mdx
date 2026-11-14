@@ -21,9 +21,28 @@ Settings resolve from these sources, lowest precedence first (later wins):
 
 1. `~/.config/harnery/config.jsonc`: the user-global file, a base for every project on the machine (honors `XDG_CONFIG_HOME`; falls back to `~/.config`)
 2. `<project>/.harnery/config.jsonc`: the project settings file, which overrides the user-global file **field by field** (a project that sets only `web.port` keeps a user-global `web.bind`)
-3. CLI flags + environment variables: per-invocation overrides (see each field's env note)
+3. `<project>/.harnery/config.local.jsonc`: this machine only, never committed. It overrides the project file field by field, so one machine can lower a value the project sets for everyone
+4. CLI flags + environment variables: per-invocation overrides (see each field's env note)
 
-The config reader (`src/core/config.ts`) merges the two files and owns `binName`, `timeZone`, `hooksSetupHint`, `hooks`, `agents`, `instructions`, `tools`, `doctor`, `workflow`, `skills`, `presence`, `coord`, `logs`, `storage`, `artifacts`, and `backup`; the web layer reads `files`. Nine values are project-only. The `binName` **pin** that `harn init` guards against re-stamping ignores the user file. So do `agents.finalizationRoots`, `agents.gitSyncCommand`, `instructions.promptReminder`, `hooks.promptContext`, `hooks.codexWindowsBridge`, `hooks.portableCommands`, `doctor.environmentFindings`, and `storage.sharing`. A global setting cannot grant filesystem authority, execute a project extension, or carry one project's wording into another. A user-global `binName` is a display fallback, never a project pin.
+The config reader (`src/core/config.ts`) merges the three files and owns `binName`, `timeZone`, `hooksSetupHint`, `hooks`, `agents`, `instructions`, `tools`, `doctor`, `workflow`, `skills`, `presence`, `coord`, `logs`, `storage`, `artifacts`, and `backup`; the web layer reads `files`. Nine values are project-only. The `binName` **pin** that `harn init` guards against re-stamping ignores the user file. So do `agents.finalizationRoots`, `agents.gitSyncCommand`, `instructions.promptReminder`, `hooks.promptContext`, `hooks.codexWindowsBridge`, `hooks.portableCommands`, `doctor.environmentFindings`, and `storage.sharing`. A global setting cannot grant filesystem authority, execute a project extension, or carry one project's wording into another. A user-global `binName` is a display fallback, never a project pin. The local file follows the same rule: the nine project-only values ignore it too, so a file nobody reviews cannot widen a trust boundary.
+
+### The machine-local file
+
+Use `.harnery/config.local.jsonc` when one machine needs a different value from the committed project file: a laptop with less memory, a machine without Linux pressure stall information, or a person who wants less detail about other machines. It has the same shape as `config.jsonc` and holds only the keys that differ.
+
+```jsonc
+// .harnery/config.local.jsonc on a laptop with 8 to 16 GB of memory
+{
+  "admission": {
+    "resources": {
+      "build": { "capacity": 1 }
+    }
+  },
+  "presence": { "remote_detail": "summary" }
+}
+```
+
+`admission` reads the project file with the local file on top and ignores the user-global file, because one project's slot policy must not leak into another. `timeZone` checks the local file before the project file. `harn init` makes sure the file is git-ignored: when the host's ignore rules do not already cover it, `init` adds it to `.harnery/.gitignore`. `harn doctor` prints a `local config` line naming the top-level keys the file sets, so a machine difference is never silent, and warns when the file is present but unreadable.
 
 ## Top-level fields
 
@@ -477,8 +496,9 @@ them.
 | --------- | ------ | ------- | ----------- |
 | `enabled` | bool   | `true`  | Cross-machine presence over git refs (`refs/harnery/presence/<machine>` on origin). On by default when an origin remote exists; every operation is fail-silent |
 | `relay`   | string | unset   | Optional live upgrade: a `wss://` relay URL (public reference: `wss://relay.harnery.com`; self-host via [`harn relay serve`](/cli/relay/) or `relay/worker/`). When set, hooks keep a per-machine daemon connected for seconds-latency presence; git refs stay on as the floor |
+| `remote_detail` | string | `"full"` | How much agent context shows about sessions on other machines. `full` lists each session with its task and held files, at most 10 rows across all machines, then `+N more`. `summary` prints one line per machine with its session count and no task titles or file paths. `off` leaves the section out. The peer table is re-sent only when what it renders changes, so in `summary` a remote task or claim change sends nothing |
 
-Env overrides per process: `HARNERY_PRESENCE=1|0` (whole feature), `HARNERY_PRESENCE_RELAY=<url|0>` (relay only), `HARNERY_PRESENCE_FETCH_INTERVAL=<secs>` (git-refs fetch throttle). A committed `.harnery/presence-salt` file rotates the relay room (it is NOT a secret; see [decision record 0016](/decisions/0016-cross-machine-presence/)). Full behavior: [`harn presence`](/cli/presence/#cross-machine-session-presence).
+Env overrides per process: `HARNERY_PRESENCE=1|0` (whole feature), `HARNERY_PRESENCE_RELAY=<url|0>` (relay only), `HARNERY_PRESENCE_REMOTE_DETAIL=full|summary|off`, `HARNERY_PRESENCE_FETCH_INTERVAL=<secs>` (git-refs fetch throttle). A committed `.harnery/presence-salt` file rotates the relay room (it is NOT a secret; see [decision record 0016](/decisions/0016-cross-machine-presence/)). Full behavior: [`harn presence`](/cli/presence/#cross-machine-session-presence).
 
 ## `web`
 

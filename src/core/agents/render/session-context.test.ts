@@ -265,3 +265,20 @@ describe("checkWiring (portable commit-guard detection)", () => {
     expect(checkWiring(root)).toEqual([]);
   });
 });
+
+describe("renderSessionContext peer table", () => {
+  test("stale and unnamed peers fold into +N more; agent-unknown never prints", () => {
+    seedV3Session(root, "named", { name: "Adelaide" });
+    seedV3Session(root, "nameless", {});
+    const out = renderSessionContext({
+      coordRoot: root,
+      instanceId: "self",
+      sessionId: "self",
+      agentName: "Maya",
+    });
+    expect(out).toContain("agent-Adelaide");
+    expect(out).not.toContain("agent-unknown");
+    expect(out).not.toContain("agent-nameless");
+    expect(out).toMatch(/\+1 more \(.*not yet named\)/);
+  });
+});

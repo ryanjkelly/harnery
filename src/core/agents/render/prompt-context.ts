@@ -44,6 +44,8 @@ import {
   coordFreshnessSeconds,
   endOfTurnStatusCommand,
   hostPromptReminder,
+  type PresenceRemoteDetail,
+  presenceRemoteDetail,
   resolveBinName,
 } from "../../config.ts";
 import { readContextState } from "../../context/index.ts";
@@ -449,12 +451,14 @@ function computePeerTableIfChanged(
   // Cross-machine presence (ADR 0016): sessions on other machines, from the
   // locally-fetched presence refs. Advisory only; remote presence never grants
   // claim authority.
-  const remote = readRemoteMachinesSafe(coordRoot);
+  const remoteDetail = presenceRemoteDetail(coordRoot);
+  const remote = remoteDetail === "off" ? [] : readRemoteMachinesSafe(coordRoot);
   if (peers.length === 0 && remote.length === 0) return "";
 
   const rendered = renderPeerTable({
     peers,
     remote,
+    remoteDetail,
     mySessionId,
     nowMs: Date.now(),
     freshnessSeconds: coordFreshnessSeconds(coordRoot),
@@ -478,28 +482,47 @@ function computePeerTableIfChanged(
 export interface PeerTableInput {
   peers: HeartbeatRow[];
   remote: RemoteMachine[];
+  /** How much of other machines' sessions to render (`presence.remote_detail`). Default `full`. */
+  remoteDetail?: PresenceRemoteDetail;
   mySessionId: string;
   nowMs: number;
   /** Sessions whose last heartbeat is older than this are folded into "+N more". */
   freshnessSeconds: number;
   relations?: Map<string, string>;
+  /**
+   * Fold sessions with no name into the "+N more" tail instead of listing
+   * them by instance id. SessionStart sets this: a nameless row there is a
+   * session still starting up and carries nothing a reader can act on.
+   */
+  foldNameless?: boolean;
 }
+
+/** Most local rows listed per subtable before the "+N more" tail. */
+export const LOCAL_ROWS_PER_SUBTABLE = 10;
+/** Most remote session rows listed across all machines in `full` mode. */
+export const REMOTE_ROWS_TOTAL = 10;
 
 /**
  * Pure peer-table render plus its change key. The key covers only what makes
  * the table news: which live sessions exist, their lifecycle, and the files
  * they claim. Activity and task text change on nearly every peer tool call, so
- * they render in the table but never trigger a reprint by themselves.
+ * they render in the table but never trigger a reprint by themselves. The
+ * remote part of the key follows what is rendered: in `summary` mode only the
+ * per-machine session counts, so a remote task or claim change is silent.
  */
 export function renderPeerTable(input: PeerTableInput): { hash: string; table: string } {
-  const { peers, remote, mySessionId, nowMs, freshnessSeconds } = input;
+  const { peers, mySessionId, nowMs, freshnessSeconds } = input;
+  const remoteDetail = input.remoteDetail ?? "full";
+  const remote = remoteDetail === "off" ? [] : input.remote;
   const cutoffMs = nowMs - freshnessSeconds * 1000;
   const live: HeartbeatRow[] = [];
   const stale: HeartbeatRow[] = [];
+  const nameless: HeartbeatRow[] = [];
   for (const peer of peers) {
     const seenMs = Date.parse(peer.last_heartbeat ?? "");
-    if (Number.isFinite(seenMs) && seenMs >= cutoffMs) live.push(peer);
-    else stale.push(peer);
+    if (!(Number.isFinite(seenMs) && seenMs >= cutoffMs)) stale.push(peer);
+    else if (input.foldNameless && !peer.name?.trim()) nameless.push(peer);
+    else live.push(peer);
   }
 
   const basis = live
@@ -515,9 +538,31 @@ export function renderPeerTable(input: PeerTableInput): { hash: string; table: s
       task_state_reason: p.task_state_reason ?? null,
     }))
     .sort((a, b) => (a.instance_id ?? "").localeCompare(b.instance_id ?? ""));
-  // Remote basis: machine + per-agent identity, lifecycle, and files
-  // (published_at, activity, and task are excluded for the same reason).
-  const remoteBasis = remote.map((m) => ({
+  const hash = sha256Hex16(
+    JSON.stringify({ local: basis, remote: remoteHashBasis(remote, remoteDetail) }),
+  );
+
+  const nowSec = Math.floor(nowMs / 1000);
+  const local = formatPeerTable(live, stale, mySessionId, nowSec, input.relations, nameless);
+  const remoteTable = formatRemoteSection(remote, remoteDetail, nowSec);
+  const table = [local, remoteTable].filter(Boolean).join("\n\n");
+  return { hash, table };
+}
+
+/**
+ * The remote part of the table's change key, matching what each mode renders.
+ * `full` covers identity, lifecycle, and files (published_at, activity, and
+ * task are excluded, as for local rows); `summary` covers only machine names
+ * and session counts; `off` covers nothing.
+ */
+export function remoteHashBasis(remote: RemoteMachine[], detail: PresenceRemoteDetail): unknown {
+  if (detail === "off") return [];
+  if (detail === "summary") {
+    return remote
+      .filter((m) => m.agents.length > 0)
+      .map((m) => ({ machine: m.machine, sessions: m.agents.length }));
+  }
+  return remote.map((m) => ({
     machine: m.machine,
     agents: m.agents.map((a) => ({
       instance_id: a.instance_id,
@@ -527,13 +572,6 @@ export function renderPeerTable(input: PeerTableInput): { hash: string; table: s
       files_touched: Array.from(a.files_touched ?? []).sort(),
     })),
   }));
-  const hash = sha256Hex16(JSON.stringify({ local: basis, remote: remoteBasis }));
-
-  const nowSec = Math.floor(nowMs / 1000);
-  const local = formatPeerTable(live, stale, mySessionId, nowSec, input.relations);
-  const remoteTable = formatRemoteTable(remote, nowSec);
-  const table = [local, remoteTable].filter(Boolean).join("\n\n");
-  return { hash, table };
 }
 
 /** readRemoteMachines with a local failure guard (rendering must never throw). */
@@ -545,12 +583,35 @@ function readRemoteMachinesSafe(coordRoot: string): RemoteMachine[] {
   }
 }
 
-/** Render sessions on other machines (presence transport) as a subtable. */
-function formatRemoteTable(remote: RemoteMachine[], nowSec: number): string {
-  if (remote.length === 0) return "";
+const REMOTE_HEADER = "Sessions on other machines (advisory, via presence refs):";
+
+/**
+ * Render sessions on other machines (presence transport) for agent context.
+ * `full` lists sessions with task and files, at most `REMOTE_ROWS_TOTAL` rows
+ * across all machines, then a "+N more" tail. `summary` prints one line per
+ * machine with its session count and no task titles or file paths. `off`
+ * renders nothing. Shared by the prompt and SessionStart renderers.
+ */
+export function formatRemoteSection(
+  remote: RemoteMachine[],
+  detail: PresenceRemoteDetail,
+  nowSec: number,
+): string {
+  if (detail === "off") return "";
+  const machines = remote.filter((m) => m.agents.length > 0);
+  if (machines.length === 0) return "";
+  if (detail === "summary") {
+    const lines = machines.map(
+      (m) => `  - @${m.machine}: ${m.agents.length} session${m.agents.length === 1 ? "" : "s"}`,
+    );
+    return `${REMOTE_HEADER}\n${lines.join("\n")}`;
+  }
   const lines: string[] = [];
-  for (const m of remote) {
-    for (const a of m.agents.slice(0, 10)) {
+  let total = 0;
+  for (const m of machines) {
+    for (const a of m.agents) {
+      total++;
+      if (lines.length >= REMOTE_ROWS_TOTAL) continue;
       lines.push(
         formatRow(
           { ...a, display_files: Array.from(a.files_touched ?? []).sort() },
@@ -559,8 +620,9 @@ function formatRemoteTable(remote: RemoteMachine[], nowSec: number): string {
       );
     }
   }
-  if (lines.length === 0) return "";
-  return `Sessions on other machines (advisory, via presence refs):\n${lines.join("\n")}`;
+  const more = total - lines.length;
+  const overflow = more > 0 ? `\n  +${more} more` : "";
+  return `${REMOTE_HEADER}\n${lines.join("\n")}${overflow}`;
 }
 
 /* ---------- helpers ---------- */
@@ -596,10 +658,9 @@ function writeHashFile(path: string, value: string): void {
   }
 }
 
-/* The peer-table formatter is a near-duplicate of session-context.ts's, but
- * intentionally co-located here so the prompt-context renderer is self-contained
- * (no cross-file imports of formatting internals). If both renderers diverge,
- * pull the shared bits into a small util module. */
+/* The peer-table formatter is shared: session-context.ts renders its
+ * SessionStart table through `renderPeerTable` so both surfaces apply the same
+ * stale split, caps, and remote detail. */
 
 type PeerRow = HeartbeatRow & { display_files: string[]; relation?: string; label?: string };
 
@@ -609,11 +670,12 @@ function formatPeerTable(
   mySessionId: string,
   nowSec: number,
   relations: Map<string, string> = new Map(),
+  namelessPeers: HeartbeatRow[] = [],
 ): string {
   if (peers.length === 0) return "";
 
   const fold: Record<string, string[]> = {};
-  for (const p of [...peers, ...stalePeers]) {
+  for (const p of [...peers, ...stalePeers, ...namelessPeers]) {
     const kind = p.kind ?? "unknown";
     if (kind === "transient" && p.session_id) {
       fold[p.session_id] = (fold[p.session_id] ?? []).concat(p.files_touched ?? []);
@@ -630,6 +692,7 @@ function formatPeerTable(
     });
   assignUniqueLabels(rows);
   const staleRows = stalePeers.filter((p) => (p.kind ?? "unknown") !== "transient");
+  const namelessRows = namelessPeers.filter((p) => (p.kind ?? "unknown") !== "transient");
 
   // Related sessions sort first so a fork parent never hides in "+N more".
   const blocking = rows
@@ -638,6 +701,8 @@ function formatPeerTable(
   const group = rows.filter((p) => p.session_id === mySessionId).sort(byStartedAt);
   const staleBlocking = staleRows.filter((p) => p.session_id !== mySessionId).length;
   const staleGroup = staleRows.length - staleBlocking;
+  const namelessBlocking = namelessRows.filter((p) => p.session_id !== mySessionId).length;
+  const namelessGroup = namelessRows.length - namelessBlocking;
 
   const out: string[] = [];
   const blk = renderSubtable(
@@ -645,6 +710,7 @@ function formatPeerTable(
     staleBlocking,
     "Other agent groups active (their files block you):",
     nowSec,
+    namelessBlocking,
   );
   if (blk) out.push(blk);
   const grp = renderSubtable(
@@ -652,6 +718,7 @@ function formatPeerTable(
     staleGroup,
     "Your group (subagents / parent / siblings; no mutual block):",
     nowSec,
+    namelessGroup,
   );
   if (grp) out.push(grp);
   return out.join("\n\n");
@@ -684,11 +751,16 @@ function renderSubtable(
   staleCount: number,
   header: string,
   nowSec: number,
+  namelessCount = 0,
 ): string {
   if (rows.length === 0) return "";
-  const first = rows.slice(0, 10).map((r) => formatRow(r, nowSec));
-  const more = Math.max(0, rows.length - 10) + staleCount;
-  const staleNote = staleCount > 0 ? ` (${staleCount} with no recent heartbeat)` : "";
+  const first = rows.slice(0, LOCAL_ROWS_PER_SUBTABLE).map((r) => formatRow(r, nowSec));
+  const more = Math.max(0, rows.length - LOCAL_ROWS_PER_SUBTABLE) + staleCount + namelessCount;
+  const notes = [
+    ...(staleCount > 0 ? [`${staleCount} with no recent heartbeat`] : []),
+    ...(namelessCount > 0 ? [`${namelessCount} not yet named`] : []),
+  ];
+  const staleNote = notes.length > 0 ? ` (${notes.join(", ")})` : "";
   const overflow = more > 0 ? `\n  +${more} more${staleNote}` : "";
   return `${header}\n${first.join("\n")}${overflow}`;
 }

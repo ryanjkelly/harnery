@@ -334,3 +334,115 @@ describe("renderPeerTable", () => {
     expect(out).toContain("agent-Amelia (two)");
   });
 });
+
+describe("renderPeerTable remote detail", () => {
+  const nowMs = Date.parse("2026-10-31T15:00:00Z");
+  const iso = (agoSec: number) => new Date(nowMs - agoSec * 1000).toISOString();
+  const local = [
+    {
+      instance_id: "l1",
+      name: "Lena",
+      session_id: "s-l1",
+      kind: "session",
+      started_at: iso(120),
+      last_heartbeat: iso(30),
+      activity: "working" as const,
+      task_state: "active" as const,
+    },
+  ];
+  const agent = (id: string, task: string, files: string[] = []) => ({
+    instance_id: id,
+    name: `R${id}`,
+    activity: "working" as const,
+    task_state: "active" as const,
+    task,
+    files_touched: files,
+    started_at: iso(300),
+    last_heartbeat: iso(10),
+  });
+  const machine = (name: string, agents: ReturnType<typeof agent>[]) => ({
+    machine: name,
+    published_at: iso(10),
+    age_secs: 10,
+    agents,
+  });
+  const render = (
+    remote: ReturnType<typeof machine>[],
+    remoteDetail?: "full" | "summary" | "off",
+  ) =>
+    renderPeerTable({
+      peers: local,
+      remote,
+      ...(remoteDetail ? { remoteDetail } : {}),
+      mySessionId: "me",
+      nowMs,
+      freshnessSeconds: 600,
+    });
+
+  test("full mode caps remote rows across machines with a +N more tail", () => {
+    const remote = [
+      machine(
+        "alpha",
+        Array.from({ length: 7 }, (_, i) => agent(`a${i}`, `alpha task ${i}`)),
+      ),
+      machine(
+        "beta",
+        Array.from({ length: 7 }, (_, i) => agent(`b${i}`, `beta task ${i}`)),
+      ),
+    ];
+    const out = render(remote).table;
+    const section = out.slice(out.indexOf("Sessions on other machines"));
+    expect(section.match(/^ {2}- agent-/gm)).toHaveLength(10);
+    expect(section).toContain("+4 more");
+    expect(section).toContain('"alpha task 0"');
+  });
+
+  test("summary mode prints one count line per machine, no tasks or files", () => {
+    const remote = [
+      machine("alpha", [agent("a1", "secret plan", ["src/private.ts"]), agent("a2", "x")]),
+      machine("beta", [agent("b1", "other")]),
+    ];
+    const out = render(remote, "summary").table;
+    expect(out).toContain("  - @alpha: 2 sessions");
+    expect(out).toContain("  - @beta: 1 session");
+    expect(out).not.toContain("secret plan");
+    expect(out).not.toContain("src/private.ts");
+    expect(out).not.toContain("agent-Ra1");
+  });
+
+  test("summary key ignores remote task and file changes but follows counts", () => {
+    const base = render([machine("alpha", [agent("a1", "one", ["a.ts"])])], "summary").hash;
+    const changed = render([machine("alpha", [agent("a1", "two", ["b.ts"])])], "summary").hash;
+    expect(changed).toBe(base);
+    const grown = render(
+      [machine("alpha", [agent("a1", "one"), agent("a2", "two")])],
+      "summary",
+    ).hash;
+    expect(grown).not.toBe(base);
+    // In full mode a claim change is news.
+    expect(render([machine("alpha", [agent("a1", "one", ["b.ts"])])]).hash).not.toBe(
+      render([machine("alpha", [agent("a1", "one", ["a.ts"])])]).hash,
+    );
+  });
+
+  test("off mode omits the section and its key", () => {
+    const out = render([machine("alpha", [agent("a1", "secret")])], "off");
+    expect(out.table).not.toContain("other machines");
+    expect(out.hash).toBe(render([], "off").hash);
+  });
+
+  test("foldNameless counts unnamed sessions in the tail instead of listing them", () => {
+    const unnamed = { ...local[0]!, instance_id: "n1", name: undefined, session_id: "s-n1" };
+    const out = renderPeerTable({
+      peers: [...local, unnamed],
+      remote: [],
+      mySessionId: "me",
+      nowMs,
+      freshnessSeconds: 600,
+      foldNameless: true,
+    }).table;
+    expect(out).not.toContain("agent-n1");
+    expect(out).not.toContain("agent-unknown");
+    expect(out).toContain("+1 more (1 not yet named)");
+  });
+});

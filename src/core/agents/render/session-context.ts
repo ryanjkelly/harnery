@@ -10,13 +10,19 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
-import { resolveBinName, resolveHooksSetupHint } from "../../config.ts";
+import {
+  coordFreshnessSeconds,
+  presenceRemoteDetail,
+  resolveBinName,
+  resolveHooksSetupHint,
+} from "../../config.ts";
 import { harneryVersion, loadAdapterWiring } from "../../hooks/adapter/wiring.ts";
 import { formatPeerInbox, peerInbox } from "../../inbox/peer-messages.ts";
-import { readRemoteMachines } from "../../presence/index.ts";
+import { type RemoteMachine, readRemoteMachines } from "../../presence/index.ts";
 import { readLiveCoordinationRows } from "../state/live-coordination-view.ts";
 import { forkRelationLabels, readForkState } from "../state/names.ts";
 import type { AgentActivity, TaskState } from "../state/session-state.ts";
+import { renderPeerTable } from "./prompt-context.ts";
 
 interface HeartbeatRow {
   instance_id?: string;
@@ -65,9 +71,20 @@ export function renderSessionContext(opts: RenderOpts): string {
     instanceId,
     new Set(peers.map((peer) => peer.instance_id ?? "")),
   );
-  const localTable = formatPeerTable(peers, sessionId, relations);
-  // Cross-machine presence (ADR 0016): sessions on other machines (advisory).
-  const peerTable = [localTable, formatRemoteMachines(coordRoot)].filter(Boolean).join("\n\n");
+  // Same table as the prompt renderer: stale peers and sessions not yet named
+  // fold into "+N more", and remote sessions follow `presence.remote_detail`.
+  // Cross-machine presence (ADR 0016) is advisory.
+  const remoteDetail = presenceRemoteDetail(coordRoot);
+  const { table: peerTable } = renderPeerTable({
+    peers,
+    remote: remoteDetail === "off" ? [] : readRemoteMachinesSafe(coordRoot),
+    remoteDetail,
+    mySessionId: sessionId,
+    nowMs: Date.now(),
+    freshnessSeconds: coordFreshnessSeconds(coordRoot),
+    relations,
+    foldNameless: true,
+  });
   if (agentName) {
     const suffix = platformLabel ? ` (${platformLabel})` : "";
     // The authority clause guards forked/branched chats. An adapter that forks a
@@ -139,30 +156,12 @@ export function renderSessionContext(opts: RenderOpts): string {
   return messages.join("\n\n");
 }
 
-/** One-line-per-agent view of sessions on other machines (presence refs). */
-function formatRemoteMachines(coordRoot: string): string {
+/** readRemoteMachines with a failure guard: SessionStart output must never throw. */
+function readRemoteMachinesSafe(coordRoot: string): RemoteMachine[] {
   try {
-    const remote = readRemoteMachines(coordRoot);
-    if (remote.length === 0) return "";
-    const lines: string[] = [];
-    for (const m of remote) {
-      for (const a of m.agents.slice(0, 10)) {
-        const task = a.task ? ` "${a.task.slice(0, 60)}"` : "";
-        const files = a.files_touched?.length
-          ? `holds: ${a.files_touched.slice(0, 3).join(", ")}${a.files_touched.length > 3 ? `, +${a.files_touched.length - 3} more` : ""}`
-          : "nothing held";
-        const reason =
-          a.task_state === "blocked" && a.task_state_reason
-            ? `: ${a.task_state_reason.slice(0, 80)}`
-            : "";
-        lines.push(
-          `  - agent-${a.name ?? a.instance_id.slice(0, 8)} @${m.machine}${task} (activity=${a.activity}, lifecycle=${a.task_state}${reason}, ${files})`,
-        );
-      }
-    }
-    return `Sessions on other machines (advisory, via presence refs):\n${lines.join("\n")}`;
+    return readRemoteMachines(coordRoot);
   } catch {
-    return "";
+    return [];
   }
 }
 
@@ -218,112 +217,6 @@ function fmtFileList(files: string[]): string {
   return sorted.length <= 3
     ? sorted.join(", ")
     : `${sorted.slice(0, 3).join(", ")}, +${sorted.length - 3} more`;
-}
-
-/**
- * Renders the peer table as
- * two subsections: "Other agent groups active" (blocking) and "Your group"
- * (subagents/siblings, no mutual block). Folds transient subagents' files
- * into their parent session.
- */
-function formatPeerTable(
-  peers: HeartbeatRow[],
-  mySessionId: string,
-  relations: Map<string, string> = new Map(),
-): string {
-  if (peers.length === 0) return "";
-  const nowSec = Math.floor(Date.now() / 1000);
-
-  // Fold transient peers' files into their session_id parent.
-  const fold: Record<string, string[]> = {};
-  for (const p of peers) {
-    const kind = p.kind ?? "unknown";
-    if (kind === "transient" && p.session_id) {
-      fold[p.session_id] = (fold[p.session_id] ?? []).concat(p.files_touched ?? []);
-    }
-  }
-
-  // Build rows with display_files (own files + folded transient files).
-  type RowExt = HeartbeatRow & { display_files: string[]; relation?: string };
-  const rows: RowExt[] = peers
-    .filter((p) => (p.kind ?? "unknown") !== "transient")
-    .map((p) => {
-      const folded = fold[p.instance_id ?? ""] ?? [];
-      const display = Array.from(new Set([...(p.files_touched ?? []), ...folded])).sort();
-      const relation = relations.get(p.instance_id ?? "");
-      return { ...p, display_files: display, ...(relation ? { relation } : {}) };
-    });
-
-  // Related sessions sort first so the parent never hides in "+N more".
-  const blocking = rows
-    .filter((p) => p.session_id !== mySessionId)
-    .sort((a, b) => Number(!!b.relation) - Number(!!a.relation) || byStartedAt(a, b));
-  const group = rows.filter((p) => p.session_id === mySessionId).sort(byStartedAt);
-
-  const sections: string[] = [];
-  const blockingSection = renderSubtable(
-    blocking,
-    "Other agent groups active (their files block you):",
-    nowSec,
-  );
-  if (blockingSection) sections.push(blockingSection);
-  const groupSection = renderSubtable(
-    group,
-    "Your group (subagents / parent / siblings; no mutual block):",
-    nowSec,
-  );
-  if (groupSection) sections.push(groupSection);
-
-  return sections.join("\n\n");
-}
-
-function byStartedAt(a: HeartbeatRow, b: HeartbeatRow): number {
-  return (a.started_at ?? "").localeCompare(b.started_at ?? "");
-}
-
-function renderSubtable(
-  rows: Array<HeartbeatRow & { display_files: string[]; relation?: string }>,
-  header: string,
-  nowSec: number,
-): string {
-  if (rows.length === 0) return "";
-  const first = rows.slice(0, 10).map((r) => formatRow(r, nowSec));
-  const overflow = rows.length > 10 ? `\n  +${rows.length - 10} more` : "";
-  return `${header}\n${first.join("\n")}${overflow}`;
-}
-
-function formatRow(
-  r: HeartbeatRow & { display_files: string[]; relation?: string },
-  nowSec: number,
-): string {
-  const taskPart = r.task ? ` "${r.task.slice(0, 60)}"` : "";
-  const activity = r.activity ?? "unknown";
-  const lifecycle = r.task_state ?? "active";
-  const reason =
-    lifecycle === "blocked" && r.task_state_reason ? `: ${r.task_state_reason.slice(0, 80)}` : "";
-  const ageFrom = fmtAge(nowSec - parseIsoSec(r.started_at));
-  const filesPart = fmtFiles(r.display_files);
-  const relation = r.relation ? ` [${r.relation}]` : "";
-  return `  - agent-${r.name ?? "unknown"}${relation}${taskPart}   (activity=${activity}, lifecycle=${lifecycle}${reason}, ${ageFrom}, ${filesPart})`;
-}
-
-function fmtFiles(files: string[]): string {
-  if (files.length === 0) return "nothing yet";
-  if (files.length <= 3) return `holds: ${files.join(", ")}`;
-  return `holds: ${files.slice(0, 3).join(", ")}, +${files.length - 3} more`;
-}
-
-function parseIsoSec(iso: string | undefined): number {
-  if (!iso) return 0;
-  const ms = Date.parse(iso);
-  return Number.isFinite(ms) ? Math.floor(ms / 1000) : 0;
-}
-
-function fmtAge(secs: number): string {
-  if (secs < 60) return `${Math.floor(secs)}s ago`;
-  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
-  if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
-  return `${Math.floor(secs / 86400)}d ago`;
 }
 
 /**

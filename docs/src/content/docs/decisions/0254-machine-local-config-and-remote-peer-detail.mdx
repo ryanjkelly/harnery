@@ -1,0 +1,78 @@
+---
+title: "0254: Machine-local config and remote peer detail"
+description: "ADR: a third config layer, .harnery/config.local.jsonc, sits above the committed project file so one machine can lower a project value; presence.remote_detail controls how much of other machines' sessions reaches agent context; the SessionStart peer table folds stale and unnamed rows like the prompt table."
+---
+
+**Status:** accepted (2026-11-14) · **Scope:** product tier (`core/config`, `core/agents/render`, `commands/doctor`, `commands/init`)
+
+## Context
+
+Settings came from two files: the user-global file as the base and the
+committed project file on top, with the project winning. That order is right
+for shared policy but leaves no way for one machine to differ from the
+project. A project tuned on one large Linux machine (two build slots, a memory
+pressure rule that reads Linux pressure stall information) imposes those
+values on an 8 GB laptop that cannot run two builds at once and has no such
+pressure signal. Admission settings ignored the user file entirely, so even a
+personal override could not lower them.
+
+Every session's context also listed each session on every other machine with
+its task title and held file paths: up to ten rows per machine with no overall
+cap. As more people join a project on their own machines, that table grows
+with headcount, carries other people's task wording into each agent's context,
+and is re-sent whenever any remote session claims a file.
+
+The SessionStart table was a separate copy of the prompt table. It listed
+stale peers alongside live ones and printed `agent-unknown` for sessions that
+had not been named yet, while the prompt table already folded stale peers into
+a `+N more` tail.
+
+## Alternatives considered
+
+- **Let the user-global file win over the project.** One file would then
+  override every project on the machine, including values a project sets on
+  purpose. The override needs to be per project and per machine.
+- **Environment variables only.** They already exist for some values, but
+  agents start from many processes and hooks; a value set in one shell does
+  not reach a hook started by an adapter. A file next to the project config is
+  read by every process.
+- **Commit per-machine profiles in the project file.** Every new machine would
+  need a commit, and the project would have to name its machines.
+- **Drop remote rows from context entirely.** Remote presence is useful when
+  two machines might touch the same files, so the full view stays the
+  default; projects or machines that do not need it can choose less.
+
+## Decision
+
+1. **Third layer.** `<root>/.harnery/config.local.jsonc` is merged on top of
+   the project file, field by field: user < project < local. It is never
+   committed; `harn init` adds it to `.harnery/.gitignore` when the host's
+   ignore rules do not already cover it.
+2. **Trust boundaries stay project-only.** Readers that guard committed output
+   or grant authority (the `binName` pin, hook command shapes, finalization
+   roots, the git sync command, prompt providers and reminders, worker full
+   access, storage sharing, auto-update, and doctor policy) read only the
+   project file. A file nobody reviews must not widen them.
+3. **Admission reads project plus local.** The user-global file still does not
+   reach admission, so one project's slot policy cannot leak into another.
+4. **Visible differences.** `harn doctor` prints a `local config` line naming
+   the top-level keys the local file sets, and warns when the file is present
+   but unreadable.
+5. **`presence.remote_detail`.** `full` (default) lists remote sessions with
+   task and files, at most ten rows across all machines, then `+N more`.
+   `summary` prints one line per machine with a session count. `off` omits the
+   section. The table's change key follows what is rendered, so in `summary` a
+   remote task or claim change does not re-send the table.
+6. **One table renderer.** SessionStart renders through the prompt renderer:
+   the same stale split and caps, with sessions not yet named counted in the
+   tail instead of listed.
+
+## Consequences
+
+- A laptop can set `admission.resources.build.capacity` to 1 and
+  `presence.remote_detail` to `summary` without touching the shared file.
+- A machine difference is no longer silent: doctor names it.
+- Status surfaces outside the two context renderers that list remote names
+  should read `presence.remote_detail` the same way.
+- Log storage retention still explains its values across the user and project
+  layers only; it does not read the local file.

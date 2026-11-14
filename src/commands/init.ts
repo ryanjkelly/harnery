@@ -397,6 +397,15 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
       // boot-time indexing storm, so exclude it from both here.
       actions.push(...applyIndexerExclusions(projectRoot, dryRun));
 
+      // ── 1a″. machine-local config stays out of git ─────────────────────────
+      // `.harnery/config.local.jsonc` holds one machine's overrides. A host
+      // that un-ignores parts of `.harnery/` (to commit config.jsonc) must
+      // still ignore it, or one laptop's tuning ships to everyone.
+      {
+        const ignored = ensureLocalConfigIgnored(projectRoot, dryRun);
+        if (ignored) actions.push(ignored);
+      }
+
       // ── 1b. stamp the host bin name ────────────────────────────────────────
       // The coord binaries (agent-hook/agent-coord) and web UI run as harnery
       // itself, so they can't see a consumer CLI's name; they read it back from
@@ -1043,4 +1052,33 @@ function gitTopLevel(): string | null {
 function rel(root: string, p: string): string {
   const r = relative(root, p);
   return r || p;
+}
+
+/**
+ * Make sure `.harnery/config.local.jsonc` is git-ignored. Asks git whether the
+ * path is ignored (`check-ignore --no-index`, so the file need not exist);
+ * when it is not, appends the name to `.harnery/.gitignore`. Returns the
+ * action line, or null when nothing was needed or the root is not a git
+ * checkout.
+ */
+export function ensureLocalConfigIgnored(projectRoot: string, dryRun: boolean): string | null {
+  const rel = ".harnery/config.local.jsonc";
+  const probe = spawnSync("git", ["-C", projectRoot, "check-ignore", "-q", "--no-index", rel], {
+    encoding: "utf8",
+    stdio: ["ignore", "ignore", "ignore"],
+  });
+  // 0 = already ignored; anything but 1 (not ignored) means no usable git here.
+  if (probe.status !== 1) return null;
+  const gitignore = resolve(projectRoot, ".harnery", ".gitignore");
+  if (dryRun) return "+ would add config.local.jsonc to .harnery/.gitignore";
+  let body = "";
+  try {
+    body = existsSync(gitignore) ? readFileSync(gitignore, "utf8") : "";
+  } catch {
+    return null;
+  }
+  const sep = body === "" || body.endsWith("\n") ? "" : "\n";
+  mkdirSync(dirname(gitignore), { recursive: true });
+  writeFileSync(gitignore, `${body}${sep}config.local.jsonc\n`);
+  return "+ added config.local.jsonc to .harnery/.gitignore (machine-local overrides)";
 }

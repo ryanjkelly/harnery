@@ -28,6 +28,8 @@ import {
   type DoctorEnvironmentFindings,
   doctorEnvironmentFindings,
   inspectTimeZone,
+  localConfigExists,
+  readLocalConfig,
   resolveBinName,
   ripgrepAutoInstall,
   type TimeZoneResolution,
@@ -215,6 +217,7 @@ export async function runChecks(): Promise<Check[]> {
     checkRipgrep(),
     checkHarneryDir(),
     timeZoneCheck(inspectTimeZone(root)),
+    ...(root ? localConfigChecks(root) : []),
     checkAdapterHooks(installed),
     ...(codexAuthorization ? [codexAuthorization] : []),
     checkGitHookRegions(),
@@ -314,6 +317,37 @@ export function codexHookRunsCheck(
       `(${events}; latest ${runs.latest}); their tools proceeded without those hooks' checks`,
     hint: "a hook that outlives its timeout is killed; look for a stalled WSL session or a slow hook",
   };
+}
+
+/**
+ * Name the machine-local override file and the top-level keys it sets, so a
+ * difference between this machine and the committed project config is never
+ * silent. Nothing is reported when the file is absent; an unparseable file
+ * warns because its overrides are being ignored.
+ */
+export function localConfigChecks(root: string): Check[] {
+  if (!localConfigExists(root)) return [];
+  const keys = Object.keys(readLocalConfig(root)).sort();
+  if (keys.length === 0) {
+    return [
+      {
+        name: "local config",
+        scope: "runtime",
+        severity: "warn",
+        detail:
+          ".harnery/config.local.jsonc is present but sets nothing (empty or not valid JSONC)",
+        hint: "fix the file or remove it; until then this machine uses the project settings",
+      },
+    ];
+  }
+  return [
+    {
+      name: "local config",
+      scope: "runtime",
+      severity: "ok",
+      detail: `.harnery/config.local.jsonc overrides project settings on this machine: ${keys.join(", ")}`,
+    },
+  ];
 }
 
 /**

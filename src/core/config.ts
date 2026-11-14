@@ -2,9 +2,18 @@
  * Harnery config reader: the settings the coord/hook layer consults when it
  * can't see the consumer CLI's own process.
  *
- * Two layers, project-over-user (project wins field-by-field):
- *   1. `~/.config/harnery/config.jsonc` — user-global base (optional)
- *   2. `<project-root>/.harnery/config.jsonc` — project override (authoritative)
+ * Three layers, merged field by field, later layers winning:
+ *   1. `~/.config/harnery/config.jsonc`: user-global base (optional)
+ *   2. `<project-root>/.harnery/config.jsonc`: committed project settings
+ *   3. `<project-root>/.harnery/config.local.jsonc`: this machine only, never
+ *      committed (optional). It lets one machine lower a value the project
+ *      sets, such as an admission capacity tuned for a larger box.
+ *
+ * Readers that guard committed output or a trust boundary (`pinnedBinName`,
+ * hook command shapes, finalization roots, worker full access, storage
+ * sharing, prompt providers, auto-update, doctor policy) read the project file
+ * alone through `readProjectConfig`, so neither a user file nor a local file
+ * can change them. `readAdmissionConfig` reads project plus local.
  *
  * Fields owned here: `binName` (host CLI name for agent-facing strings),
  * `timeZone` (zone for human-facing times and journal stamps),
@@ -151,7 +160,7 @@ interface HarneryConfig {
    * relay for seconds-latency presence; the git-refs transport stays on as
    * the floor. Unset → git-refs only.
    */
-  presence?: { enabled?: boolean; relay?: string };
+  presence?: { enabled?: boolean; relay?: string; remote_detail?: unknown };
   /**
    * Coord-layer tunables. `freshness_seconds` is the heartbeat age above which
    * the sweeper prunes an agent (default 600). Read via `coordFreshnessSeconds()`.
@@ -354,6 +363,11 @@ function userConfigPath(): string {
   return join(base, "harnery", "config.jsonc");
 }
 
+/** The machine-local override file for `root`: never committed, top precedence. */
+export function localConfigPath(root: string): string {
+  return join(root, ".harnery", "config.local.jsonc");
+}
+
 /** File mtime in ms, or -1 when the file can't be stat'd (missing). */
 function statMtime(p: string): number {
   try {
@@ -414,8 +428,10 @@ export function logStorageConfigSource(root: string): LogStorageConfigSource {
   const projectPath = join(root, ".harnery", "config.jsonc");
   const user = parseConfigLayer(userConfigPath());
   const project = parseConfigLayer(projectPath);
+  // Storage retention explains each value's origin across exactly two layers,
+  // so it does not read the machine-local file.
   const layer = (source: ReturnType<typeof parseConfigLayer>): LogStorageConfigLayerSource => ({
-    layer: source.path_kind,
+    layer: source.path_kind === "user" ? "user" : "project",
     value: source.config.logs?.storage,
     invalid: source.invalid,
     signature: source.signature,
@@ -433,7 +449,9 @@ export function logStorageConfigSource(root: string): LogStorageConfigSource {
 export function coordRunQualityConfigSource(root: string): CoordRunQualityConfigSource {
   const projectPath = join(root, ".harnery", "config.jsonc");
   const userPath = userConfigPath();
-  const layers = [userPath, projectPath].map((path) => parseConfigLayer(path));
+  const layers = [userPath, projectPath, localConfigPath(root)].map((path) =>
+    parseConfigLayer(path),
+  );
   const invalid = layers.filter((layer) => layer.invalid);
   if (invalid.length > 0) {
     return {
@@ -445,7 +463,7 @@ export function coordRunQualityConfigSource(root: string): CoordRunQualityConfig
       })),
     };
   }
-  const merged = mergeConfig(layers[0]!.config, layers[1]!.config);
+  const merged = mergeConfig(mergeConfig(layers[0]!.config, layers[1]!.config), layers[2]!.config);
   return {
     value: merged.coord?.run_quality,
     invalid: false,
@@ -456,10 +474,11 @@ export function coordRunQualityConfigSource(root: string): CoordRunQualityConfig
 function parseConfigLayer(path: string): {
   config: HarneryConfig;
   invalid: boolean;
-  path_kind: "user" | "project";
+  path_kind: "user" | "project" | "local";
   signature: string | null;
 } {
-  const pathKind = path === userConfigPath() ? "user" : "project";
+  const pathKind =
+    path === userConfigPath() ? "user" : path.endsWith("config.local.jsonc") ? "local" : "project";
   const signature = statSignature(path);
   if (signature === null) return { config: {}, invalid: false, path_kind: pathKind, signature };
   try {
@@ -491,43 +510,75 @@ function mergeConfig(base: HarneryConfig, override: HarneryConfig): HarneryConfi
   return out as HarneryConfig;
 }
 
-// Stat-signature-keyed per-process cache (both layers): a stat is cheap, a parse on every render isn't.
+// Stat-signature-keyed per-process cache (all three layers): a stat is cheap, a parse on every render isn't.
 let cache: {
   root: string;
   projSignature: string | null;
   userSignature: string | null;
+  localSignature: string | null;
   cfg: HarneryConfig;
 } | null = null;
 
 /**
  * The effective config for `root`: user-global (`~/.config/harnery/config.jsonc`)
- * as the base, the project file (`<root>/.harnery/config.jsonc`) merged on top.
- * Project values win field-by-field.
+ * as the base, the project file (`<root>/.harnery/config.jsonc`) on top, and
+ * the machine-local file (`<root>/.harnery/config.local.jsonc`) on top of
+ * that. Later layers win field by field.
  */
 function readConfig(root: string): HarneryConfig {
   const projPath = join(root, ".harnery", "config.jsonc");
   const userPath = userConfigPath();
+  const localPath = localConfigPath(root);
   const projSignature = statSignature(projPath);
   const userSignature = statSignature(userPath);
+  const localSignature = statSignature(localPath);
   if (
     cache &&
     cache.root === root &&
     cache.projSignature === projSignature &&
-    cache.userSignature === userSignature
+    cache.userSignature === userSignature &&
+    cache.localSignature === localSignature
   ) {
     return cache.cfg;
   }
   const user = userSignature === null ? {} : parseConfigFile(userPath);
   const project = projSignature === null ? {} : parseConfigFile(projPath);
-  const cfg = mergeConfig(user, project);
-  cache = { root, projSignature, userSignature, cfg };
+  const local = localSignature === null ? {} : parseConfigFile(localPath);
+  const cfg = mergeConfig(mergeConfig(user, project), local);
+  cache = { root, projSignature, userSignature, localSignature, cfg };
   return cfg;
 }
 
 /**
- * The PROJECT config file only — no user-global merge. `pinnedBinName` uses this
- * so a user-global `binName` can never masquerade as a deliberate project pin
- * (the pin guards committed, public surfaces; see `pinnedBinName`).
+ * The machine-local override file alone, or `{}` when it is absent or
+ * unparseable. `harn doctor` uses it to name the keys a machine overrides.
+ */
+export function readLocalConfig(root: string): HarneryConfig {
+  const p = localConfigPath(root);
+  return statSignature(p) === null ? {} : parseConfigFile(p);
+}
+
+/** Whether a machine-local override file exists for `root`, even an unparseable one. */
+export function localConfigExists(root: string): boolean {
+  return statSignature(localConfigPath(root)) !== null;
+}
+
+/**
+ * Project plus machine-local, without the user-global base. For settings that
+ * describe the machine a project runs on (admission slots): the project sets
+ * the default and one machine may lower it, but a user-global file written for
+ * another project must not reach in.
+ */
+function readProjectAndLocalConfig(root: string): HarneryConfig {
+  return mergeConfig(readProjectConfig(root), readLocalConfig(root));
+}
+
+/**
+ * The PROJECT config file only: no user-global or machine-local merge.
+ * `pinnedBinName` uses this so neither a user-global nor a local `binName` can
+ * masquerade as a deliberate project pin (the pin guards committed, public
+ * surfaces; see `pinnedBinName`). Every other trust-boundary or
+ * committed-output reader uses it for the same reason.
  */
 function readProjectConfig(root: string): HarneryConfig {
   const p = join(root, ".harnery", "config.jsonc");
@@ -571,11 +622,11 @@ export function pinnedBinName(projectRoot: string): string | null {
 export const DEFAULT_TIME_ZONE = "UTC";
 
 /** Where `resolveTimeZone()` found its answer. */
-export type TimeZoneSource = "env" | "project" | "user" | "system" | "default";
+export type TimeZoneSource = "env" | "local" | "project" | "user" | "system" | "default";
 
 /** An explicit setting that names no zone this runtime knows. */
 export interface InvalidTimeZoneSetting {
-  source: "env" | "project" | "user";
+  source: "env" | "local" | "project" | "user";
   value: string;
 }
 
@@ -615,10 +666,11 @@ function systemTimeZone(): string | null {
  * Resolve the time zone with its source and any skipped invalid settings.
  * Precedence:
  *   1. `HARNERY_TIME_ZONE` env
- *   2. project `.harnery/config.jsonc` `timeZone`
- *   3. user-global `~/.config/harnery/config.jsonc` `timeZone`
- *   4. the system zone (Intl)
- *   5. `"UTC"`
+ *   2. machine-local `.harnery/config.local.jsonc` `timeZone`
+ *   3. project `.harnery/config.jsonc` `timeZone`
+ *   4. user-global `~/.config/harnery/config.jsonc` `timeZone`
+ *   5. the system zone (Intl)
+ *   6. `"UTC"`
  *
  * An invalid explicit setting falls through to the next source; the caller
  * decides whether that is a warning (runtime) or an error (`doctor`).
@@ -640,6 +692,8 @@ export function inspectTimeZone(coordRoot?: string | null): TimeZoneResolution {
   if (fromEnv) return fromEnv;
   const root = coordRoot ?? findCoordRoot();
   if (root) {
+    const fromLocal = consider("local", readLocalConfig(root).timeZone);
+    if (fromLocal) return fromLocal;
     const fromProject = consider("project", readProjectConfig(root).timeZone);
     if (fromProject) return fromProject;
   }
@@ -684,6 +738,8 @@ export function timeZoneSourceLabel(source: TimeZoneSource): string {
   switch (source) {
     case "env":
       return "HARNERY_TIME_ZONE";
+    case "local":
+      return "local .harnery/config.local.jsonc timeZone";
     case "project":
       return "project .harnery/config.jsonc timeZone";
     case "user":
@@ -946,14 +1002,17 @@ function positiveNumber(value: unknown, max: number): number | undefined {
  * }
  * ```
  *
- * Project config only, like other machine-shaping policy. Malformed values are
- * dropped one by one rather than rejecting the whole block. Undefined when the
- * project declares no admission settings.
+ * Read from the project file with the machine-local file merged on top, so a
+ * smaller machine can lower a capacity or drop a pressure rule the project
+ * set for a larger one. The user-global file is ignored: one project's slot
+ * policy must not leak into another. Malformed values are dropped one by one
+ * rather than rejecting the whole block. Undefined when neither file declares
+ * admission settings.
  */
 export function readAdmissionConfig(coordRoot?: string | null): AdmissionProjectConfig | undefined {
   const root = coordRoot ?? findCoordRoot();
   if (!root) return undefined;
-  const raw = readProjectConfig(root).admission;
+  const raw = readProjectAndLocalConfig(root).admission;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
   const record = raw as { resources?: unknown; guard?: unknown };
   const resources: Record<string, AdmissionResourceConfig> = {};
@@ -1646,6 +1705,30 @@ export function presenceEnabled(coordRoot?: string | null): boolean {
   const root = coordRoot ?? findCoordRoot();
   if (!root) return false;
   return readConfig(root).presence?.enabled !== false;
+}
+
+/** How much of another machine's sessions reaches agent context. */
+export type PresenceRemoteDetail = "full" | "summary" | "off";
+
+/**
+ * How much detail agent context shows about sessions on other machines.
+ * `full` (default) lists each remote session with its task and held files,
+ * capped overall. `summary` prints one line per machine with a session count
+ * and no task titles or file paths. `off` omits remote sessions entirely.
+ *
+ * `.harnery/config.jsonc` (or `config.local.jsonc` for one machine):
+ * `{ "presence": { "remote_detail": "summary" } }`.
+ * `HARNERY_PRESENCE_REMOTE_DETAIL` overrides per process. An unrecognized
+ * value falls back to `full`.
+ */
+export function presenceRemoteDetail(coordRoot?: string | null): PresenceRemoteDetail {
+  const parse = (v: unknown): PresenceRemoteDetail | null =>
+    v === "full" || v === "summary" || v === "off" ? v : null;
+  const env = parse(coordEnv("PRESENCE_REMOTE_DETAIL")?.trim());
+  if (env) return env;
+  const root = coordRoot ?? findCoordRoot();
+  if (!root) return "full";
+  return parse(readConfig(root).presence?.remote_detail) ?? "full";
 }
 
 /**
