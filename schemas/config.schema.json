@@ -687,6 +687,18 @@
         }
       }
     },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Decision docket settings (decision record 0255).",
+      "properties": {
+        "share": {
+          "type": "boolean",
+          "default": false,
+          "description": "Publish this machine's waiting decisions, pending run approvals, and recently changed decisions to refs/harnery/docket/<machine> on origin so other machines can read them. Off by default because decision text can be sensitive. Requires presence. Env override: HARNERY_DOCKET_SHARE=1|0."
+        }
+      }
+    },
     "presence": {
       "type": "object",
       "additionalProperties": false,
@@ -700,6 +712,12 @@
         "relay": {
           "type": "string",
           "description": "Optional live-socket upgrade: a wss:// relay URL (public reference: wss://relay.harnery.com; self-host via `harn relay serve` or relay/worker/). Hooks keep a per-machine daemon connected; git refs stay on as the floor. Env override: HARNERY_PRESENCE_RELAY=<url|0>."
+        },
+        "remote_detail": {
+          "type": "string",
+          "enum": ["full", "summary", "off"],
+          "default": "full",
+          "description": "How much agent context shows about sessions on other machines: full (sessions with task and files, capped), summary (one count line per machine, no tasks or paths), or off. Env override: HARNERY_PRESENCE_REMOTE_DETAIL."
         }
       }
     },
