@@ -1,0 +1,93 @@
+---
+title: "0248: Hold foreground actions until the person is quiet"
+description: "ADR: `harn computer call` reads how long the person's keyboard and mouse have been idle before it sends a foreground action. It waits for a short quiet period and refuses the action, with nothing sent, when the person stays busy. Background actions are never delayed."
+---
+
+**Status:** accepted (2026-11-14) · **Scope:** product tier (`commands/computer`, `lib/computer`, `core/config`, the opt-in skill)
+
+## Context
+
+[Decision 0228](/decisions/0228-computer-use-through-a-pinned-desktop-driver/)
+put every agent's desktop work behind one lease, and both drivers work in the
+background by default: they press a control through the accessibility tree,
+and no window comes to the front.
+
+Background delivery does not reach every target. Web content in Chromium and
+Electron windows, some toolkits, and a few extension popups drop posted input.
+The driver then refuses with `background_unavailable`, and the agent repeats
+the action in the foreground: the driver brings the agent's window to the
+front, sends real keyboard and mouse input, and puts the earlier window back.
+
+The agent and the person share one keyboard focus during that swap. A person
+who is typing at that moment types into the agent's window. Their text lands
+in the wrong place, the agent's own input mixes with it, and the agent reads
+back a page it did not produce. The lease does not help, because it only keeps
+agents apart from each other.
+
+## Alternatives considered
+
+- **Leave it to the skill.** The skill already tells agents to use foreground
+  delivery only after a background refusal. That lowers how often it happens
+  but cannot time an action around the person, because an agent cannot see
+  whether they are typing.
+- **Ask the person before each foreground action.** A prompt per action
+  interrupts them more than the action does, and a task may need several.
+- **A separate desktop for agents.** A second session or a virtual machine
+  removes the shared focus altogether. It is the complete fix, and it costs a
+  second sign-in to every browser profile and password manager the agent
+  needs. It stays available to anyone who sets it up; nothing here prevents it.
+- **Refuse at once when the person is active.** Simple, but a person who
+  pauses for a few seconds between sentences would cause a refusal that a
+  short wait avoids.
+
+## Decision
+
+`computer call` asks the driver adapter whether the call may take the
+foreground (`DesktopDriver.takesForeground`). For such a call only, after it
+holds the lease, it reads how long the person's keyboard and mouse have been
+idle:
+
+- Idle for at least `computer.foreground_quiet_seconds` (default 3): the
+  action is sent at once.
+- Otherwise the call sleeps for what the quiet period still needs and reads
+  again, for up to `computer.foreground_wait_seconds` (default 60).
+- Still busy after that: the call exits 5 (`person_active`) and sends nothing
+  to the driver. The agent keeps the lease and tries once more later.
+
+The lease is taken for the call's timeout plus the wait limit, so the wait can
+never outlive it. `foreground_quiet_seconds: 0` turns the wait off for a
+machine nobody types on. Background calls skip all of this and cost nothing
+extra.
+
+Each adapter names its own foreground calls. For cua: `delivery_mode:
+"foreground"` on the call or on any `run_steps` step, `foreground_fallback`,
+`bring_to_front`, and a `run_script` program that names either. For
+agent-desktop: `headed`, `activate` on a launch, and `focus-window`, also
+inside a `batch`.
+
+The idle reading comes from the operating system: `GetLastInputInfo` on
+Windows, reached from WSL through interop; the HID idle time on macOS; and
+`xprintidle` on an X11 Linux desktop where it is installed. A host with no
+reading reports unknown, and the call proceeds without waiting.
+
+## Result and gotchas
+
+- **The wait is cooperative, like the lease and the approval.** It is a
+  courtesy toward the person, not a lock. An agent that runs the driver
+  directly skips it, as it skips the lease.
+- **The reading is taken just before the action.** The person can start
+  typing in the fraction of a second between the reading and the driver's
+  input. The wait makes a collision rare; it cannot make one impossible.
+- **Synthetic input counts as input.** The operating systems do not separate
+  an agent's injected keystrokes from the person's. An agent's foreground
+  action therefore restarts the quiet period, and two in a row are at least
+  one period apart. This slows a run of foreground actions by a few seconds
+  each and needs no special case.
+- **One reading costs a process start.** On Windows it is one PowerShell
+  process, roughly half a second. Only foreground calls pay it, and a person
+  who is away is read once.
+- **A `run_steps` call with `foreground_fallback` waits up front.** The
+  command cannot know which step will fall back, so it waits before the whole
+  call.
+- **Wayland has no reading.** A Wayland session does not expose idle time to
+  an ordinary process, so those hosts proceed without waiting.

@@ -11,6 +11,7 @@ import {
   CUA_PINS,
   type CuaDeps,
   createCuaDriver,
+  cuaTakesForeground,
   INSTALL_MARKER,
   type SpawnResult,
 } from "./cua.ts";
@@ -540,5 +541,49 @@ describe("Cua Driver on macOS and Linux", () => {
       expect(pin.sha256).toMatch(/^[0-9a-f]{64}$/);
       expect(pin.format).toBe(key.startsWith("windows-") ? "zip" : "tar.gz");
     }
+  });
+});
+
+describe("cuaTakesForeground", () => {
+  test("background delivery, the default, never takes the foreground", () => {
+    expect(cuaTakesForeground("click", { pid: 1, element_token: "s0000002a:11" })).toBe(false);
+    expect(cuaTakesForeground("click", { pid: 1, delivery_mode: "background" })).toBe(false);
+    expect(cuaTakesForeground("set_value", { value: "foreground" })).toBe(false);
+    expect(cuaTakesForeground("run_script", { script: "await click({ pid: 1 })" })).toBe(false);
+  });
+
+  test("an explicit foreground delivery mode does", () => {
+    expect(cuaTakesForeground("click", { pid: 1, delivery_mode: "foreground" })).toBe(true);
+    expect(cuaTakesForeground("browser_prepare", { delivery_mode: "foreground" })).toBe(true);
+  });
+
+  test("run_steps counts its default, its fallback and each step", () => {
+    const step = { tool: "click", args: { pid: 1 } };
+    expect(cuaTakesForeground("run_steps", { steps: [step] })).toBe(false);
+    expect(cuaTakesForeground("run_steps", { steps: [step], foreground_fallback: true })).toBe(
+      true,
+    );
+    expect(cuaTakesForeground("run_steps", { steps: [step], delivery_mode: "foreground" })).toBe(
+      true,
+    );
+    expect(
+      cuaTakesForeground("run_steps", {
+        steps: [step, { tool: "press_key", args: { key: "return", delivery_mode: "foreground" } }],
+      }),
+    ).toBe(true);
+    expect(cuaTakesForeground("run_steps", { steps: [{ tool: "bring_to_front" }] })).toBe(true);
+  });
+
+  test("bring_to_front and a script that names foreground delivery do", () => {
+    expect(cuaTakesForeground("bring_to_front", { pid: 1 })).toBe(true);
+    expect(
+      cuaTakesForeground("run_script", {
+        script: 'await click({ pid: 1, delivery_mode: "foreground" })',
+      }),
+    ).toBe(true);
+  });
+
+  test("the driver exposes the check", () => {
+    expect(createCuaDriver().takesForeground?.("bring_to_front", {})).toBe(true);
   });
 });

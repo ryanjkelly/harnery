@@ -256,6 +256,13 @@ interface HarneryConfig {
     idle_seconds?: number;
     wait_seconds?: number;
     /**
+     * How long the person's keyboard and mouse must have been quiet before a
+     * foreground action is sent, in seconds (ADR 0248). 0 turns the wait off.
+     */
+    foreground_quiet_seconds?: number;
+    /** How long `computer call` waits for that quiet period before refusing, in seconds. */
+    foreground_wait_seconds?: number;
+    /**
      * Whether each person may let agents sign in to websites for them, in
      * their own browser through their password manager's extension. Off
      * unless true; even then each person turns it on for themselves
@@ -892,6 +899,13 @@ export interface AdmissionProjectConfig {
   guard?: { resource: string };
 }
 
+/** A number of seconds from 0 to `max`, where 0 is a meaningful setting; else undefined. */
+function boundedSeconds(value: unknown, max: number): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= max
+    ? value
+    : undefined;
+}
+
 function positiveNumber(value: unknown, max: number): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value > 0 && value <= max
     ? value
@@ -1000,6 +1014,10 @@ export interface ComputerProjectConfig {
   idle_seconds?: number;
   /** How long `computer call` waits for another agent's lease, in seconds. */
   wait_seconds?: number;
+  /** Quiet period required before a foreground action, in seconds; 0 turns the wait off. */
+  foreground_quiet_seconds?: number;
+  /** How long `computer call` waits for that quiet period before refusing, in seconds. */
+  foreground_wait_seconds?: number;
   /** How long an `ask-each-task` approval lasts at most, in minutes. */
   grant_minutes?: number;
   /** Default desktop driver id from `computer.driver` (ADR 0231); the command validates it. */
@@ -1206,6 +1224,9 @@ function projectComputerMode(record: Record<string, unknown>): {
  * "computer": { "mode": "ask-each-task", "grant_minutes": 20, "idle_seconds": 120, "wait_seconds": 30 }
  * ```
  *
+ * `foreground_quiet_seconds` and `foreground_wait_seconds` tune the wait before
+ * a foreground action (ADR 0248).
+ *
  * The project decides whether desktop control exists at all and sets the
  * default mode. Where it is not `off`, each person may choose their own mode
  * (`computer mode`), stored in `computer.json` beside the user config, never
@@ -1248,6 +1269,8 @@ export function readComputerConfig(
   const idle = positiveNumber(record.idle_seconds, 86_400);
   const wait = record.wait_seconds;
   const waitOk = typeof wait === "number" && Number.isFinite(wait) && wait >= 0 && wait <= 3600;
+  const foregroundQuiet = boundedSeconds(record.foreground_quiet_seconds, 600);
+  const foregroundWait = boundedSeconds(record.foreground_wait_seconds, 3600);
   const grantMinutes = positiveNumber(record.grant_minutes, 24 * 60);
   // Signing in for the person drives their browser, so it needs desktop
   // control; it is never on unless both the project and the person say so.
@@ -1273,6 +1296,8 @@ export function readComputerConfig(
     ...(project.error ? { config_error: project.error } : {}),
     ...(idle !== undefined ? { idle_seconds: idle } : {}),
     ...(waitOk ? { wait_seconds: wait } : {}),
+    ...(foregroundQuiet !== undefined ? { foreground_quiet_seconds: foregroundQuiet } : {}),
+    ...(foregroundWait !== undefined ? { foreground_wait_seconds: foregroundWait } : {}),
     ...(grantMinutes !== undefined ? { grant_minutes: grantMinutes } : {}),
     ...(typeof record.driver === "string" && record.driver.trim()
       ? { driver: record.driver.trim() }

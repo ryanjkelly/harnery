@@ -12,7 +12,8 @@
 // Exit codes: 0 ok · 1 error (disabled, unsupported host, not installed,
 // driver failure; `call` propagates the driver's own exit code) · 3 the
 // desktop lease is held by another agent · 4 desktop control needs the
-// person's approval first, or they declined.
+// person's approval first, or they declined · 5 a foreground action was held
+// back because the person is using the keyboard or mouse (ADR 0248).
 
 import { hostname, userInfo } from "node:os";
 import { basename } from "node:path";
@@ -40,6 +41,12 @@ import type {
   GrantKind,
   GrantLogEntry,
 } from "../lib/computer/grants.ts";
+import {
+  DEFAULT_FOREGROUND_QUIET_SECONDS,
+  DEFAULT_FOREGROUND_WAIT_SECONDS,
+  probePersonIdleMs,
+  waitForQuietDesktop,
+} from "../lib/computer/person-idle.ts";
 import type {
   BackgroundProcess,
   DaemonStatus,
@@ -56,6 +63,8 @@ import type {
 export const EXIT_LEASE_HELD = 3;
 /** Exit code when desktop control needs the person's approval first, or they declined. */
 export const EXIT_APPROVAL_REQUIRED = 4;
+/** Exit code when a foreground action was held back because the person is using the desktop. */
+export const EXIT_PERSON_ACTIVE = 5;
 /** `call` waits this long for another agent's lease when nothing overrides it. */
 export const DEFAULT_CALL_WAIT_SECONDS = 30;
 /** How long the approval dialog waits for an answer before counting as no. */
@@ -112,6 +121,12 @@ export interface ComputerDeps {
   defaultIdleMs: number;
   /** Driver stderr passthrough. */
   writeStderr: (text: string) => void;
+  /**
+   * Milliseconds since the person last used the keyboard or mouse, or null
+   * when this host gives no reading. Read before a foreground action.
+   */
+  personIdleMs: (host: HostInfo) => number | null | Promise<number | null>;
+  sleep: (ms: number) => Promise<void>;
   now: () => number;
 }
 
@@ -224,6 +239,8 @@ async function resolveDeps(input: ComputerDepsInput): Promise<ComputerDeps> {
     owner: input.owner ?? (() => resolveLeaseOwner()),
     config: input.config ?? ((prefs) => readComputerConfig(undefined, prefs)),
     writeStderr: input.writeStderr ?? ((text) => process.stderr.write(text)),
+    personIdleMs: input.personIdleMs ?? ((host) => probePersonIdleMs(host)),
+    sleep: input.sleep ?? ((ms) => new Promise((done) => setTimeout(done, ms))),
     now: input.now ?? Date.now,
   };
 }
@@ -454,6 +471,31 @@ function callLeaseIdleMs(
   return Math.max(configuredIdleMs(deps), timeout + CALL_LEASE_MARGIN_MS);
 }
 
+/** The quiet period a foreground action waits for, and how long it waits (ADR 0248). */
+function foregroundQuiet(config: ComputerProjectConfig): { quietMs: number; maxWaitMs: number } {
+  return {
+    quietMs: Math.round(
+      (config.foreground_quiet_seconds ?? DEFAULT_FOREGROUND_QUIET_SECONDS) * 1000,
+    ),
+    maxWaitMs: Math.round(
+      (config.foreground_wait_seconds ?? DEFAULT_FOREGROUND_WAIT_SECONDS) * 1000,
+    ),
+  };
+}
+
+function describeForegroundQuiet(config: ComputerProjectConfig): string {
+  const { quietMs, maxWaitMs } = foregroundQuiet(config);
+  if (quietMs <= 0) return "sent at once (the quiet wait is off)";
+  return (
+    `waits until the keyboard and mouse have been quiet for ${formatSeconds(quietMs)}, ` +
+    `for up to ${formatSeconds(maxWaitMs)}`
+  );
+}
+
+function formatSeconds(ms: number): string {
+  return `${Math.round(ms / 100) / 10}s`;
+}
+
 function secondsUntil(iso: string, nowMs: number): number {
   return Math.max(0, Math.ceil((Date.parse(iso) - nowMs) / 1000));
 }
@@ -653,7 +695,8 @@ export function createComputerCommand(
       "after",
       `\nEnable per project with "computer": { "mode": "ask-each-task" } (or "ask-once-per-session" or "on")\n` +
         `in .harnery/config.jsonc; each person may then choose their own with \`${bin} computer mode <mode>\`.\n` +
-        `Exit codes: 0 ok · 1 error · ${EXIT_LEASE_HELD} desktop held by another agent · ${EXIT_APPROVAL_REQUIRED} approval needed or declined.\n` +
+        `Exit codes: 0 ok · 1 error · ${EXIT_LEASE_HELD} desktop held by another agent · ${EXIT_APPROVAL_REQUIRED} approval needed or declined · ` +
+        `${EXIT_PERSON_ACTIVE} foreground action held back while the person is using the desktop.\n` +
         `Start with \`${bin} computer status\`.`,
     );
 
@@ -712,6 +755,8 @@ export function createComputerCommand(
             project_sign_in: config.project_sign_in,
             sign_in_source: config.sign_in_source,
             person_sign_in: config.person_sign_in,
+            foreground_quiet_seconds: foregroundQuiet(config).quietMs / 1000,
+            foreground_wait_seconds: foregroundQuiet(config).maxWaitMs / 1000,
             approval: grant,
             host: {
               kind: host.kind,
@@ -750,6 +795,7 @@ export function createComputerCommand(
               ]
             : []),
           `sign-in:   ${describeSignIn(config, deps.binName)}`,
+          `quiet:     a foreground action ${describeForegroundQuiet(config)}`,
           `host:      ${host.kind}${host.reason ? ` (${host.reason})` : ""}${host.note ? ` (${host.note})` : ""}`,
         ];
         for (const { driver, installed, daemon, background } of drivers) {
@@ -1020,7 +1066,8 @@ export function createComputerCommand(
     .command("call <tool> [json]")
     .description(
       "Call one driver tool with a JSON object of arguments, holding the desktop lease. " +
-        "`session` defaults to your agent name; inline base64 screenshots are redacted unless --keep-screenshot.",
+        "`session` defaults to your agent name; inline base64 screenshots are redacted unless --keep-screenshot. " +
+        "A foreground action waits until the person's keyboard and mouse are quiet.",
     )
     .option(DRIVER_OPTION, driverHelp("to call (default: the project's default driver)"))
     .option(
@@ -1051,18 +1098,45 @@ export function createComputerCommand(
           // Hold the lease for at least the driver's call timeout, so a slow
           // call never runs on after its lease lapsed and another agent took
           // the desktop; refresh to the normal idle period once it returns.
+          // A foreground action fronts a window and sends real input, so the
+          // person's own typing would land in it. Hold it until their input
+          // has been quiet; the lease covers that wait as well.
+          const quiet = foregroundQuiet(config);
+          const foreground = quiet.quietMs > 0 && (driver.takesForeground?.(tool, args) ?? false);
           const acquired = await deps.lease.acquire(
             owner,
             leaseOptions(
               deps,
               host,
               Math.round(waitSeconds * 1000),
-              callLeaseIdleMs(deps, driver, tool, args),
+              callLeaseIdleMs(deps, driver, tool, args) + (foreground ? quiet.maxWaitMs : 0),
             ),
           );
           if (!acquired.ok) throw heldError(deps, acquired.holder);
 
           if (driver.hasDaemon) await ensureDaemon(driver, host);
+          if (foreground) {
+            const waited = await waitForQuietDesktop({
+              ...quiet,
+              probe: () => deps.personIdleMs(host),
+              now: deps.now,
+              sleep: deps.sleep,
+            });
+            if (waited.status === "busy") {
+              await deps.lease.acquire(owner, leaseOptions(deps, host));
+              throw new ComputerError(
+                "person_active",
+                `The person is using the keyboard or mouse, so this foreground action was not sent ` +
+                  `(waited ${formatSeconds(waited.waitedMs)} for ${formatSeconds(quiet.quietMs)} of quiet).`,
+                EXIT_PERSON_ACTIVE,
+                "Nothing was sent. Do other work and try once more later, or use a background route. Do not retry in a loop.",
+              );
+            }
+            if (waited.waitedMs >= 1000)
+              deps.writeStderr(
+                `Waited ${formatSeconds(waited.waitedMs)} for the person's keyboard and mouse to go quiet before this foreground action.\n`,
+              );
+          }
           const translated = driver.translateArgsPaths(host, tool, args);
           const result = driver.call(host, tool, translated);
           await deps.lease.acquire(owner, leaseOptions(deps, host));

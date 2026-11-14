@@ -14,6 +14,7 @@ import {
   agentDesktopCallTimeoutMs,
   agentDesktopPlatform,
   agentDesktopSession,
+  agentDesktopTakesForeground,
   createAgentDesktopDriver,
   unwrapSingleBatch,
 } from "./agent-desktop.ts";
@@ -428,5 +429,34 @@ describe("agent-desktop permissions on macOS", () => {
     });
     expect(driver.call(host("macos"), "snapshot", {}).stderr).toContain('"Editor"');
     expect(driver.planInstall(host("macos")).setup?.[0]).toContain('"Editor"');
+  });
+});
+
+describe("agentDesktopTakesForeground", () => {
+  test("headless delivery, the default, never takes the foreground", () => {
+    expect(agentDesktopTakesForeground("click", { ref_id: "@s1:e2" })).toBe(false);
+    expect(agentDesktopTakesForeground("launch", { app: "Notes" })).toBe(false);
+    expect(
+      agentDesktopTakesForeground("batch", { commands: [{ command: "click", args: {} }] }),
+    ).toBe(false);
+  });
+
+  test("headed delivery, an activating launch and focus-window do", () => {
+    expect(agentDesktopTakesForeground("type", { text: "hi", headed: true })).toBe(true);
+    expect(agentDesktopTakesForeground("launch", { app: "Notes", activate: true })).toBe(true);
+    expect(agentDesktopTakesForeground("focus-window", { window_id: "w1" })).toBe(true);
+  });
+
+  test("a batch counts its own headed flag and each command", () => {
+    const click = { command: "click", args: { ref_id: "@s1:e2" } };
+    expect(agentDesktopTakesForeground("batch", { commands: [click], headed: true })).toBe(true);
+    expect(
+      agentDesktopTakesForeground("batch", {
+        commands: [click, { command: "launch", args: { app: "Notes", activate: true } }],
+      }),
+    ).toBe(true);
+    expect(
+      agentDesktopTakesForeground("batch", { commands: [click, { command: "focus-window" }] }),
+    ).toBe(true);
   });
 });

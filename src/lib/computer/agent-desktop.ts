@@ -222,6 +222,32 @@ export const AGENT_DESKTOP_COMMANDS: Readonly<Record<string, readonly string[]>>
 /** Arg keys whose string values are file paths in the caller's syntax. */
 const PATH_ARG_KEYS = new Set(["output_path", "out", "image", "path", "trace", "screenshot"]);
 
+/** Commands that always bring a window to the front. */
+const AGENT_DESKTOP_FOREGROUND_COMMANDS: ReadonlySet<string> = new Set(["focus-window"]);
+
+function commandTakesForeground(command: unknown, args: unknown): boolean {
+  if (typeof command === "string" && AGENT_DESKTOP_FOREGROUND_COMMANDS.has(command)) return true;
+  if (!args || typeof args !== "object") return false;
+  const record = args as Record<string, unknown>;
+  return record.headed === true || record.activate === true;
+}
+
+/**
+ * Whether one call may take the foreground: `headed` delivery (the pointer
+ * moves and the window takes focus), `activate` on a launch, or
+ * `focus-window`, on the call itself or on any command of a `batch`. Headless
+ * delivery, the default, never does.
+ */
+export function agentDesktopTakesForeground(tool: string, args: Record<string, unknown>): boolean {
+  if (commandTakesForeground(tool, args)) return true;
+  if (tool !== "batch" || !Array.isArray(args.commands)) return false;
+  return args.commands.some((entry) => {
+    if (!entry || typeof entry !== "object") return false;
+    const step = entry as Record<string, unknown>;
+    return commandTakesForeground(step.command, step.args);
+  });
+}
+
 /** Session names the binary accepts: letters, digits, `-` and `_`, at most 64. */
 export function agentDesktopSession(label: string): string {
   const cleaned = label.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
@@ -595,6 +621,7 @@ export function createAgentDesktopDriver(deps: AgentDesktopDeps = {}): DesktopDr
     hasDaemon: false,
     callTimeoutMs: AGENT_DESKTOP_CALL_TIMEOUT_MS,
     callTimeoutFor: agentDesktopCallTimeoutMs,
+    takesForeground: agentDesktopTakesForeground,
     backgroundProcesses,
     stopBackgroundProcesses,
     planInstall,

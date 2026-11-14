@@ -168,6 +168,33 @@ export interface CuaDeps {
 }
 
 /** The pin key for this host, or undefined when no build covers it. */
+/** Tools that always bring a window to the front. */
+const CUA_FOREGROUND_TOOLS: ReadonlySet<string> = new Set(["bring_to_front"]);
+/** A `run_script` program that asks for foreground delivery anywhere in its source. */
+const CUA_FOREGROUND_SCRIPT = /\bforeground\b|\bbring_to_front\b/;
+
+function asksForForeground(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(asksForForeground);
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  if (record.delivery_mode === "foreground" || record.foreground_fallback === true) return true;
+  if (typeof record.tool === "string" && CUA_FOREGROUND_TOOLS.has(record.tool)) return true;
+  return Object.values(record).some(asksForForeground);
+}
+
+/**
+ * Whether one call may take the foreground: an explicit
+ * `delivery_mode: "foreground"` (on the call, or on any step of `run_steps`),
+ * `run_steps`' `foreground_fallback`, `bring_to_front`, or a `run_script`
+ * program that names either. Background delivery, the default, never does.
+ */
+export function cuaTakesForeground(tool: string, args: Record<string, unknown>): boolean {
+  if (CUA_FOREGROUND_TOOLS.has(tool)) return true;
+  if (tool === "run_script" && typeof args.script === "string")
+    return CUA_FOREGROUND_SCRIPT.test(args.script);
+  return asksForForeground(args);
+}
+
 export function cuaPlatform(host: HostInfo, arch: string): CuaPlatform | undefined {
   if (host.kind === "macos") return "darwin-universal";
   const mapped = archLabel(arch);
@@ -556,6 +583,7 @@ export function createCuaDriver(deps: CuaDeps = {}): DesktopDriver {
       "tool calls with JSON arguments; accessibility, keyboard and pixel routes; screenshots; isolated browser control through CDP",
     hasDaemon: true,
     callTimeoutMs: CALL_TIMEOUT_MS,
+    takesForeground: cuaTakesForeground,
     planInstall,
     install,
     installedExecutable,

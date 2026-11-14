@@ -26,6 +26,7 @@ import {
   createComputerCommand,
   EXIT_APPROVAL_REQUIRED,
   EXIT_LEASE_HELD,
+  EXIT_PERSON_ACTIVE,
   type GrantsApi,
   redactInlineScreenshots,
   resolveLeaseOwner,
@@ -445,6 +446,123 @@ describe("computer call", () => {
     const cap = await run(["call", "click", "{}"], { driver });
     expect(cap.exitCode()).toBe(7);
     expect(cap.stderr.join("")).toContain("boom");
+  });
+});
+
+describe("computer call before a foreground action", () => {
+  /** A driver that treats `delivery_mode: "foreground"` as a foreground action. */
+  function foregroundDriver(): FakeDriver {
+    const driver = fakeDriver();
+    driver.takesForeground = (_tool, args) => args.delivery_mode === "foreground";
+    return driver;
+  }
+
+  /** Idle readings in order (the last repeats) and a clock that moves only when the wait sleeps. */
+  function quietDeps(readings: (number | null)[]) {
+    let clock = NOW;
+    let index = 0;
+    const probes: number[] = [];
+    return {
+      probes,
+      deps: {
+        personIdleMs: () => {
+          probes.push(clock - NOW);
+          return readings[Math.min(index++, readings.length - 1)] ?? null;
+        },
+        sleep: async (ms: number) => {
+          clock += ms;
+        },
+        now: () => clock,
+      },
+    };
+  }
+
+  const FOREGROUND = '{"pid":1,"delivery_mode":"foreground"}';
+
+  test("a background action never reads the person's activity", async () => {
+    const driver = foregroundDriver();
+    const quiet = quietDeps([0]);
+    const cap = await run(["call", "click", '{"pid":1}'], { driver, ...quiet.deps });
+    expect(cap.exitCode()).toBe(0);
+    expect(quiet.probes).toEqual([]);
+    expect(driver.calls).toHaveLength(1);
+  });
+
+  test("it is sent at once when the person is away", async () => {
+    const driver = foregroundDriver();
+    const quiet = quietDeps([9000]);
+    const cap = await run(["call", "click", FOREGROUND], { driver, ...quiet.deps });
+    expect(cap.exitCode()).toBe(0);
+    expect(driver.calls).toHaveLength(1);
+    expect(cap.stderr).toEqual([]);
+  });
+
+  test("it waits for the person to stop typing, then says how long it waited", async () => {
+    const driver = foregroundDriver();
+    const quiet = quietDeps([0, 1000, 3000]);
+    const cap = await run(["call", "click", FOREGROUND], { driver, ...quiet.deps });
+    expect(cap.exitCode()).toBe(0);
+    expect(quiet.probes).toEqual([0, 3000, 5000]);
+    expect(driver.calls).toHaveLength(1);
+    expect(cap.stderr.join("")).toContain("Waited 5s");
+  });
+
+  test("it is refused, with nothing sent, when the person stays busy", async () => {
+    const driver = foregroundDriver();
+    const quiet = quietDeps([0]);
+    const cap = await run(["call", "click", FOREGROUND], { driver, ...quiet.deps });
+    expect(cap.exitCode()).toBe(EXIT_PERSON_ACTIVE);
+    expect(cap.errors[0]?.code).toBe("person_active");
+    expect(cap.errors[0]?.message).toContain("waited 60s for 3s of quiet");
+    expect(driver.calls).toEqual([]);
+  });
+
+  test("the lease covers the wait, and returns to its normal length after a refusal", async () => {
+    const lease = fakeLease();
+    const quiet = quietDeps([0]);
+    await run(["call", "click", FOREGROUND], { driver: foregroundDriver(), lease, ...quiet.deps });
+    expect(lease.acquired.map((o) => o.idleMs)).toEqual([180_000, 120_000]);
+  });
+
+  test("a host with no reading does not hold the action back", async () => {
+    const driver = foregroundDriver();
+    const quiet = quietDeps([null]);
+    const cap = await run(["call", "click", FOREGROUND], { driver, ...quiet.deps });
+    expect(cap.exitCode()).toBe(0);
+    expect(driver.calls).toHaveLength(1);
+  });
+
+  test("the project sets both periods, and 0 turns the wait off", async () => {
+    const tuned = quietDeps([0]);
+    const cap = await run(["call", "click", FOREGROUND], {
+      driver: foregroundDriver(),
+      config: () => cfg("on", { foreground_quiet_seconds: 1, foreground_wait_seconds: 2 }),
+      ...tuned.deps,
+    });
+    expect(cap.exitCode()).toBe(EXIT_PERSON_ACTIVE);
+    expect(cap.errors[0]?.message).toContain("waited 2s for 1s of quiet");
+
+    const driver = foregroundDriver();
+    const off = quietDeps([0]);
+    const sent = await run(["call", "click", FOREGROUND], {
+      driver,
+      config: () => cfg("on", { foreground_quiet_seconds: 0 }),
+      ...off.deps,
+    });
+    expect(sent.exitCode()).toBe(0);
+    expect(off.probes).toEqual([]);
+    expect(driver.calls).toHaveLength(1);
+  });
+
+  test("status reports the wait", async () => {
+    const cap = await run(["status"]);
+    expect(cap.text.join("\n")).toContain(
+      "quiet:     a foreground action waits until the keyboard and mouse have been quiet for 3s, for up to 60s",
+    );
+    const off = await run(["status"], {
+      config: () => cfg("on", { foreground_quiet_seconds: 0 }),
+    });
+    expect(off.text.join("\n")).toContain("sent at once (the quiet wait is off)");
   });
 });
 

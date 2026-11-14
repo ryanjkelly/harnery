@@ -866,6 +866,19 @@ describe("readComputerConfig", () => {
     });
   });
 
+  test("the quiet wait before a foreground action is tunable, and 0 is a setting", () => {
+    const read = (body: string) =>
+      readComputerConfig(makeRoot(`{"computer":{"mode":"on",${body}}}`), none);
+    expect(read('"foreground_quiet_seconds":5,"foreground_wait_seconds":90')).toMatchObject({
+      foreground_quiet_seconds: 5,
+      foreground_wait_seconds: 90,
+    });
+    expect(read('"foreground_quiet_seconds":0').foreground_quiet_seconds).toBe(0);
+    const bad = read('"foreground_quiet_seconds":-1,"foreground_wait_seconds":"long"');
+    expect(bad.foreground_quiet_seconds).toBeUndefined();
+    expect(bad.foreground_wait_seconds).toBeUndefined();
+  });
+
   test("a malformed or contradictory section is off and says why", () => {
     const bad = readComputerConfig(makeRoot('{"computer":{"mode":"yes"}}'), none);
     expect(bad).toMatchObject({ enabled: false, mode: "off" });

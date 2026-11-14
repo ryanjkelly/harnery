@@ -377,6 +377,20 @@
           "default": 30,
           "description": "How long `computer call` waits for another agent's lease before failing. `--wait` overrides per call."
         },
+        "foreground_quiet_seconds": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 600,
+          "default": 3,
+          "description": "How long the person's keyboard and mouse must have been quiet before `computer call` sends a foreground action. 0 turns the wait off."
+        },
+        "foreground_wait_seconds": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 3600,
+          "default": 60,
+          "description": "How long `computer call` waits for that quiet period before it refuses the foreground action with exit 5."
+        },
         "sign_in": {
           "type": "boolean",
           "default": false,

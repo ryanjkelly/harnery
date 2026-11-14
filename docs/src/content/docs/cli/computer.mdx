@@ -77,7 +77,9 @@ desktop control on; a malformed or contradictory section counts as `off` and
 `status` says why. Where the project is not `off`, `install`, `up`, `call`, and
 `lease acquire` work, and `harn init` renders the `harn-computer` skill into
 each adapter's skills directory. Optional tunables: `grant_minutes`,
-`idle_seconds` (default 120), and `wait_seconds` (default 30). See
+`idle_seconds` (default 120), `wait_seconds` (default 30),
+`foreground_quiet_seconds` (default 3), and `foreground_wait_seconds`
+(default 60). See
 [`computer` in the config schema](/reference/config-schema/#computer) and
 [decision record 0230](/decisions/0230-desktop-control-approval-modes/).
 
@@ -261,15 +263,51 @@ object (default `{}`). In order, the command:
    Desktop is held by agent-Ada (generation 7, idle-expires in 84s). Wait, or ask them to run `harn computer lease release`.
    ```
 3. Starts the driver's daemon if it has one and it is not running.
-4. Translates file paths in the arguments and results between WSL and Windows
+4. Holds a [foreground action](#foreground-actions-wait-for-the-person) until
+   the person's keyboard and mouse are quiet, or exits 5 with nothing sent.
+5. Translates file paths in the arguments and results between WSL and Windows
    syntax, so `screenshot_out_file` or `output_path` can name a WSL path.
-5. Replaces the value of any key ending in `png_b64`, and any other string of
+6. Replaces the value of any key ending in `png_b64`, and any other string of
    2,048 or more base64 characters, with a short `<omitted N chars; …>` note,
    so one state read cannot flood an agent's context. Pass `--keep-screenshot`
    to keep the inline image, or write it to a file and read that file.
 
 The driver's stderr passes through and its exit code becomes the command's
 exit code.
+
+### Foreground actions wait for the person
+
+Most calls work in the background: the driver presses a control through the
+accessibility tree and no window comes to the front. Some targets ignore that
+kind of input, and the driver then needs a foreground action, which brings the
+agent's window to the front and sends real keyboard and mouse input. While it
+runs, anything the person types lands in the agent's window.
+
+So `call` reads how long the person's keyboard and mouse have been quiet
+before it sends one. If that is at least `foreground_quiet_seconds` (default
+3), the action goes at once. Otherwise the call waits, for up to
+`foreground_wait_seconds` (default 60), and then refuses:
+
+```
+The person is using the keyboard or mouse, so this foreground action was not sent (waited 60s for 3s of quiet).
+```
+
+That refusal exits 5 and sends nothing to the driver. The agent keeps the
+lease and should try once more later. Background actions never wait.
+
+| Driver | Counts as a foreground action |
+|---|---|
+| cua | `delivery_mode: "foreground"` on the call or on any step of `run_steps`; `run_steps` with `foreground_fallback: true`; `bring_to_front`; a `run_script` program that names either |
+| agent-desktop | `"headed": true`; `"activate": true` on a launch; `focus-window`; any of those inside a `batch` |
+
+The reading comes from the operating system: Windows (also from WSL) and
+macOS always give one, and an X11 Linux desktop gives one when `xprintidle`
+is installed. A host with no reading sends the action without waiting. The
+systems count an agent's own foreground input as input, so two foreground
+actions in a row are at least one quiet period apart. Set
+`foreground_quiet_seconds` to `0` on a machine nobody else types on.
+`status` shows the setting on its `quiet:` line. See
+[decision record 0248](/decisions/0248-hold-foreground-actions-until-the-person-is-quiet/).
 
 ## computer lease
 
@@ -298,4 +336,5 @@ holder increments the generation.
 | 1 | Error: computer use disabled, unsupported host, driver not installed, bad arguments, or a failing health check |
 | 3 | The desktop lease is held by another agent |
 | 4 | Desktop control needs the person's approval first, or they declined or did not answer |
+| 5 | A foreground action was held back because the person is using the keyboard or mouse; nothing was sent |
 | other | `call`, `tools`, and `describe` pass through the driver's exit code |

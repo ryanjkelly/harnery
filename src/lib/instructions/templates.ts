@@ -487,6 +487,12 @@ lists them.
   invoke) over typing and coordinate clicks.
 - Never pass cua's \`delivery_mode: "foreground"\` unless the driver returned
   \`background_unavailable\` or \`delivery_failed\` for that action.
+- A foreground action (cua's \`delivery_mode: "foreground"\` or
+  \`bring_to_front\`; agent-desktop's \`"headed": true\`, \`"activate": true\` or
+  \`focus-window\`) takes the person's keyboard and mouse, so \`call\` first
+  waits until they have stopped typing and moving the mouse. If they stay
+  busy it exits 5 and sends nothing: do other work and try once more later.
+  Never switch the wait off or go around it to save time.
 - For a browser page that needs no sign-in, use cua's \`browser_prepare\` with
   \`allow_launch: true\` and \`profile: {"mode": "isolated_new"}\`. The driver
   controls that browser through the DevTools protocol, and sites can tell.

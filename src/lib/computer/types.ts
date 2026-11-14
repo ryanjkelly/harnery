@@ -138,6 +138,13 @@ export interface DesktopDriver {
    * arguments. Falls back to `callTimeoutMs` when absent.
    */
   callTimeoutFor?(tool: string, args: Record<string, unknown>): number;
+  /**
+   * True when this call may bring a window to the front or send real keyboard
+   * and mouse input, so it would collide with a person who is typing. The
+   * command waits for their input to go quiet first (ADR 0248). Absent means
+   * the driver never does that.
+   */
+  takesForeground?(tool: string, args: Record<string, unknown>): boolean;
   /** Background processes the driver left running on this host (see BackgroundProcess). */
   backgroundProcesses?(host: HostInfo): BackgroundProcess[];
   /** Stop every background process; returns the ones still running afterwards. */
