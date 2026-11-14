@@ -23,8 +23,10 @@
 //
 // Toolkit tier: this module must not import src/core (layering check).
 
+import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
+  existsSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -76,6 +78,12 @@ export interface AdmissionEntry {
   capacity?: number;
   /** Set on holders that had to wait: the holder labels they first waited behind. */
   waited_behind?: string[];
+  /**
+   * Start time of the queueing process, recorded only where /proc is absent
+   * (macOS). There a dead holder's pid can be reused by an unrelated process,
+   * which would otherwise keep its ticket alive until the TTL.
+   */
+  start?: string;
 }
 
 export interface AdmissionWaitInfo {
@@ -188,6 +196,7 @@ function listLive(
             ...(typeof record.acquired_at === "string" ? { acquired_at: record.acquired_at } : {}),
             ...(typeof record.cwd === "string" ? { cwd: record.cwd } : {}),
             ...(typeof record.capacity === "number" ? { capacity: record.capacity } : {}),
+            ...(typeof record.start === "string" ? { start: record.start } : {}),
             ...(Array.isArray(record.waited_behind)
               ? {
                   waited_behind: record.waited_behind.filter(
@@ -216,7 +225,7 @@ function listLive(
       continue;
     }
     const age = now - Date.parse(entry.created_at);
-    const dead = !processMayBeAlive(entry.pid);
+    const dead = !processMayBeAlive(entry.pid) || holderPidReused(entry);
     if (dead || Number.isNaN(age) || age > ttlMs) {
       let pruned = false;
       try {
@@ -302,6 +311,8 @@ export async function acquireAdmission(
     cwd: process.cwd(),
     capacity: config.capacity,
   };
+  const start = holderStartToken(process.pid);
+  if (start) myEntry.start = start;
   let waitedBehind: string[] | undefined;
   const pressureWait = options.pressureWaitMs ? { pressure_wait_ms: options.pressureWaitMs } : {};
   const myName = `${String(Date.now()).padStart(13, "0")}-${process.pid}-${randomUUID().slice(0, 8)}.json`;
@@ -527,4 +538,72 @@ export function listAdmissionResources(dir: string): string[] {
   } catch {
     return [];
   }
+}
+
+/** Read a process start time; null when it cannot be read. */
+export type AdmissionStartReader = (pid: number) => string | null;
+
+/**
+ * Whether ticket holders are identified by start time as well as pid. Only
+ * where Linux /proc is absent; Linux keeps the plain pid check.
+ */
+export function admissionStartIdentityApplies(): boolean {
+  return process.platform !== "win32" && !existsSync("/proc/self/stat");
+}
+
+/**
+ * `ps -o lstart=` with the timezone and locale pinned, so every reader
+ * renders the same instant the same way.
+ */
+const psStartReader: AdmissionStartReader = (pid) => {
+  try {
+    const out = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+      encoding: "utf8",
+      timeout: 2_000,
+      env: { ...process.env, TZ: "UTC", LC_ALL: "C" },
+    });
+    const value = out.status === 0 ? out.stdout.split("\n")[0]?.trim().replace(/\s+/g, " ") : "";
+    return value ? value : null;
+  } catch {
+    return null;
+  }
+};
+
+/** The start token to record for `pid`, or undefined where none applies. */
+export function holderStartToken(
+  pid: number,
+  applies: boolean = admissionStartIdentityApplies(),
+  read: AdmissionStartReader = psStartReader,
+): string | undefined {
+  return applies ? (read(pid) ?? undefined) : undefined;
+}
+
+/** Live holders already confirmed, so a waiter does not spawn ps on every poll. */
+const confirmedHolders = new Map<string, number>();
+const CONFIRM_TTL_MS = 30_000;
+
+/**
+ * True only when the entry recorded a start time and the live process now
+ * on that pid started at a different time: the holder died and its pid was
+ * reused. An unreadable start time counts as the same process.
+ */
+export function holderPidReused(
+  entry: Pick<AdmissionEntry, "pid" | "start">,
+  applies: boolean = admissionStartIdentityApplies(),
+  read: AdmissionStartReader = psStartReader,
+  now: number = Date.now(),
+): boolean {
+  if (!applies || !entry.start) return false;
+  const key = `${entry.pid}:${entry.start}`;
+  const confirmed = confirmedHolders.get(key);
+  if (confirmed !== undefined && now - confirmed < CONFIRM_TTL_MS) return false;
+  const current = read(entry.pid);
+  if (current === null) return false;
+  if (current !== entry.start) {
+    confirmedHolders.delete(key);
+    return true;
+  }
+  if (confirmedHolders.size > 1_000) confirmedHolders.clear();
+  confirmedHolders.set(key, now);
+  return false;
 }
