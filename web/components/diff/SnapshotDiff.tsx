@@ -153,7 +153,7 @@ export function SnapshotDiff({
                 <tr key={`c-${idx}`}>
                   <td
                     colSpan={4}
-                    className="px-3 py-1 text-center text-[10px] text-muted-foreground/70 bg-background/60 border-t border-b border-border/40 italic"
+                    className="px-3 py-1 text-center text-[10px] text-subtle-foreground bg-background/60 border-t border-b border-border/40 italic"
                   >
                     … {item.count} unchanged line
                     {item.count === 1 ? "" : "s"} …
@@ -349,7 +349,7 @@ function DiffRow({ row }: { row: Row }) {
 
   return (
     <tr className="align-top">
-      <td className="select-none w-10 text-right pr-1.5 text-[10px] text-muted-foreground/60 tabular-nums">
+      <td className="select-none w-10 text-right pr-1.5 text-[10px] text-subtle-foreground tabular-nums">
         {row.leftNo ?? ""}
       </td>
       <td
@@ -360,7 +360,7 @@ function DiffRow({ row }: { row: Row }) {
       >
         {leftContent}
       </td>
-      <td className="select-none w-10 text-right pr-1.5 text-[10px] text-muted-foreground/60 tabular-nums">
+      <td className="select-none w-10 text-right pr-1.5 text-[10px] text-subtle-foreground tabular-nums">
         {row.rightNo ?? ""}
       </td>
       <td

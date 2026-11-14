@@ -60,7 +60,7 @@ export default async function ImagesPage() {
             <div className="flex items-center gap-3">
               <span>{meta.distinct.toLocaleString()} distinct</span>
               <span>{meta.total_touches.toLocaleString()} touches</span>
-              <code className="font-mono text-muted-foreground/80">.harnery/images/</code>
+              <code className="font-mono text-subtle-foreground">.harnery/images/</code>
             </div>
           }
         />

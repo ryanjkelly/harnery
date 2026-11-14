@@ -35,7 +35,7 @@ export function AttentionReplayBell() {
         data-attention-replay
         onClick={replay}
         disabled={disabled}
-        className="text-muted-foreground hover:text-foreground rounded p-1 hover:bg-muted/60 disabled:opacity-35 disabled:hover:bg-transparent disabled:hover:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+        className="text-muted-foreground hover:text-foreground rounded p-1 hover:bg-muted/60 disabled:opacity-35 disabled:hover:bg-transparent disabled:hover:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         aria-label="Replay the last attention alert"
       >
         <BellRing className="size-5" strokeWidth={1.5} aria-hidden />

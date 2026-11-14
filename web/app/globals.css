@@ -22,6 +22,7 @@
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
+  --color-subtle-foreground: var(--subtle-foreground);
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
@@ -42,24 +43,36 @@
 }
 
 :root {
+  /* One hue tints every neutral, so greys read as one family instead of flat
+   * black-and-white. 250 is the hue of the brand charcoal. Chroma stays low
+   * (0.003 to 0.02): the tint should be felt, not seen. */
+  --theme-hue: 250;
   --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
+  --foreground: oklch(0.145 0.012 var(--theme-hue));
   --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
+  --card-foreground: var(--foreground);
   --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
+  --popover-foreground: var(--foreground);
+  --primary: oklch(0.205 0.012 var(--theme-hue));
+  --primary-foreground: oklch(0.985 0.003 var(--theme-hue));
+  --secondary: oklch(0.967 0.005 var(--theme-hue));
+  --secondary-foreground: oklch(0.205 0.012 var(--theme-hue));
+  --muted: oklch(0.967 0.005 var(--theme-hue));
+  /* Secondary text. Holds 4.5:1 on background, card and muted in both themes. */
+  --muted-foreground: oklch(0.5 0.014 var(--theme-hue));
+  /* One step quieter than muted-foreground, for tertiary captions, connective
+   * words and empty-cell dashes. Use it instead of text-muted-foreground/NN:
+   * an alpha blend drops to about 2.4:1, and this token holds 4.5:1 on
+   * background, card and muted in both themes. */
+  --subtle-foreground: oklch(0.54 0.012 var(--theme-hue));
+  --accent: oklch(0.967 0.005 var(--theme-hue));
+  --accent-foreground: oklch(0.205 0.012 var(--theme-hue));
   --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
+  --border: oklch(0.922 0.006 var(--theme-hue));
+  --input: oklch(0.922 0.006 var(--theme-hue));
+  /* The focus indicator colour. Drawn solid, it holds 3:1 against every
+   * surface in both themes (WCAG 1.4.11). */
+  --ring: oklch(0.52 0.02 var(--theme-hue));
   --positive: oklch(0.55 0.16 150);
   --positive-soft: oklch(0.94 0.07 150);
   --negative: oklch(0.55 0.22 27);
@@ -70,24 +83,23 @@
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
+  --background: oklch(0.145 0.008 var(--theme-hue));
+  --foreground: oklch(0.985 0.004 var(--theme-hue));
+  --card: oklch(0.205 0.011 var(--theme-hue));
+  --popover: oklch(0.205 0.011 var(--theme-hue));
+  --primary: oklch(0.922 0.006 var(--theme-hue));
+  --primary-foreground: oklch(0.205 0.012 var(--theme-hue));
+  --secondary: oklch(0.269 0.013 var(--theme-hue));
+  --secondary-foreground: oklch(0.985 0.004 var(--theme-hue));
+  --muted: oklch(0.269 0.013 var(--theme-hue));
+  --muted-foreground: oklch(0.72 0.012 var(--theme-hue));
+  --subtle-foreground: oklch(0.66 0.012 var(--theme-hue));
+  --accent: oklch(0.269 0.013 var(--theme-hue));
+  --accent-foreground: oklch(0.985 0.004 var(--theme-hue));
   --destructive: oklch(0.704 0.191 22.216);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
+  --ring: oklch(0.7 0.02 var(--theme-hue));
   --positive: oklch(0.74 0.17 150);
   --positive-soft: oklch(0.3 0.05 150);
   --negative: oklch(0.72 0.19 22);
@@ -97,7 +109,7 @@
 
 @layer base {
   * {
-    @apply border-border outline-ring/50;
+    @apply border-border outline-ring;
   }
   body {
     @apply bg-background text-foreground;
@@ -115,6 +127,45 @@
   pre,
   samp {
     @apply font-mono;
+  }
+}
+
+/* Every clickable control shows the pointer. Browsers give buttons the
+ * default arrow, so without this an action looks inert until clicked. In the
+ * base layer with :where() (no specificity), so a cursor utility on a help
+ * trigger, drag handle or resize grip still wins. */
+@layer base {
+  :where(a[href], button, summary, select, label[for], input[type="button"], input[type="submit"], input[type="reset"], input[type="checkbox"], input[type="radio"], [role="button"], [role="link"], [role="tab"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="checkbox"], [role="radio"], [role="switch"], [role="option"]):not(:disabled):not([aria-disabled="true"]):not([data-disabled]) {
+    cursor: pointer;
+  }
+  :where(button, select, input, [role="button"], [role="tab"], [role="menuitem"], [role="option"]):is(:disabled, [aria-disabled="true"], [data-disabled]) {
+    cursor: not-allowed;
+  }
+}
+
+/* iOS Safari zooms the page when a focused form control's text is under 16px
+ * and never zooms back out. Forcing 16px at phone widths removes the trigger;
+ * desktop keeps the dense sizes. Unlayered and !important on purpose: it must
+ * outrank Tailwind's utility layer and inline styles. Pinch-zoom stays on. */
+@media (max-width: 767px) {
+  input,
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}
+
+/* Reduced motion, app-wide. Every transition and smooth scroll is cut here, so
+ * a component needs no guard of its own for them. Keyframe animations are not
+ * cut: each one that moves (attention, log flow) carries its own guard, and a
+ * spinner keeps turning because it is the only sign that work is in flight. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0s !important;
+    transition-delay: 0s !important;
+    scroll-behavior: auto !important;
   }
 }
 
@@ -239,7 +290,7 @@
 /* Live structured-log flow. Events use DOM buttons rather than canvas so
  * every visible point remains focusable and inspectable. */
 .log-flow-control {
-  @apply inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 text-xs font-medium text-muted-foreground transition hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/40;
+  @apply inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 text-xs font-medium text-muted-foreground transition hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring;
 }
 
 .log-flow-control svg { @apply size-3.5; }

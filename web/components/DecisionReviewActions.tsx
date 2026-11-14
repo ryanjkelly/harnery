@@ -94,7 +94,7 @@ export function DecisionReviewActions({ decisionId }: { decisionId: string }) {
           onChange={(e) => setNote(e.target.value)}
           placeholder="Optional note (why you overrode, what to change)…"
           rows={2}
-          className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+          className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         />
         <div className="flex flex-wrap gap-2 [&>button]:min-h-11 sm:[&>button]:min-h-0">
           {VERDICTS.map(({ verdict, label, hint, Icon, cls }) => (

@@ -47,7 +47,7 @@ const COLORS = {
   number: "text-amber-600 dark:text-amber-400",
   bool: "text-violet-600 dark:text-violet-400",
   null: "text-rose-600 dark:text-rose-400",
-  punct: "text-muted-foreground/70",
+  punct: "text-subtle-foreground",
 } as const;
 
 /** Max levels of JSON-in-string unwrapping. A guardrail, not a functional

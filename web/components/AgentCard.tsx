@@ -22,7 +22,7 @@ export function AgentCard({ hb, stale }: { hb: Heartbeat; stale: boolean }) {
       <Link
         href={`/agents/${encodeURIComponent(hb.instance_id)}`}
         aria-label={`Open agent ${hb.name}`}
-        className="absolute inset-0 z-0 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+        className="absolute inset-0 z-0 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
       />
       <CardHeader className="relative z-10 pointer-events-none">
         <CardTitle className="w-fit pointer-events-auto text-base normal-case tracking-normal text-foreground">
@@ -61,7 +61,7 @@ export function AgentCard({ hb, stale }: { hb: Heartbeat; stale: boolean }) {
 function Row({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex gap-2">
-      <span className="text-muted-foreground/70 tabular-nums shrink-0 w-16">{label}</span>
+      <span className="text-subtle-foreground tabular-nums shrink-0 w-16">{label}</span>
       <span className="text-foreground/90 truncate">{value}</span>
     </div>
   );

@@ -388,7 +388,7 @@ function TimelineView({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search entry bodies…"
-            className="w-full text-xs pl-7 pr-2 py-1.5 rounded-md border border-border/60 bg-muted/10 focus:outline-none focus:ring-2 focus:ring-ring/40"
+            className="w-full text-xs pl-7 pr-2 py-1.5 rounded-md border border-border/60 bg-muted/10 focus:outline-none focus:ring-2 focus:ring-ring"
           />
         </div>
         <Tooltip
@@ -586,7 +586,7 @@ function ComposeView({
           spellCheck={false}
           rows={6}
           disabled={pending}
-          className="w-full text-sm font-sans p-2 rounded-md border border-border/40 bg-background focus:outline-none focus:ring-2 focus:ring-ring/40 resize-y"
+          className="w-full text-sm font-sans p-2 rounded-md border border-border/40 bg-background focus:outline-none focus:ring-2 focus:ring-ring resize-y"
           placeholder={`Write a ${category} entry…`}
         />
         <div className="flex items-center justify-between gap-3 flex-wrap text-[11px] text-muted-foreground">
@@ -858,7 +858,7 @@ function ReplaceEditor({
           onChange={(e) => setDraft(e.target.value)}
           spellCheck={false}
           rows={12}
-          className="w-full text-xs font-mono p-2 rounded-md border border-border/40 bg-background focus:outline-none focus:ring-2 focus:ring-ring/40 resize-y"
+          className="w-full text-xs font-mono p-2 rounded-md border border-border/40 bg-background focus:outline-none focus:ring-2 focus:ring-ring resize-y"
         />
       )}
       <div className="flex items-center justify-between gap-3 flex-wrap text-[11px] text-muted-foreground">

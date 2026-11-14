@@ -84,7 +84,7 @@ export default function ArchiveRenderer({ meta, path }: { meta: FileMeta; path: 
               {e.name}
             </span>
             {!e.isDir && (
-              <span className="shrink-0 tabular-nums text-muted-foreground/60">
+              <span className="shrink-0 tabular-nums text-subtle-foreground">
                 {fmtSize(e.size)}
               </span>
             )}

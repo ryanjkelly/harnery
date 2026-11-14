@@ -65,7 +65,7 @@ export default function HtmlRenderer({
           </ModeButton>
         )}
         {mode === "preview" && (
-          <span className="ml-2 text-[10px] text-muted-foreground/70">
+          <span className="ml-2 text-[10px] text-subtle-foreground">
             sandboxed · scripts disabled · isolated origin
           </span>
         )}

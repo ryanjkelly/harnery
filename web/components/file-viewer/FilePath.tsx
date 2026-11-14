@@ -36,7 +36,7 @@ export function FilePath({
         open(path);
       }}
       title={title ?? `Open ${path}`}
-      className={`cursor-pointer rounded-sm text-left underline decoration-dotted decoration-muted-foreground/40 underline-offset-2 transition-colors hover:text-foreground hover:decoration-foreground/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/50 ${className ?? ""}`}
+      className={`cursor-pointer rounded-sm text-left underline decoration-dotted decoration-muted-foreground/40 underline-offset-2 transition-colors hover:text-foreground hover:decoration-foreground/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${className ?? ""}`}
     >
       {display ?? path}
     </button>

@@ -120,7 +120,7 @@ export function LogFlow({ initialSnapshot }: { initialSnapshot: LogFlowSnapshot 
               onChange={(event) => setQuery(event.target.value)}
               placeholder="Filter event names"
               aria-label="Filter event names"
-              className="h-8 w-48 rounded-md border border-input bg-background pl-8 pr-3 text-xs outline-none focus:ring-2 focus:ring-ring/40"
+              className="h-8 w-48 rounded-md border border-input bg-background pl-8 pr-3 text-xs outline-none focus:ring-2 focus:ring-ring"
             />
           </label>
           <fieldset className="flex items-center rounded-md border border-border/70 p-0.5">

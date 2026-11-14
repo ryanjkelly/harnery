@@ -141,7 +141,7 @@ export function NavBar({ scannedDir, compact = false }: { scannedDir: string; co
             <button
               type="button"
               onClick={() => openCommandPalette()}
-              className="inline-flex items-center gap-1.5 text-muted-foreground hover:text-foreground rounded p-1 hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+              className="inline-flex items-center gap-1.5 text-muted-foreground hover:text-foreground rounded p-1 hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               aria-label="Open command palette"
             >
               <Search className="size-4" aria-hidden />
@@ -155,7 +155,7 @@ export function NavBar({ scannedDir, compact = false }: { scannedDir: string; co
             <button
               type="button"
               onClick={() => setSettingsOpen(true)}
-              className="text-muted-foreground hover:text-foreground rounded p-1 -mr-1 hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+              className="text-muted-foreground hover:text-foreground rounded p-1 -mr-1 hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               aria-label="Display settings"
             >
               {/* Gear icon (Heroicons-style, inline so we don't add a deps) */}

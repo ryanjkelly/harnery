@@ -84,7 +84,7 @@ export default function CsvRenderer({ file }: { file: FileText }) {
       </div>
       {/* header row, same grid as body rows */}
       <div className="flex shrink-0 border-b border-border bg-muted/40">
-        <Cell width={GUTTER} className="text-right text-muted-foreground/60">
+        <Cell width={GUTTER} className="text-right text-subtle-foreground">
           #
         </Cell>
         {cols.map((_, i) => (

@@ -1249,7 +1249,7 @@ const EntryRow = memo(function EntryRow({
             version={`${entry.mtime ?? ""}:${entry.size ?? ""}:${thumbnailGeneration}`}
           >
             <Icon
-              className={grid ? "size-10 text-muted-foreground/70" : "size-4 text-muted-foreground"}
+              className={grid ? "size-10 text-subtle-foreground" : "size-4 text-muted-foreground"}
             />
           </FileThumbnail>
         </div>

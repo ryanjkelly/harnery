@@ -65,7 +65,7 @@ export default async function DecisionDetailPage({ params }: PageProps) {
               {m.review && <VerdictPill verdict={m.review.verdict} />}
               {filedBy && (
                 <span className="inline-flex items-center gap-1">
-                  <span className="text-muted-foreground/60">filed by</span>
+                  <span className="text-subtle-foreground">filed by</span>
                   <AgentChip name={filedBy} className="font-mono text-foreground/80" />
                 </span>
               )}
@@ -77,7 +77,7 @@ export default async function DecisionDetailPage({ params }: PageProps) {
                   {claimerWorking ? (
                     <span className="live-dot" aria-hidden />
                   ) : (
-                    <span className="text-muted-foreground/60">claimed by</span>
+                    <span className="text-subtle-foreground">claimed by</span>
                   )}
                   <AgentChip name={claimedBy} className="font-mono text-foreground/80" />
                   {claimerWorking && <span className={TONE.done.text}>working</span>}
@@ -86,7 +86,7 @@ export default async function DecisionDetailPage({ params }: PageProps) {
             </div>
           }
           description={
-            <span className="font-mono text-[11px] text-muted-foreground/60">{m.decision_id}</span>
+            <span className="font-mono text-[11px] text-subtle-foreground">{m.decision_id}</span>
           }
         />
 

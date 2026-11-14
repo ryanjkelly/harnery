@@ -50,7 +50,7 @@ export function ThemeControl() {
             aria-pressed={selected}
             onClick={() => setThemePreference(value)}
             className={cn(
-              "inline-flex items-center gap-1.5 rounded px-3 py-1 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+              "inline-flex items-center gap-1.5 rounded px-3 py-1 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
               selected
                 ? "bg-primary text-primary-foreground"
                 : "text-muted-foreground hover:bg-muted hover:text-foreground",

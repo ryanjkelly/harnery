@@ -46,7 +46,7 @@ export default async function EventsPage({ searchParams }: PageProps) {
           actions={
             <div className="flex items-center gap-3">
               <span>{data.meta.total_lines.toLocaleString()} events in buffer</span>
-              <code className="font-mono text-muted-foreground/80">Event Ledger V3</code>
+              <code className="font-mono text-subtle-foreground">Event Ledger V3</code>
               <Link href="/live" className="underline hover:text-foreground">
                 commands-only view →
               </Link>

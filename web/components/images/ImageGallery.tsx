@@ -195,7 +195,7 @@ function FilterBar(props: {
   unavailableReason?: string;
 }) {
   const selectCls =
-    "rounded-md border border-border bg-card px-2 py-1.5 text-xs text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40";
+    "rounded-md border border-border bg-card px-2 py-1.5 text-xs text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
   return (
     <div className="mb-3 flex shrink-0 flex-wrap items-center gap-2">
       <input
@@ -304,7 +304,7 @@ const ThumbCard = memo(function ThumbCard({
       <button
         type="button"
         onClick={() => onOpen(img.hash)}
-        className="relative aspect-4/3 w-full overflow-hidden bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+        className="relative aspect-4/3 w-full overflow-hidden bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         aria-label={`Open ${filename}`}
       >
         {img.blob_exists ? (
@@ -584,7 +584,7 @@ function DetailOverlay({
                     can open the live file the snapshot came from. */}
                 <FilePath
                   path={t.source_path}
-                  className="truncate font-mono text-[10px] text-muted-foreground/80"
+                  className="truncate font-mono text-[10px] text-subtle-foreground"
                 />
               </li>
             ))}

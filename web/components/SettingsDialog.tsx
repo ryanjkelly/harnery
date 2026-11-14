@@ -447,7 +447,7 @@ function FormatPicker({
   // string) so Tailwind's static class scanner picks up the arbitrary value.
   return (
     <div className="space-y-1">
-      <div className="grid grid-cols-[auto_12rem_minmax(0,1fr)_minmax(0,1fr)] gap-3 px-2 pb-1 text-[10px] uppercase tracking-wide text-muted-foreground/80">
+      <div className="grid grid-cols-[auto_12rem_minmax(0,1fr)_minmax(0,1fr)] gap-3 px-2 pb-1 text-[10px] uppercase tracking-wide text-subtle-foreground">
         <span />
         <span>Preset</span>
         <span>Example output</span>

@@ -56,7 +56,7 @@ export function DecisionArchiveActions({ decisionId }: { decisionId: string }) {
           value={graduatedTo}
           onChange={(e) => setGraduatedTo(e.target.value)}
           placeholder="Graduated to (e.g. docs/decisions.md#foo) — optional"
-          className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+          className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         />
         <Button
           size="sm"

@@ -211,13 +211,13 @@ export function AgentChip({
       >
         <span
           tabIndex={0}
-          className={`${labelCls} cursor-help underline decoration-dotted decoration-muted-foreground/40 underline-offset-2 hover:decoration-foreground/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 rounded-sm`}
+          className={`${labelCls} cursor-help underline decoration-dotted decoration-muted-foreground/40 underline-offset-2 hover:decoration-foreground/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm`}
         >
           {display}
         </span>
         {summary.kind === "subagent" && summary.parent && (
           <span
-            className="ml-1 font-mono text-[10px] text-muted-foreground/70 whitespace-nowrap"
+            className="ml-1 font-mono text-[10px] text-subtle-foreground whitespace-nowrap"
             title={`subagent of agent-${summary.parent}`}
           >
             ↳{summary.parent}
@@ -425,7 +425,7 @@ function AgentCardBody({
             {summary.aliases.map((a, i) => (
               <li key={i} className="font-mono text-[11px]">
                 agent-{a.name}{" "}
-                <span className="text-muted-foreground/70">
+                <span className="text-subtle-foreground">
                   (retired {relativeAgo(a.retired_at)})
                 </span>
               </li>
@@ -444,7 +444,7 @@ function AgentCardBody({
 function IdRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-center gap-1.5">
-      <span className="text-[10px] uppercase tracking-wide text-muted-foreground/70 shrink-0">
+      <span className="text-[10px] uppercase tracking-wide text-subtle-foreground shrink-0">
         {label}
       </span>
       <span className="font-mono text-[10px] break-all flex-1">{value}</span>

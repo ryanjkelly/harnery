@@ -28,7 +28,7 @@ export function EmptyState({
     >
       <div className="flex items-center gap-2">
         {icon ? (
-          <span className="shrink-0 text-muted-foreground/60 [&>svg]:size-4">{icon}</span>
+          <span className="shrink-0 text-subtle-foreground [&>svg]:size-4">{icon}</span>
         ) : null}
         <div>{children}</div>
       </div>

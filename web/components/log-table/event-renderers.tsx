@@ -224,7 +224,7 @@ function SessionEventSummary({ event }: { event: SessionEvent }) {
 function KV({ label, value }: { label: string; value: string }) {
   return (
     <span>
-      <span className="text-muted-foreground/60">{label}</span>{" "}
+      <span className="text-subtle-foreground">{label}</span>{" "}
       <span className="tabular-nums text-foreground/85">{value}</span>
     </span>
   );

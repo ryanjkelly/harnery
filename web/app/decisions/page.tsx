@@ -227,7 +227,7 @@ function DecisionCard({
   return (
     <Link
       href={`/decisions/${encodeURIComponent(d.decision_id)}`}
-      className={`block rounded-lg border ${TONE_RING[tone]} bg-card p-4 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50`}
+      className={`block rounded-lg border ${TONE_RING[tone]} bg-card p-4 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring`}
     >
       <div className="flex items-start justify-between gap-3">
         {/* min-w-0 lets the question shrink + wrap; the pill (shrink-0) stays put. */}
@@ -242,7 +242,7 @@ function DecisionCard({
         {d.review && <VerdictPill verdict={d.review.verdict} />}
         {who && (
           <span className="text-muted-foreground inline-flex items-center gap-1">
-            <span className="text-muted-foreground/60">by</span>
+            <span className="text-subtle-foreground">by</span>
             <AgentChip name={who} className="font-mono text-foreground/80" />
           </span>
         )}
@@ -253,11 +253,11 @@ function DecisionCard({
             const working = claimer.active && d.status === "deliberating";
             return (
               <span className="text-muted-foreground inline-flex items-center gap-1">
-                <span className="text-muted-foreground/60">·</span>
+                <span className="text-subtle-foreground">·</span>
                 {working ? (
                   <span className="live-dot" aria-hidden />
                 ) : (
-                  <span className="text-muted-foreground/60">claimed by</span>
+                  <span className="text-subtle-foreground">claimed by</span>
                 )}
                 <AgentChip name={claimer.name} className="font-mono text-foreground/80" />
                 {working && <span className={TONE.done.text}>working</span>}

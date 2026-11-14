@@ -528,7 +528,7 @@ export function LogTable<E>({
               : "border-border/60 focus-within:border-foreground/40",
           )}
         >
-          <Search className="size-3.5 text-muted-foreground/70 ml-2" />
+          <Search className="size-3.5 text-subtle-foreground ml-2" />
           <input
             ref={searchInputRef}
             type="text"
@@ -536,7 +536,7 @@ export function LogTable<E>({
             onChange={onSearchChange}
             onKeyDown={onSearchKey}
             placeholder={regexMode ? "regex /pattern/i" : "search… (Ctrl/⌘F)"}
-            className="bg-transparent border-0 outline-none px-2 py-1.5 text-foreground placeholder:text-muted-foreground/60 w-64 font-mono"
+            className="bg-transparent border-0 outline-none px-2 py-1.5 text-foreground placeholder:text-subtle-foreground w-64 font-mono"
             spellCheck={false}
             autoComplete="off"
           />
@@ -882,11 +882,11 @@ function LogRowInner<E>({
           {agentName ? (
             <AgentChip name={agentName} className="font-mono" prefix="" />
           ) : agentInstanceId ? (
-            <span className="text-muted-foreground/70" title={agentInstanceId}>
+            <span className="text-subtle-foreground" title={agentInstanceId}>
               {agentInstanceId.slice(0, 8)}
             </span>
           ) : (
-            <span className="text-muted-foreground/40">{NO_DATA}</span>
+            <span className="text-subtle-foreground">{NO_DATA}</span>
           )}
         </td>
         {/* `wrap-anywhere`, not `wrap-break-word`: only `anywhere` counts
@@ -1002,7 +1002,7 @@ function LogRowGroupInner<E>({
             <Badge variant={variant} className="font-mono normal-case tracking-normal">
               {kind}
             </Badge>
-            <span className="text-muted-foreground/70 tabular-nums text-[11px]">{count} lines</span>
+            <span className="text-subtle-foreground tabular-nums text-[11px]">{count} lines</span>
           </span>
         </td>
         <td
@@ -1013,16 +1013,16 @@ function LogRowGroupInner<E>({
           {agentName ? (
             <AgentChip name={agentName} className="font-mono" prefix="" />
           ) : agentInstanceId ? (
-            <span className="text-muted-foreground/70" title={agentInstanceId}>
+            <span className="text-subtle-foreground" title={agentInstanceId}>
               {agentInstanceId.slice(0, 8)}
             </span>
           ) : (
-            <span className="text-muted-foreground/40">{NO_DATA}</span>
+            <span className="text-subtle-foreground">{NO_DATA}</span>
           )}
         </td>
         <td className={cn(STACKED_SUMMARY_CELL, "min-w-0 text-muted-foreground")}>
           {expanded ? (
-            <span className="text-muted-foreground/50 italic text-[11px]">
+            <span className="text-subtle-foreground italic text-[11px]">
               {count} lines, click to collapse
             </span>
           ) : (
@@ -1030,7 +1030,7 @@ function LogRowGroupInner<E>({
               <span className="truncate block max-w-full opacity-90">
                 {renderer.renderSummary(first)}
               </span>
-              <span className="text-muted-foreground/40 shrink-0 text-[11px]">
+              <span className="text-subtle-foreground shrink-0 text-[11px]">
                 +{count - 1} more
               </span>
             </span>

@@ -21,7 +21,7 @@ function StateShell({
 }) {
   return (
     <div className="flex h-full min-h-48 flex-col items-center justify-center gap-3 p-8 text-center">
-      <div className="text-muted-foreground/70">{icon}</div>
+      <div className="text-subtle-foreground">{icon}</div>
       <p className="text-sm font-medium text-foreground">{title}</p>
       {detail && (
         <p className="max-w-md break-all font-mono text-[11px] text-muted-foreground">{detail}</p>
@@ -34,7 +34,7 @@ function StateShell({
 export function LoadingState({ path }: { path: string }) {
   return (
     <div className="flex h-full min-h-48 flex-col items-center justify-center gap-3 p-8">
-      <RefreshCw className="size-5 animate-spin text-muted-foreground/60" />
+      <RefreshCw className="size-5 animate-spin text-subtle-foreground" />
       <p className="max-w-md break-all font-mono text-[11px] text-muted-foreground">{path}</p>
     </div>
   );

@@ -199,7 +199,7 @@ function InlineEditor({
         spellCheck={false}
         disabled={pending}
         rows={Math.min(12, Math.max(3, body.split("\n").length))}
-        className="w-full text-sm font-sans p-2 rounded-md border border-border/40 bg-background focus:outline-none focus:ring-2 focus:ring-ring/40 resize-y"
+        className="w-full text-sm font-sans p-2 rounded-md border border-border/40 bg-background focus:outline-none focus:ring-2 focus:ring-ring resize-y"
       />
       <div className="flex items-center justify-between gap-2 flex-wrap text-[11px] text-muted-foreground">
         <span>

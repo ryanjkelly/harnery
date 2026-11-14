@@ -31,7 +31,7 @@ type Size =
  * - per-size svg auto-sizing via `[&_svg:not([class*='size-'])]:size-X`,
  *   so consumers can omit explicit `size-3` on icons.
  * - `active:translate-y-px` press feedback.
- * - `focus-visible:ring-2 ring-ring/50` focus state.
+ * - `focus-visible:ring-2 ring-ring` solid focus state.
  * - When `tooltip` is provided the whole button wraps in a custom
  *   <Tooltip> so hover surfaces a styled popover even on disabled
  *   buttons (the wrapper handles hover at the span level).
@@ -88,7 +88,7 @@ export const Button = React.forwardRef<
       // browser one so we don't get a double-stacked hint.
       title={tooltip ? undefined : title}
       className={cn(
-        "inline-flex shrink-0 items-center justify-center border border-transparent font-medium whitespace-nowrap transition-all outline-none select-none active:translate-y-px disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 [&_svg]:pointer-events-none [&_svg]:shrink-0",
+        "inline-flex shrink-0 items-center justify-center border border-transparent font-medium whitespace-nowrap transition-all outline-none select-none active:translate-y-px disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&_svg]:pointer-events-none [&_svg]:shrink-0",
         VARIANT_CLS[variant],
         SIZE_CLS[size],
         className,
@@ -117,7 +117,7 @@ export function buttonVariants({
   className?: string;
 } = {}): string {
   return cn(
-    "inline-flex shrink-0 items-center justify-center border border-transparent font-medium whitespace-nowrap transition-all outline-none select-none active:translate-y-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 [&_svg]:pointer-events-none [&_svg]:shrink-0",
+    "inline-flex shrink-0 items-center justify-center border border-transparent font-medium whitespace-nowrap transition-all outline-none select-none active:translate-y-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&_svg]:pointer-events-none [&_svg]:shrink-0",
     VARIANT_CLS[variant],
     SIZE_CLS[size],
     className,
