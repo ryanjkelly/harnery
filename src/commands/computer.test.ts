@@ -6,7 +6,12 @@ import { Command } from "commander";
 import { initializeV3Fixture, seedV3Session } from "../../tests/helpers/event-v3-runtime.ts";
 import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import type { EmitContext } from "../commander.ts";
-import type { ComputerMode, ComputerPreferences, ComputerProjectConfig } from "../core/config.ts";
+import type {
+  AgentWindowPatch,
+  ComputerMode,
+  ComputerPreferences,
+  ComputerProjectConfig,
+} from "../core/config.ts";
 import type {
   BrowserGuard,
   GuardDecision,
@@ -14,6 +19,7 @@ import type {
   GuardWindow,
 } from "../lib/computer/browser-guard.ts";
 import type { ConfirmRequest, ConfirmResult } from "../lib/computer/confirm.ts";
+import type { Corner, DisplaySnapshot } from "../lib/computer/displays.ts";
 import type { DesktopGrant, GrantLogEntry } from "../lib/computer/grants.ts";
 import type {
   BrowserCall,
@@ -21,6 +27,7 @@ import type {
   DaemonStatus,
   DesktopDriver,
   DesktopLease,
+  DisplayInfo,
   DriverCallResult,
   HostInfo,
   InstallPlan,
@@ -28,16 +35,21 @@ import type {
   LeaseApi,
   LeaseOptions,
   LeaseOwner,
+  Rect,
   WindowRef,
 } from "../lib/computer/types.ts";
 import {
+  type ComputerDeps,
   type ComputerDepsInput,
   createComputerCommand,
+  type DisplaysApi,
   EXIT_APPROVAL_REQUIRED,
   EXIT_LEASE_HELD,
   EXIT_PERSON_ACTIVE,
   type GrantsApi,
+  placeWindow,
   redactInlineScreenshots,
+  refreshDisplays,
   resolveLeaseOwner,
 } from "./computer.ts";
 
@@ -63,6 +75,8 @@ function cfg(
     project_browser_attach: false,
     browser_attach_source: "default",
     person_browser_attach: false,
+    agent_window: { display: "secondary", corner: "bottom-right", margin: 0, move_apps: true },
+    agent_window_source: "default",
     ...extra,
   };
 }
@@ -125,6 +139,7 @@ function fakePrefs(initial: ComputerPreferences = {}) {
     writes: [] as { root: string | null; mode: ComputerMode | null }[],
     signInWrites: [] as { root: string | null; on: boolean | null }[],
     attachWrites: [] as { root: string | null; on: boolean | null }[],
+    windowWrites: [] as (AgentWindowPatch | null)[],
   };
   return {
     state,
@@ -141,7 +156,141 @@ function fakePrefs(initial: ComputerPreferences = {}) {
       state.attachWrites.push({ root, on });
       return state.prefs;
     },
+    writeAgentWindow: (patch: AgentWindowPatch | null) => {
+      state.windowWrites.push(patch);
+      if (patch === null) {
+        const { agent_window: _gone, ...rest } = state.prefs;
+        state.prefs = rest;
+      } else {
+        const merged: Record<string, unknown> = { ...(state.prefs.agent_window ?? {}) };
+        for (const [k, v] of Object.entries(patch)) {
+          if (v === null) delete merged[k];
+          else merged[k] = v;
+        }
+        state.prefs = { ...state.prefs, agent_window: merged };
+      }
+      return state.prefs;
+    },
   };
+}
+
+const PRIMARY: DisplayInfo = {
+  id: "DISPLAY1",
+  primary: true,
+  bounds: { x: 0, y: 0, width: 1920, height: 1080 },
+  work_area: { x: 0, y: 0, width: 1920, height: 1040 },
+};
+const SECONDARY: DisplayInfo = {
+  id: "DISPLAY2",
+  primary: false,
+  bounds: { x: 1920, y: 0, width: 2560, height: 1440 },
+  work_area: { x: 1920, y: 0, width: 2560, height: 1400 },
+  scale: 1.5,
+};
+const TWO_DISPLAYS: DisplaySnapshot = {
+  probed_at: new Date(NOW).toISOString(),
+  source: "windows",
+  displays: [SECONDARY, PRIMARY],
+};
+
+/** Display detection with scripted readings; placement math mirrors the real corner rule. */
+function fakeDisplays(
+  opts: { probe?: DisplaySnapshot; cache?: DisplaySnapshot | null; probeThrows?: boolean } = {},
+) {
+  const log = {
+    probes: 0,
+    reads: 0,
+    writes: [] as { dir: string; snapshot: DisplaySnapshot }[],
+    corners: [] as {
+      display: string;
+      corner: Corner;
+      size: { width: number; height: number };
+      margin: number;
+    }[],
+  };
+  let cache = opts.cache ?? null;
+  const ordered = (list: DisplayInfo[]) => [...list].sort((a, b) => a.bounds.x - b.bounds.x);
+  const api: DisplaysApi & { log: typeof log } = {
+    log,
+    probe: () => {
+      log.probes++;
+      if (opts.probeThrows) throw new Error("probe exploded");
+      return opts.probe ?? TWO_DISPLAYS;
+    },
+    readCache: () => {
+      log.reads++;
+      return cache;
+    },
+    writeCache: (dir, snapshot) => {
+      log.writes.push({ dir, snapshot });
+      cache = snapshot;
+    },
+    pick: (displays, selector) => {
+      const list = ordered(displays);
+      if (selector === "primary") return list.find((d) => d.primary) ?? list[0];
+      if (selector === "secondary") return list.find((d) => !d.primary) ?? list[0];
+      if (/^\d+$/.test(selector)) return list[Number(selector) - 1];
+      return list.find((d) => d.id === selector);
+    },
+    corner: (display, corner, size, margin) => {
+      log.corners.push({
+        display: display.id,
+        corner,
+        size: { width: size.width, height: size.height },
+        margin,
+      });
+      const area = display.work_area ?? display.bounds;
+      const right = corner.endsWith("right");
+      const bottom = corner.startsWith("bottom");
+      return {
+        x: right ? area.x + area.width - size.width - margin : area.x + margin,
+        y: bottom ? area.y + area.height - size.height - margin : area.y + margin,
+      };
+    },
+    describe: (d) =>
+      `${d.id}: ${d.bounds.width} by ${d.bounds.height}${d.primary ? ", primary" : ""}`,
+  };
+  return api;
+}
+
+/** A driver that moves windows; the program clamps sizes to at least 400 by 300. */
+function moverDriver(
+  opts: {
+    windows?: (WindowRef & { frame?: Rect })[][];
+    launched?: number;
+    frameFails?: boolean;
+  } = {},
+) {
+  const base = fakeDriver();
+  const frames: { window: WindowRef; frame: Partial<Rect> }[] = [];
+  const windowsCalls: number[] = [];
+  let current: Rect = { x: 50, y: 50, width: 1200, height: 900 };
+  const lists = opts.windows ?? [];
+  const driver: FakeDriver = {
+    ...base,
+    setWindowFrame: (_host, window, frame) => {
+      frames.push({ window: { pid: window.pid, window_id: window.window_id }, frame });
+      if (opts.frameFails) return undefined;
+      current = {
+        x: frame.x ?? current.x,
+        y: frame.y ?? current.y,
+        width: frame.width !== undefined ? Math.max(400, frame.width) : current.width,
+        height: frame.height !== undefined ? Math.max(300, frame.height) : current.height,
+      };
+      return { ...current };
+    },
+    windowsOf: (_host, pid) => {
+      windowsCalls.push(pid);
+      return lists.length > 1 ? (lists.shift() ?? []) : (lists[0] ?? []);
+    },
+    ...(opts.launched !== undefined
+      ? {
+          launchedProcess: (tool: string) =>
+            tool === "launch_app" ? { pid: opts.launched as number } : undefined,
+        }
+      : {}),
+  };
+  return { driver, frames, windowsCalls, calls: base.calls };
 }
 
 interface Captured {
@@ -436,6 +585,7 @@ async function run(
       writeStderr: (s) => cap.stderr.push(s),
       now: () => NOW,
       browserGuard: () => fakeGuard(),
+      displays: fakeDisplays(),
       ...over,
     },
     program,
@@ -1631,6 +1781,7 @@ describe("computer browser open", () => {
       target_id: "t-9",
       tab_id: "tab-2",
       url: "https://example.com/",
+      placement_skipped: "no installed driver can move windows",
     });
     // Taken for the open, then refreshed to the idle period.
     expect(leaseApi.acquired.length).toBe(2);
@@ -1870,5 +2021,502 @@ describe("computer status browser windows", () => {
     expect((json.data[0] as { browser_windows: unknown }).browser_windows).toEqual(list);
     const none = await run(["status"]);
     expect(none.text.join("")).not.toContain("windows:");
+  });
+});
+
+/** Fully resolved deps for calling placeWindow and refreshDisplays directly. */
+function directDeps(over: Partial<ComputerDeps> = {}): ComputerDeps & { stderr: string[] } {
+  const cap = capture();
+  const prefs = fakePrefs();
+  return {
+    emit: cap.emit,
+    binName: "acme",
+    host: () => WSL_HOST,
+    drivers: [fakeDriver()],
+    lease: fakeLease(),
+    owner: () => ({ id: "me-id", label: "agent-Me" }),
+    config: () => cfg("on"),
+    grants: fakeGrants(),
+    confirm: fakeConfirm(),
+    prefs,
+    projectRoot: () => "/proj",
+    leaseDir: (dir) => `${dir}/computer`,
+    defaultIdleMs: 120_000,
+    writeStderr: (s) => cap.stderr.push(s),
+    personIdleMs: () => null,
+    sleep: async () => {},
+    now: () => NOW,
+    browserGuard: () => fakeGuard(),
+    displays: fakeDisplays(),
+    stderr: cap.stderr,
+    ...over,
+  };
+}
+
+const HOST = WSL_HOST as HostInfo & { desktopStateDir: string };
+const WINDOW: WindowRef = { pid: 700, window_id: 55 };
+
+describe("computer displays", () => {
+  test("reads the displays now, saves them, and numbers them left to right", async () => {
+    const displays = fakeDisplays();
+    const cap = await run(["displays"], { displays });
+    expect(cap.exitCode()).toBe(0);
+    expect(displays.log.probes).toBe(1);
+    expect(displays.log.writes).toEqual([
+      { dir: `${WSL_HOST.desktopStateDir}/computer`, snapshot: TWO_DISPLAYS },
+    ]);
+    const out = cap.text.join("\n");
+    expect(out).toContain("1. DISPLAY1: 1920 by 1080, primary\n");
+    expect(out).toContain("2. DISPLAY2: 2560 by 1440 (agent windows go here)");
+    expect(out).toContain("from windows.");
+  });
+
+  test("--cached prints the last reading without probing, and --json emits it", async () => {
+    const displays = fakeDisplays({ cache: TWO_DISPLAYS });
+    const cap = await run(["displays", "--cached", "--json"], { displays });
+    expect(displays.log.probes).toBe(0);
+    expect(cap.data).toEqual([TWO_DISPLAYS]);
+    const none = await run(["displays", "--cached"], { displays: fakeDisplays() });
+    expect(none.errors[0]?.code).toBe("displays_not_read");
+    expect(none.errors[0]?.message).toContain("acme computer displays");
+    expect(none.exitCode()).toBe(1);
+  });
+
+  test("no displays prints the error and exits 1", async () => {
+    const empty: DisplaySnapshot = {
+      probed_at: TWO_DISPLAYS.probed_at,
+      source: "none",
+      displays: [],
+      error: "powershell.exe exited 1",
+    };
+    const cap = await run(["displays"], { displays: fakeDisplays({ probe: empty }) });
+    expect(cap.errors[0]?.message).toContain("powershell.exe exited 1");
+    expect(cap.exitCode()).toBe(1);
+    const json = await run(["displays", "--json"], { displays: fakeDisplays({ probe: empty }) });
+    expect(json.data).toEqual([empty]);
+    expect(json.exitCode()).toBe(1);
+  });
+
+  test("refreshDisplays turns a probe failure into an empty reading", () => {
+    const deps = directDeps({ displays: fakeDisplays({ probeThrows: true }) });
+    const snapshot = refreshDisplays(deps, HOST);
+    expect(snapshot.displays).toEqual([]);
+    expect(snapshot.error).toBe("probe exploded");
+  });
+});
+
+describe("computer window", () => {
+  /** Effective settings that apply the person's saved agent-window choice. */
+  const placing = (prefsState: { prefs: ComputerPreferences }) => (prefs?: ComputerPreferences) => {
+    const chosen = (prefs ?? prefsState.prefs).agent_window;
+    return cfg("on", {
+      agent_window: {
+        display: "secondary",
+        corner: "bottom-right",
+        margin: 0,
+        move_apps: true,
+        ...chosen,
+      },
+      agent_window_source: chosen ? "user" : "default",
+    });
+  };
+
+  test("shows the effective placement and where it came from", async () => {
+    const cap = await run(["window"]);
+    expect(cap.text.join("")).toBe(
+      "Agent windows go: the smallest size the program allows, bottom-right corner of the secondary display; launched programs move there too (the default).\n",
+    );
+    const json = await run(["window", "--json"]);
+    expect(json.data[0]).toEqual({
+      agent_window: { display: "secondary", corner: "bottom-right", margin: 0, move_apps: true },
+      agent_window_source: "default",
+    });
+  });
+
+  test("saves each option as the person's own choice, without asking", async () => {
+    const prefs = fakePrefs();
+    const confirm = fakeConfirm();
+    const cap = await run(
+      [
+        "window",
+        "--display",
+        "2",
+        "--corner",
+        "top-left",
+        "--size",
+        "800x600",
+        "--margin",
+        "10",
+        "--apps",
+        "off",
+      ],
+      { prefs, confirm, config: placing(prefs.state) },
+    );
+    expect(cap.errors).toEqual([]);
+    expect(confirm.asked).toEqual([]);
+    expect(prefs.state.windowWrites).toEqual([
+      { display: "2", corner: "top-left", width: 800, height: 600, margin: 10, move_apps: false },
+    ]);
+    expect(cap.text.join("")).toBe(
+      "Agent windows now go: 800 by 600, top-left corner of display 2, 10px from the edges; launched programs stay where they open (your setting).\n",
+    );
+  });
+
+  test("smallest removes the size, and --clear removes the whole choice", async () => {
+    const prefs = fakePrefs({ agent_window: { width: 800, height: 600, corner: "top-left" } });
+    const cap = await run(["window", "--size", "smallest"], {
+      prefs,
+      config: placing(prefs.state),
+    });
+    expect(prefs.state.windowWrites).toEqual([{ width: null, height: null }]);
+    expect(cap.text.join("")).toContain("the smallest size the program allows, top-left corner");
+    const cleared = await run(["window", "--clear", "--json"], {
+      prefs,
+      config: placing(prefs.state),
+    });
+    expect(prefs.state.windowWrites[1]).toBeNull();
+    expect(cleared.data[0]).toMatchObject({ agent_window_source: "default", changed: true });
+  });
+
+  test("rejects a bad corner, size, margin or apps value, and settings with --clear", async () => {
+    for (const argv of [
+      ["--corner", "middle"],
+      ["--size", "800"],
+      ["--size", "0x600"],
+      ["--size", "axb"],
+      ["--size", "20001x10"],
+      ["--margin", "-1"],
+      ["--margin", "2.5"],
+      ["--apps", "maybe"],
+      ["--display", " "],
+      ["--corner", "top-left", "--clear"],
+    ]) {
+      const prefs = fakePrefs();
+      const cap = await run(["window", ...argv], { prefs });
+      expect(cap.errors[0]?.code).toBe("computer_usage");
+      expect(cap.exitCode()).toBe(1);
+      expect(prefs.state.windowWrites).toEqual([]);
+    }
+  });
+});
+
+describe("placeWindow", () => {
+  test("moves onto the target display at the smallest size, then into the corner the clamped size fits", () => {
+    const { driver, frames } = moverDriver();
+    const displays = fakeDisplays({ cache: TWO_DISPLAYS });
+    const deps = directDeps({ drivers: [driver], displays });
+    const placed = placeWindow(deps, HOST, WINDOW, { resize: true });
+    expect(frames).toEqual([
+      { window: WINDOW, frame: { x: 1920, y: 0, width: 100, height: 100 } },
+      { window: WINDOW, frame: { x: 1920 + 2560 - 400, y: 1400 - 300 } },
+    ]);
+    // The program's own minimum (400 by 300), not the request, decides the corner.
+    expect(displays.log.corners).toEqual([
+      { display: "DISPLAY2", corner: "bottom-right", size: { width: 400, height: 300 }, margin: 0 },
+    ]);
+    expect(placed).toEqual({
+      display: "DISPLAY2",
+      frame: { x: 4080, y: 1100, width: 400, height: 300 },
+    });
+    expect(displays.log.probes).toBe(0);
+  });
+
+  test("a requested size, display, corner and margin are used, and fresh reads the displays now", () => {
+    const { driver, frames } = moverDriver();
+    const displays = fakeDisplays({ cache: TWO_DISPLAYS });
+    const deps = directDeps({
+      drivers: [driver],
+      displays,
+      config: () =>
+        cfg("on", {
+          agent_window: {
+            display: "primary",
+            corner: "top-right",
+            width: 800,
+            height: 600,
+            margin: 10,
+            move_apps: true,
+          },
+        }),
+    });
+    const placed = placeWindow(deps, HOST, WINDOW, { resize: true, fresh: true });
+    expect(displays.log.probes).toBe(1);
+    expect(frames[0]?.frame).toEqual({ x: 0, y: 0, width: 800, height: 600 });
+    expect(frames[1]?.frame).toEqual({ x: 1920 - 800 - 10, y: 10 });
+    expect(placed).toMatchObject({ display: "DISPLAY1" });
+  });
+
+  test("without resize, moves a window and keeps its size unless it cannot fit", () => {
+    const { driver, frames } = moverDriver({
+      windows: [[{ pid: 700, window_id: 55, frame: { x: 10, y: 10, width: 1000, height: 700 } }]],
+    });
+    const deps = directDeps({ drivers: [driver], displays: fakeDisplays({ cache: TWO_DISPLAYS }) });
+    const placed = placeWindow(deps, HOST, WINDOW, { resize: false });
+    expect(frames).toEqual([{ window: WINDOW, frame: { x: 4480 - 1000, y: 1400 - 700 } }]);
+    expect(placed).toMatchObject({ display: "DISPLAY2" });
+
+    const big = moverDriver({
+      windows: [[{ pid: 700, window_id: 55, frame: { x: 0, y: 0, width: 3000, height: 700 } }]],
+    });
+    // Too wide for the target display: cut down to what fits there, then moved.
+    const fitted = placeWindow(
+      directDeps({ drivers: [big.driver], displays: fakeDisplays({ cache: TWO_DISPLAYS }) }),
+      HOST,
+      WINDOW,
+      { resize: false },
+    );
+    expect(fitted).toMatchObject({ display: "DISPLAY2" });
+    expect(big.frames).toHaveLength(2);
+    expect(big.frames[0]?.frame.height).toBe(700);
+    expect(big.frames[0]?.frame.width).toBeLessThan(3000);
+    expect(Object.keys(big.frames[1]?.frame ?? {}).sort()).toEqual(["x", "y"]);
+  });
+
+  test("each reason to leave the window alone is reported, never thrown", () => {
+    const cached = () => fakeDisplays({ cache: TWO_DISPLAYS });
+    expect(placeWindow(directDeps({ displays: cached() }), HOST, WINDOW, { resize: true })).toEqual(
+      { skipped: "no installed driver can move windows" },
+    );
+    const empty = fakeDisplays({
+      probe: {
+        probed_at: TWO_DISPLAYS.probed_at,
+        source: "none",
+        displays: [],
+        error: "no screen",
+      },
+    });
+    expect(
+      placeWindow(directDeps({ drivers: [moverDriver().driver], displays: empty }), HOST, WINDOW, {
+        resize: true,
+      }),
+    ).toEqual({ skipped: "no displays were found (no screen)" });
+    expect(
+      placeWindow(
+        directDeps({
+          drivers: [moverDriver().driver],
+          displays: cached(),
+          config: () =>
+            cfg("on", {
+              agent_window: { display: "9", corner: "bottom-right", margin: 0, move_apps: true },
+            }),
+        }),
+        HOST,
+        WINDOW,
+        { resize: true },
+      ),
+    ).toEqual({ skipped: 'no display matches "9"' });
+    expect(
+      placeWindow(
+        directDeps({ drivers: [moverDriver({ frameFails: true }).driver], displays: cached() }),
+        HOST,
+        WINDOW,
+        { resize: true },
+      ),
+    ).toEqual({ skipped: "the driver could not size the window" });
+    expect(
+      placeWindow(
+        directDeps({ drivers: [moverDriver({ windows: [[]] }).driver], displays: cached() }),
+        HOST,
+        WINDOW,
+        { resize: false },
+      ),
+    ).toEqual({ skipped: "the window's size is unknown" });
+    const throwing = moverDriver();
+    throwing.driver.setWindowFrame = () => {
+      throw new Error("bad handle");
+    };
+    expect(
+      placeWindow(directDeps({ drivers: [throwing.driver], displays: cached() }), HOST, WINDOW, {
+        resize: true,
+      }),
+    ).toEqual({ skipped: "placing the window failed: bad handle" });
+  });
+});
+
+describe("computer browser open placement", () => {
+  const attachOn = () => cfg("on", { browser_attach: true, project_browser_attach: true });
+
+  test("picks the page tab, not the browser's own setup page left active by the attach", async () => {
+    const { driver } = browserDriver({
+      bindStdout: JSON.stringify({
+        status: "ok",
+        target_id: "t-1",
+        tabs: [
+          { active: false, tab_id: "tab-page", url: "https://example.com/" },
+          { active: true, tab_id: "tab-setup", url: "chrome://inspect/#remote-debugging" },
+        ],
+      }),
+    });
+    const cap = await run(["browser", "open", "https://example.com/", "--json"], {
+      driver,
+      config: attachOn,
+      displays: fakeDisplays(),
+      personIdleMs: () => 60_000,
+    });
+    expect(cap.data[0]).toMatchObject({ tab_id: "tab-page", url: "https://example.com/" });
+  });
+
+  test("shrinks the window after the attach, binds last, and reports the frame", async () => {
+    const { driver, order } = browserDriver();
+    const mover = moverDriver();
+    driver.setWindowFrame = (host, window, frame) => {
+      order.push("frame");
+      return mover.driver.setWindowFrame?.(host, window, frame);
+    };
+    const displays = fakeDisplays();
+    const cap = await run(["browser", "open", "--json"], {
+      driver,
+      config: attachOn,
+      displays,
+      personIdleMs: () => 60_000,
+    });
+    expect(cap.errors).toEqual([]);
+    expect(order).toEqual([
+      "open",
+      "call:browser_prepare",
+      "frame",
+      "frame",
+      "call:get_browser_state",
+    ]);
+    // A fresh reading right before placing.
+    expect(displays.log.probes).toBe(1);
+    expect(cap.data[0]).toMatchObject({
+      display: "DISPLAY2",
+      frame: { x: 4080, y: 1100, width: 400, height: 300 },
+    });
+    expect(cap.data[0]).not.toHaveProperty("placement_skipped");
+
+    const text = await run(["browser", "open"], {
+      driver,
+      config: attachOn,
+      displays: fakeDisplays(),
+      personIdleMs: () => 60_000,
+    });
+    expect(text.text.join("")).toContain("Placed it on display DISPLAY2 at 4080,1100, 400 by 300.");
+  });
+
+  test("a skipped placement is one stderr line and does not fail the open", async () => {
+    const { driver } = browserDriver();
+    const cap = await run(["browser", "open"], {
+      driver,
+      config: attachOn,
+      personIdleMs: () => 60_000,
+    });
+    expect(cap.exitCode()).toBe(0);
+    expect(cap.stderr).toEqual([
+      "Left the browser window where it opened: no installed driver can move windows.\n",
+    ]);
+    expect(cap.text.join("")).not.toContain("Placed it");
+  });
+});
+
+describe("computer call and displays", () => {
+  test("reads the displays when the lease is newly taken, not on a refresh", async () => {
+    const fresh = fakeDisplays();
+    await run(["call", "click", "{}"], { displays: fresh });
+    expect(fresh.log.probes).toBe(1);
+    expect(fresh.log.writes).toHaveLength(1);
+
+    const held = fakeDisplays();
+    const refreshing = fakeLease();
+    refreshing.acquire = async (owner, opts) => {
+      refreshing.acquired.push(opts);
+      return {
+        ok: true,
+        fresh: false,
+        lease: lease({ owner_id: owner.id, owner_label: owner.label, generation: 1 }),
+      };
+    };
+    await run(["call", "click", "{}"], { displays: held, lease: refreshing });
+    expect(held.log.probes).toBe(0);
+  });
+
+  test("moves a launched program's windows to the corner without resizing them", async () => {
+    const { driver, frames, windowsCalls } = moverDriver({
+      launched: 900,
+      windows: [
+        [],
+        [
+          { pid: 900, window_id: 1, frame: { x: 0, y: 0, width: 1000, height: 700 } },
+          { pid: 900, window_id: 2, frame: { x: 0, y: 0, width: 600, height: 400 } },
+        ],
+      ],
+    });
+    const slept: number[] = [];
+    const cap = await run(["call", "launch_app", '{"name":"notepad"}'], {
+      driver,
+      displays: fakeDisplays(),
+      sleep: async (ms) => {
+        slept.push(ms);
+      },
+    });
+    expect(cap.exitCode()).toBe(0);
+    expect(windowsCalls).toEqual([900, 900]);
+    expect(slept).toEqual([250]);
+    expect(frames).toEqual([
+      { window: { pid: 900, window_id: 1 }, frame: { x: 3480, y: 700 } },
+      { window: { pid: 900, window_id: 2 }, frame: { x: 3880, y: 1000 } },
+    ]);
+    expect(cap.stderr).toEqual(["Moved the launched program's window to display DISPLAY2.\n"]);
+  });
+
+  test("leaves launched programs alone when move_apps is off, or nothing was launched", async () => {
+    const off = moverDriver({
+      launched: 900,
+      windows: [[{ pid: 900, window_id: 1, frame: { x: 0, y: 0, width: 500, height: 400 } }]],
+    });
+    const cap = await run(["call", "launch_app", "{}"], {
+      driver: off.driver,
+      config: () =>
+        cfg("on", {
+          agent_window: {
+            display: "secondary",
+            corner: "bottom-right",
+            margin: 0,
+            move_apps: false,
+          },
+        }),
+    });
+    expect(cap.exitCode()).toBe(0);
+    expect(off.windowsCalls).toEqual([]);
+    expect(off.frames).toEqual([]);
+    expect(cap.stderr).toEqual([]);
+
+    const other = moverDriver({ launched: 900 });
+    await run(["call", "click", "{}"], { driver: other.driver });
+    expect(other.windowsCalls).toEqual([]);
+  });
+
+  test("gives up quietly after 3 seconds when the program shows no window", async () => {
+    const { driver, frames, windowsCalls } = moverDriver({ launched: 900, windows: [[]] });
+    const cap = await run(["call", "launch_app", "{}"], { driver, sleep: async () => {} });
+    expect(windowsCalls).toHaveLength(13);
+    expect(frames).toEqual([]);
+    expect(cap.stderr).toEqual([]);
+    expect(cap.exitCode()).toBe(0);
+  });
+});
+
+describe("computer status displays and window", () => {
+  test("names the last display reading and the placement", async () => {
+    const reading = { ...TWO_DISPLAYS, probed_at: new Date(NOW - 40_000).toISOString() };
+    const cap = await run(["status"], { displays: fakeDisplays({ cache: reading }) });
+    const out = cap.text.join("\n");
+    expect(out).toContain(
+      "displays:  2 displays, read 40s ago; `acme computer displays` reads them now",
+    );
+    expect(out).toContain(
+      "window:    the smallest size the program allows, bottom-right corner of the secondary display; launched programs move there too (the default)",
+    );
+    const none = await run(["status"]);
+    expect(none.text.join("\n")).toContain(
+      "displays:  not read yet; `acme computer displays` reads them now",
+    );
+    const json = await run(["status", "--json"], { displays: fakeDisplays({ cache: reading }) });
+    expect(json.data[0]).toMatchObject({
+      displays: reading,
+      agent_window: { display: "secondary", corner: "bottom-right", margin: 0, move_apps: true },
+      agent_window_source: "default",
+    });
   });
 });

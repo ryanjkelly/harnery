@@ -53,6 +53,7 @@ import type {
   BackgroundProcess,
   DaemonStatus,
   DesktopDriver,
+  DisplayInfo,
   DriverCallResult,
   HostInfo,
   InstallPlan,
@@ -313,6 +314,63 @@ export function unwrapSingleBatch(result: DriverCallResult): DriverCallResult {
   return { ...result, exitCode: ok ? 0 : 1, stdout, json: out };
 }
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  !!value && typeof value === "object" && !Array.isArray(value);
+const finite = (value: unknown): number | undefined =>
+  typeof value === "number" && Number.isFinite(value) ? value : undefined;
+
+/**
+ * The displays in a `list-displays` envelope
+ * (`{"ok": true, "data": [{"id", "bounds", "is_primary", "scale"}, ...]}`).
+ * A failed envelope or anything else gives an empty list; an entry without an
+ * id or a complete `bounds` is skipped.
+ */
+export function parseDisplayList(json: unknown): DisplayInfo[] {
+  if (!isRecord(json) || json.ok !== true || !Array.isArray(json.data)) return [];
+  const out: DisplayInfo[] = [];
+  for (const row of json.data) {
+    if (!isRecord(row) || !isRecord(row.bounds)) continue;
+    const id = typeof row.id === "string" && row.id !== "" ? row.id : undefined;
+    const x = finite(row.bounds.x);
+    const y = finite(row.bounds.y);
+    const width = finite(row.bounds.width);
+    const height = finite(row.bounds.height);
+    if (id === undefined || x === undefined || y === undefined) continue;
+    if (width === undefined || height === undefined) continue;
+    const display: DisplayInfo = {
+      id,
+      primary: row.is_primary === true,
+      bounds: { x, y, width, height },
+    };
+    if (typeof row.name === "string" && row.name !== "") display.name = row.name;
+    const scale = finite(row.scale);
+    if (scale !== undefined && scale > 0) display.scale = scale;
+    out.push(display);
+  }
+  return out;
+}
+
+/**
+ * The process a `launch` call started: `data.pid` of its result envelope.
+ * Undefined for any other command, a failed envelope, or output that is not
+ * JSON.
+ */
+export function agentDesktopLaunchedProcess(
+  tool: string,
+  stdout: string,
+): { pid: number } | undefined {
+  if (tool !== "launch") return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return undefined;
+  }
+  if (!isRecord(parsed) || parsed.ok !== true || !isRecord(parsed.data)) return undefined;
+  const pid = parsed.data.pid;
+  return typeof pid === "number" && Number.isInteger(pid) && pid > 0 ? { pid } : undefined;
+}
+
 export function createAgentDesktopDriver(deps: AgentDesktopDeps = {}): DesktopDriver {
   const run = deps.spawnSync ?? defaultSpawnSync;
   const baseEnv = (): NodeJS.ProcessEnv => deps.env ?? process.env;
@@ -513,6 +571,18 @@ export function createAgentDesktopDriver(deps: AgentDesktopDeps = {}): DesktopDr
     return result;
   }
 
+  /** The displays from `list-displays`; empty when the call fails or prints anything else. */
+  function listDisplays(host: HostInfo): DisplayInfo[] {
+    let result: DriverCallResult;
+    try {
+      result = call(host, "list-displays", {});
+    } catch {
+      return [];
+    }
+    if (result.exitCode !== 0) return [];
+    return parseDisplayList(result.json);
+  }
+
   function listTools(host: HostInfo): DriverCallResult {
     requireExecutable(host);
     const lines = Object.entries(AGENT_DESKTOP_COMMANDS).map(
@@ -622,6 +692,8 @@ export function createAgentDesktopDriver(deps: AgentDesktopDeps = {}): DesktopDr
     callTimeoutMs: AGENT_DESKTOP_CALL_TIMEOUT_MS,
     callTimeoutFor: agentDesktopCallTimeoutMs,
     takesForeground: agentDesktopTakesForeground,
+    listDisplays,
+    launchedProcess: agentDesktopLaunchedProcess,
     backgroundProcesses,
     stopBackgroundProcesses,
     planInstall,

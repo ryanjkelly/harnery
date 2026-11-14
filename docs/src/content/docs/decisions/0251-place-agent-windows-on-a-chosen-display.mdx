@@ -1,0 +1,90 @@
+---
+title: "0251: Place agent windows on a chosen display"
+description: "ADR: Harnery reads the desktop's displays and opens an agent's own windows small, in a corner of the secondary display by default, so they stay out of the person's way. A project sets the default placement, each person may set their own, and placement never fails a command."
+---
+
+**Status:** accepted (2026-11-14) · **Scope:** product tier (`commands/computer`, `lib/computer`, `core/config`, the opt-in skill)
+
+## Context
+
+[Decision 0250](/decisions/0250-keep-agents-in-their-own-browser-window/)
+gave an agent a browser window of its own. That window opened wherever the
+browser chose, usually large and on the display the person was using, so it
+covered their work. A program an agent launched did the same. Harnery did
+not know the desktop's displays, so it had nothing to place a window by.
+
+A trial on a Windows desktop with two displays of different scale showed
+what placement has to work with:
+
+- A browser window asked for 100 by 100 pixels settled at 627 by 180, its
+  own minimum. At that size an agent read the page, typed, clicked and read
+  the result, because the driver reads page structure and scrolls a control
+  into view.
+- A minimized window could not be used. The driver refused reads and actions
+  in it, because it matches a tab to its window by the window's geometry.
+- When the program clamped the size, the driver's frame call reported
+  "unverifiable". Reading the frame back gave the true size.
+- Moving a window to a display with another scale changed its size.
+- A system query returned true pixel bounds, work areas and per-display
+  scale in under a second, and matched the desktop driver's own listing.
+
+## Alternatives considered
+
+- **Minimize or hide the agent's window.** The driver cannot read or act in
+  a minimized window, so the agent stops working.
+- **Give the agent a separate virtual desktop or a second session.** It
+  removes all interference, but the person would have to sign in to every
+  site and program a second time.
+- **Ask the browser for a size and position on its command line.** A browser
+  that is already running ignores those options for a new window.
+- **Read the displays on every call.** A system query can take most of a
+  second under WSL, which every call would pay.
+
+## Decision
+
+- **Harnery reads the displays.** `computer displays` lists each display's
+  id, optional name, primary flag, bounds, work area and scale, in the same
+  coordinate space as window frames. Windows, also from WSL, uses a system
+  query; macOS and Linux use the desktop driver's listing first, then a
+  system query. The last reading is cached and `status` shows its age.
+- **Readings are fresh where they matter.** Harnery reads the displays when
+  an agent newly takes the desktop lease and every time it opens an agent
+  window, so placement never uses a stale layout, and ordinary calls pay
+  nothing.
+- **Agent windows open small and out of the way.** By default a window takes
+  the smallest size its program allows, in the bottom-right corner of the
+  secondary display (the first display that is not primary, counting left to
+  right; on a one-display desktop, that display). `computer browser open`
+  moves its window onto that display before it attaches, shrinks it after
+  the attach, and reports the display and final frame. A program launched
+  through a driver's launch tool has its windows moved to the same corner
+  and keeps its size, cut down only when it cannot fit on that display.
+- **Move, then size, then position.** The window goes onto the target display
+  first, because a change of scale changes its size. Harnery then sizes it,
+  reads the frame back for the true size, and positions it from that.
+- **Projects and people choose.** The project sets `computer.agent_window`
+  (`display`, `corner`, `width`, `height`, `margin`, `move_apps`). Displays
+  belong to the machine, so each person may set their own placement for
+  every project with `computer window`, and their fields win.
+- **Placement never fails a command.** With no displays read, no driver that
+  can move windows, or an unknown display, the window stays where the system
+  put it and one line says why.
+- **The skill never tells agents to minimize their window.**
+
+## Result / Gotchas
+
+- The window is shrunk after the attach, never before it. A live check that
+  shrank it first left the browser's attach setup page open and selected in
+  the window, and the bind returned that page. The bind now also skips a
+  browser-internal page when it chooses the tab.
+- A launched editor taller than the target display was skipped by the first
+  version of the move. It is now cut down to fit and moved.
+
+- Display queries and window closing on macOS and Linux are not yet verified
+  on real machines.
+- Each attach still takes keyboard focus briefly, even when the window is
+  small and on another display.
+- A small window can make a responsive page switch to its narrow layout, so
+  element names can differ from the wide layout.
+- A placement that names a display that is unplugged falls back to no
+  placement.

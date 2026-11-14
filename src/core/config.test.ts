@@ -29,6 +29,7 @@ import {
   resolveBinName,
   sessionFinalizationConfig,
   stripJsonComments,
+  writeAgentWindowPreference,
   writeBrowserAttachPreference,
   writeComputerPreference,
   writeSignInPreference,
@@ -1008,5 +1009,96 @@ describe("readComputerConfig", () => {
     });
     writeBrowserAttachPreference("/p", null, file);
     expect(readComputerPreferences(file)).toEqual({ sign_in: true });
+  });
+
+  test("agent windows default to the smallest size in the secondary display's bottom-right corner", () => {
+    const placement = readComputerConfig(makeRoot('{"computer":{"mode":"on"}}'), none);
+    expect(placement.agent_window).toEqual({
+      display: "secondary",
+      corner: "bottom-right",
+      margin: 0,
+      move_apps: true,
+    });
+    expect(placement.agent_window_source).toBe("default");
+    // Placement belongs to the machine, so it resolves with desktop control off too.
+    expect(readComputerConfig(makeRoot(), { agent_window: { corner: "top-left" } })).toMatchObject({
+      agent_window: { corner: "top-left" },
+      agent_window_source: "user",
+    });
+  });
+
+  test("the project's agent window applies under the person's, field by field", () => {
+    const root = makeRoot(
+      '{"computer":{"mode":"on","agent_window":{"display":"primary","corner":"top-right","width":800,"height":600,"margin":8,"move_apps":false}}}',
+    );
+    expect(readComputerConfig(root, none)).toMatchObject({
+      agent_window: {
+        display: "primary",
+        corner: "top-right",
+        width: 800,
+        height: 600,
+        margin: 8,
+        move_apps: false,
+      },
+      agent_window_source: "project",
+    });
+    expect(
+      readComputerConfig(root, { agent_window: { display: "2", width: 400, move_apps: true } }),
+    ).toMatchObject({
+      agent_window: {
+        display: "2",
+        corner: "top-right",
+        width: 400,
+        height: 600,
+        margin: 8,
+        move_apps: true,
+      },
+      agent_window_source: "user",
+    });
+  });
+
+  test("a bad agent-window field is dropped and the rest kept", () => {
+    const root = makeRoot(
+      '{"computer":{"mode":"on","agent_window":{"display":"","corner":"middle","width":0,"height":1.5,"margin":2001,"move_apps":"yes"}}}',
+    );
+    const config = readComputerConfig(root, none);
+    expect(config.agent_window).toEqual({
+      display: "secondary",
+      corner: "bottom-right",
+      margin: 0,
+      move_apps: true,
+    });
+    expect(config.agent_window_source).toBe("default");
+    const mixed = makeRoot(
+      '{"computer":{"mode":"on","agent_window":{"corner":"top-left","width":20001,"height":300,"margin":2000}}}',
+    );
+    expect(readComputerConfig(mixed, none).agent_window).toEqual({
+      display: "secondary",
+      corner: "top-left",
+      height: 300,
+      margin: 2000,
+      move_apps: true,
+    });
+  });
+
+  test("the person's agent-window choice is patched, field-cleared and cleared in computer.json", () => {
+    const file = join(mkdtempSync(join(tmpdir(), "harnery-computer-prefs-")), "computer.json");
+    writeSignInPreference(null, true, file);
+    writeAgentWindowPreference({ corner: "top-left", width: 640, height: 480 }, file);
+    writeAgentWindowPreference({ display: "primary", margin: 12 }, file);
+    expect(readComputerPreferences(file)).toEqual({
+      sign_in: true,
+      agent_window: { display: "primary", corner: "top-left", width: 640, height: 480, margin: 12 },
+    });
+    writeAgentWindowPreference({ width: null, height: null }, file);
+    expect(readComputerPreferences(file).agent_window).toEqual({
+      display: "primary",
+      corner: "top-left",
+      margin: 12,
+    });
+    writeAgentWindowPreference(null, file);
+    expect(readComputerPreferences(file)).toEqual({ sign_in: true });
+    writeFileSync(file, JSON.stringify({ agent_window: { corner: "nowhere", margin: -1 } }));
+    expect(readComputerPreferences(file)).toEqual({});
   });
 });

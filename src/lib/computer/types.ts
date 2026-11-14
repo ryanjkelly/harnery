@@ -153,6 +153,29 @@ export interface WindowRef {
   window_id: number;
 }
 
+/** A rectangle in the desktop coordinate space the drivers' window lists use. */
+export interface Rect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** One display attached to the desktop (ADR 0251). */
+export interface DisplayInfo {
+  /** Stable enough to name in a setting: the system's own display id or device name. */
+  id: string;
+  /** Human name when the system gives one (a monitor model, for example). */
+  name?: string;
+  primary: boolean;
+  /** The whole display, in the same coordinate space as window frames. */
+  bounds: Rect;
+  /** The display minus taskbars, docks and menu bars, when the system reports it. */
+  work_area?: Rect;
+  /** UI scale factor (1.5 means 150%), when known. */
+  scale?: number;
+}
+
 /** How to start a driver's daemon. */
 export interface DaemonStartOptions {
   /** Start it able to attach to the person's running browser (ADR 0249). */
@@ -235,6 +258,22 @@ export interface DesktopDriver {
   openBrowserWindow?(host: HostInfo, options: { url?: string; pid?: number }): Promise<WindowRef>;
   /** Close one window without bringing anything forward. False when it could not. */
   closeWindow?(host: HostInfo, window: WindowRef): boolean;
+  /**
+   * Move and/or resize one window without bringing it forward; omitted
+   * fields keep their value. Returns the frame read back afterwards (the
+   * program may clamp a size to its own minimum), or undefined when the
+   * driver could not set or read it (ADR 0251).
+   */
+  setWindowFrame?(host: HostInfo, window: WindowRef, frame: Partial<Rect>): Rect | undefined;
+  /** The top-level windows of one process, with their frames when known. */
+  windowsOf?(host: HostInfo, pid: number): (WindowRef & { frame?: Rect })[];
+  /** The displays as this driver reports them; a fallback for the display probe. */
+  listDisplays?(host: HostInfo): DisplayInfo[];
+  /**
+   * The process a launch tool call started, from its stdout, so the command
+   * can place that program's windows. Undefined when the call launched nothing.
+   */
+  launchedProcess?(tool: string, stdout: string): { pid: number } | undefined;
   /** Background processes the driver left running on this host (see BackgroundProcess). */
   backgroundProcesses?(host: HostInfo): BackgroundProcess[];
   /** Stop every background process; returns the ones still running afterwards. */

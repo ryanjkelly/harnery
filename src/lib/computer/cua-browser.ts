@@ -7,7 +7,7 @@
  * Internal module: not exported from package.json.
  */
 
-import type { BrowserCall, BrowserObservation, WindowRef } from "./types.ts";
+import type { BrowserCall, BrowserObservation, Rect, WindowRef } from "./types.ts";
 
 type Json = Record<string, unknown>;
 
@@ -193,8 +193,7 @@ export function cuaBrowserObservation(call: BrowserCall, stdout: string): Browse
     return {};
   }
   if (!isRecord(parsed)) return {};
-  const refused =
-    parsed.status === "refused" || parsed.refusal !== undefined || typeof parsed.code === "string";
+  const refused = isCuaRefusal(parsed);
   switch (call.kind) {
     case "bind": {
       const target_id = str(parsed.target_id);
@@ -229,9 +228,29 @@ export interface ListedWindow {
   window_id: number;
   app_name: string;
   z_index: number | null;
+  /** The window's frame, when the record carries a complete one. */
+  frame?: Rect;
 }
 
-/** The windows in a `list_windows` result (`{"windows": [...]}` or a bare array). */
+const finite = (value: unknown): number | undefined =>
+  typeof value === "number" && Number.isFinite(value) ? value : undefined;
+
+/** A record's frame: its `bounds` object, else top-level `x`/`y`/`width`/`height`. */
+function frameOf(row: Json): Rect | undefined {
+  const source = isRecord(row.bounds) ? row.bounds : row;
+  const x = finite(source.x);
+  const y = finite(source.y);
+  const width = finite(source.width);
+  const height = finite(source.height);
+  if (x === undefined || y === undefined || width === undefined || height === undefined)
+    return undefined;
+  return { x, y, width, height };
+}
+
+/**
+ * The windows in a `list_windows` result (`{"windows": [...]}`, which may sit
+ * beside a `_legacy_windows` copy, or a bare array), with each frame when known.
+ */
 export function parseWindowList(stdout: string): ListedWindow[] {
   let parsed: unknown;
   try {
@@ -250,14 +269,68 @@ export function parseWindowList(stdout: string): ListedWindow[] {
     const pid = int(row.pid);
     const window_id = int(row.window_id);
     if (pid === undefined || window_id === undefined) continue;
-    out.push({
+    const listed: ListedWindow = {
       pid,
       window_id,
       app_name: typeof row.app_name === "string" ? row.app_name : "",
       z_index: int(row.z_index) ?? null,
-    });
+    };
+    const frame = frameOf(row);
+    if (frame) listed.frame = frame;
+    out.push(listed);
   }
   return out;
+}
+
+/** A tool result that reports a refusal or an error code instead of an outcome. */
+export function isCuaRefusal(parsed: Json): boolean {
+  return (
+    parsed.status === "refused" || parsed.refusal !== undefined || typeof parsed.code === "string"
+  );
+}
+
+/**
+ * The process a `launch_app` call started: its `pid`, else the first entry of
+ * a `pids` array. Undefined for any other tool, output that is not a JSON
+ * object, or a refusal.
+ */
+export function cuaLaunchedProcess(tool: string, stdout: string): { pid: number } | undefined {
+  if (tool !== "launch_app") return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return undefined;
+  }
+  if (!isRecord(parsed) || isCuaRefusal(parsed)) return undefined;
+  const pid = int(parsed.pid) ?? (Array.isArray(parsed.pids) ? int(parsed.pids[0]) : undefined);
+  return pid !== undefined && pid > 0 ? { pid } : undefined;
+}
+
+/**
+ * The `set_window_frame` arguments for one window: omitted fields of `frame`
+ * come from `current`, and every number is rounded to an integer. Throws on a
+ * pid or window id that is not a positive integer, or a frame value that is
+ * not finite.
+ */
+export function windowFrameArgs(
+  window: WindowRef,
+  current: Rect,
+  frame: Partial<Rect>,
+): WindowRef & Rect {
+  const pid = requirePositiveInteger("pid", window.pid);
+  const window_id = requirePositiveInteger("window_id", window.window_id);
+  const pick = (key: keyof Rect): number => {
+    const value = frame[key] ?? current[key];
+    if (typeof value !== "number" || !Number.isFinite(value))
+      throw new Error(`${key} must be a finite number, got ${String(value)}.`);
+    return Math.round(value);
+  };
+  const width = pick("width");
+  const height = pick("height");
+  if (width < 1 || height < 1)
+    throw new Error(`width and height must be at least 1, got ${width} by ${height}.`);
+  return { pid, window_id, x: pick("x"), y: pick("y"), width, height };
 }
 
 /** App names of the Chromium browsers the driver can attach to: Chrome, Chromium, Edge, Brave. */

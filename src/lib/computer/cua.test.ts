@@ -995,3 +995,127 @@ describe("cuaTakesForeground", () => {
     expect(createCuaDriver().takesForeground?.("bring_to_front", {})).toBe(true);
   });
 });
+
+describe("window frames", () => {
+  const live = (frame: { x: number; y: number; width: number; height: number }, id = 6951354) => ({
+    app_name: "chrome.exe",
+    bounds: frame,
+    is_on_screen: true,
+    minimized: false,
+    pid: 30536,
+    title: "t",
+    window_id: id,
+    z_index: 27,
+  });
+
+  test("windowsOf reads the three list shapes and keeps only that pid", async () => {
+    const legacy = {
+      pid: 30536,
+      window_id: 9,
+      app_name: "chrome.exe",
+      x: 1,
+      y: 2,
+      width: 3,
+      height: 4,
+    };
+    const other = { ...legacy, pid: 1, window_id: 10 };
+    const outputs = [
+      { windows: [live({ x: 9700, y: 1500, width: 627, height: 180 }), other] },
+      { _legacy_windows: [legacy], windows: [legacy, { pid: 30536, window_id: 11 }] },
+      [legacy],
+    ];
+    let i = 0;
+    const rec = recorder(() => ({ stdout: JSON.stringify(outputs[i++]) }));
+    const { driver, host } = await installed({ spawnSync: rec.spawnSync });
+    expect(driver.windowsOf?.(host, 30536)).toEqual([
+      { pid: 30536, window_id: 6951354, frame: { x: 9700, y: 1500, width: 627, height: 180 } },
+    ]);
+    expect(driver.windowsOf?.(host, 30536)).toEqual([
+      { pid: 30536, window_id: 9, frame: { x: 1, y: 2, width: 3, height: 4 } },
+      { pid: 30536, window_id: 11 },
+    ]);
+    expect(driver.windowsOf?.(host, 30536)).toHaveLength(1);
+    expect(rec.calls[0]?.args).toEqual(["call", "list_windows", '{"pid":30536}']);
+    expect(() => driver.windowsOf?.(host, 0)).toThrow(/positive integer/);
+  });
+
+  test("setWindowFrame fills omitted fields, sends integers and returns the clamped readback", async () => {
+    let lists = 0;
+    const rec = recorder((c) => {
+      if (c.args[1] === "list_windows") {
+        lists++;
+        const frame =
+          lists === 1
+            ? { x: 10, y: 20, width: 800, height: 600 }
+            : { x: 101, y: 20, width: 627, height: 180 };
+        return { stdout: JSON.stringify({ windows: [live(frame)] }) };
+      }
+      return {
+        stdout: JSON.stringify({
+          delivery: { mode: "not_applicable" },
+          effect: "unverifiable",
+          evidence: [{ detail: "DWM visible-frame bounds did not match", kind: "value_readback" }],
+        }),
+      };
+    });
+    const { driver, host } = await installed({ spawnSync: rec.spawnSync });
+    const result = driver.setWindowFrame?.(
+      host,
+      { pid: 30536, window_id: 6951354 },
+      { x: 100.6, width: 100, height: 100 },
+    );
+    expect(result).toEqual({ x: 101, y: 20, width: 627, height: 180 });
+    const set = rec.calls.find((c) => c.args[1] === "set_window_frame");
+    expect(JSON.parse(set?.args[2] ?? "")).toEqual({
+      pid: 30536,
+      window_id: 6951354,
+      x: 101,
+      y: 20,
+      width: 100,
+      height: 100,
+    });
+    expect(rec.calls.map((c) => c.args[1])).toEqual([
+      "list_windows",
+      "set_window_frame",
+      "list_windows",
+    ]);
+  });
+
+  test("setWindowFrame returns undefined for a missing window, a refusal or a failed call", async () => {
+    const frame = { x: 0, y: 0, width: 500, height: 400 };
+    const run = async (setResult: Partial<SpawnResult>, windows: unknown[] = [live(frame)]) => {
+      const rec = recorder((c) =>
+        c.args[1] === "list_windows" ? { stdout: JSON.stringify({ windows }) } : setResult,
+      );
+      const { driver, host } = await installed({ spawnSync: rec.spawnSync });
+      return {
+        result: driver.setWindowFrame?.(host, { pid: 30536, window_id: 6951354 }, { x: 5 }),
+        tools: rec.calls.map((c) => c.args[1]),
+      };
+    };
+    const missing = await run({ stdout: "{}" }, [live(frame, 1)]);
+    expect(missing.result).toBeUndefined();
+    expect(missing.tools).toEqual(["list_windows"]);
+    expect((await run({ stdout: '{"status":"refused"}' })).result).toBeUndefined();
+    expect((await run({ stdout: '{"refusal":{"reason":"x"}}' })).result).toBeUndefined();
+    expect((await run({ stdout: '{"code":"window_not_found"}' })).result).toBeUndefined();
+    expect((await run({ status: 1, stdout: "boom" })).result).toBeUndefined();
+    expect((await run({ stdout: '{"effect":"verified"}' })).result).toEqual({ ...frame });
+  });
+
+  test("setWindowFrame validates the window and the frame numbers", async () => {
+    const rec = recorder(() => ({ stdout: "[]" }));
+    const { driver, host } = await installed({ spawnSync: rec.spawnSync });
+    expect(() =>
+      driver.setWindowFrame?.(host, { pid: 1, window_id: 2 }, { x: Number.NaN }),
+    ).toThrow(/finite/);
+    expect(() => driver.setWindowFrame?.(host, { pid: -1, window_id: 2 }, {})).toThrow(/integer/);
+  });
+
+  test("launchedProcess reads launch_app's pid", () => {
+    const driver = createCuaDriver(baseDeps());
+    expect(driver.launchedProcess?.("launch_app", '{"pid":4242,"name":"x","windows":[]}')).toEqual({
+      pid: 4242,
+    });
+  });
+});

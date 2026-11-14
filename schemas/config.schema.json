@@ -400,6 +400,49 @@
           "type": "boolean",
           "default": false,
           "description": "Lets each person allow agents to attach to their running browser and work in its tabs through the desktop driver (computer browser-attach). Each person's choice still starts off. ADR 0249."
+        },
+        "agent_window": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Where an agent's own windows go (ADR 0251): by default the smallest size the program allows, in the bottom-right corner of the secondary display. This is the project default; each person's own choice (`computer window`) applies on top, for every project. An invalid field is dropped and the rest kept.",
+          "properties": {
+            "display": {
+              "type": "string",
+              "minLength": 1,
+              "default": "secondary",
+              "description": "Which display: `secondary` (the first display that is not the primary; the primary on a one-display desktop), `primary`, a 1-based number in left-to-right order, or a display id or name from `computer displays`."
+            },
+            "corner": {
+              "type": "string",
+              "enum": ["top-left", "top-right", "bottom-left", "bottom-right"],
+              "default": "bottom-right",
+              "description": "Which corner of the display's work area (the display minus taskbars, docks and menu bars)."
+            },
+            "width": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 20000,
+              "description": "Requested window width in desktop pixels. Leave width and height out for the smallest size the program allows."
+            },
+            "height": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 20000,
+              "description": "Requested window height in desktop pixels. Leave width and height out for the smallest size the program allows."
+            },
+            "margin": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 2000,
+              "default": 0,
+              "description": "Gap between the window and the work area's edges, in desktop pixels."
+            },
+            "move_apps": {
+              "type": "boolean",
+              "default": true,
+              "description": "Also move the windows of programs an agent launches to that corner, without resizing them."
+            }
+          }
         }
       }
     },

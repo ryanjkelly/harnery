@@ -14,6 +14,8 @@ harn computer doctor [--driver <id>] [--json]
 harn computer tools [--driver <id>]
 harn computer describe <tool> [--driver <id>]
 harn computer call <tool> [json] [--driver <id>] [--wait <seconds>] [--keep-screenshot]
+harn computer displays [--json] [--cached]
+harn computer window [--display <selector>] [--corner <corner>] [--size <WxH|smallest>] [--margin <n>] [--apps <on|off>] [--clear]
 harn computer lease status [--json]
 harn computer lease acquire [--wait <seconds>]
 harn computer lease release
@@ -176,6 +178,62 @@ directly skips it. Field and offer detection are heuristics, and they let a
 call through when its element reference is not in the latest snapshot. See
 [decision record 0250](/decisions/0250-keep-agents-in-their-own-browser-window/).
 
+### Agent window placement
+
+An agent's own windows open out of the person's way. By default a window
+opens at the smallest size the program allows, in the bottom-right corner of
+the secondary display: the first display that is not primary, counting left
+to right, or the only display on a one-display desktop. `computer browser
+open` places its window this way, and a program an agent launches through a
+driver's launch tool has its windows moved to the same corner at their own
+size, cut down only when they cannot fit on that display. A project sets its
+default:
+
+```jsonc
+// .harnery/config.jsonc
+{
+  "computer": {
+    "agent_window": {
+      "display": "secondary",
+      "corner": "bottom-right",
+      "width": 900,
+      "height": 700,
+      "margin": 0,
+      "move_apps": true
+    }
+  }
+}
+```
+
+| Field | Default | Meaning |
+|---|---|---|
+| `display` | `secondary` | `secondary`, `primary`, a 1-based number counting left to right then top to bottom, or a display id or name from `computer displays` |
+| `corner` | `bottom-right` | `top-left`, `top-right`, `bottom-left` or `bottom-right` of the display's work area |
+| `width`, `height` | smallest | Window size in pixels. Without them the window takes the smallest size the program allows |
+| `margin` | `0` | Gap in pixels between the window and the corner |
+| `move_apps` | `true` | Also move the windows of programs an agent launches through a driver's launch tool |
+
+Every field is optional. Displays belong to the machine, so each person may
+set their own placement for every project:
+
+```bash
+harn computer window --display 2 --corner top-right --size smallest
+harn computer window --apps off
+harn computer window --clear
+harn computer window
+```
+
+The person's fields win over the project's, field by field. With no option
+the command shows the effective placement and where each field came from.
+
+Placement never fails a command. With no displays read, no driver that can
+move windows, or a display that is not connected, the window stays where the
+system put it and one line says why. A small window can make a responsive
+page show its narrow layout, so element names can differ from the wide
+layout. Agents never minimize their window: the driver refuses reads and
+actions in a minimized window. See
+[decision record 0251](/decisions/0251-place-agent-windows-on-a-chosen-display/).
+
 ## Approval
 
 In an ask mode, `call` and `lease acquire` refuse with exit 4 until the agent
@@ -319,6 +377,10 @@ object (default `{}`). In order, the command:
    ```
    Desktop is held by agent-Ada (generation 7, idle-expires in 84s). Wait, or ask them to run `harn computer lease release`.
    ```
+
+   When the caller newly takes the lease, at the start of a stretch of
+   computer use, Harnery reads the [displays](#computer-displays) fresh, so
+   window placement never works from a stale layout.
 3. Starts the driver's daemon if it has one and it is not running. An
    attach to the person's running browser is refused (exit 4) unless
    [browser attach](#browser-attach) is on, and with it on a daemon without
@@ -387,11 +449,17 @@ harn computer browser close
 `browser open [url]` needs [browser attach](#browser-attach) on. It waits for
 a quiet keyboard and mouse, opens a new window in the person's default
 browser when it is a running Chromium browser (Chrome, Edge or Brave), else
-their front-most one (`--browser-pid` picks one), attaches,
-binds the window, and prints `pid`, `window_id`, `session`, `target_id` and
-`tab_id`. The agent then passes those ids to the driver's browser tools
-(`get_browser_state`, `browser_navigate`, `browser_type`, `browser_click`)
-through `call`. `--json` prints them as one object.
+their front-most one (`--browser-pid` picks one). It reads the displays
+fresh and [places the window](#agent-window-placement) in two steps around
+the attach. It first moves the window onto the target display at the size it
+opened with, then attaches, and only then sizes it, reads the frame back and
+positions it in the corner. The browser's own attach setup opens a page in
+that window and did not finish in a window already at its minimum size. It
+then binds the window, choosing the tab that shows the requested page, and
+prints `pid`, `window_id`, `session`, `target_id` and `tab_id`, with the
+display and the final frame. The agent then passes those ids to the driver's
+browser tools (`get_browser_state`, `browser_navigate`, `browser_type`,
+`browser_click`) through `call`. `--json` prints them as one object.
 
 `browser close` ends the agent's driver browser sessions, which closes the
 browser's debugging connection, and closes the windows the agent opened.
@@ -400,6 +468,49 @@ Windows (also from WSL) the window closes. On macOS and Linux it stays open
 and the command names it, so the agent tells the person. A window opened by
 an agent that has gone away stays open until that agent runs
 `browser close` or the person closes it; `status` lists it.
+
+## computer displays
+
+```bash
+harn computer displays
+harn computer displays --json
+harn computer displays --cached
+```
+
+Reads the desktop's displays and prints one line each: its id, its name when
+the system gives one, whether it is primary, its bounds, its work area (the
+display minus the taskbar, dock or menu bar, where the system reports it)
+and its scale. Bounds and work areas use the same coordinate space as window
+frames. On Windows, also from WSL, it runs a system query. On macOS and Linux
+it asks the desktop driver for its display listing first, then falls back to
+a system query (`NSScreen` through `osascript` on macOS, `xrandr` on Linux).
+
+Each reading is cached. `--cached` prints the last reading without reading
+again, and `status` shows it with its age. Harnery reads the displays fresh
+when an agent newly takes the desktop lease and every time it opens an agent
+window, rather than on every call, because a system query can take most of a
+second under WSL. macOS and Linux queries are not yet verified on real
+machines.
+
+## computer window
+
+```bash
+harn computer window
+harn computer window --display secondary --corner bottom-right --size smallest
+harn computer window --size 900x700 --margin 16 --apps off
+harn computer window --clear
+```
+
+Shows or sets this person's [agent window placement](#agent-window-placement)
+for every project. `--display` takes `secondary`, `primary`, a 1-based
+number, or a display id or name; `--corner` takes `top-left`, `top-right`,
+`bottom-left` or `bottom-right`; `--size` takes `WxH` or `smallest`;
+`--margin` takes pixels; `--apps on|off` sets whether launched programs are
+moved too. Options set only the fields they name. `--clear` removes the
+person's placement, so the project's applies again. With no option it shows
+the effective placement and, for each field, whether it came from the
+person, the project or the default. The choice is stored in `computer.json`
+beside the user config.
 
 ## computer lease
 

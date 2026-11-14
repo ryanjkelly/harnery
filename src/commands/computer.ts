@@ -22,6 +22,7 @@ import type { EmitContext } from "../commander.ts";
 import { resolveCoordRoot, resolveOwnerAcrossRoots } from "../core/agents/coord-client.ts";
 import { agentDisplayName, resolveShortName } from "../core/agents/state/activity-log.ts";
 import {
+  type AgentWindowPatch,
   COMPUTER_MODES,
   type ComputerMode,
   type ComputerPreferences,
@@ -30,6 +31,7 @@ import {
   isComputerMode,
   readComputerConfig,
   readComputerPreferences,
+  writeAgentWindowPreference,
   writeBrowserAttachPreference,
   writeComputerPreference,
   writeSignInPreference,
@@ -40,6 +42,19 @@ import {
   type GuardOwner,
 } from "../lib/computer/browser-guard.ts";
 import type { Confirm } from "../lib/computer/confirm.ts";
+import {
+  CORNERS,
+  type Corner,
+  cornerPosition,
+  type DisplaySnapshot,
+  describeDisplay,
+  pickDisplay,
+  probeDisplays,
+  readDisplayCache,
+  SMALLEST_REQUEST,
+  type WindowPlacement,
+  writeDisplayCache,
+} from "../lib/computer/displays.ts";
 import { DRIVER_IDS } from "../lib/computer/drivers.ts";
 import type {
   DesktopGrant,
@@ -59,11 +74,13 @@ import type {
   DaemonStatus,
   DesktopDriver,
   DesktopLease,
+  DisplayInfo,
   DriverCallResult,
   HostInfo,
   LeaseApi,
   LeaseOptions,
   LeaseOwner,
+  Rect,
   WindowRef,
 } from "../lib/computer/types.ts";
 
@@ -102,6 +119,22 @@ export interface GrantsApi {
   defaultTaskMinutes: number;
 }
 
+/** Display detection and placement math (ADR 0251); tests inject fakes. */
+export interface DisplaysApi {
+  /** Read the displays now. */
+  probe(host: HostInfo): DisplaySnapshot;
+  readCache(dir: string): DisplaySnapshot | null;
+  writeCache(dir: string, snapshot: DisplaySnapshot): void;
+  pick(displays: DisplayInfo[], selector: string): DisplayInfo | undefined;
+  corner(
+    display: DisplayInfo,
+    corner: Corner,
+    size: { width: number; height: number },
+    margin: number,
+  ): { x: number; y: number };
+  describe(display: DisplayInfo): string;
+}
+
 /** Everything the command touches outside itself; tests inject fakes. */
 export interface ComputerDeps {
   emit: EmitContext;
@@ -121,6 +154,8 @@ export interface ComputerDeps {
     write: (root: string | null, mode: ComputerMode | null) => ComputerPreferences;
     writeSignIn: (root: string | null, on: boolean | null) => ComputerPreferences;
     writeBrowserAttach: (root: string | null, on: boolean | null) => ComputerPreferences;
+    /** Patch the person's agent-window choice; null clears it. */
+    writeAgentWindow: (patch: AgentWindowPatch | null) => ComputerPreferences;
   };
   /** The project root personal choices are keyed by. */
   projectRoot: () => string | null;
@@ -139,6 +174,8 @@ export interface ComputerDeps {
   now: () => number;
   /** Browser guard for one lease directory (ADR 0250); tests inject a fake. */
   browserGuard: (dir: string) => BrowserGuard;
+  /** Display detection and placement (ADR 0251). */
+  displays: DisplaysApi;
 }
 
 export type ComputerDepsInput = Pick<ComputerDeps, "emit" | "binName"> &
@@ -229,12 +266,13 @@ async function resolveDeps(input: ComputerDepsInput): Promise<ComputerDeps> {
     !input.confirm ||
     input.defaultIdleMs === undefined;
   const defaults = needsDefaults ? await loadDefaultDeps() : undefined;
+  const drivers =
+    input.drivers ?? (input.driver ? [input.driver] : (defaults?.drivers as DesktopDriver[]));
   return {
     emit: input.emit,
     binName: input.binName,
     host: input.host ?? (defaults?.host as ComputerDeps["host"]),
-    drivers:
-      input.drivers ?? (input.driver ? [input.driver] : (defaults?.drivers as DesktopDriver[])),
+    drivers,
     lease: input.lease ?? (defaults?.lease as LeaseApi),
     leaseDir: input.leaseDir ?? (defaults?.leaseDir as ComputerDeps["leaseDir"]),
     defaultIdleMs: input.defaultIdleMs ?? (defaults?.defaultIdleMs as number),
@@ -245,6 +283,7 @@ async function resolveDeps(input: ComputerDepsInput): Promise<ComputerDeps> {
       write: (root, mode) => writeComputerPreference(root, mode),
       writeSignIn: (root, on) => writeSignInPreference(root, on),
       writeBrowserAttach: (root, on) => writeBrowserAttachPreference(root, on),
+      writeAgentWindow: (patch) => writeAgentWindowPreference(patch),
       ...input.prefs,
     },
     projectRoot: input.projectRoot ?? (() => resolveCoordRoot()),
@@ -257,6 +296,26 @@ async function resolveDeps(input: ComputerDepsInput): Promise<ComputerDeps> {
     browserGuard:
       input.browserGuard ??
       ((dir) => createBrowserGuard({ dir, now: () => (input.now ?? Date.now)() })),
+    displays: input.displays ?? defaultDisplays(drivers, input.now ?? Date.now),
+  };
+}
+
+/** The real display module; the probe falls back to the first installed driver that lists displays. */
+function defaultDisplays(drivers: DesktopDriver[], now: () => number): DisplaysApi {
+  return {
+    probe: (host) =>
+      probeDisplays(host, {
+        now,
+        driverDisplays: () => {
+          const lister = drivers.find((d) => d.listDisplays && d.installedExecutable(host));
+          return lister?.listDisplays?.(host);
+        },
+      }),
+    readCache: readDisplayCache,
+    writeCache: writeDisplayCache,
+    pick: pickDisplay,
+    corner: cornerPosition,
+    describe: describeDisplay,
   };
 }
 
@@ -838,6 +897,7 @@ export function createComputerCommand(
             browserWindows = [];
           }
         }
+        const displayCache = supported ? cachedDisplays(deps, host as SupportedHost) : null;
         if (opts.json) {
           deps.emit.data({
             enabled: config.enabled,
@@ -873,6 +933,9 @@ export function createComputerCommand(
             })),
             lease: lease ? { ...lease, expires_in_seconds: expiresInSeconds(lease, nowMs) } : null,
             browser_windows: browserWindows,
+            displays: displayCache,
+            agent_window: config.agent_window,
+            agent_window_source: config.agent_window_source,
           });
           return;
         }
@@ -896,6 +959,10 @@ export function createComputerCommand(
           `sign-in:   ${describeSignIn(config, deps.binName)}`,
           `browser:   ${describeBrowserAttach(config, deps.binName)}`,
           `quiet:     a foreground action ${describeForegroundQuiet(config)}`,
+          `window:    ${describePlacement(config)}`,
+          ...(supported
+            ? [`displays:  ${describeDisplayCache(displayCache, nowMs, deps.binName)}`]
+            : []),
           `host:      ${host.kind}${host.reason ? ` (${host.reason})` : ""}${host.note ? ` (${host.note})` : ""}`,
         ];
         for (const { driver, installed, daemon, background } of drivers) {
@@ -1276,6 +1343,9 @@ export function createComputerCommand(
             ),
           );
           if (!acquired.ok) throw heldError(deps, acquired.holder);
+          // A new stretch of computer use: read the displays now, since the
+          // person may have plugged one in or moved one since (ADR 0251).
+          if (acquired.fresh) refreshDisplays(deps, host);
 
           if (driver.hasDaemon)
             await ensureDaemon(driver, host, {
@@ -1285,6 +1355,17 @@ export function createComputerCommand(
           if (foreground) await awaitQuietDesktop(deps, host, owner, quiet);
           const translated = driver.translateArgsPaths(host, tool, args);
           const result = driver.call(host, tool, translated);
+          // A program the call launched opens where the person is working;
+          // move its windows to the agent-window corner (ADR 0251).
+          if (result.exitCode === 0 && config.agent_window.move_apps && driver.launchedProcess) {
+            let launched: { pid: number } | undefined;
+            try {
+              launched = driver.launchedProcess(tool, result.stdout);
+            } catch {
+              launched = undefined;
+            }
+            if (launched) await placeLaunchedWindows(deps, host, launched.pid);
+          }
           await deps.lease.acquire(owner, leaseOptions(deps, host));
           observeBrowserCalls(deps, guard, owner, driver, tool, calls, result, personWindow);
           let stdout = driver.translateResultPaths(host, result.stdout);
@@ -1381,6 +1462,11 @@ export function createComputerCommand(
           }
           const guard = browserGuardFor(deps, host);
           guard.recordWindow(guardOwner(owner), { ...win, session });
+          // Out of the person's way first (ADR 0251): move the window onto the
+          // target display at the size it opened with. It is shrunk only after
+          // the attach, because the browser's own attach setup opens a page in
+          // this window and did not finish in a window at its minimum size.
+          placeWindow(deps, host, win, { resize: false, fresh: true });
 
           const send = (tool: string, args: Record<string, unknown>): DriverCallResult => {
             const calls = driver.browserCalls?.(tool, args) ?? [];
@@ -1410,8 +1496,13 @@ export function createComputerCommand(
             await deps.lease.acquire(owner, leaseOptions(deps, host));
             return;
           }
+          // Small, and bound last: the driver mints the ids for the frame the
+          // window ends up with.
+          const placed = placeWindow(deps, host, win, { resize: true });
+          if ("skipped" in placed)
+            deps.writeStderr(`Left the browser window where it opened: ${placed.skipped}.\n`);
           const bound = send("get_browser_state", { ...ids });
-          const bind = bound.exitCode === 0 ? parseBind(bound) : null;
+          const bind = bound.exitCode === 0 ? parseBind(bound, url) : null;
           await deps.lease.acquire(owner, leaseOptions(deps, host));
           if (!bind) {
             failed(bound);
@@ -1422,6 +1513,9 @@ export function createComputerCommand(
             target_id: bind.target_id,
             tab_id: bind.tab_id ?? null,
             url: bind.url ?? null,
+            ...("skipped" in placed
+              ? { placement_skipped: placed.skipped }
+              : { display: placed.display, frame: placed.frame }),
           };
           if (opts.json) {
             deps.emit.data(out);
@@ -1432,6 +1526,11 @@ export function createComputerCommand(
             [
               `Opened browser window ${win.window_id} (pid ${win.pid}) for session ${session}.`,
               `Bound target ${bind.target_id}${bind.tab_id ? `, tab ${bind.tab_id}` : ""}${bind.url ? ` at ${bind.url}` : ""}.`,
+              ...("skipped" in placed
+                ? []
+                : [
+                    `Placed it on display ${placed.display} at ${placed.frame.x},${placed.frame.y}, ${placed.frame.width} by ${placed.frame.height}.`,
+                  ]),
               `Act in it with the driver's browser tools using these ids, and finish with \`${deps.binName} computer browser close\`.`,
             ].join("\n"),
           );
@@ -2061,6 +2160,151 @@ export function createComputerCommand(
       ),
     );
 
+  // ---------------------------------------------------------------- displays
+  computer
+    .command("displays")
+    .description(
+      "Read the desktop's displays now (and save them for window placement), numbered left to right; --cached shows the last reading.",
+    )
+    .option("--cached", "Show the last reading instead of reading the displays now.")
+    .option("--json", "Emit the reading as JSON.")
+    .action(
+      guarded(input, (deps, opts: { cached?: boolean; json?: boolean }) => {
+        const host = requireSupported(deps.host());
+        const snapshot = opts.cached ? cachedDisplays(deps, host) : refreshDisplays(deps, host);
+        if (!snapshot) {
+          throw new ComputerError(
+            "displays_not_read",
+            `The displays have not been read yet. Run \`${deps.binName} computer displays\` to read them now.`,
+          );
+        }
+        if (opts.json) {
+          deps.emit.data(snapshot);
+          if (snapshot.displays.length === 0) deps.emit.setExitCode(1);
+          return;
+        }
+        if (snapshot.displays.length === 0) {
+          throw new ComputerError(
+            "displays_none",
+            `No displays were found${snapshot.error ? `: ${snapshot.error}` : "."}`,
+          );
+        }
+        const placement = deps.config().agent_window;
+        const target = deps.displays.pick(snapshot.displays, placement.display);
+        const lines: string[] = [];
+        for (let i = 1; i <= snapshot.displays.length; i++) {
+          const display = deps.displays.pick(snapshot.displays, String(i));
+          if (!display) continue;
+          lines.push(
+            `${i}. ${deps.displays.describe(display)}${display === target ? " (agent windows go here)" : ""}`,
+          );
+        }
+        lines.push(
+          `Read ${describeAge(snapshot.probed_at, deps.now())} (${snapshot.probed_at}) from ${snapshot.source}.`,
+        );
+        emitLine(deps.emit, lines.join("\n"));
+      }),
+    );
+
+  // ------------------------------------------------------------------ window
+  computer
+    .command("window")
+    .description(
+      "Show or set where agents' own windows go (ADR 0251): which display, which corner, what size. " +
+        "By default the smallest size the program allows, in the bottom-right corner of the secondary display. " +
+        "Your choice applies in every project.",
+    )
+    .option(
+      "--display <selector>",
+      "secondary, primary, a number from `computer displays`, or a display id or name.",
+    )
+    .option("--corner <corner>", `Which corner (${CORNERS.join(", ")}).`)
+    .option("--size <size>", "WIDTHxHEIGHT (e.g. 800x600), or smallest.")
+    .option("--margin <pixels>", `Gap from the display's edges (0 to ${MAX_WINDOW_MARGIN}).`)
+    .option("--apps <state>", "on: also move programs an agent launches there; off: leave them.")
+    .option("--clear", "Remove your own choice, so the project's default applies.")
+    .option("--json", "Emit the result as JSON.")
+    .action(
+      guarded(
+        input,
+        (
+          deps,
+          opts: {
+            display?: string;
+            corner?: string;
+            size?: string;
+            margin?: string;
+            apps?: string;
+            clear?: boolean;
+            json?: boolean;
+          },
+        ) => {
+          const report = (config: ComputerProjectConfig, changed: boolean) =>
+            opts.json
+              ? deps.emit.data({
+                  agent_window: config.agent_window,
+                  agent_window_source: config.agent_window_source,
+                  ...(changed ? { changed: true } : {}),
+                })
+              : emitLine(
+                  deps.emit,
+                  `${changed ? "Agent windows now go" : "Agent windows go"}: ${describePlacement(config)}.`,
+                );
+          const setting =
+            opts.display !== undefined ||
+            opts.corner !== undefined ||
+            opts.size !== undefined ||
+            opts.margin !== undefined ||
+            opts.apps !== undefined;
+          if (!setting && !opts.clear) {
+            report(deps.config(), false);
+            return;
+          }
+          if (setting && opts.clear)
+            throw new ComputerError("computer_usage", "Pass settings or --clear, not both.");
+          let patch: AgentWindowPatch | null = null;
+          if (setting) {
+            patch = {};
+            if (opts.display !== undefined) {
+              const display = opts.display.trim();
+              if (!display)
+                throw new ComputerError("computer_usage", "--display must name a display.");
+              patch.display = display;
+            }
+            if (opts.corner !== undefined) {
+              if (!(CORNERS as readonly string[]).includes(opts.corner))
+                throw new ComputerError(
+                  "computer_usage",
+                  `--corner must be one of ${CORNERS.join(", ")}.`,
+                );
+              patch.corner = opts.corner as Corner;
+            }
+            if (opts.size !== undefined) {
+              const size = parseWindowSize(opts.size);
+              patch.width = size ? size.width : null;
+              patch.height = size ? size.height : null;
+            }
+            if (opts.margin !== undefined) {
+              const margin = Number(opts.margin);
+              if (!Number.isInteger(margin) || margin < 0 || margin > MAX_WINDOW_MARGIN)
+                throw new ComputerError(
+                  "computer_usage",
+                  `--margin must be a whole number of pixels from 0 to ${MAX_WINDOW_MARGIN}.`,
+                );
+              patch.margin = margin;
+            }
+            if (opts.apps !== undefined) {
+              if (opts.apps !== "on" && opts.apps !== "off")
+                throw new ComputerError("computer_usage", "--apps must be on or off.");
+              patch.move_apps = opts.apps === "on";
+            }
+          }
+          const written = deps.prefs.writeAgentWindow(patch);
+          report(deps.config(written), true);
+        },
+      ),
+    );
+
   return computer;
 }
 
@@ -2300,8 +2544,17 @@ function describeCleanup(cleanup: BrowserCleanup | null): string[] {
 }
 
 /** The target and tab a bind (get_browser_state) returned, read leniently. */
+/** A page of the browser itself (settings, its attach setup page), never the agent's page. */
+const BROWSER_INTERNAL_URL = /^(?:chrome|edge|brave|about|devtools|chrome-extension):/i;
+
+/**
+ * The target and tab from a bind result. The tab is the one showing `wanted`
+ * when given, else the active tab that is not a browser-internal page, else
+ * the first such tab, else whatever is active.
+ */
 function parseBind(
   result: DriverCallResult,
+  wanted?: string,
 ): { target_id: string; tab_id?: string; url?: string } | null {
   let json = result.json;
   if (json === undefined) {
@@ -2319,13 +2572,256 @@ function parseBind(
         (t): t is Record<string, unknown> => !!t && typeof t === "object" && !Array.isArray(t),
       )
     : [];
-  const tab = tabs.find((t) => t.active === true) ?? tabs[0];
+  const urlOf = (t: Record<string, unknown>) => (typeof t.url === "string" ? t.url : "");
+  const pages = tabs.filter((t) => !BROWSER_INTERNAL_URL.test(urlOf(t)));
+  const tab =
+    (wanted ? tabs.find((t) => urlOf(t) === wanted) : undefined) ??
+    pages.find((t) => t.active === true) ??
+    pages[0] ??
+    tabs.find((t) => t.active === true) ??
+    tabs[0];
   const tabId = tab ? (tab.tab_id ?? tab.id) : undefined;
   return {
     target_id: record.target_id,
     ...(typeof tabId === "string" ? { tab_id: tabId } : {}),
     ...(tab && typeof tab.url === "string" ? { url: tab.url } : {}),
   };
+}
+
+// ---------------------------------------------------------------- displays
+
+function displayCacheDir(deps: ComputerDeps, host: SupportedHost): string {
+  return deps.leaseDir(host.desktopStateDir);
+}
+
+/**
+ * Read the displays now and save them for the rest of this stretch of
+ * computer use (ADR 0251). Best effort: never throws and never fails a command.
+ */
+export function refreshDisplays(deps: ComputerDeps, host: SupportedHost): DisplaySnapshot {
+  let snapshot: DisplaySnapshot;
+  try {
+    snapshot = deps.displays.probe(host);
+  } catch (err) {
+    return {
+      probed_at: new Date(deps.now()).toISOString(),
+      source: "none",
+      displays: [],
+      error: (err as Error).message ?? String(err),
+    };
+  }
+  try {
+    deps.displays.writeCache(displayCacheDir(deps, host), snapshot);
+  } catch {
+    // best effort: the snapshot still serves this command
+  }
+  return snapshot;
+}
+
+function cachedDisplays(deps: ComputerDeps, host: SupportedHost): DisplaySnapshot | null {
+  try {
+    return deps.displays.readCache(displayCacheDir(deps, host));
+  } catch {
+    return null;
+  }
+}
+
+/** The first installed driver that can move windows. */
+function windowMover(deps: ComputerDeps, host: HostInfo): DesktopDriver | undefined {
+  return deps.drivers.find((d) => {
+    if (typeof d.setWindowFrame !== "function") return false;
+    try {
+      return Boolean(d.installedExecutable(host));
+    } catch {
+      return false;
+    }
+  });
+}
+
+export type PlaceResult = { display: string; frame: Rect } | { skipped: string };
+
+/**
+ * Put one of the agent's windows where the person wants agent windows
+ * (ADR 0251). With `resize`, it is first moved onto the target display at the
+ * requested size (the smallest the program allows unless the placement names
+ * one), because a display with another scale changes the size; the actual
+ * frame read back then decides the corner position. Without `resize`, it is
+ * only moved, and only when it fits. `fresh` reads the displays now instead
+ * of using the last reading. Never throws.
+ */
+export function placeWindow(
+  deps: ComputerDeps,
+  host: SupportedHost,
+  window: WindowRef & { frame?: Rect },
+  options: { resize: boolean; fresh?: boolean },
+): PlaceResult {
+  try {
+    const placement: WindowPlacement = deps.config().agent_window;
+    const mover = windowMover(deps, host);
+    if (!mover?.setWindowFrame) return { skipped: "no installed driver can move windows" };
+    const snapshot = options.fresh
+      ? refreshDisplays(deps, host)
+      : (cachedDisplays(deps, host) ?? refreshDisplays(deps, host));
+    if (snapshot.displays.length === 0)
+      return { skipped: `no displays were found${snapshot.error ? ` (${snapshot.error})` : ""}` };
+    const display = deps.displays.pick(snapshot.displays, placement.display);
+    if (!display) return { skipped: `no display matches "${placement.display}"` };
+    const area = display.work_area ?? display.bounds;
+    let size: Rect;
+    if (options.resize) {
+      const actual = mover.setWindowFrame(host, window, {
+        x: area.x,
+        y: area.y,
+        width: placement.width ?? SMALLEST_REQUEST.width,
+        height: placement.height ?? SMALLEST_REQUEST.height,
+      });
+      if (!actual) return { skipped: "the driver could not size the window" };
+      size = actual;
+    } else {
+      const frame =
+        window.frame ??
+        mover.windowsOf?.(host, window.pid)?.find((w) => w.window_id === window.window_id)?.frame;
+      if (!frame) return { skipped: "the window's size is unknown" };
+      if (frame.width > area.width || frame.height > area.height) {
+        // Too large for the target display: it keeps its size where it can
+        // and is cut down only to what fits there.
+        const fitted = mover.setWindowFrame(host, window, {
+          x: area.x,
+          y: area.y,
+          width: Math.min(frame.width, area.width),
+          height: Math.min(frame.height, area.height),
+        });
+        if (!fitted) return { skipped: "the driver could not fit the window on the display" };
+        size = fitted;
+      } else size = frame;
+    }
+    const position = deps.displays.corner(display, placement.corner, size, placement.margin);
+    const moved = mover.setWindowFrame(
+      host,
+      { pid: window.pid, window_id: window.window_id },
+      position,
+    );
+    if (!moved) return { skipped: "the driver could not move the window" };
+    return { display: display.id, frame: moved };
+  } catch (err) {
+    return { skipped: `placing the window failed: ${(err as Error).message ?? String(err)}` };
+  }
+}
+
+const LAUNCH_POLL_MS = 250;
+const LAUNCH_WAIT_MS = 3_000;
+const LAUNCH_MAX_WINDOWS = 3;
+
+/**
+ * Move the windows of a program a call just launched to the agent-window
+ * corner, without resizing them. Best effort and silent unless one moved.
+ */
+async function placeLaunchedWindows(
+  deps: ComputerDeps,
+  host: SupportedHost,
+  pid: number,
+): Promise<void> {
+  try {
+    const mover = windowMover(deps, host);
+    if (!mover?.windowsOf) return;
+    let windows: (WindowRef & { frame?: Rect })[] = [];
+    for (let waited = 0; ; waited += LAUNCH_POLL_MS) {
+      try {
+        windows = mover.windowsOf(host, pid) ?? [];
+      } catch {
+        windows = [];
+      }
+      if (windows.length > 0 || waited >= LAUNCH_WAIT_MS) break;
+      await deps.sleep(LAUNCH_POLL_MS);
+    }
+    let movedTo: string | undefined;
+    for (const window of windows.slice(0, LAUNCH_MAX_WINDOWS)) {
+      const placed = placeWindow(deps, host, window, { resize: false });
+      if ("display" in placed) movedTo ??= placed.display;
+    }
+    if (movedTo !== undefined)
+      deps.writeStderr(`Moved the launched program's window to display ${movedTo}.\n`);
+  } catch {
+    // best effort
+  }
+}
+
+function describeSize(placement: WindowPlacement): string {
+  if (placement.width !== undefined && placement.height !== undefined)
+    return `${placement.width} by ${placement.height}`;
+  if (placement.width !== undefined) return `${placement.width} wide, smallest height`;
+  if (placement.height !== undefined) return `${placement.height} high, smallest width`;
+  return "the smallest size the program allows";
+}
+
+function describeWindowSource(config: ComputerProjectConfig): string {
+  if (config.agent_window_source === "user") return "your setting";
+  if (config.agent_window_source === "project") return "the project's setting";
+  return "the default";
+}
+
+/** One plain line for the effective agent-window placement. */
+function describePlacement(config: ComputerProjectConfig): string {
+  const p = config.agent_window;
+  const display = /^\d+$/.test(p.display)
+    ? `display ${p.display}`
+    : p.display === "primary" || p.display === "secondary"
+      ? `the ${p.display} display`
+      : `display ${p.display}`;
+  return (
+    `${describeSize(p)}, ${p.corner} corner of ${display}` +
+    `${p.margin > 0 ? `, ${p.margin}px from the edges` : ""}; ` +
+    `launched programs ${p.move_apps ? "move there too" : "stay where they open"} (${describeWindowSource(config)})`
+  );
+}
+
+function describeAge(iso: string, nowMs: number): string {
+  const seconds = Math.max(0, Math.round((nowMs - Date.parse(iso)) / 1000));
+  if (!Number.isFinite(seconds)) return "at an unknown time";
+  if (seconds < 120) return `${seconds}s ago`;
+  if (seconds < 7200) return `${Math.round(seconds / 60)}m ago`;
+  return `${Math.round(seconds / 3600)}h ago`;
+}
+
+/** The `displays:` status line, from the last reading. */
+function describeDisplayCache(
+  snapshot: DisplaySnapshot | null,
+  nowMs: number,
+  bin: string,
+): string {
+  const hint = `\`${bin} computer displays\` reads them now`;
+  if (!snapshot) return `not read yet; ${hint}`;
+  const age = describeAge(snapshot.probed_at, nowMs);
+  if (snapshot.displays.length === 0)
+    return `none found${snapshot.error ? ` (${snapshot.error})` : ""}, read ${age}; ${hint}`;
+  const n = snapshot.displays.length;
+  return `${n} display${n === 1 ? "" : "s"}, read ${age}; ${hint}`;
+}
+
+const MAX_WINDOW_SIZE = 20_000;
+const MAX_WINDOW_MARGIN = 2_000;
+
+/** `--size WxH` as two positive integers, or null for `smallest`. */
+function parseWindowSize(raw: string): { width: number; height: number } | null {
+  const value = raw.trim().toLowerCase();
+  if (value === "smallest") return null;
+  const m = /^(\d+)x(\d+)$/.exec(value);
+  const width = m ? Number(m[1]) : Number.NaN;
+  const height = m ? Number(m[2]) : Number.NaN;
+  if (
+    !Number.isInteger(width) ||
+    !Number.isInteger(height) ||
+    width < 1 ||
+    height < 1 ||
+    width > MAX_WINDOW_SIZE ||
+    height > MAX_WINDOW_SIZE
+  ) {
+    throw new ComputerError(
+      "computer_usage",
+      `--size must be WIDTHxHEIGHT (two whole numbers from 1 to ${MAX_WINDOW_SIZE}, e.g. 800x600) or smallest.`,
+    );
+  }
+  return { width, height };
 }
 
 export function registerComputerCommand(

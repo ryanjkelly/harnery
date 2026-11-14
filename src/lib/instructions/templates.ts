@@ -149,6 +149,10 @@ URL with \`${b} files url <repo-relative-path>\` instead of guessing it. HTML op
 as a real page with working scripts and relative assets; other files open in the
 dashboard viewer. Use localhost links only when the operator shares this machine.
 
+**Machine facts.** \`${b} machine specs\` describes this machine: operating
+system, processor, memory, graphics, disks and displays. Read it instead of
+guessing what the machine can run.
+
 **Decision docket.** When you would otherwise stop to ask a human a decision you
 can't resolve from the repo, file it instead. \`${b} decision file "<question>"\`
 records it and lets you proceed on a stated default; \`${b} decision search "<terms>"\`
@@ -385,7 +389,9 @@ It shows the approval mode, the host, each pinned driver and whether it is
 installed, any daemon, and who holds the desktop. When a driver is missing,
 run \`${b} computer install --yes\` (both) or add \`--driver <id>\`.
 \`${b} computer doctor\` reports each driver's own health checks, including
-missing OS permissions.
+missing OS permissions. \`${b} computer displays\` lists the displays; a
+program you launch has its window moved to the corner that
+\`${b} computer window\` shows, out of the person's way.
 
 ## Two drivers
 
@@ -531,6 +537,9 @@ refuses an attach otherwise; do not ask them to turn it on to save a step.
    and mouse, opens a new window for you in their default browser,
    attaches and binds it, and prints \`pid\`, \`window_id\`, \`session\`,
    \`target_id\` and \`tab_id\`. Keep them; work only in that window.
+   By default it opens small in a corner of the secondary display, which
+   can show a page's narrow layout; \`${b} computer window\` shows or
+   changes that. Never minimize it: a minimized window stops working.
 2. Read with cua's \`get_browser_state\` (those ids,
    \`snapshot_format: "semantic_v2"\`, an optional \`query\`), then act with
    \`browser_navigate\`, \`browser_type\` or \`browser_click\`, one tool per

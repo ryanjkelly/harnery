@@ -1,0 +1,81 @@
+---
+title: "0252: Record machine specs and refresh them on read"
+description: "ADR: Harnery records the machine's slow-changing hardware and system description once per machine and probes again only when a reader finds the record stale: another boot, another Harnery version, another record format, or older than the reader's age limit. `machine specs` prints it with two cheap live numbers."
+---
+
+**Status:** accepted (2026-11-14) · **Scope:** product tier (`commands/machine`, internal `lib/machine-specs`)
+
+## Context
+
+Agents need to know what machine they are on before they size work: how many
+cores and how much memory there are, which GPU is present, which OS build is
+running, and how many displays are attached. Without a source they guessed,
+and the guesses were often wrong, especially under WSL, where the Linux guest
+sees only part of the machine.
+
+`harn resources` already measures live load: CPU use, memory in use, disk
+free, and pressure. It does not describe the hardware itself. That
+description changes rarely, but reading it is not free. Under WSL, the Windows
+side can only be read through PowerShell, and one PowerShell start costs about
+a second.
+
+## Alternatives considered
+
+- **Probe on every query.** Always current, but every query under WSL would
+  pay about a second for PowerShell, plus the display probe. Agents would
+  learn to avoid the command.
+- **Probe from a background timer or a session-start hook.** Both do work
+  nobody may read. A timer also needs a host process to run it, and a hook
+  slows every session start for a description most sessions never ask for.
+- **Fold the specs into the resources snapshot.** That record is rewritten
+  every sample and is stored per project. The specs are per machine and
+  change rarely, so rewriting them every two seconds in every project would
+  waste work and spread copies.
+
+## Decision
+
+- **One record per machine.** `machine-specs.json` lives beside the user
+  config file, not in a project's `.harnery/`. Writes are atomic.
+- **Refresh on read.** A read returns the stored record when it has the
+  current schema version, was written by the running Harnery version, was
+  written in the current boot, and is younger than the reader's age limit
+  (24 hours by default). Otherwise the read probes, writes, and returns the
+  new record with the reason. `--refresh` always probes. Linux and WSL use the
+  kernel's boot id. macOS and Windows derive the boot time from the uptime and
+  compare it within two minutes, so a read never starts a process. An unknown
+  boot skips that test.
+- **Best-effort sections.** OS, CPU, memory, GPUs, disks, displays, runtimes,
+  and the WSL Windows host are probed independently. A failed section adds one
+  short entry to `errors` and never fails the probe.
+- **One PowerShell call.** Native Windows and the WSL host block are read with
+  a single PowerShell program that prints one JSON object. Video memory comes
+  from the display driver's registry entry, because the older 32-bit field
+  stops near 4 GiB.
+- **WSL describes both sides.** The top level describes the Linux guest, whose
+  memory and cores are the limits WSL sets. `windows_host` describes the
+  Windows side and the WSL distribution and kernel.
+- **Live numbers are measured, not stored.** Each read adds memory available
+  and free space per recorded disk, measured then. Real load stays with
+  `harn resources`.
+- **Privacy.** The record never holds serial numbers, network addresses, user
+  names, home paths, or the hostname. The existing machine label is its only
+  machine name. Mounts under a home directory are skipped.
+
+## Result / Gotchas
+
+- A first read under WSL takes about two seconds: one PowerShell start and the
+  display probe. Later reads take milliseconds until the next boot, update,
+  or age limit.
+- A WSL guest's virtual disks report themselves as rotating, so disk kind is
+  `unknown` there. On native Linux the kind comes from the whole disk's
+  rotational flag.
+- In a WSL guest, `lspci` shows the GPU as a paravirtual Microsoft device.
+  The probe prefers `nvidia-smi` (including the copy WSL provides under
+  `/usr/lib/wsl/lib`) and skips hypervisor vendors in `lspci` output; the
+  Windows host block always has the real adapters.
+- Windows and macOS boot times derived from uptime can drift. The two-minute
+  tolerance absorbs ordinary drift; a larger jump only costs one extra probe.
+- A display change, such as plugging in a monitor, does not refresh the record
+  by itself. `--refresh` or the age limit picks it up, and `computer` reads
+  displays live when it places windows.
+- The macOS probes are covered by fixtures but have not yet run on a Mac.

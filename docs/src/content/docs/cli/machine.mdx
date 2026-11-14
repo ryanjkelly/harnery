@@ -1,0 +1,127 @@
+---
+title: machine
+description: Describe this machine's hardware and system, recorded once and refreshed on read.
+---
+
+`harn machine specs` tells an agent what machine it is on: the operating
+system and its build, the CPU and its core count, total memory, the GPUs, the
+local disks, the displays, and the installed Bun and Node versions. Under WSL
+it also describes the Windows host. Agents use it instead of guessing.
+
+```bash
+harn machine
+harn machine specs
+harn machine specs --json
+harn machine specs --refresh
+harn machine specs --max-age 60
+```
+
+`harn machine` with no subcommand prints the same summary as
+`harn machine specs`.
+
+## The record
+
+The description changes slowly, so Harnery records it once per machine at
+`machine-specs.json` beside the user config file (`~/.config/harnery/` by
+default, or under `XDG_CONFIG_HOME`). It is not per project: every project on
+the machine reads the same record. Writes are atomic.
+
+A read returns the stored record when all of these hold:
+
+- it has the current record format;
+- it was written by the running Harnery version;
+- it was written since the last boot of this machine;
+- it is younger than the age limit, 24 hours by default.
+
+Otherwise the read probes the machine again, writes the new record, and
+returns it. `--refresh` always probes. `--max-age <minutes>` sets the age
+limit for that read. The last line of the summary says when the record was
+probed and, when it was probed just now, why.
+
+There is no timer and no hook. A machine nobody asks about is never probed.
+
+| Reason | Meaning |
+|---|---|
+| `missing` | No record existed. |
+| `schema` | The record format changed, or the file could not be read as JSON. |
+| `version` | Harnery was updated since the record was written. |
+| `boot` | The machine restarted since the record was written. |
+| `age` | The record was older than the age limit. |
+| `forced` | `--refresh` was given. |
+
+Linux and WSL tell boots apart by the kernel's boot id. macOS and Windows use
+the boot time derived from the system uptime, compared within two minutes so
+small clock drift does not count as a restart. When the boot cannot be read,
+that test is skipped.
+
+## Live numbers
+
+Every read also measures two cheap numbers now and never stores them: memory
+available and free space on each recorded disk. They appear in the summary and
+under `live` in JSON. For CPU load, memory pressure, and per-process use, run
+`harn resources snapshot` or read the supervisor's cached status with
+`harn resources status` (see [resources](/cli/resources/)).
+
+## What is recorded
+
+| Field | Contents |
+|---|---|
+| `machine_label` | The machine label Harnery uses elsewhere. |
+| `host_kind` | `linux`, `wsl`, `macos`, `windows`, or `unknown`. |
+| `os` | Platform, name, version, build, kernel, and architecture. |
+| `cpu` | Model, vendor, physical cores, logical cores, and architecture. |
+| `memory` | Total bytes. |
+| `gpus` | Name, vendor, and video memory when known. |
+| `disks` | Real local filesystems: mount, device, filesystem, total bytes, and whether the disk is solid state when the system says so. |
+| `displays` | Each display's id, name, bounds, work area, scale, and whether it is primary. |
+| `runtimes` | The `bun` and `node` versions found on the path. |
+| `windows_host` | Under WSL only: the Windows side's OS, CPU, memory, and GPUs, plus the WSL distribution and kernel. |
+| `errors` | One short entry per section that could not be read. |
+
+Under WSL the top level describes the Linux guest, so its memory and core
+counts are the limits WSL gives the guest. The Windows host block shows the
+whole machine. Disks in a WSL guest are virtual, so their kind is `unknown`.
+Windows drives mounted at `/mnt/<letter>` are listed with the guest's disks.
+
+Disk listings skip pseudo filesystems (tmpfs, overlay, proc, squashfs, and
+similar), loop and image mounts, repeated mounts of the same device, and any
+mount under a home directory.
+
+The record never holds serial numbers, network addresses, user names, home
+paths, or the hostname. The machine label is the only machine name.
+
+## How each platform is probed
+
+Every section is probed on its own. A section that fails adds an entry to
+`errors` and leaves the rest of the record intact, so the command never fails
+because one probe did.
+
+- **Linux and the WSL guest** read `/proc/cpuinfo`, `/proc/meminfo`,
+  `/etc/os-release`, and `/proc/mounts`, measure each mount with `statfs`, and
+  read `/sys/block/*/queue/rotational` for the disk kind. GPUs come from
+  `nvidia-smi` when it is present, otherwise from `lspci`.
+- **Windows and the WSL host** use one PowerShell call that prints one JSON
+  object from the operating system, processor, computer system, video
+  controller, and logical disk classes. Video memory comes from the display
+  driver's registry entry, because the older field stops near 4 GiB. One
+  PowerShell start costs about a second, which is why the record exists.
+- **macOS** reads `sw_vers`, `sysctl` for the CPU and memory, `system_profiler`
+  for GPUs, and `df` for the root volume and mounts under `/Volumes`.
+
+Displays come from the same probe [`computer`](/cli/computer/) uses for
+window placement.
+
+## JSON
+
+`--json` prints one object:
+
+```json
+{
+  "specs": { "schema_version": 1, "probed_at": "…", "host_kind": "wsl", "…": "…" },
+  "live": { "measured_at": "…", "memory_available_bytes": 0, "disks": [{ "mount": "/", "free_bytes": 0 }] },
+  "refreshed": false,
+  "reason": null
+}
+```
+
+`reason` is `null` when the stored record was current.

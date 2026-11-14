@@ -23,6 +23,12 @@
 import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import {
+  CORNERS,
+  type Corner,
+  DEFAULT_PLACEMENT,
+  type WindowPlacement,
+} from "../lib/computer/displays.ts";
 import { coordEnv } from "../lib/env.ts";
 import { DEFAULT_WEB_PORT } from "../lib/local-file-url.ts";
 import { AUTOUPDATE_DEFAULTS, type AutoUpdateConfig } from "./autoupdate/types.ts";
@@ -276,6 +282,11 @@ interface HarneryConfig {
      * (`computer browser-attach on`).
      */
     browser_attach?: boolean;
+    /**
+     * Where an agent's own windows go (ADR 0251): the project default, under
+     * each person's own choice from `computer.json`.
+     */
+    agent_window?: AgentWindowSettings;
   };
   /**
    * Activity-fired project self-update (ADR 0229). Inert unless `enabled` is
@@ -1057,6 +1068,85 @@ export interface ComputerProjectConfig {
   browser_attach_source: SignInSource;
   /** The person's saved browser-attach choice before the project's and the desktop's gates. */
   person_browser_attach: boolean;
+  /**
+   * Where an agent's own windows go (ADR 0251): the default placement, then
+   * the project's `computer.agent_window`, then the person's own choice.
+   */
+  agent_window: WindowPlacement & { move_apps: boolean };
+  /** `user` when the person set any field, else `project` when the project did, else `default`. */
+  agent_window_source: AgentWindowSource;
+}
+
+/**
+ * One layer of agent-window settings (ADR 0251), as the project or the person
+ * writes them. Every field is optional; absent width and height mean the
+ * smallest size the program allows.
+ */
+export interface AgentWindowSettings {
+  display?: string;
+  corner?: Corner;
+  width?: number;
+  height?: number;
+  margin?: number;
+  /** Also move the windows of programs an agent launches (default true). */
+  move_apps?: boolean;
+}
+
+export type AgentWindowSource = "default" | "project" | "user";
+
+/** A patch to the person's agent-window choice; null removes that field. */
+export type AgentWindowPatch = {
+  [K in keyof AgentWindowSettings]?: AgentWindowSettings[K] | null;
+};
+
+const AGENT_WINDOW_MAX_SIZE = 20_000;
+const AGENT_WINDOW_MAX_MARGIN = 2_000;
+
+function boundedInteger(value: unknown, min: number, max: number): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max
+    ? value
+    : undefined;
+}
+
+/**
+ * The valid fields of an `agent_window` object; a bad field is dropped and
+ * the rest kept. Undefined when nothing valid is left.
+ */
+export function parseAgentWindowSettings(value: unknown): AgentWindowSettings | undefined {
+  if (!isPlainObject(value)) return undefined;
+  const out: AgentWindowSettings = {};
+  if (typeof value.display === "string" && value.display.trim()) out.display = value.display.trim();
+  if (typeof value.corner === "string" && (CORNERS as readonly string[]).includes(value.corner))
+    out.corner = value.corner as Corner;
+  const width = boundedInteger(value.width, 1, AGENT_WINDOW_MAX_SIZE);
+  if (width !== undefined) out.width = width;
+  const height = boundedInteger(value.height, 1, AGENT_WINDOW_MAX_SIZE);
+  if (height !== undefined) out.height = height;
+  const margin = boundedInteger(value.margin, 0, AGENT_WINDOW_MAX_MARGIN);
+  if (margin !== undefined) out.margin = margin;
+  if (typeof value.move_apps === "boolean") out.move_apps = value.move_apps;
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/** Default placement, then the project's fields, then the person's on top. */
+function resolveAgentWindow(
+  project: AgentWindowSettings | undefined,
+  person: AgentWindowSettings | undefined,
+): Pick<ComputerProjectConfig, "agent_window" | "agent_window_source"> {
+  const agent_window: WindowPlacement & { move_apps: boolean } = {
+    ...DEFAULT_PLACEMENT,
+    move_apps: true,
+  };
+  for (const layer of [project, person]) {
+    if (!layer) continue;
+    for (const [key, value] of Object.entries(layer)) {
+      if (value !== undefined) (agent_window as unknown as Record<string, unknown>)[key] = value;
+    }
+  }
+  return {
+    agent_window,
+    agent_window_source: person ? "user" : project ? "project" : "default",
+  };
 }
 
 /** Where a person's own on/off choice (agent sign-in, browser attach) came from. */
@@ -1076,6 +1166,11 @@ export interface ComputerPreferences {
   browser_attach?: boolean;
   /** Browser attach for one project, keyed by its absolute root. Wins over `browser_attach`. */
   browser_attach_projects?: Record<string, boolean>;
+  /**
+   * Where an agent's own windows go (ADR 0251), over the project's default.
+   * One choice for every project, because the displays belong to the machine.
+   */
+  agent_window?: AgentWindowSettings;
 }
 
 export interface ResolvedHelperLimit extends EffectiveHelperLimit {
@@ -1151,7 +1246,35 @@ export function readComputerPreferences(path = computerPreferencesPath()): Compu
   if (typeof value.browser_attach === "boolean") out.browser_attach = value.browser_attach;
   const attach = booleanMap(value.browser_attach_projects);
   if (attach) out.browser_attach_projects = attach;
+  const agentWindow = parseAgentWindowSettings(value.agent_window);
+  if (agentWindow) out.agent_window = agentWindow;
   return out;
+}
+
+/**
+ * Change the person's agent-window choice (ADR 0251): each field in `patch`
+ * is set, a null field is removed, and `patch` null clears the whole choice.
+ * Invalid fields are dropped.
+ */
+export function writeAgentWindowPreference(
+  patch: AgentWindowPatch | null,
+  path = computerPreferencesPath(),
+): ComputerPreferences {
+  const prefs = readComputerPreferences(path);
+  if (patch === null) {
+    delete prefs.agent_window;
+  } else {
+    const merged: Record<string, unknown> = { ...(prefs.agent_window ?? {}) };
+    for (const [key, value] of Object.entries(patch)) {
+      if (value === null) delete merged[key];
+      else if (value !== undefined) merged[key] = value;
+    }
+    const parsed = parseAgentWindowSettings(merged);
+    if (parsed) prefs.agent_window = parsed;
+    else delete prefs.agent_window;
+  }
+  savePreferences(prefs, path);
+  return prefs;
 }
 
 /** The boolean entries of a `{ root: boolean }` map, or undefined when none. */
@@ -1293,6 +1416,15 @@ export function readComputerConfig(
   prefs: ComputerPreferences = readComputerPreferences(),
 ): ComputerProjectConfig {
   const root = coordRoot ?? findCoordRoot();
+  const raw = root ? readProjectConfig(root).computer : undefined;
+  const record =
+    raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : null;
+  // Window placement is about the machine's displays, not desktop control's
+  // gates, so it resolves the same whether or not control is on.
+  const agentWindow = resolveAgentWindow(
+    parseAgentWindowSettings(record?.agent_window),
+    prefs.agent_window,
+  );
   const off: ComputerProjectConfig = {
     enabled: false,
     mode: "off",
@@ -1307,11 +1439,9 @@ export function readComputerConfig(
     project_browser_attach: false,
     browser_attach_source: "default",
     person_browser_attach: false,
+    ...agentWindow,
   };
-  if (!root) return off;
-  const raw = readProjectConfig(root).computer;
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return off;
-  const record = raw as Record<string, unknown>;
+  if (!root || !record) return off;
   const project = projectComputerMode(record);
   let mode = project.mode;
   let source: ComputerModeSource = "project";
@@ -1367,6 +1497,7 @@ export function readComputerConfig(
     project_browser_attach: projectAttach,
     browser_attach_source: attachSource,
     person_browser_attach: personAttach,
+    ...agentWindow,
     ...(project.error ? { config_error: project.error } : {}),
     ...(idle !== undefined ? { idle_seconds: idle } : {}),
     ...(waitOk ? { wait_seconds: wait } : {}),

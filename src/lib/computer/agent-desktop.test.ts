@@ -12,10 +12,12 @@ import {
   AGENT_DESKTOP_VERSION,
   type AgentDesktopDeps,
   agentDesktopCallTimeoutMs,
+  agentDesktopLaunchedProcess,
   agentDesktopPlatform,
   agentDesktopSession,
   agentDesktopTakesForeground,
   createAgentDesktopDriver,
+  parseDisplayList,
   unwrapSingleBatch,
 } from "./agent-desktop.ts";
 import { responsibleAppName, type SpawnResult } from "./driver-support.ts";
@@ -458,5 +460,88 @@ describe("agentDesktopTakesForeground", () => {
     expect(
       agentDesktopTakesForeground("batch", { commands: [click, { command: "focus-window" }] }),
     ).toBe(true);
+  });
+});
+
+describe("agent-desktop displays and launches", () => {
+  const DISPLAYS = {
+    version: "2.6",
+    ok: true,
+    command: "list-displays",
+    data: [
+      {
+        bounds: { height: 2160, width: 5120, x: 0, y: 0 },
+        id: "monitor-580651801",
+        is_primary: true,
+        scale: 1.5,
+      },
+      {
+        bounds: { height: 1440, width: 5120, x: 5120, y: 700 },
+        id: "monitor-554109125",
+        is_primary: false,
+        scale: 1.25,
+      },
+    ],
+  };
+  const MAPPED = [
+    {
+      id: "monitor-580651801",
+      primary: true,
+      bounds: { x: 0, y: 0, width: 5120, height: 2160 },
+      scale: 1.5,
+    },
+    {
+      id: "monitor-554109125",
+      primary: false,
+      bounds: { x: 5120, y: 700, width: 5120, height: 1440 },
+      scale: 1.25,
+    },
+  ];
+  const batchOf = (entry: Record<string, unknown>) =>
+    JSON.stringify({ version: "2.6", ok: true, command: "batch", data: { results: [entry] } });
+
+  test("listDisplays runs list-displays through one batch entry and maps the envelope", async () => {
+    const { version: _v, ...entry } = DISPLAYS;
+    const rec = recorder(() => ({ stdout: batchOf({ ...entry, version: "2.6" }) }));
+    const { driver } = await installed("wsl", { spawnSync: rec.spawnSync });
+    expect(driver.listDisplays?.(host("wsl"))).toEqual(MAPPED);
+    const args = rec.calls.at(-1)?.args ?? [];
+    expect(JSON.parse(args[1] ?? "")).toEqual([{ command: "list-displays", args: {} }]);
+  });
+
+  test("listDisplays gives an empty list for a failure, a non-zero exit or junk", async () => {
+    const failed = recorder(() => ({
+      stdout: batchOf({ ok: false, command: "list-displays", error: { message: "no" } }),
+    }));
+    const a = await installed("linux", { spawnSync: failed.spawnSync });
+    expect(a.driver.listDisplays?.(host("linux"))).toEqual([]);
+    const exit = recorder(() => ({ status: 3, stdout: JSON.stringify(DISPLAYS) }));
+    const b = await installed("linux", { spawnSync: exit.spawnSync });
+    expect(b.driver.listDisplays?.(host("linux"))).toEqual([]);
+    // Not installed: the call throws, and the fallback stays empty.
+    expect(createAgentDesktopDriver().listDisplays?.({ kind: "unsupported" })).toEqual([]);
+    const junk = recorder(() => ({ stdout: "not json" }));
+    const c = await installed("linux", { spawnSync: junk.spawnSync });
+    expect(c.driver.listDisplays?.(host("linux"))).toEqual([]);
+    expect(parseDisplayList(DISPLAYS)).toEqual(MAPPED);
+    expect(parseDisplayList({ ...DISPLAYS, ok: false })).toEqual([]);
+    expect(
+      parseDisplayList({ ok: true, data: [{ id: "x", bounds: { x: 0, y: 0, width: 1 } }, 7] }),
+    ).toEqual([]);
+  });
+
+  test("launchedProcess reads data.pid from a launch envelope only", () => {
+    const ok = JSON.stringify({ ok: true, command: "launch", data: { app: "notepad", pid: 611 } });
+    expect(agentDesktopLaunchedProcess("launch", ok)).toEqual({ pid: 611 });
+    const cases: [string, string][] = [
+      ["click", ok],
+      ["launch", "not json"],
+      ["launch", JSON.stringify({ ok: false, error: { code: "APP_UNRESPONSIVE" } })],
+      ["launch", JSON.stringify({ ok: true, data: { app: "x" } })],
+      ["launch", JSON.stringify({ ok: true, data: { pid: -1 } })],
+    ];
+    for (const [tool, stdout] of cases)
+      expect(agentDesktopLaunchedProcess(tool, stdout)).toBeUndefined();
+    expect(createAgentDesktopDriver().launchedProcess?.("launch", ok)).toEqual({ pid: 611 });
   });
 });

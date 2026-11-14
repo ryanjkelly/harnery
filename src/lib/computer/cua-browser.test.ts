@@ -4,12 +4,14 @@ import {
   checkBrowserUrl,
   cuaBrowserCalls,
   cuaBrowserObservation,
+  cuaLaunchedProcess,
   defaultBrowserPattern,
   PASSWORD_OFFER_PATTERN,
   parseWindowList,
   pickBrowser,
   pickFrontBrowser,
   SENSITIVE_FIELD_PATTERN,
+  windowFrameArgs,
 } from "./cua-browser.ts";
 import type { BrowserCall } from "./types.ts";
 
@@ -358,5 +360,55 @@ describe("window helpers", () => {
     expect(checkBrowserUrl(undefined)).toBe("about:blank");
     expect(checkBrowserUrl("http://localhost:3000/")).toBe("http://localhost:3000/");
     expect(() => checkBrowserUrl("chrome://settings")).toThrow(/Refusing/);
+  });
+});
+
+describe("window frame helpers", () => {
+  test("parseWindowList carries bounds or top-level frame fields", () => {
+    const bounds = { x: 9700, y: 1500, width: 627, height: 180 };
+    expect(
+      parseWindowList(JSON.stringify({ windows: [{ pid: 1, window_id: 2, bounds }] }))[0]?.frame,
+    ).toEqual(bounds);
+    expect(
+      parseWindowList(JSON.stringify([{ pid: 1, window_id: 2, ...bounds }]))[0]?.frame,
+    ).toEqual(bounds);
+    expect(
+      parseWindowList(JSON.stringify([{ pid: 1, window_id: 2, x: 1, y: 2, width: 3 }]))[0],
+    ).not.toHaveProperty("frame");
+  });
+
+  test("windowFrameArgs merges, rounds and validates", () => {
+    const current = { x: 1, y: 2, width: 300, height: 200 };
+    expect(windowFrameArgs({ pid: 5, window_id: 6 }, current, { y: 9.4 })).toEqual({
+      pid: 5,
+      window_id: 6,
+      x: 1,
+      y: 9,
+      width: 300,
+      height: 200,
+    });
+    expect(() => windowFrameArgs({ pid: 0, window_id: 6 }, current, {})).toThrow(/integer/);
+    expect(() => windowFrameArgs({ pid: 5, window_id: 6 }, current, { x: Infinity })).toThrow(
+      /finite/,
+    );
+    expect(() => windowFrameArgs({ pid: 5, window_id: 6 }, current, { width: 0 })).toThrow(
+      /at least 1/,
+    );
+  });
+
+  test("cuaLaunchedProcess reads pid, else pids[0], from launch_app only", () => {
+    const table: [string, string, { pid: number } | undefined][] = [
+      ["launch_app", '{"pid":12,"windows":[]}', { pid: 12 }],
+      ["launch_app", '{"pids":[34,35]}', { pid: 34 }],
+      ["launch_app", '{"pid":12,"status":"refused"}', undefined],
+      ["launch_app", '{"refusal":{}}', undefined],
+      ["launch_app", '{"code":"not_found"}', undefined],
+      ["launch_app", '{"pid":"12"}', undefined],
+      ["launch_app", "[12]", undefined],
+      ["launch_app", "not json", undefined],
+      ["list_windows", '{"pid":12}', undefined],
+    ];
+    for (const [tool, stdout, expected] of table)
+      expect(cuaLaunchedProcess(tool, stdout)).toEqual(expected);
   });
 });

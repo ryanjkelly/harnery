@@ -1,0 +1,5 @@
+---
+"harnery": minor
+---
+
+Open agent windows out of the person's way. `computer displays` (`--json`, `--cached`) lists the desktop's displays with their bounds, work areas and scale, and Harnery reads them fresh when an agent newly takes the desktop lease and whenever it opens an agent window. `computer browser open` now places its window onto that display before it attaches and shrinks it afterwards, by default at the smallest size the browser allows in the bottom-right corner of the secondary display, and reports the display and final frame; a program launched through a driver's launch tool is moved to the same corner at its own size, cut down only when it cannot fit. A project sets the default under `computer.agent_window` (`display`, `corner`, `width`, `height`, `margin`, `move_apps`), and each person may set their own with `computer window`, whose fields win. Placement never fails a command: when it cannot place a window, the window stays where the system put it and one line says why.

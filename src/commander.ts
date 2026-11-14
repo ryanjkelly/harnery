@@ -712,6 +712,12 @@ function harneryCommandBundles({
       async (program) =>
         (await import("./commands/resources.ts")).registerResourcesCommand(program, emit, context),
     ),
+    lazy(
+      "machine",
+      "Describe this machine's hardware and system: OS, CPU, memory, GPUs, disks, displays",
+      async (program) =>
+        (await import("./commands/machine.ts")).registerMachineCommand(program, emit, context),
+    ),
     lazy("supervisor", "Run Harnery's optional local diagnostic supervisor", async (program) =>
       (await import("./commands/supervisor.ts")).registerSupervisorCommand(program, emit, context),
     ),

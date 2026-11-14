@@ -33,12 +33,15 @@ import {
   closeWindowScript,
   cuaBrowserCalls,
   cuaBrowserObservation,
+  cuaLaunchedProcess,
   DEFAULT_BROWSER_SCRIPT,
   defaultBrowserPattern,
+  isCuaRefusal,
   newWindowScript,
   parseWindowList,
   pickBrowser,
   processPathScript,
+  windowFrameArgs,
 } from "./cua-browser.ts";
 import {
   archLabel,
@@ -65,12 +68,14 @@ import type {
   InstallPlan,
   InstallResult,
   PinnedArtifact,
+  Rect,
   WindowRef,
 } from "./types.ts";
 
 export {
   cuaBrowserCalls,
   cuaBrowserObservation,
+  cuaLaunchedProcess,
   PASSWORD_OFFER_PATTERN,
   SENSITIVE_FIELD_PATTERN,
 } from "./cua-browser.ts";
@@ -828,6 +833,49 @@ export function createCuaDriver(deps: CuaDeps = {}): DesktopDriver {
     return result.status === 0 && normalize(result.stdout).trim() === "True";
   }
 
+  function windowsOf(host: HostInfo, pid: number): (WindowRef & { frame?: Rect })[] {
+    if (!Number.isInteger(pid) || pid <= 0)
+      throw new Error(`pid must be a positive integer, got ${String(pid)}.`);
+    return listWindows(host, { pid })
+      .filter((w) => w.pid === pid)
+      .map((w) =>
+        w.frame ? { pid, window_id: w.window_id, frame: w.frame } : { pid, window_id: w.window_id },
+      );
+  }
+
+  function frameOf(host: HostInfo, window: WindowRef): Rect | undefined {
+    return windowsOf(host, window.pid).find((w) => w.window_id === window.window_id)?.frame;
+  }
+
+  /**
+   * Move and/or resize one window. The driver's own verdict is often
+   * "unverifiable" when the program clamps the size to its minimum, so the
+   * frame read back afterwards is the answer, not that verdict.
+   */
+  function setWindowFrame(
+    host: HostInfo,
+    window: WindowRef,
+    frame: Partial<Rect>,
+  ): Rect | undefined {
+    for (const [key, value] of Object.entries(frame))
+      if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value)))
+        throw new Error(`${key} must be a finite number, got ${String(value)}.`);
+    const current = frameOf(host, window);
+    if (!current) return undefined;
+    const args = windowFrameArgs(window, current, frame);
+    const result = exec(host, ["call", "set_window_frame", JSON.stringify(args)], CALL_TIMEOUT_MS);
+    if (result.exitCode !== 0) return undefined;
+    const json = result.json;
+    if (
+      json &&
+      typeof json === "object" &&
+      !Array.isArray(json) &&
+      isCuaRefusal(json as Record<string, unknown>)
+    )
+      return undefined;
+    return frameOf(host, window);
+  }
+
   function stopDaemon(host: HostInfo): DaemonStatus {
     exec(host, ["stop"], STATUS_TIMEOUT_MS);
     return daemonStatus(host);
@@ -863,6 +911,9 @@ export function createCuaDriver(deps: CuaDeps = {}): DesktopDriver {
     browserObservation: cuaBrowserObservation,
     openBrowserWindow,
     closeWindow,
+    setWindowFrame,
+    windowsOf,
+    launchedProcess: cuaLaunchedProcess,
     planInstall,
     install,
     installedExecutable,
