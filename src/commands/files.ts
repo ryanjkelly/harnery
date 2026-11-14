@@ -20,6 +20,12 @@ import {
   type TunnelState,
   tunnelTargetPort,
 } from "../lib/tunnel/state.ts";
+import {
+  ensureViewerStarted,
+  readViewerStartConfig,
+  ViewerStartConfigError,
+  ViewerStartError,
+} from "./files-start.ts";
 
 export { FILES_ORIGIN_HOST } from "../lib/local-file-url.ts";
 
@@ -242,6 +248,68 @@ export function tunnelFileUrl(
   );
 }
 
+/**
+ * Verify the dashboard, starting it first when it does not answer and the
+ * project names a start command (`files.start_command`). Only an unreachable
+ * dashboard triggers a start; a dashboard for another repository, or one that
+ * cannot report its identity, is reported as before.
+ */
+export async function verifyOrStartDashboard(
+  coordRoot: string,
+  port: number,
+  options: { start: boolean; onProgress?: (message: string) => void },
+  fetchImpl: DashboardRootFetch = fetch,
+): Promise<void> {
+  try {
+    await verifyDashboardRoot(coordRoot, port, fetchImpl);
+    return;
+  } catch (error) {
+    if (!(error instanceof DashboardRootError) || error.code !== "dashboard_unreachable")
+      throw error;
+    if (!options.start) throw error;
+    let config: ReturnType<typeof readViewerStartConfig>;
+    try {
+      config = readViewerStartConfig(coordRoot);
+    } catch (configError) {
+      if (configError instanceof ViewerStartConfigError) {
+        throw new DashboardRootError("dashboard_unreachable", error.message, configError.message);
+      }
+      throw configError;
+    }
+    if (!config) throw error;
+    try {
+      await ensureViewerStarted({
+        coordRoot,
+        config,
+        onProgress: options.onProgress,
+        probe: async () => {
+          try {
+            await verifyDashboardRoot(coordRoot, port, fetchImpl);
+            return { kind: "ready" };
+          } catch (probeError) {
+            if (
+              probeError instanceof DashboardRootError &&
+              probeError.code !== "dashboard_root_mismatch"
+            ) {
+              return { kind: "waiting", message: probeError.message };
+            }
+            return { kind: "fatal", error: probeError as Error };
+          }
+        },
+      });
+    } catch (startError) {
+      if (startError instanceof ViewerStartError) {
+        throw new DashboardRootError(
+          "dashboard_unreachable",
+          `${error.message}; ${startError.message}`,
+          startError.hint,
+        );
+      }
+      throw startError;
+    }
+  }
+}
+
 export function registerFilesCommand(
   program: Command,
   emit: EmitContext,
@@ -260,6 +328,7 @@ export function registerFilesCommand(
     .option("--raw", "Use the isolated files origin, regardless of extension")
     .option("--viewer", "Use the dashboard file viewer, regardless of extension")
     .option("--no-verify", "Mint without checking the running dashboard's repository identity")
+    .option("--no-start", "Do not run files.start_command when the dashboard is not running")
     .option(
       "--tunnel",
       "Print the file's URL on a live tunnel instead of localhost (HTML uses a files-origin tunnel)",
@@ -273,6 +342,7 @@ export function registerFilesCommand(
           raw?: boolean;
           viewer?: boolean;
           verify?: boolean;
+          start?: boolean;
           tunnel?: boolean;
         },
       ) => {
@@ -308,7 +378,12 @@ export function registerFilesCommand(
             port,
             mode: opts.raw ? "raw" : opts.viewer ? "viewer" : "auto",
           });
-          if (opts.verify !== false) await verifyDashboardRoot(coordRoot, port);
+          if (opts.verify !== false) {
+            await verifyOrStartDashboard(coordRoot, port, {
+              start: opts.start !== false,
+              onProgress: (message) => emit.log(message, "info"),
+            });
+          }
           const url = opts.tunnel ? tunnelFileUrl(result, port, listStates(coordRoot)) : result.url;
           emit.text(`${url}\n`);
         } catch (error) {

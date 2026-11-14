@@ -1,0 +1,60 @@
+---
+title: "0253: Start the dashboard from files url"
+description: "ADR: a project may name its dashboard start command in files.start_command. When the dashboard does not answer, files url runs that command once under a start lease, waits a bounded time for the dashboard to report this repository, and then prints the link."
+---
+
+**Status:** accepted (2026-11-14) · **Scope:** product tier (`commands/files`)
+
+## Context
+
+Agents hand people local file links with `files url`. The link only works
+while the dashboard runs, and `files url` refuses to print one when the
+dashboard does not answer. On a fresh machine nothing starts the dashboard, so
+the first link an agent tries to share fails, and the person who reads the
+link is often not able to start a server themselves.
+
+Hosts start the dashboard in different ways. Some run `web up` directly; others
+run it under their own supervisor, which builds the bundle first and holds a
+machine-wide build slot. Harnery cannot know that command.
+
+## Alternatives considered
+
+- **Start the dashboard from a session-start hook.** Every session would pay
+  for a server most sessions never link to, and a hook that builds on start
+  slows every session on a fresh machine.
+- **Always run `web up` from `files url`.** That ignores a host's own
+  supervisor and could start a second server beside it.
+- **Leave it to the host's onboarding.** Onboarding runs once; a crash or a
+  reboot later puts the machine back where it started.
+
+## Decision
+
+`files.start_command` in `.harnery/config.jsonc` names the start command as an
+argv array. `files.start_timeout_seconds` bounds the wait (600 by default).
+Both may also come from the user file or the machine-local file; later layers
+win per key. When the identity check finds the dashboard unreachable and a
+start command is configured, `files url`:
+
+1. takes a no-clobber start lease under `.harnery/files-viewer/`, so several
+   sessions asking at once start one server, not several;
+2. checks the dashboard again, because a peer may have just finished;
+3. runs the command detached from the coord root, appending its output to
+   `.harnery/files-viewer/start.log`;
+4. polls the identity check until the dashboard serves this repository, the
+   command exits with a failure, or the timeout passes.
+
+A caller that does not win the lease only waits. The lease expires after the
+start timeout and is recoverable once its owner process is gone. A dashboard
+that serves another repository is reported at once and never triggers a start.
+On failure or timeout the command keeps the `dashboard_unreachable` error and
+adds the command it ran and the log path. `--no-start` skips the start.
+
+## Consequences
+
+- An opted-in project gets working links on a fresh machine with no human
+  step. A project without the key behaves as before.
+- The first call on a fresh machine can wait several minutes while the host
+  builds. Progress goes to the log channel, never to stdout.
+- The command is the host's to choose, so it must be safe to run while a
+  dashboard is already starting. A host supervisor that refuses a second
+  start fits; the lease only removes the common stampede.

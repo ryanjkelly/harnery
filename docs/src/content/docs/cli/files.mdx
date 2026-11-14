@@ -6,7 +6,7 @@ sidebar:
 ---
 
 ```
-harn files url <path> [--port 4276] [--coord-root <dir>] [--raw | --viewer] [--tunnel] [--no-verify]
+harn files url <path> [--port 4276] [--coord-root <dir>] [--raw | --viewer] [--tunnel] [--no-verify] [--no-start]
 ```
 
 Mint the browser URL for an existing file under the dashboard's coord root:
@@ -33,9 +33,40 @@ reports the cause and leaves stdout empty.
 
 The check compares opaque SHA-256 digests; the dashboard does not return its
 absolute filesystem path. Use `--no-verify` only when you intentionally need to
-construct a URL while the dashboard is unavailable. The command does not start
-the dashboard or bypass the file server's deny rules. The
-[dashboard](/cli/web/) must already be running for the printed URL to work.
+construct a URL while the dashboard is unavailable. The command never bypasses
+the file server's deny rules.
+
+## Starting the dashboard
+
+By default the [dashboard](/cli/web/) must already be running. A project can
+let `files url` start it instead by naming the start command in
+`.harnery/config.jsonc`:
+
+```jsonc
+{
+  "files": {
+    "start_command": ["harn", "web", "up"],
+    "start_timeout_seconds": 600
+  }
+}
+```
+
+When the dashboard does not answer and `start_command` is set, `files url`
+runs the command once from the coord root, detached, and waits until the
+dashboard reports this repository. Then it prints the link. Several sessions
+calling at once share one start: the first takes a lease under
+`.harnery/files-viewer/` and runs the command, and the others only wait. The
+command's output goes to `.harnery/files-viewer/start.log`, and progress
+messages go to stderr.
+
+The wait ends after `start_timeout_seconds` (600 by default). If the command
+exits with a failure or the wait runs out, the command keeps the
+`dashboard_unreachable` error and adds the command it ran and the log path. A
+dashboard that serves another repository is reported at once and never
+triggers a start. `--no-start` skips the start for one call. The user file and
+`.harnery/config.local.jsonc` may also set either key; later layers win per
+key. A host with its own supervisor should name that supervisor's start
+command here rather than `web up`.
 
 Port resolution matches `harn web up`: `--port`, then `HARNERY_WEB_PORT`, then
 `.harnery/config.jsonc` `web.port`, then `4276`. Pass `--coord-root` when the

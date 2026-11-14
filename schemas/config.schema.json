@@ -519,6 +519,19 @@
           "items": { "type": "string" },
           "default": [],
           "description": "Rescue globs consulted ONLY when a deny came from a soft-tier floor pattern (the deliberately over-broad nets like `**/.env.*` or `**/*secret*.json`). Hard-tier matches (credentials, key/cert files, `.ssh`/`.aws`/`.gnupg`, SA-key/oauth/token JSON, `.git`) are never overridable; an override that names a hard family is loudly dropped at config load."
+        },
+        "start_command": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1,
+          "description": "Command (argv) that `files url` runs once, detached from the coord root, when the dashboard does not answer. Concurrent callers share one start through a lease under `.harnery/files-viewer/`; output goes to `.harnery/files-viewer/start.log`. Omit it to keep `files url` from starting anything."
+        },
+        "start_timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400,
+          "default": 600,
+          "description": "How long `files url` waits for a started dashboard to answer before it reports `dashboard_unreachable`."
         }
       }
     },
