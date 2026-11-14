@@ -541,6 +541,60 @@ an earlier clean observation. An unavailable supplemental observer leaves all
 existing Stop rules in force. The status command retains its upstream and
 submodule freshness checks. Codex's Stop hook remains observe-only.
 
+### Catching up automatically at the end of a turn
+
+In a repository where several people push to the same branch, the guarded
+status often refuses only because the checkout is behind its upstream or a
+submodule checkout trails its parent gitlink. Nothing of the session's own is
+unfinished. A project can let the guarded status catch up by itself:
+
+```jsonc
+{
+  "agents": {
+    "requireGitFinalization": true,
+    "gitSyncCommand": "<the project's safe sync command>",
+    "gitSyncOnEndTurn": true
+  }
+}
+```
+
+When `gitSyncOnEndTurn` is `true` and the only findings are freshness (behind
+upstream, or a submodule checkout behind its gitlink), the guarded status runs
+`gitSyncCommand` once from the coordination root, with a two-minute limit, and
+then repeats the whole check. The box gains a `sync` row that says which
+command ran and what it brought in, for example
+`ran \`sync-all\` to catch up; brought in 3 upstream commits`.
+
+The guarded status still refuses, and the sync never runs, when the session has
+dirty or unpushed work, a submodule has diverged, a repository cannot be
+verified, or the write-claim history is incomplete. It also refuses when the
+sync command exits non-zero, times out, or leaves findings behind; the refusal
+then starts with what the sync did and the last lines of its output. A stale
+checkout still cannot report success.
+
+Both keys are project-only: a user-global or machine-local file cannot make
+the status command execute anything. The sync command must be safe to run
+while other sessions edit the same checkout. Set
+`HARNERY_AGENTS_GIT_SYNC_ON_END_TURN=0` to switch the behavior off for one
+process. The default is `false`.
+
+### When the Stop hook stops retrying
+
+A Stop hook that keeps blocking a turn retries a bounded number of times (five
+by default) and then lets the turn end, so a session whose evidence can never
+land cannot loop forever. That turn may have left work unfinished, so Harnery
+does three things:
+
+- In Claude Code, the Stop response carries a `systemMessage` that tells the
+  person the turn ended after the retries ran out and which rule was unmet.
+  Cursor's Stop output can only start a new agent turn, and Codex and OpenCode
+  have no Stop notice, so those adapters show nothing at that moment.
+- On the session's next prompt, the agent receives a cue naming the unmet rule.
+  It asks the agent to fix it first, finish with the guarded status, and tell
+  the person in one plain sentence what was left unfinished and whether it is
+  now fixed.
+- The exhaustion is counted under `stop_remediation` in `harn agents health`.
+
 The assistant must paste a complete fenced box in its reply. When an adapter
 supplies the completed reply, that text is the evidence. Otherwise Harnery
 scans assistant text in the current operator turn. An earlier turn's box or a

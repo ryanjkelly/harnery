@@ -1,0 +1,72 @@
+---
+title: "0256: Catch up at end of turn and surface Stop cap exhaustion"
+description: "ADR: an opt-in agents.gitSyncOnEndTurn lets the guarded status run the project's sync command once when the only findings are freshness. When the Stop remediation cap lets a turn end, the person sees a notice where the adapter allows one and the next prompt tells the agent to fix and report the unmet rule."
+---
+
+**Status:** accepted (2026-11-14) · **Scope:** product tier (`commands/agents`, `core/agents/finalization`, `core/hooks`)
+
+## Context
+
+The guarded `agents status --end-turn` refuses whenever the checkout is behind
+its upstream or a submodule checkout trails its parent gitlink. That rule is
+right: a stale clone must not report success. In a repository where several
+people push to one branch, though, it fires on most turns even when the session
+changed nothing. The agent then has to run the project's sync command by hand
+and retry, and agents driven by people who do not read Git output stall there.
+
+Separately, the Stop hook stops blocking after a fixed number of consecutive
+remediations so that a session whose evidence can never land does not loop
+forever. When that cap ran out, the turn ended silently. Only a debug row
+recorded it, so the person never learned that work might be unfinished.
+
+## Alternatives considered
+
+- **Drop the freshness check from the guarded status.** Rejected: a stale
+  checkout could then report success over work it never saw.
+- **Run the sync command on every end-turn refusal.** Rejected: running a sync
+  over dirty or unpushed owned work, or over a diverged submodule, can tangle
+  the session's own changes. Those cases need the agent's judgment.
+- **Sync from the Stop hook instead of the status command.** Rejected: the Stop
+  hook runs after the reply, so the pasted box would not show what changed, and
+  a long sync would delay every stop.
+- **Keep blocking past the cap, or raise it.** Rejected: the cap exists for
+  sessions that cannot produce the evidence at all.
+- **Re-prompt the agent through Cursor's `followup_message` on exhaustion.**
+  Rejected: that starts another agent turn and defeats the cap.
+
+## Decision
+
+1. A new project-only key, `agents.gitSyncOnEndTurn` (default `false`), lets
+   the guarded status catch up by itself. When it is on, a sync command is
+   configured, and the only findings are freshness (behind upstream, or a stale
+   submodule checkout), the status runs `agents.gitSyncCommand` once from the
+   coordination root with a two-minute limit, then repeats the full check.
+   It passes only when the command succeeded and the repeat check is clean. The
+   box gains a `sync` row saying which command ran and what it brought in. Any
+   other finding refuses without running anything, and a failed, timed-out, or
+   incomplete sync refuses with what the sync did and its last output lines.
+   `HARNERY_AGENTS_GIT_SYNC_ON_END_TURN=0` switches it off per process.
+2. When the Stop remediation cap lets a turn end, Harnery still allows the stop
+   and keeps the existing debug row that `agents health` counts under
+   `stop_remediation`. It also writes a Claude Code `systemMessage`, which the
+   hook output schema documents as a warning shown to the user, and stores a
+   per-session cue. The session's next prompt (not a remediation prompt)
+   carries that cue: the unmet rule, its first reason line, and an instruction
+   to fix it, finish with the guarded status, and tell the person in one plain
+   sentence what was left unfinished.
+3. Every finalization refusal now leads with one plain sentence that says what
+   happened and names the exact command to run next.
+
+## Consequences
+
+- Projects with many writers can opt in and stop paying a manual retry on most
+  turns, while the freshness rule stays intact.
+- The configured sync command now runs unattended in the shared checkout. The
+  project must choose a command that is safe while other sessions edit it.
+- The key is read only from the project file, matching `gitSyncCommand`, so a
+  user-global or machine-local file cannot make the status execute a command.
+- Cursor, Codex, and OpenCode show no notice at the moment the cap runs out;
+  they rely on the next-prompt cue and the health count.
+- The cue lives in a per-session temporary file, like the remediation counter.
+  A machine restart between the capped turn and the next prompt loses it; the
+  health count remains.
