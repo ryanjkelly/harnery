@@ -119,6 +119,23 @@ export function emitStopOutcome(
   return 2;
 }
 
+/**
+ * Tell the human that the remediation cap let a stop through.
+ *
+ * Claude Code's common hook output accepts a `systemMessage` field ("Warning
+ * message shown to the user") on an exit-0 response, so the stop is allowed
+ * and the notice is shown. Cursor's Stop output only offers
+ * `followup_message`, which would re-prompt the agent and defeat the cap, and
+ * Codex and OpenCode have no Stop notice channel, so those print nothing and
+ * rely on the next-prompt cue and the health count.
+ */
+export function emitStopCapNotice(adapter: Adapter, notice: string): 0 {
+  if (adapter === "claude-code") {
+    process.stdout.write(`${JSON.stringify({ systemMessage: notice })}\n`);
+  }
+  return 0;
+}
+
 function cursorCoordinationRemediation(
   verdict: { reason?: string; rule: string },
   coordRoot?: string,

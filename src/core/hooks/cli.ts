@@ -73,6 +73,7 @@ import {
 import {
   agentsRequireGitFinalization,
   coordFreshnessSeconds,
+  endOfTurnStatusCommand,
   helperLimitSkipped,
   hostPromptContextConfig,
   readAdmissionConfig,
@@ -1508,6 +1509,18 @@ async function handleTurnStarted(run: HookRun): Promise<void> {
     deliver: coordEnv("WORKFLOW_CHILD") !== "1",
     onError: (err, phase) => logError(coordRoot, err, { phase }),
   });
+  // A turn the Stop remediation cap let end unfinished leaves a cue for the
+  // session's next real prompt: name the unmet rule and ask for a fix + report.
+  let stopCapCue = "";
+  if (!stopRemediation) {
+    try {
+      const { takeStopCapExhaustion, formatStopCapCue } = await import("./remediation-cap.ts");
+      const exhaustion = takeStopCapExhaustion(sessionId);
+      if (exhaustion) stopCapCue = formatStopCapCue(exhaustion, endOfTurnStatusCommand(coordRoot));
+    } catch (err) {
+      logError(coordRoot, err, { phase: "user-prompt-stop-cap-cue" });
+    }
+  }
   try {
     const injected = await emitUserPromptSubmitSystemMessage(
       coordRoot,
@@ -1517,7 +1530,7 @@ async function handleTurnStarted(run: HookRun): Promise<void> {
       payload?.cwd,
       recovery?.briefing ?? "",
       hostPromptContext,
-      autoUpdateCue,
+      [stopCapCue, autoUpdateCue].filter(Boolean).join("\n\n"),
     );
     if (injected && recovery) {
       completeRecoveryInjection(coordRoot, owner.instance_id, sessionId, recovery);
@@ -1624,6 +1637,24 @@ async function handleStop(run: HookRun): Promise<number | undefined> {
         session_id: sessionId,
         remediation_cycle_anchor: verdict.remediation_cycle_anchor,
       });
+      // The stop is allowed, but never silently: the human sees a notice
+      // where the adapter supports one, and the next prompt carries a cue.
+      try {
+        const { recordStopCapExhaustion, formatStopCapNotice } = await import(
+          "./remediation-cap.ts"
+        );
+        const exhaustion = {
+          rule: verdict.rule,
+          ...(verdict.reason ? { reason: verdict.reason } : {}),
+          blocked_count: remediation.count - 1,
+          at: new Date().toISOString(),
+        };
+        recordStopCapExhaustion(sessionId, exhaustion);
+        const { emitStopCapNotice } = await import("./adapter/output.ts");
+        emitStopCapNotice(adapter, formatStopCapNotice(exhaustion));
+      } catch (err) {
+        logError(coordRoot, err, { phase: "stop-remediation-cap-notice" });
+      }
     } else {
       // Adapter-aware enforcement channel: Claude Code honors exit-2 + stderr
       // as a turn block; Cursor ignores exit codes and re-prompts only via a

@@ -53,3 +53,44 @@ describe("recordRemediationBlock", () => {
     clearRemediationCount("");
   });
 });
+
+describe("stop cap exhaustion cue", () => {
+  test("a recorded exhaustion is taken once and then cleared", async () => {
+    const { recordStopCapExhaustion, takeStopCapExhaustion } = await import("./remediation-cap.ts");
+    const sid = randomUUID();
+    expect(takeStopCapExhaustion(sid)).toBeNull();
+    recordStopCapExhaustion(sid, {
+      rule: "stop-hook.status_missing",
+      reason: "Owned work is not finalized.\nmore detail",
+      blocked_count: 5,
+      at: "2026-01-01T00:00:00.000Z",
+    });
+    expect(takeStopCapExhaustion(sid)).toEqual({
+      rule: "stop-hook.status_missing",
+      reason: "Owned work is not finalized.\nmore detail",
+      blocked_count: 5,
+      at: "2026-01-01T00:00:00.000Z",
+    });
+    expect(takeStopCapExhaustion(sid)).toBeNull();
+  });
+
+  test("notice and cue name the rule, the fix, and the report to the operator", async () => {
+    const { formatStopCapCue, formatStopCapNotice } = await import("./remediation-cap.ts");
+    const exhaustion = {
+      rule: "stop-hook.status_missing",
+      reason: "Owned work is not finalized.\nmore detail",
+      blocked_count: 5,
+      at: "",
+    };
+    const notice = formatStopCapNotice(exhaustion);
+    expect(notice).toContain("5 blocked attempts");
+    expect(notice).toContain("stop-hook.status_missing");
+    expect(notice).not.toContain("\n");
+    const cue = formatStopCapCue(exhaustion, "harn agents status --end-turn");
+    expect(cue).toContain("rule stop-hook.status_missing");
+    expect(cue).toContain("What was unmet: Owned work is not finalized.");
+    expect(cue).not.toContain("more detail");
+    expect(cue).toContain("`harn agents status --end-turn`");
+    expect(cue).toContain("tell the operator in one plain sentence");
+  });
+});

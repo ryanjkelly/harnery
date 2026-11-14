@@ -81,3 +81,85 @@ export function clearRemediationCount(sessionId: string): void {
     // best-effort
   }
 }
+
+/**
+ * Cap exhaustion must not be silent. The stop is still allowed, but the
+ * session keeps a pending cue so its next prompt tells the agent which rule
+ * went unmet, and the human gets a visible notice where the adapter has one.
+ */
+export interface StopCapExhaustion {
+  rule: string;
+  reason?: string;
+  blocked_count: number;
+  at: string;
+}
+
+function cuePath(sessionId: string): string {
+  const key = (sessionId || "default").replace(/[^A-Za-z0-9_-]/g, "_");
+  return join(os.tmpdir(), `harnery-stop-cap-cue-${key}.json`);
+}
+
+/** Remember one exhaustion so the session's next prompt can carry a cue. */
+export function recordStopCapExhaustion(sessionId: string, exhaustion: StopCapExhaustion): void {
+  try {
+    writeFileSync(cuePath(sessionId), JSON.stringify(exhaustion), "utf8");
+  } catch {
+    // best-effort: the debug row still counts the exhaustion in health.
+  }
+}
+
+/** Read and clear a pending exhaustion for this session, if any. */
+export function takeStopCapExhaustion(sessionId: string): StopCapExhaustion | null {
+  const path = cuePath(sessionId);
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
+  try {
+    rmSync(path, { force: true });
+  } catch {
+    // best-effort
+  }
+  try {
+    const parsed = JSON.parse(raw) as Partial<StopCapExhaustion> | null;
+    if (!parsed || typeof parsed.rule !== "string") return null;
+    return {
+      rule: parsed.rule,
+      ...(typeof parsed.reason === "string" ? { reason: parsed.reason } : {}),
+      blocked_count: typeof parsed.blocked_count === "number" ? parsed.blocked_count : 0,
+      at: typeof parsed.at === "string" ? parsed.at : "",
+    };
+  } catch {
+    return null;
+  }
+}
+
+function firstLine(text: string | undefined): string {
+  return (
+    (text ?? "")
+      .split("\n")
+      .find((line) => line.trim().length > 0)
+      ?.trim() ?? ""
+  );
+}
+
+/** One plain notice for the human when the cap lets a turn end. */
+export function formatStopCapNotice(exhaustion: StopCapExhaustion): string {
+  return (
+    `Harnery let this turn end after ${exhaustion.blocked_count} blocked attempts, ` +
+    `so the work may be unfinished: the end-of-turn rule ${exhaustion.rule} was not met. ` +
+    "The agent will be asked to fix it on your next message."
+  );
+}
+
+/** The prompt-time cue that tells the agent to repair and report the gap. */
+export function formatStopCapCue(exhaustion: StopCapExhaustion, statusCommand: string): string {
+  const reason = firstLine(exhaustion.reason);
+  return [
+    `Your previous turn ended unfinished: the Stop hook blocked it ${exhaustion.blocked_count} times for rule ${exhaustion.rule} and then let it end.`,
+    ...(reason ? [`What was unmet: ${reason}`] : []),
+    `Fix that first in this turn, finish with \`${statusCommand}\`, and tell the operator in one plain sentence what was left unfinished and whether it is now fixed.`,
+  ].join("\n");
+}

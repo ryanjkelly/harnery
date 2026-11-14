@@ -206,3 +206,23 @@ describe("emitStopBlock", () => {
     expect((payload.followup_message ?? "").length).toBeGreaterThan(0);
   });
 });
+
+describe("emitStopCapNotice", () => {
+  test("Claude Code gets a systemMessage JSON line; other adapters print nothing", async () => {
+    const { emitStopCapNotice } = await import("./output.ts");
+    const writes: string[] = [];
+    const original = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((s: string | Uint8Array) => {
+      writes.push(String(s));
+      return true;
+    }) as typeof process.stdout.write;
+    try {
+      expect(emitStopCapNotice("claude-code", "turn ended unfinished")).toBe(0);
+      expect(emitStopCapNotice("cursor", "x")).toBe(0);
+      expect(emitStopCapNotice("codex", "x")).toBe(0);
+    } finally {
+      process.stdout.write = original;
+    }
+    expect(writes).toEqual([`${JSON.stringify({ systemMessage: "turn ended unfinished" })}\n`]);
+  });
+});
