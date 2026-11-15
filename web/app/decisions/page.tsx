@@ -3,19 +3,21 @@ import Link from "next/link";
 import { AgentChip, AgentChipProvider } from "@/components/AgentChip";
 import { Attention } from "@/components/Attention";
 import { StakesPill, StatusPill, TierPill, VerdictPill } from "@/components/decision/DecisionPills";
+import { RemoteDecisionsSection } from "@/components/decision/RemoteDocket";
 import { FormattedDateTime } from "@/components/FormattedDateTime";
 import { EmptyState } from "@/components/layout/EmptyState";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { PageShell } from "@/components/layout/PageShell";
 import { Section as LayoutSection } from "@/components/layout/Section";
 import { buildAgentSummaryMap } from "@/lib/agent-summary";
-import { formatDuration } from "@/lib/format/duration";
 import { hostInfo } from "@/lib/config";
 import { readAgents, readInstanceIdentities } from "@/lib/coord-reader";
 import { actorName, chipName } from "@/lib/decision-actors";
 import { sortReviewFeed } from "@/lib/decision-attention";
 import { type DecisionManifest, readDecisions } from "@/lib/decision-reader";
+import { formatDuration } from "@/lib/format/duration";
 import { bareName } from "@/lib/identities";
+import { readRemoteDocketSnapshot } from "@/lib/remote-docket-reader";
 import { TONE } from "@/lib/tone";
 
 export const dynamic = "force-dynamic";
@@ -30,6 +32,10 @@ export default function DecisionsPage() {
   const snap = readDecisions();
   const { binName } = hostInfo();
   const reviewFeed = sortReviewFeed(snap.review);
+  // Other machines' shared copies. Read-only, and deliberately kept out of the
+  // Attention request below: nobody at this dashboard can rule on them.
+  const remote = readRemoteDocketSnapshot();
+  const now = new Date().toISOString();
 
   const identities = readInstanceIdentities();
   const activeIds = new Set(readAgents().active.map((a) => a.instance_id));
@@ -71,6 +77,9 @@ export default function DecisionsPage() {
               <Count n={reviewFeed.length} label="to review" />
               <Count n={snap.queue.length} label="in queue" />
               <Count n={snap.reviewed.length} label="reviewed" />
+              {remote.waiting.length > 0 && (
+                <Count n={remote.waiting.length} label="waiting on other machines" />
+              )}
             </>
           }
         />
@@ -120,6 +129,7 @@ export default function DecisionsPage() {
           claimers={claimers}
           emptyText="Empty queue."
         />
+        <RemoteDecisionsSection snap={remote} binName={binName} now={now} />
         <Section
           title="Reviewed"
           hint="You've weighed in. Kept for precedent."

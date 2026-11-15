@@ -12,24 +12,42 @@ import { PageShell } from "@/components/layout/PageShell";
 import { Eyebrow } from "@/components/layout/Section";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { buildAgentSummaryMap } from "@/lib/agent-summary";
+import { hostInfo } from "@/lib/config";
 import { readAgents, readInstanceIdentities } from "@/lib/coord-reader";
 import { actorName, chipName } from "@/lib/decision-actors";
-import { readDecision } from "@/lib/decision-reader";
+import { type DecisionDetail, readDecision } from "@/lib/decision-reader";
 import { bareName } from "@/lib/identities";
+import { findRemoteDecisionRow, readRemoteDocketSnapshot } from "@/lib/remote-docket-reader";
 import { TONE } from "@/lib/tone";
+import { RemoteDecisionDetail } from "./remote-detail";
 
 export const dynamic = "force-dynamic";
 
 interface PageProps {
   params: Promise<{ id: string }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
 }
 
-export default async function DecisionDetailPage({ params }: PageProps) {
+export default async function DecisionDetailPage({ params, searchParams }: PageProps) {
   const { id } = await params;
   const decoded = decodeURIComponent(id);
-  const detail = readDecision(decoded);
-  if (!detail) notFound();
+  const sp = await searchParams;
+  // `?from=<machine ref>` pins a shared copy from another machine. Without it,
+  // a local decision wins and a remote copy is only the fallback, matching
+  // `decision show`.
+  const from = typeof sp.from === "string" && sp.from ? sp.from : undefined;
+  const detail = from ? null : readDecision(decoded);
+  if (!detail) {
+    const row = findRemoteDecisionRow(readRemoteDocketSnapshot(), decoded, from);
+    if (row) return <RemoteDecisionDetail row={row} binName={hostInfo().binName} />;
+    const local = from ? readDecision(decoded) : null;
+    if (!local) notFound();
+    return <LocalDecisionDetail detail={local} />;
+  }
+  return <LocalDecisionDetail detail={detail} />;
+}
 
+function LocalDecisionDetail({ detail }: { detail: DecisionDetail }) {
   const { manifest: m, bodies } = detail;
   const awaitingReview = m.status === "resolved" || m.status === "enacted";
   const identities = readInstanceIdentities();

@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { RemoteApprovalsList } from "@/components/decision/RemoteDocket";
 import { FormattedDateTime } from "@/components/FormattedDateTime";
 import { EmptyState } from "@/components/layout/EmptyState";
 import { PageHeader } from "@/components/layout/PageHeader";
@@ -6,7 +7,9 @@ import { PageShell } from "@/components/layout/PageShell";
 import { Tooltip } from "@/components/ui/tooltip";
 import { WorkflowStatusBadge } from "@/components/WorkflowStatusBadge";
 import { cn } from "@/lib/cn";
+import { hostInfo } from "@/lib/config";
 import { coordRoot } from "@/lib/coord-reader";
+import { readRemoteDocketSnapshot } from "@/lib/remote-docket-reader";
 import { TONE } from "@/lib/tone";
 import { describeRunCost } from "@/lib/workflow-cost";
 import { readWorkflowRuns } from "@/lib/workflow-reader";
@@ -22,6 +25,8 @@ export const metadata = { title: "Workflows · Harnery" };
  */
 export default function WorkflowsPage() {
   const runs = readWorkflowRuns(coordRoot());
+  // Pending approvals shared from other machines: read-only here, answered there.
+  const remoteApprovals = readRemoteDocketSnapshot().approvals;
 
   /*
    * Repeat attempts at the same work item look identical in this list: same
@@ -133,6 +138,16 @@ export default function WorkflowsPage() {
             </li>
           ))}
         </ul>
+      )}
+      {remoteApprovals.length > 0 && (
+        <div className="mt-8">
+          <RemoteApprovalsList
+            rows={remoteApprovals}
+            binName={hostInfo().binName}
+            now={new Date().toISOString()}
+            title="Approvals pending on other machines"
+          />
+        </div>
       )}
     </PageShell>
   );
