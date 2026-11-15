@@ -149,6 +149,11 @@ manual use when this setting is false.
 }
 ```
 
+A write claim inside a `git` root is checked at the end of the turn like one in
+the coordination repository, held or released. Because the event ledger records
+such a claim without its path, each machine keeps the path in its own
+`.harnery/finalization-paths/` index ([ADR 0267](/decisions/0267-index-extra-root-claims-locally/)).
+
 The coordination repository is an implicit `git` root. Every extra root comes
 from the project config; the user-global config cannot grant filesystem
 authority. Relative paths resolve from the coordination root. A `git` path must

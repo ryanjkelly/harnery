@@ -481,9 +481,16 @@ is not yet recorded in the parent's gitlink. A peer's unpushed commit to a
 different path does not count against you. The same rule covers paths you
 handed to a peer. See [ADR 0264](/decisions/0264-keep-released-claims-in-the-push-check/).
 
-Claims on paths outside the coordination repository, such as an extra Git root
-in `agents.finalizationRoots`, are recorded without a path, so the end-turn
-check does not yet see them, held or released.
+A claim on a path in an extra Git root from `agents.finalizationRoots` follows
+the same rules. The event ledger records such a claim without its path, so
+Harnery keeps the path in a machine-local index under
+`.harnery/finalization-paths/`, and the end-turn check, Stop's check and
+`lifecycle done` read it from there. A held path must be clean, committed and
+pushed; a released one owes only its commits. A root with no remote owes no
+push. A released path whose root has left the configuration is named as
+unsupported instead of passing. An unreadable index refuses as an unverified
+claim history. The index grants nothing and no guard reads it. See
+[ADR 0267](/decisions/0267-index-extra-root-claims-locally/).
 
 ### handoff
 

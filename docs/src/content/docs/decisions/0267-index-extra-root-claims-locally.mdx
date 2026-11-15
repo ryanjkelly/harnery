@@ -1,0 +1,79 @@
+---
+title: "0267: Index extra-root claims locally"
+description: "ADR: a machine-local index under .harnery/finalization-paths/ gives the end-turn check the paths of write claims in extra Git finalization roots, whose external_path ledger targets carry no path, so those claims are checked held or released."
+---
+
+**Status:** accepted (2026-11-14) · **Scope:** product tier (`core/agents/finalization`, `core/agents/live-authority-v3`, `core/agents/state/finalization-path-index`, session-end cleanup in `core/hooks`)
+
+## Context
+
+A host can list extra Git repositories in `agents.finalizationRoots`, and
+sessions may claim and edit files there. The V3 contract records a claim on a
+path outside the coordination repository as an `external_path` target with a
+fingerprint and no path, so absolute paths from one machine never enter a
+ledger that other machines read. The coordination view lists only workspace
+paths, so the end-turn check, Stop's supplemental check and `agents lifecycle
+done` never saw these claims. A session could leave a dirty or unpushed file
+in an extra root and still finish. ADR 0264 found the gap while fixing released
+claims in the coordination repository and left two tests marking it.
+
+## Alternatives considered
+
+- **Add a display path to `external_path` targets inside configured roots.**
+  Rejected. Readers on older builds validate targets strictly and would reject
+  the new field, which fails the shared ledger closed for every session until
+  every reader upgrades. It would also put one machine's absolute paths into a
+  ledger shared across machines, where they mean nothing and expose local
+  layout.
+- **Read the claim path back from the heartbeat cache.** Rejected. The cache
+  holds only paths held now, so released claims would still vanish, and it is
+  rebuilt from the ledger, which has no path to give it.
+
+## Decision
+
+Keep a machine-local index of these claims. When a session acquires a write
+claim whose canonical path is absolute and classifies into a configured `git`
+finalization root, Harnery records an entry in
+`.harnery/finalization-paths/<instance>.json`: the session generation, the
+canonical path, the configured root, the ledger target fingerprint when the
+acquisition recorded one, and the state `held`. A release marks the entry
+`released`; claiming the path again marks it `held`. Every claim change already
+passes through one recording function, so the index is maintained there.
+
+The finalization read merges the current generation's entries into the
+session's scope: held entries join the held paths (dirty-file and push
+obligations), released entries join the repository-only paths (push
+obligations, as in ADR 0264). The existing check then classifies and inspects
+them like any other path.
+
+Edge cases:
+
+- **Root without a remote.** Dirty files still refuse; commits owe no push,
+  matching the rule for any repository without a remote.
+- **Root removed from the configuration.** A held path is named as outside the
+  finalization roots, as before. A released path outside the coordination
+  repository that no longer classifies is now named too, instead of passing.
+- **Path outside every root.** Not indexed. The write guard already refuses
+  such claims where Git finalization is required.
+- **Missing index.** Nothing is added, which is the earlier behavior.
+- **Unreadable index.** The claim history counts as unverified and the check
+  refuses, naming the index directory in the message.
+
+The index grants nothing. The edit and commit guards do not read it, so it can
+never block a peer. No event contract or schema changes.
+
+## Gotchas
+
+- Entries are keyed by instance and generation. Writes drop other generations,
+  session end removes the instance's file, and any write prunes files nobody has
+  written for seven days.
+- Writes take a per-file lock directory and replace the file through
+  temp-then-rename, so several agents on one machine cannot interleave.
+- Index maintenance is best effort. A failed index write never undoes a
+  recorded claim; the claim then stays invisible to the check, as before.
+- An acquisition that finds an unreadable file replaces it with this
+  generation's entries, so earlier released entries in that file are lost.
+- A claim made on one machine is checked only on that machine. Sessions do not
+  move between machines, so this matches where the obligation lives.
+- Handoffs of extra-root paths still carry no path in the ledger and are not
+  covered here.
