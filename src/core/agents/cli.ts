@@ -247,9 +247,11 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
         // same durable, idempotent pool path used by normal SessionStart.
         if (task && before && humanFacing && !before.name?.trim()) {
           const { assignName } = await import("./state/names.ts");
+          const { remoteLiveNames } = await import("./state/remote-live-names.ts");
           const { coordFreshnessSeconds } = await import("../config.ts");
           const name = assignName(root, owner, "session", {
             freshnessSecs: coordFreshnessSeconds(root),
+            remoteLiveNames: () => remoteLiveNames(root),
           });
           before = writer.setAssignedNameCache(root, owner, name, "session");
           if (!before) {
@@ -292,10 +294,14 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
             (!hb.name?.trim() || /^Agent unknown - /.test(hb.suggested_session_name ?? ""))
           ) {
             const { assignName } = await import("./state/names.ts");
+            const { remoteLiveNames } = await import("./state/remote-live-names.ts");
             const { coordFreshnessSeconds } = await import("../config.ts");
             const name =
               hb.name?.trim() ||
-              assignName(root, owner, "session", { freshnessSecs: coordFreshnessSeconds(root) });
+              assignName(root, owner, "session", {
+                freshnessSecs: coordFreshnessSeconds(root),
+                remoteLiveNames: () => remoteLiveNames(root),
+              });
             hb = writer.setAssignedNameCache(root, owner, name, "session");
           }
         } catch (error) {
@@ -552,6 +558,7 @@ async function handleJournalAction(root: string, action: string, rest: string[])
 
 async function handleAssignName(root: string, rest: string[]): Promise<number> {
   const { assignName } = await import("./state/names.ts");
+  const { remoteLiveNames } = await import("./state/remote-live-names.ts");
   // Optional recorded-fork-lineage flag: --forked-from <parent_instance_id>.
   // Supplied by an adapter layer that knows (or detected) that this session
   // was branched from another conversation. Inert on resume: assignName only
@@ -579,6 +586,7 @@ async function handleAssignName(root: string, rest: string[]): Promise<number> {
   const { coordFreshnessSeconds } = await import("../config.ts");
   const name = assignName(root, owner, kindArg, {
     freshnessSecs: coordFreshnessSeconds(root),
+    remoteLiveNames: () => remoteLiveNames(root),
     ...(forkedFrom ? { forkedFrom } : {}),
   });
   process.stdout.write(

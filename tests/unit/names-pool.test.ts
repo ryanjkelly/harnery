@@ -21,6 +21,7 @@ import {
   resolveForkAncestry,
   resolveName,
 } from "../../src/core/agents/state/names.ts";
+import { remoteLiveNames } from "../../src/core/agents/state/remote-live-names.ts";
 import { resolveMachineLabel } from "../../src/lib/machine.ts";
 import { removeDir } from "../helpers/remove-dir.ts";
 
@@ -635,28 +636,31 @@ describe("machine-aware name assignment", () => {
     );
   }
 
+  // Callers inject the cross-machine reader; the names module never imports it.
+  const withRemote = { freshnessSecs: 600, remoteLiveNames: () => remoteLiveNames(root) };
+
   test("fresh remote names reserve slots but stale and self-machine rows do not", () => {
     writeFileSync(path.join(root, ".harnery", ".name-counter"), "0");
     remote("peer-west", "anna");
     remote("peer-old", "Bob", 3600);
     remote("peer-east", "Bob");
-    expect(assignName(root, "new", "session", { freshnessSecs: 600 })).toBe("Bob");
+    expect(assignName(root, "new", "session", withRemote)).toBe("Bob");
     expect(readFileSync(path.join(root, ".harnery", ".name-counter"), "utf8")).toBe("2");
   });
 
   test("missing, malformed, and disabled presence never prevent assignment", () => {
     writeFileSync(path.join(root, ".harnery", ".name-counter"), "0");
-    expect(assignName(root, "missing", "session", { freshnessSecs: 600 })).toBe("Anna");
+    expect(assignName(root, "missing", "session", withRemote)).toBe("Anna");
     const directory = path.join(root, ".harnery", "presence", "remote");
     mkdirSync(directory, { recursive: true });
     writeFileSync(path.join(directory, "broken.json"), "{torn");
-    expect(assignName(root, "malformed", "session", { freshnessSecs: 600 })).toBe("Bob");
+    expect(assignName(root, "malformed", "session", withRemote)).toBe("Bob");
     remote("peer-west", "Carmen");
     writeFileSync(
       path.join(root, ".harnery", "config.jsonc"),
       JSON.stringify({ presence: { enabled: false } }),
     );
-    expect(assignName(root, "disabled", "session", { freshnessSecs: 600 })).toBe("Carmen");
+    expect(assignName(root, "disabled", "session", withRemote)).toBe("Carmen");
   });
 
   test("the assignment lock retries the shared Windows EPERM contention case", () => {

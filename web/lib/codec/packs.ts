@@ -24,7 +24,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { harneryDir } from "@/lib/coord-reader";
-import { COORD_NAMES } from "../../../src/core/agents/state/names";
+import { COORD_NAMES } from "../../../src/core/agents/state/name-pool";
 
 import { type CodecExpression, FALLBACK_PACK } from "./contracts";
 
@@ -384,10 +384,14 @@ function validBinding(value: unknown): value is PackBinding {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const binding = value as Record<string, unknown>;
   return (
-    typeof binding.instance_id === "string" && binding.instance_id.length > 0 &&
-    typeof binding.pack_id === "string" && SLUG_RE.test(binding.pack_id) &&
-    typeof binding.pack_version === "string" && binding.pack_version.length > 0 &&
-    typeof binding.bound_at === "string" && Number.isFinite(Date.parse(binding.bound_at)) &&
+    typeof binding.instance_id === "string" &&
+    binding.instance_id.length > 0 &&
+    typeof binding.pack_id === "string" &&
+    SLUG_RE.test(binding.pack_id) &&
+    typeof binding.pack_version === "string" &&
+    binding.pack_version.length > 0 &&
+    typeof binding.bound_at === "string" &&
+    Number.isFinite(Date.parse(binding.bound_at)) &&
     (binding.released_at === undefined ||
       (typeof binding.released_at === "string" && Number.isFinite(Date.parse(binding.released_at))))
   );

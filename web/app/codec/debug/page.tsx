@@ -7,7 +7,7 @@ import { buildAgentSummaryMap } from "@/lib/agent-summary";
 import { FALLBACK_PACK } from "@/lib/codec/contracts";
 import type { CodecDebugAgent } from "@/lib/codec/debug-scene";
 import { listPacks } from "@/lib/codec/packs";
-import { COORD_NAMES } from "../../../../src/core/agents/state/names";
+import { COORD_NAMES } from "../../../../src/core/agents/state/name-pool";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;

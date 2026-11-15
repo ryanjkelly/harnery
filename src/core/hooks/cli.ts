@@ -67,6 +67,7 @@ import {
   resolveName,
 } from "../agents/state/names.ts";
 import { writePidmapRow } from "../agents/state/pidmap.ts";
+import { remoteLiveNames } from "../agents/state/remote-live-names.ts";
 import {
   observeStopGitFinalization,
   type StopGitFinalization,
@@ -288,6 +289,7 @@ function assignNameInProcess(
   try {
     const name = assignName(coordRoot, instanceId, kind, {
       freshnessSecs: coordFreshnessSeconds(coordRoot),
+      remoteLiveNames: () => remoteLiveNames(coordRoot),
       ...(fork?.forkedFrom ? { forkedFrom: fork.forkedFrom } : {}),
       ...(fork?.fork ? { fork: true } : {}),
       ...(fork?.forkChecked ? { forkChecked: true } : {}),

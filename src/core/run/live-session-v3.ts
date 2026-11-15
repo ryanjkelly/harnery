@@ -9,6 +9,7 @@ import {
 import { readLiveCoordinationRow } from "../agents/state/live-coordination-view.ts";
 import { ensureLiveCoordinationHeartbeat } from "../agents/state/live-coordination-writer.ts";
 import { assignName } from "../agents/state/names.ts";
+import { remoteLiveNames } from "../agents/state/remote-live-names.ts";
 import { coordFreshnessSeconds } from "../config.ts";
 import { ensureEventLedgerV3 } from "../events/v3/bootstrap.ts";
 import {
@@ -62,6 +63,7 @@ export function startWorkflowChildSessionV3(input: WorkflowChildSessionV3Input):
   if (!cache) throw new Error("workflow_child_v3_cache_missing");
   const name = assignName(input.coordRoot, input.instanceId, "workflow-child", {
     freshnessSecs: coordFreshnessSeconds(input.coordRoot),
+    remoteLiveNames: () => remoteLiveNames(input.coordRoot),
   });
   if (input.label) {
     recordLiveTaskChangeV3({
