@@ -5,7 +5,7 @@ import {
   type CapabilitySupportV3,
 } from "./capabilities.ts";
 import type { EventPayloadV3, EventV3 } from "./contract.ts";
-import { isDelegationLinkEventV3 } from "./delegation-keys.ts";
+import { isDelegationLinkEventV3 } from "./delegation-link-event.ts";
 
 export interface CapabilityDeliveryV3 {
   signal: AdapterSignalV3;

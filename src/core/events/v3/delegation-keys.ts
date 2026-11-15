@@ -1,18 +1,6 @@
 import type { EventV3 } from "./contract.ts";
 import type { CoordinationViewV3 } from "./coordination-view.ts";
-
-/**
- * Provenance `source_event` of the `agent.started` and `agent.completed`
- * events that link a client-delegated worker to its parent (ADR 0268). Readers
- * use it to tell a key-linked delegation from a native subagent.
- */
-export const DELEGATION_LINK_SOURCE_EVENT = "agent-coord.delegation-link";
-
-export function isDelegationLinkEventV3(event: {
-  provenance?: { source_event?: string };
-}): boolean {
-  return event.provenance?.source_event === DELEGATION_LINK_SOURCE_EVENT;
-}
+import { isDelegationLinkEventV3 } from "./delegation-link-event.ts";
 
 /** One link to write: the parent generation delegated to the child generation. */
 export interface DelegationLinkPlanV3 {

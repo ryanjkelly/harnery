@@ -1,5 +1,5 @@
 import type { EventV3 } from "./contract.ts";
-import { isDelegationLinkEventV3 } from "./delegation-keys.ts";
+import { isDelegationLinkEventV3 } from "./delegation-link-event.ts";
 import type { PositionedEventV3, ReadLedgerV3Result } from "./reader.ts";
 
 export const EVENT_V3_SAFETY_REDUCER_BUILD = "event-v3-safety-reducer-v2" as const;

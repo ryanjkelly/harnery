@@ -9,11 +9,11 @@ import type { EventV3 } from "../events/v3/contract.ts";
 import { readEventV3ControlState } from "../events/v3/control.ts";
 import { projectCoordinationViewV3 } from "../events/v3/coordination-view.ts";
 import {
-  DELEGATION_LINK_SOURCE_EVENT,
   type DelegationCompletionPlanV3,
   type DelegationLinkPlanV3,
   planDelegationLinksV3,
 } from "../events/v3/delegation-keys.ts";
+import { DELEGATION_LINK_SOURCE_EVENT } from "../events/v3/delegation-link-event.ts";
 import { fingerprintContextV3 } from "../events/v3/fingerprint-keys.ts";
 import { delegationIdV3, spanIdV3 } from "../events/v3/ids.ts";
 import { livePlatformV3, resolveLiveEventLedgerRouteV3 } from "../events/v3/live-routing.ts";
