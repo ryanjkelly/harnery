@@ -297,7 +297,7 @@ function renderTurnRitualReminder(
   writeHashFile(statePath, key);
   const bounced =
     previous === TURN_RITUAL_BOUNCED
-      ? "Your previous turn was bounced by the Stop hook because the ritual was incomplete. "
+      ? "The Stop hook refused your previous turn. "
       : "";
 
   const bin = resolveBinName(coordRoot);
@@ -307,10 +307,16 @@ function renderTurnRitualReminder(
     adapter === "claude-code" || adapter === "cursor"
       ? " and paste its output verbatim in a fenced code block at the end of your reply"
       : "";
+  // The Stop hook heals a missing status, paste, or repeated task itself
+  // (ADR 0266); only unfinished Git work and a never-declared task refuse.
+  const enforcement =
+    adapter === "claude-code" || adapter === "cursor"
+      ? " A status in your reply is the only display every surface shows. If you skip a step, the Stop hook runs the check or carries your task forward itself. It still refuses to end a turn while your work is not committed and pushed, or while this session has never declared a task."
+      : "";
   return (
     bounced +
-    `Turn ritual (Stop-enforced): on any turn that uses tools, run \`${bin} agents set-task "<short focus>"\` at some point during the turn (required every turn, even when the focus is unchanged; pass an empty string when there is no meaningful focus), then make \`${statusCommand}\` your final tool call${paste}. ` +
-    "A turn that ends without these is bounced by the Stop hook and costs a retry."
+    `Turn ritual: on any turn that uses tools, run \`${bin} agents set-task "<short focus>"\` during the turn (every turn, even when the focus is unchanged; pass an empty string when there is no meaningful focus), then make \`${statusCommand}\` your final tool call${paste}.` +
+    enforcement
   );
 }
 

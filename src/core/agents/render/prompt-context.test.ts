@@ -72,26 +72,30 @@ describe("renderPromptContext on the V3 coordination projection", () => {
     expect(runtimeText).not.toContain(reminder);
   });
 
-  test("the stop-enforced turn ritual is adapter-specific", () => {
+  test("the turn ritual is adapter-specific", () => {
     const claude = render({ turnRitualNudge: "claude-code" });
-    expect(claude).toContain("Turn ritual (Stop-enforced)");
+    expect(claude).toContain("Turn ritual:");
     expect(claude).toContain("paste its output verbatim in a fenced code block");
+    // A missing status is healed, not refused (ADR 0266).
+    expect(claude).not.toContain("bounced");
+    expect(claude).toContain("not committed and pushed");
+    expect(claude).toContain("never declared a task");
 
     markTurnRitualBounced(root, "self");
     const cursor = render({ turnRitualNudge: "cursor" });
-    expect(cursor).toContain("Turn ritual (Stop-enforced)");
+    expect(cursor).toContain("Turn ritual:");
     expect(cursor).toContain("paste its output verbatim in a fenced code block");
   });
 
   test("the turn ritual reminder appears only when it is news", () => {
-    expect(render({ turnRitualNudge: "claude-code" })).toContain("Turn ritual (Stop-enforced)");
+    expect(render({ turnRitualNudge: "claude-code" })).toContain("Turn ritual:");
     expect(render({ turnRitualNudge: "claude-code" })).toBe("");
     expect(render({ turnRitualNudge: "claude-code" })).toBe("");
 
     markTurnRitualBounced(root, "self");
     const afterBounce = render({ turnRitualNudge: "claude-code" });
-    expect(afterBounce).toContain("previous turn was bounced by the Stop hook");
-    expect(afterBounce).toContain("Turn ritual (Stop-enforced)");
+    expect(afterBounce).toContain("The Stop hook refused your previous turn");
+    expect(afterBounce).toContain("Turn ritual:");
     expect(render({ turnRitualNudge: "claude-code" })).toBe("");
 
     // A compaction advances the context generation and drops the old reminder.
@@ -103,7 +107,7 @@ describe("renderPromptContext on the V3 coordination projection", () => {
     );
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "state.json"), JSON.stringify({ generation: 2 }), "utf8");
-    expect(render({ turnRitualNudge: "claude-code" })).toContain("Turn ritual (Stop-enforced)");
+    expect(render({ turnRitualNudge: "claude-code" })).toContain("Turn ritual:");
     expect(render({ turnRitualNudge: "claude-code" })).toBe("");
   });
 

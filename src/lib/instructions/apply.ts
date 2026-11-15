@@ -15,7 +15,7 @@
  *     `@AGENTS.md`. A CLAUDE.md that already imports AGENTS.md or already carries
  *     the block (a host that generates CLAUDE.md from AGENTS.md) is left alone.
  *   - `.cursor/rules/harnery-turn-ritual.mdc` — cursor only; an Always Apply
- *     rule that makes the Stop-enforced status footer visible in reply text.
+ *     rule that asks for the end-of-turn status in reply text.
  *   - `<adapter-skill-dir>/<skill>/SKILL.md` — fully-owned files, honoring
  *     `skills.exclude` in `.harnery/config.jsonc`. Claude Code uses
  *     `.claude/skills/`; Cursor and Codex use `.agents/skills/`.
@@ -111,7 +111,7 @@ function cursorRuleBody(projectRoot: string, binName: string): string {
     `2. Make \`${statusCommand}\` your final tool call.`,
     "3. Append that command's stdout verbatim in a fenced code block at the bottom of the same substantive reply.",
     "",
-    "Cursor Stop enforces all three signals. A missing signal produces one follow-up that names every repair needed.",
+    "If a step is missing, the Stop hook runs the status check or carries your task forward itself. It sends one follow-up only when owned work is not committed and pushed, or when the session has never declared a task.",
   ].join("\n");
 }
 
