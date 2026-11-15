@@ -92,6 +92,20 @@ hook's own observation of owned paths runs before the heal and refuses on
 its own when it sees dirty or unpushed owned work; only the slower upstream
 freshness check is skipped.
 
+That observation has its own short budget and can itself be unavailable. In
+that one case nothing has established that owned work is finished, so a
+hook-side check that also fails or times out keeps the original refusal
+(run the status check), which the remediation cap still bounds. This is what
+the old rule did on every such turn.
+
+**Projects without Git finalization.** The hook runs the command the project
+is configured to require. A project that does not require Git finalization
+gets the ordinary status from the heal, and a missing status never imposes
+the commit-and-push check it opted out of.
+
+**Stale status.** A closing check followed by another tool call is rerun
+whether or not the paste or the task is also missing.
+
 ## Expected effect
 
 Replaying the same recorded turns against the new rules, counting only the
