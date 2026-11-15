@@ -20,6 +20,7 @@ import { canonicalClaimPath } from "../claim-path.ts";
 import { atomicWrite } from "./atomic-write.ts";
 import { type Heartbeat, heartbeatPath, readHeartbeat } from "./heartbeat-reader.ts";
 import type { TaskState } from "./session-state.ts";
+import { rememberSessionTitle } from "./session-title-memory.ts";
 
 export { type Heartbeat, readHeartbeat } from "./heartbeat-reader.ts";
 
@@ -54,6 +55,7 @@ function mutate(
   const next = fn(hb);
   next.last_heartbeat = nowIsoSeconds();
   atomicWrite(heartbeatPath(coordRoot, instanceId), JSON.stringify(next, null, 2));
+  rememberSessionTitle(coordRoot, hb, next);
   return next;
 }
 

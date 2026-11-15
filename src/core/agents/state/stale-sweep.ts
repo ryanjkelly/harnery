@@ -19,6 +19,7 @@ import {
   liveSubjectGenerationWaitingV3,
   recordLiveSweepObservationV3,
 } from "../live-lifecycle-v3.ts";
+import { pruneSessionTitleMemory } from "./session-title-memory.ts";
 
 /**
  * Record the sweep before deleting disposable cache state.
@@ -189,6 +190,15 @@ export function staleSweep(coordRoot: string): {
 
       if (parsed.instance_id) liveInstanceIds.add(parsed.instance_id);
     }
+  }
+
+  // Title memory outlives the cache on purpose: an idle session whose cache
+  // was just deleted above recalls its title from it on the next hook. Only
+  // memories unchanged for the retention window are removed.
+  try {
+    pruneSessionTitleMemory(coordRoot, nowSec);
+  } catch {
+    /* swallow */
   }
 
   // 2. Prune pid-map entries whose instance has no live heartbeat.

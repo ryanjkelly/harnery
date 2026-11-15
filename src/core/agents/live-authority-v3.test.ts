@@ -53,7 +53,7 @@ import { recordLiveCoordinationObservationV3 } from "./live-observation-v3.ts";
 import { renderPromptContext } from "./render/prompt-context.ts";
 import { renderSessionContext } from "./render/session-context.ts";
 import type { Heartbeat } from "./state/heartbeat-reader.ts";
-import { readHeartbeat } from "./state/heartbeat-writer.ts";
+import { readHeartbeat, stampSessionTitleApplied } from "./state/heartbeat-writer.ts";
 import { readLiveCoordinationRows } from "./state/live-coordination-view.ts";
 import {
   ensureLiveCoordinationHeartbeat,
@@ -624,6 +624,40 @@ describe("live V3 coordination", () => {
       task: "today focus",
       suggested_session_name: "Agent unknown - yesterday focus",
       session_name_seen_for: "Agent unknown - yesterday focus",
+    });
+  });
+
+  test("keeps an applied title when the stale sweep deletes an idle session's cache", () => {
+    const root = startedRoot();
+    const title = "Agent unknown - First focus";
+    expect(recordLiveTaskChangeV3(liveInput(root, { task: "First focus" })).state).toBe("recorded");
+    expect(stampSessionTitleApplied(root, "operator", title, "t3-code")).not.toBeNull();
+
+    // The sweep removes the whole cache file for a session idle past the
+    // freshness window. Before the title memory, the rebuilt row had no
+    // title, so the next focus minted a new one and the client thread was
+    // renamed mid-session.
+    rmSync(join(root, ".harnery/active/operator.json"));
+    const row = readLiveCoordinationRows(root).find((r) => r.instance_id === "operator");
+    expect(row).toMatchObject({
+      suggested_session_name: title,
+      session_title_applied_for: title,
+    });
+
+    expect(
+      ensureLiveCoordinationHeartbeat(root, "operator", "native-session", "claude-code"),
+    ).toMatchObject({
+      suggested_session_name: title,
+      session_title_surface: "t3-code",
+      session_title_applied_for: title,
+    });
+    expect(recordLiveTaskChangeV3(liveInput(root, { task: "Second focus" })).state).toBe(
+      "recorded",
+    );
+    expect(readHeartbeat(root, "operator")).toMatchObject({
+      task: "Second focus",
+      suggested_session_name: title,
+      session_title_applied_for: title,
     });
   });
 

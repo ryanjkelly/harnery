@@ -14,6 +14,7 @@ import {
 } from "../../events/v3/live-route-observer.ts";
 import { type Heartbeat, readHeartbeat } from "./heartbeat-reader.ts";
 import { resolveName } from "./names.ts";
+import { recallSessionTitle } from "./session-title-memory.ts";
 
 /**
  * Heartbeat files are disposable V3 caches. These bindings prevent a stale
@@ -170,6 +171,14 @@ export function projectHeartbeatV3(
     cache?.session_id ?? generation.session_id,
   );
   const taskIsSet = generation.task_state === "set";
+  // The stale sweep deletes an idle session's cache; its title state survives
+  // in the durable title memory, so a row read before the cache is rebuilt
+  // still carries the title (session-title-memory.ts).
+  const naming: Partial<Heartbeat> =
+    cache ??
+    // The generation's session id is a hashed ledger id, not the native id
+    // the memory stores; the instance id already names the native session.
+    recallSessionTitle(coordRoot, instanceId, undefined, durableIdentity?.name || undefined);
   const lifecycle = isLifecycleState(generation.lifecycle_state)
     ? generation.lifecycle_state
     : "active";
@@ -202,15 +211,15 @@ export function projectHeartbeatV3(
     task_state: lifecycle,
     task_state_updated_at: generation.lifecycle_state_updated_at,
     task_state_reason: lifecycle === "blocked" ? cache?.task_state_reason : undefined,
-    suggested_session_name: cache?.suggested_session_name,
-    session_name_seen_at: cache?.session_name_seen_at,
-    session_name_seen_for: cache?.session_name_seen_for,
-    session_name_display_requested_for: cache?.session_name_display_requested_for,
-    session_name_display_reminders: cache?.session_name_display_reminders,
-    session_title_surface: cache?.session_title_surface,
-    session_title_client_thread: cache?.session_title_client_thread,
-    session_title_applied_for: cache?.session_title_applied_for,
-    session_title_fallback_for: cache?.session_title_fallback_for,
+    suggested_session_name: naming.suggested_session_name,
+    session_name_seen_at: naming.session_name_seen_at,
+    session_name_seen_for: naming.session_name_seen_for,
+    session_name_display_requested_for: naming.session_name_display_requested_for,
+    session_name_display_reminders: naming.session_name_display_reminders,
+    session_title_surface: naming.session_title_surface,
+    session_title_client_thread: naming.session_title_client_thread,
+    session_title_applied_for: naming.session_title_applied_for,
+    session_title_fallback_for: naming.session_title_fallback_for,
     workflow_run_id: generation.run_id,
     workflow_agent_id: generation.workflow_agent_id,
     parent_instance_id: parent ? nativeInstanceIdV3(parent.instance_id) : undefined,

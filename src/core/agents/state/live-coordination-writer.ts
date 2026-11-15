@@ -15,6 +15,11 @@ import {
   type V3HeartbeatMaterialization,
 } from "./live-coordination-view.ts";
 import { resolveName } from "./names.ts";
+import {
+  recallSessionTitle,
+  rememberSessionTitle,
+  sessionTitleFields,
+} from "./session-title-memory.ts";
 
 /**
  * Ensure the current V3 generation has a mutation target. The resulting file
@@ -94,41 +99,18 @@ function materializeLiveCoordinationHeartbeat(
   // Same native session id means the same adapter tab; drop the carry only
   // when the durable identity observably changed (a reassumed name would make
   // the old "Agent <name> - …" block wrong for the new owner).
+  //
+  // The stale sweep deletes an idle session's cache outright, so `current` is
+  // often missing when an idle session wakes. The durable title memory keeps
+  // the same fields for exactly that case (session-title-memory.ts).
   const identityUnchanged = !resolved?.name || !current?.name || resolved.name === current.name;
+  const sameSession = !current || current.session_id === nativeSessionId;
+  const cachedNaming =
+    current && sameSession && identityUnchanged ? sessionTitleFields(current) : {};
   const carriedNaming =
-    current && current.session_id === nativeSessionId && identityUnchanged
-      ? {
-          ...(current.suggested_session_name
-            ? { suggested_session_name: current.suggested_session_name }
-            : {}),
-          ...(current.session_name_seen_for
-            ? { session_name_seen_for: current.session_name_seen_for }
-            : {}),
-          ...(current.session_name_seen_at
-            ? { session_name_seen_at: current.session_name_seen_at }
-            : {}),
-          ...(current.session_name_display_requested_for
-            ? {
-                session_name_display_requested_for: current.session_name_display_requested_for,
-              }
-            : {}),
-          ...(typeof current.session_name_display_reminders === "number"
-            ? { session_name_display_reminders: current.session_name_display_reminders }
-            : {}),
-          ...(current.session_title_surface
-            ? { session_title_surface: current.session_title_surface }
-            : {}),
-          ...(current.session_title_client_thread
-            ? { session_title_client_thread: current.session_title_client_thread }
-            : {}),
-          ...(current.session_title_applied_for
-            ? { session_title_applied_for: current.session_title_applied_for }
-            : {}),
-          ...(current.session_title_fallback_for
-            ? { session_title_fallback_for: current.session_title_fallback_for }
-            : {}),
-        }
-      : {};
+    Object.keys(cachedNaming).length > 0 || !sameSession || !identityUnchanged
+      ? cachedNaming
+      : recallSessionTitle(coordRoot, nativeInstanceId, nativeSessionId, resolved?.name);
   const materialized: V3HeartbeatMaterialization = {
     ...projected,
     ...carriedNaming,
@@ -146,6 +128,7 @@ function materializeLiveCoordinationHeartbeat(
     v3_task_state: generation.task_state === "set" ? "set" : "cleared",
   };
   writeHeartbeatCache(coordRoot, nativeInstanceId, materialized);
+  rememberSessionTitle(coordRoot, current, materialized);
   return materialized;
 }
 
