@@ -24,7 +24,7 @@ export const MAIL_REF_PREFIX = "refs/harnery/mail/";
 /** Shared docket refs: a machine's waiting decisions and pending approvals,
  * published only when the project opts in (ADR 0255). */
 export const DOCKET_REF_PREFIX = "refs/harnery/docket/";
-type HarneryRefPrefix =
+export type HarneryRefPrefix =
   | typeof PRESENCE_REF_PREFIX
   | typeof MAIL_REF_PREFIX
   | typeof DOCKET_REF_PREFIX;
@@ -49,7 +49,7 @@ function gitEnv(): NodeJS.ProcessEnv {
   };
 }
 
-function runGit(
+export function runPresenceGit(
   root: string,
   args: string[],
   input?: string,
@@ -70,12 +70,12 @@ function runGit(
 
 /** Does the repo have an `origin` remote to rendezvous on? */
 export function hasOrigin(root: string): boolean {
-  return runGit(root, ["remote", "get-url", "origin"]).ok;
+  return runPresenceGit(root, ["remote", "get-url", "origin"]).ok;
 }
 
 /** The origin remote URL, or null. Input to relay room derivation. */
 export function originUrl(root: string): string | null {
-  const r = runGit(root, ["remote", "get-url", "origin"]);
+  const r = runPresenceGit(root, ["remote", "get-url", "origin"]);
   const url = r.stdout.trim();
   return r.ok && url ? url : null;
 }
@@ -86,7 +86,7 @@ export function originUrl(root: string): string | null {
  * sorted so every clone picks the same one. Null when the repo has no commits.
  */
 export function rootCommitSha(root: string): string | null {
-  const r = runGit(root, ["rev-list", "--max-parents=0", "HEAD"]);
+  const r = runPresenceGit(root, ["rev-list", "--max-parents=0", "HEAD"]);
   if (!r.ok) return null;
   const shas = r.stdout
     .split("\n")
@@ -116,9 +116,9 @@ export function sanitizeRefComponent(label: string): string {
 export function writePresenceCommit(root: string, message: string): string | null {
   // Ensure the empty-tree object exists in this odb (mktree with empty stdin
   // writes it idempotently).
-  const mk = runGit(root, ["mktree"], "");
+  const mk = runPresenceGit(root, ["mktree"], "");
   const tree = mk.ok && mk.stdout.trim() ? mk.stdout.trim() : EMPTY_TREE_SHA;
-  const r = runGit(root, ["commit-tree", tree, "-m", message]);
+  const r = runPresenceGit(root, ["commit-tree", tree, "-m", message]);
   return r.ok && r.stdout.trim() ? r.stdout.trim() : null;
 }
 
@@ -147,7 +147,18 @@ export function fetchMachineRefs(
   const refspecs = [PRESENCE_REF_PREFIX, MAIL_REF_PREFIX, DOCKET_REF_PREFIX].map(
     (p) => `+${p}*:${p}*`,
   );
-  return runNetworkGit(root, ["fetch", "--quiet", "--no-tags", "origin", ...refspecs], opts);
+  const args = ["fetch", "--quiet", "--no-tags", "--prune", "origin", ...refspecs];
+  const result = runNetworkGit(root, args, opts);
+  // A peer can retire a ref after the server advertises it. Refresh the
+  // advertisement once; a missing peer must not break a synchronous reader.
+  if (
+    opts.sync &&
+    !result.ok &&
+    /couldn't find remote ref|not our ref|unadvertised object/i.test(result.error ?? "")
+  ) {
+    return runNetworkGit(root, args, opts);
+  }
+  return result;
 }
 
 function runNetworkGit(
@@ -156,7 +167,7 @@ function runNetworkGit(
   opts: { sync?: boolean },
 ): { ok: boolean; error?: string } {
   if (opts.sync) {
-    const r = runGit(root, args);
+    const r = runPresenceGit(root, args);
     return r.ok ? { ok: true } : { ok: false, error: r.stderr.trim().slice(0, 300) };
   }
   try {
@@ -178,7 +189,11 @@ export function readMachineRefs(
   root: string,
   prefix: HarneryRefPrefix = PRESENCE_REF_PREFIX,
 ): Array<{ machine: string; message: string }> {
-  const r = runGit(root, ["for-each-ref", "--format=%(refname)%00%(contents)%01", `${prefix}*`]);
+  const r = runPresenceGit(root, [
+    "for-each-ref",
+    "--format=%(refname)%00%(contents)%01",
+    `${prefix}*`,
+  ]);
   if (!r.ok) return [];
   return parseForEachRefOutput(r.stdout, prefix);
 }

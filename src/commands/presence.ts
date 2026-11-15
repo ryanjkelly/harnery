@@ -17,6 +17,7 @@ import {
   runRelayDaemon,
 } from "../core/presence/index.ts";
 import { importMail, mailStatus, publishMail } from "../core/presence/mail.ts";
+import { DEFAULT_REF_PRUNE_AGE, listMachineRefs, pruneMachineRefs } from "../core/presence/refs.ts";
 import { type RelayStatus, relayStatus } from "../core/presence/relay-status.ts";
 import {
   ageSeconds,
@@ -47,7 +48,7 @@ export function registerPresenceCommand(program: Command, emit: EmitContext): vo
   const cmd = program
     .command("presence")
     .description(
-      "Presence: mobile/office state (get/set/pin/unpin/clear/detect) + cross-machine session presence (publish/fetch/peers/relay-status)",
+      "Presence: mobile/office state (get/set/pin/unpin/clear/detect) + cross-machine session presence (publish/fetch/peers/refs/relay-status)",
     )
     .action(() => {
       printStatus(emit);
@@ -137,6 +138,81 @@ export function registerPresenceCommand(program: Command, emit: EmitContext): vo
     });
 
   // ---- cross-machine session presence (ADR 0016) ----
+
+  const refs = cmd
+    .command("refs")
+    .description(
+      "List presence, mail, and docket refs on origin with commit age and machine ownership",
+    )
+    .option("--json", "JSON output")
+    .action((opts: { json?: boolean }) => {
+      const root = requireRoot(emit);
+      try {
+        const inventory = listMachineRefs(root);
+        if (opts.json) emit.config({ format: "json" });
+        if (opts.json || !process.stdout.isTTY) {
+          emit.data(inventory);
+          return;
+        }
+        for (const row of inventory.refs) {
+          const age = row.age_secs === null ? "unknown" : formatAge(row.age_secs);
+          emit.text(
+            `${row.ref}  machine=${row.machine} namespace=${row.namespace} age=${age} own=${row.own ? "yes" : "no"}${row.error ? ` (${row.error})` : ""}\n`,
+          );
+        }
+        if (!inventory.refs.length) emit.text("No cross-machine refs on origin.\n");
+      } catch (error) {
+        emit.error({
+          code: "refs_failed",
+          message: error instanceof Error ? error.message : String(error),
+        });
+        process.exitCode = 1;
+      }
+    });
+
+  refs
+    .command("prune")
+    .description("Preview stale peer ref deletion; --yes deletes exact refs remotely and locally")
+    .option(
+      "--older-than <duration>",
+      "Minimum commit age (e.g. 30d, 6w); at least 15m",
+      DEFAULT_REF_PRUNE_AGE,
+    )
+    .option("--include-mail", "Allow deletion of mail refs with undelivered, unexpired messages")
+    .option("--yes", "Delete eligible refs on origin and locally")
+    .option("--json", "JSON output")
+    .action((opts: { olderThan: string; includeMail?: boolean; yes?: boolean; json?: boolean }) => {
+      const root = requireRoot(emit);
+      try {
+        const result = pruneMachineRefs(root, opts);
+        if (opts.json) emit.config({ format: "json" });
+        if (opts.json || !process.stdout.isTTY) {
+          emit.data(result);
+        } else {
+          emit.text(
+            `${result.preview ? "Preview" : "Prune"}: origin refs older than ${result.older_than}.\n`,
+          );
+          for (const row of result.refs) {
+            const age = row.age_secs === null ? "unknown" : formatAge(row.age_secs);
+            emit.text(
+              `${row.ref}  machine=${row.machine} age=${age} would-delete=${row.would_delete ? "yes" : "no"} undelivered-mail=${row.undelivered_mail ?? "unknown"} would-lose=${row.mail_messages_lost ?? "unknown"} (${row.reason})\n`,
+            );
+          }
+          for (const failure of result.failed)
+            emit.text(`Failed: ${failure.ref}: ${failure.error}\n`);
+          emit.text(
+            `Deleted refs (${result.deleted.length}):\n${result.deleted.map((ref) => `  ${ref}\n`).join("")}`,
+          );
+        }
+        if (result.failed.length) process.exitCode = 1;
+      } catch (error) {
+        emit.error({
+          code: "refs_prune_failed",
+          message: error instanceof Error ? error.message : String(error),
+        });
+        process.exitCode = 1;
+      }
+    });
 
   cmd
     .command("publish")

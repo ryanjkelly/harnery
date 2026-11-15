@@ -1,12 +1,12 @@
 ---
 title: harn presence
-description: Mobile/office state for agents, plus cross-machine session presence over git refs and the relay (publish / fetch / peers / relay-status).
+description: Mobile/office state for agents, plus cross-machine session presence over git refs and the relay (publish / fetch / peers / refs / relay-status).
 sidebar:
   order: 15
 ---
 
 ```
-harn presence [get|set|pin|unpin|clear|publish|fetch|peers|mail|relay-status] [options]
+harn presence [get|set|pin|unpin|clear|publish|fetch|peers|mail|refs|relay-status] [options]
 ```
 
 Two related surfaces share this command: **mobile/office state** (is the human
@@ -133,9 +133,55 @@ harn presence publish [--force]   # publish this machine's sessions now (synchro
 harn presence fetch [--force]     # pull peer machines' refs now
 harn presence peers [--json]      # sessions on other machines (refs + relay cache merged) + daemon status
 harn presence mail [--sync]       # cross-machine messages: outbox awaiting acknowledgement, counts
+harn presence refs [--json]       # list presence, mail, and docket refs on origin
+harn presence refs prune          # preview retired machine refs older than 30 days
 harn presence relay-status [--json]  # diagnose the relay transport from local state (no network)
 harn presence relay-daemon        # run the relay client daemon in the foreground (hooks spawn it detached)
 ```
+
+### Retiring old machine refs
+
+Renaming or retiring a machine leaves its refs on origin. `harn presence refs`
+lists every presence, mail, and docket ref with its exact name, machine label,
+namespace, last commit age, and whether it belongs to this machine. Inspection
+reads origin and fetches missing commit objects without publishing anything or
+changing local refs. Age comes from the Git commit, not the blob's publish time.
+
+```bash
+harn presence refs
+harn presence refs prune --older-than 30d           # preview only
+harn presence refs prune --older-than 6w --json     # script-readable preview
+harn presence refs prune --older-than 30d --yes     # delete eligible refs
+```
+
+Without `--yes`, pruning prints a preview. Each row prints the exact ref, its age, whether
+it would be deleted, the number of undelivered messages, and how many would be
+lost. Nothing on origin is deleted until `--yes` is passed. JSON output includes
+`would_delete`, `reason`, `undelivered_mail`, and `mail_messages_lost` per row,
+followed by the final `deleted` and `failed` lists.
+
+The default threshold is 30 days. `--older-than` accepts a number followed by
+`ms`, `s`, `m`, `h`, `d`, or `w`, including fractions such as `1.5h`. The command
+refuses thresholds shorter than the 15-minute presence staleness window. A ref
+must be strictly older than the threshold. The command always protects this
+machine's refs, including its recorded docket ref when a label collision added a suffix.
+
+A mail ref with undelivered, unexpired messages is skipped. Messages acknowledged
+by their recipient or at least 14 days old do not count as undelivered. Pass
+`--include-mail` to allow deletion of unexpired mail after reviewing the loss
+count. The command skips unreadable mail and unknown commit ages even with that flag.
+
+Each deletion sends one exact `git push origin --delete <ref>` with a lease on
+the inspected commit. If a machine refreshes its ref during the run, the lease
+refuses to delete it. The command reports failures and attempts the remaining
+refs. It prints the final list of deleted refs and exits nonzero
+if any deletion or local cleanup failed. Local refs are removed only after the
+remote deletion succeeds, and a newer local value is preserved.
+
+Regular presence fetches also prune local copies of refs that disappeared from
+origin, including copies used by views that show stale machines. Relay cache
+entries are separate and are not removed by ref pruning. A ref disappearing
+during inspection is skipped without preventing the remaining refs from being read.
 
 ### The live upgrade: a relay
 
