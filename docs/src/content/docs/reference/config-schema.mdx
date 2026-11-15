@@ -137,6 +137,21 @@ be the repository top level. An `output` path explicitly approves non-Git files
 and fails closed if it overlaps a Git root or the claimed path belongs to a Git
 repository.
 
+Paths support two substitutions, applied when Harnery reads the project config:
+
+- A leading `~/` expands to the current user's home directory.
+- `{uid}` expands to the numeric user ID of the current process, wherever it
+  appears in the path. Harnery skips an entry containing this token on Windows
+  or when the process has no numeric user ID.
+
+For example, `/tmp/scratch-{uid}` follows the current account, and
+`~/generated-exports` follows its home directory. Harnery expands these values
+before resolving absolute or relative paths and before checking Git roots.
+Other `{...}` tokens stay literal and produce a doctor warning. No shell or
+environment-variable expansion takes place. Existing literal paths keep their
+meaning. These substitutions do not let user-global or machine-local config
+grant roots.
+
 Env override per process: `HARNERY_AGENTS_REQUIRE_GIT_FINALIZATION=1|0`.
 
 ## `coord`

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import {
@@ -18,6 +18,7 @@ import {
   eventLedgerArchivePolicy,
   hostPromptContextConfig,
   hostPromptReminder,
+  inspectFinalizationRoots,
   logStorageConfigSource,
   MAX_HOST_PROMPT_REMINDER_CHARS,
   pinnedBinName,
@@ -348,6 +349,85 @@ describe("agentsFinalizationRoots", () => {
     process.env.XDG_CONFIG_HOME = xdg;
 
     expect(agentsFinalizationRoots(root)).toEqual([]);
+  });
+
+  test("expands the home prefix and leaves other tildes and literal paths unchanged", () => {
+    const paths = ["~/scratch", "~someone/scratch", "../exports", join(tmpdir(), "output")];
+    const root = makeRoot(
+      JSON.stringify({
+        agents: { finalizationRoots: paths.map((path) => ({ path, disposition: "output" })) },
+      }),
+    );
+    roots.push(root);
+    expect(agentsFinalizationRoots(root).map((entry) => entry.path)).toEqual([
+      join(homedir(), "scratch"),
+      ...paths.slice(1),
+    ]);
+  });
+
+  test("expands every uid token before returning relative and home paths", () => {
+    const root = makeRoot(
+      JSON.stringify({
+        agents: {
+          finalizationRoots: [
+            { path: "../scratch-{uid}/{uid}", disposition: "output" },
+            { path: "~/scratch-{uid}", disposition: "git" },
+          ],
+        },
+      }),
+    );
+    roots.push(root);
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    const getuid = Object.getOwnPropertyDescriptor(process, "getuid");
+    try {
+      Object.defineProperty(process, "platform", { value: "linux" });
+      Object.defineProperty(process, "getuid", { configurable: true, value: () => 42 });
+      expect(agentsFinalizationRoots(root)).toEqual([
+        { path: "../scratch-42/42", disposition: "output" },
+        { path: join(homedir(), "scratch-42"), disposition: "git" },
+      ]);
+    } finally {
+      Object.defineProperty(process, "platform", platform);
+      if (getuid) Object.defineProperty(process, "getuid", getuid);
+      else Reflect.deleteProperty(process, "getuid");
+    }
+  });
+
+  test("skips uid entries on Windows and still reports their unknown tokens", () => {
+    const root = makeRoot(
+      JSON.stringify({
+        agents: {
+          finalizationRoots: [
+            { path: "../scratch-{uid}/{unknown}", disposition: "output" },
+            { path: "../exports", disposition: "output" },
+          ],
+        },
+      }),
+    );
+    roots.push(root);
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    try {
+      Object.defineProperty(process, "platform", { value: "win32" });
+      expect(inspectFinalizationRoots(root)).toEqual({
+        roots: [{ path: "../exports", disposition: "output" }],
+        unknownTokens: ["{unknown}"],
+      });
+    } finally {
+      Object.defineProperty(process, "platform", platform);
+    }
+  });
+
+  test("preserves unknown tokens literally and reports each once", () => {
+    const root = makeRoot(
+      JSON.stringify({
+        agents: { finalizationRoots: [{ path: "../{user}/{user}/{UID}", disposition: "git" }] },
+      }),
+    );
+    roots.push(root);
+    expect(inspectFinalizationRoots(root)).toEqual({
+      roots: [{ path: "../{user}/{user}/{UID}", disposition: "git" }],
+      unknownTokens: ["{user}", "{UID}"],
+    });
   });
 });
 

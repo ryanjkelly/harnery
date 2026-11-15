@@ -10,6 +10,7 @@ import {
   countRecentCodexMidFlightOnboardings,
   doctorOutcome,
   doctorReport,
+  finalizationRootChecks,
   nodeCheck,
   runChecks,
 } from "../../src/commands/doctor.ts";
@@ -28,6 +29,36 @@ afterEach(() => {
 });
 
 describe("harn doctor", () => {
+  test("warns about unknown finalization root tokens without failing doctor", () => {
+    const root = mkdtempSync(join(tmpdir(), "harnery-doctor-roots-"));
+    sandboxes.push(root);
+    mkdirSync(join(root, ".harnery"));
+    writeFileSync(
+      join(root, ".harnery", "config.jsonc"),
+      JSON.stringify({
+        agents: { finalizationRoots: [{ path: "../{unknown}", disposition: "output" }] },
+      }),
+    );
+    const roots = finalizationRootChecks(root);
+    expect(roots).toEqual([
+      expect.objectContaining({
+        name: "finalization roots",
+        scope: "runtime",
+        severity: "warn",
+        detail: "unknown path tokens left literal: {unknown}",
+      }),
+    ]);
+    expect(doctorReport(roots, { mode: "fail", error: null }).exitCode).toBe(0);
+    expect(finalizationRootChecks(null)).toEqual([]);
+    writeFileSync(
+      join(root, ".harnery", "config.jsonc"),
+      JSON.stringify({
+        agents: { finalizationRoots: [{ path: "~/scratch-{uid}", disposition: "output" }] },
+      }),
+    );
+    expect(finalizationRootChecks(root)).toEqual([]);
+  });
+
   test("runChecks returns Node + git + .harnery checks", () => {
     const names = checks.map((c) => c.name);
     expect(names).toContain("node");

@@ -27,6 +27,7 @@ import {
   codexWindowsBridgeConfig,
   type DoctorEnvironmentFindings,
   doctorEnvironmentFindings,
+  inspectFinalizationRoots,
   inspectTimeZone,
   localConfigExists,
   readLocalConfig,
@@ -218,6 +219,7 @@ export async function runChecks(): Promise<Check[]> {
     checkHarneryDir(),
     timeZoneCheck(inspectTimeZone(root)),
     ...(root ? localConfigChecks(root) : []),
+    ...finalizationRootChecks(root),
     checkAdapterHooks(installed),
     ...(codexAuthorization ? [codexAuthorization] : []),
     checkGitHookRegions(),
@@ -229,6 +231,23 @@ export async function runChecks(): Promise<Check[]> {
     checkPlaywright(),
     checkPython(),
   ];
+}
+
+/** Unknown root tokens remain literal in both the write guard and finalization. */
+export function finalizationRootChecks(root: string | null): Check[] {
+  if (!root) return [];
+  const { unknownTokens } = inspectFinalizationRoots(root);
+  return unknownTokens.length
+    ? [
+        {
+          name: "finalization roots",
+          scope: "runtime",
+          severity: "warn",
+          detail: `unknown path tokens left literal: ${unknownTokens.join(", ")}`,
+          hint: "agents.finalizationRoots paths support {uid} and a leading ~/",
+        },
+      ]
+    : [];
 }
 
 function checkGitHookRegions(): Check {

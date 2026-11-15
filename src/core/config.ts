@@ -871,21 +871,42 @@ export function agentsRequireGitFinalization(coordRoot?: string | null): boolean
  * This trust boundary comes only from the project config. A user-global config
  * may tune ordinary behavior, but it cannot grant one project filesystem
  * authority outside its coordination root. Paths may be absolute or relative
- * to the coordination root. Invalid entries are ignored here and fail closed
- * when the finalization policy validates them.
+ * to the coordination root. A leading `~/` expands to the current user's home,
+ * and `{uid}` expands to the numeric process user ID (the entry is skipped on
+ * Windows). Unknown tokens stay literal. Invalid entries are ignored here and
+ * fail closed when the finalization policy validates them.
  */
 export function agentsFinalizationRoots(coordRoot?: string | null): AgentFinalizationRoot[] {
+  return inspectFinalizationRoots(coordRoot).roots;
+}
+
+/** Expand project-owned roots and report unknown tokens without granting them meaning. */
+export function inspectFinalizationRoots(coordRoot?: string | null): {
+  roots: AgentFinalizationRoot[];
+  unknownTokens: string[];
+} {
   const root = coordRoot ?? findCoordRoot();
-  if (!root) return [];
+  const roots: AgentFinalizationRoot[] = [];
+  const unknownTokens = new Set<string>();
+  if (!root) return { roots, unknownTokens: [] };
   const entries = readProjectConfig(root).agents?.finalizationRoots;
-  if (!Array.isArray(entries)) return [];
-  return entries.flatMap((entry) => {
-    if (!entry || typeof entry !== "object") return [];
-    const path = typeof entry.path === "string" ? entry.path.trim() : "";
+  if (!Array.isArray(entries)) return { roots, unknownTokens: [] };
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object") continue;
+    let path = typeof entry.path === "string" ? entry.path.trim() : "";
     const disposition = entry.disposition;
-    if (!path || (disposition !== "git" && disposition !== "output")) return [];
-    return [{ path, disposition }];
-  });
+    if (!path || (disposition !== "git" && disposition !== "output")) continue;
+    for (const [token] of path.matchAll(/\{[^{}]*\}/g)) {
+      if (token !== "{uid}") unknownTokens.add(token);
+    }
+    if (path.includes("{uid}")) {
+      if (process.platform === "win32" || typeof process.getuid !== "function") continue;
+      path = path.replaceAll("{uid}", String(process.getuid()));
+    }
+    if (path.startsWith("~/")) path = join(homedir(), path.slice(2));
+    roots.push({ path, disposition });
+  }
+  return { roots, unknownTokens: [...unknownTokens] };
 }
 
 /**

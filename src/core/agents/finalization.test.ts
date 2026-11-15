@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { removeDir } from "../../../tests/helpers/remove-dir.ts";
 import {
@@ -420,6 +420,51 @@ describe("checkGitFinalization", () => {
       reason: "invalid_finalization_root",
     });
   });
+
+  test("expands home paths before classifying writes and validating Git roots", () => {
+    const coord = join(temp, "coord");
+    const output = join(temp, "output");
+    initRepo(coord);
+    mkdirSync(output);
+    const path = `~/${relative(homedir(), output).replaceAll("\\", "/")}`;
+    configureFinalizationRoots(coord, [{ path, disposition: "output" }]);
+    const claim = join(output, "artifact.txt");
+    expect(classifyWriteClaimFinalization(coord, claim)).toMatchObject({
+      allow: true,
+      descriptor: { disposition: "output", root: output },
+    });
+    expect(checkGitFinalization(coord, [claim])).toMatchObject({
+      ok: true,
+      host_output_paths: ["../output/artifact.txt"],
+    });
+    configureFinalizationRoots(coord, [{ path, disposition: "git" }]);
+    expect(classifyWriteClaimFinalization(coord, claim)).toMatchObject({
+      allow: false,
+      reason: "invalid_finalization_root",
+    });
+    initRepo(output);
+    expect(classifyWriteClaimFinalization(coord, claim)).toMatchObject({
+      allow: true,
+      descriptor: { disposition: "git", root: output },
+    });
+  });
+
+  test.skipIf(process.platform === "win32")(
+    "expands uid paths for write and finalization checks",
+    () => {
+      const coord = join(temp, "coord");
+      const output = join(temp, `scratch-${process.getuid!()}`);
+      initRepo(coord);
+      mkdirSync(output);
+      configureFinalizationRoots(coord, [{ path: "../scratch-{uid}", disposition: "output" }]);
+      const claim = join(output, "artifact.txt");
+      expect(classifyWriteClaimFinalization(coord, claim).allow).toBe(true);
+      expect(checkGitFinalization(coord, [claim])).toMatchObject({
+        ok: true,
+        host_output_paths: [`../scratch-${process.getuid!()}/artifact.txt`],
+      });
+    },
+  );
 
   test("rejects an arbitrary external repository without granting Git discovery", () => {
     const coord = join(temp, "coord");
