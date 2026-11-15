@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { removeDir } from "../../../tests/helpers/remove-dir.ts";
@@ -25,6 +25,9 @@ beforeEach(() => {
     configDigest: `sha256:${"0".repeat(64)}`,
     approvalRecordId: "test-workflow-v3",
   });
+  // A machine with no counter starts at a name derived from its label. Pin the
+  // counter so the first name is the same on every machine that runs this test.
+  writeFileSync(join(root, ".harnery", ".name-counter"), "0");
 });
 
 afterEach(() => removeDir(root));

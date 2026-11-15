@@ -113,6 +113,9 @@ function makeMidFlightSandbox(
     configDigest: sha256V3("config"),
     approvalRecordId: "test-agents-lifecycle-mid-flight",
   });
+  // A machine with no counter starts at a name derived from its label. Pin the
+  // counter so the first name is the same on every machine that runs this test.
+  writeFileSync(path.join(root, ".harnery", ".name-counter"), "0");
   const route = resolveLiveEventLedgerRouteV3(root);
   if (route.state !== "v3") throw new Error("expected V3 route");
   recordLiveHookSignalV3({
