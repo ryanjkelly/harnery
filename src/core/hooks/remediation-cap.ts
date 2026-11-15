@@ -233,33 +233,55 @@ export function formatStopCapCue(exhaustion: StopCapExhaustion, statusCommand: s
 }
 
 /**
- * A session that has never declared a task is refused once (ADR 0266): the
- * refusal exists so the session gets a name, and repeating it every turn only
- * costs retries. The marker lives beside the cap cues, keyed by a hash of the
- * session id.
+ * A session that has never declared a task is refused in one stop cycle only
+ * (ADR 0266): the refusal exists so the session gets a name, and repeating it
+ * every turn only costs retries. Continuations of that first refused cycle
+ * stay refused so the remediation cap still bounds it. The marker lives beside
+ * the cap cues, keyed by a hash of the session id, and records the cycle.
  */
 function noTaskRefusalPath(coordRoot: string, sessionId: string): string {
   const key = createHash("sha256").update(sessionId).digest("hex").slice(0, 24);
-  return join(coordRoot, ".harnery", "active", "stop-no-task-refused", key);
+  return join(coordRoot, ".harnery", "active", "stop-no-task-refused", `${key}.json`);
 }
 
-/** True when this session already received its one no-task refusal. */
-export function hasNoTaskRefusal(coordRoot: string, sessionId: string): boolean {
+/** True when this session was already refused for a missing task in an earlier cycle. */
+export function noTaskRefusedEarlier(
+  coordRoot: string,
+  sessionId: string,
+  cycleAnchor: string | undefined,
+): boolean {
   try {
-    readFileSync(noTaskRefusalPath(coordRoot, sessionId), "utf8");
-    return true;
+    const marker = JSON.parse(readFileSync(noTaskRefusalPath(coordRoot, sessionId), "utf8")) as {
+      anchor?: unknown;
+    };
+    return marker.anchor !== (cycleAnchor ?? null);
   } catch {
     return false;
   }
 }
 
-/** Remember that this session received its no-task refusal. Best-effort. */
-export function markNoTaskRefusal(coordRoot: string, sessionId: string, nowMs = Date.now()): void {
+/** Remember the cycle in which this session got its no-task refusal. Best-effort. */
+export function markNoTaskRefusal(
+  coordRoot: string,
+  sessionId: string,
+  cycleAnchor: string | undefined,
+  nowMs = Date.now(),
+): void {
   try {
     const path = noTaskRefusalPath(coordRoot, sessionId);
+    try {
+      readFileSync(path, "utf8");
+      return; // the first refused cycle stays recorded
+    } catch {
+      // no marker yet
+    }
     mkdirSync(dirname(path), { recursive: true });
     pruneNoTaskRefusals(dirname(path), nowMs);
-    writeFileSync(path, new Date(nowMs).toISOString(), "utf8");
+    writeFileSync(
+      path,
+      JSON.stringify({ at: new Date(nowMs).toISOString(), anchor: cycleAnchor ?? null }),
+      "utf8",
+    );
   } catch {
     // A missing marker only means one more refusal later; never a crash.
   }
@@ -270,10 +292,10 @@ function pruneNoTaskRefusals(dir: string, nowMs: number): void {
     for (const name of readdirSync(dir)) {
       const path = join(dir, name);
       try {
-        const at = Date.parse(readFileSync(path, "utf8"));
+        const at = Date.parse((JSON.parse(readFileSync(path, "utf8")) as { at?: string }).at ?? "");
         if (!Number.isFinite(at) || nowMs - at > STOP_CAP_CUE_RETENTION_MS) unlinkSync(path);
       } catch {
-        // skip unreadable entries
+        unlinkSync(path);
       }
     }
   } catch {

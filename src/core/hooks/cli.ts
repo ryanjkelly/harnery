@@ -1599,7 +1599,7 @@ async function handleStop(run: HookRun): Promise<number | undefined> {
   // Stop verdict (V3 ritual + task/status gate). Direct in-process call: the
   // rule lives in Harnery. agent-hook already emitted this turn.completed
   // with privacy-safe ritual observations, so the evidence is in the stream.
-  const verdict = evaluateStopHook(coordRoot, {
+  const rawVerdict = evaluateStopHook(coordRoot, {
     rule: "stop-hook",
     instance_id: owner.instance_id,
     session_id: sessionId,
@@ -1612,6 +1612,19 @@ async function handleStop(run: HookRun): Promise<number | undefined> {
     pending_background_handoff: pendingBackgroundHandoffs.length > 0,
     final_git_state: finalGitState,
   });
+  // Heal what the hook can do itself instead of refusing (ADR 0266).
+  const { healStopForSession } = await import("./stop-heal.ts");
+  const heal = await healStopForSession(
+    coordRoot,
+    adapter,
+    owner.instance_id,
+    sessionId,
+    rawVerdict,
+  );
+  const verdict = heal.verdict;
+  if (Object.keys(heal.debug).length > 0) {
+    appendDebug(coordRoot, { ...debugBase, effect: "stop-heal", rule: verdict.rule, ...heal.debug });
+  }
   if (verdict.rule === "stop-hook.background_handoff_deferred") {
     appendDebug(coordRoot, {
       ...debugBase,
@@ -1672,6 +1685,10 @@ async function handleStop(run: HookRun): Promise<number | undefined> {
   } else {
     const { clearRemediationCount } = await import("./remediation-cap.ts");
     clearRemediationCount(sessionId);
+    if (heal.userMessage) {
+      const { emitStopUserMessage } = await import("./adapter/output.ts");
+      emitStopUserMessage(adapter, heal.userMessage);
+    }
   }
 
   // An explicit end requested from inside this turn cannot be authoritative

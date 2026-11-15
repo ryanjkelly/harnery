@@ -186,3 +186,17 @@ function buildDenyJson(adapter: Adapter, reason: string): Record<string, unknown
     },
   };
 }
+
+/**
+ * Show the person a status the Stop hook produced itself (ADR 0266).
+ *
+ * Only Claude Code has a user-visible channel on an allowed stop: the common
+ * `systemMessage` field. Cursor's only Stop output is `followup_message`,
+ * which would re-prompt the agent, and Codex and OpenCode have no Stop
+ * channel, so those print nothing and the stop is simply allowed.
+ */
+export function emitStopUserMessage(adapter: Adapter, message: string): boolean {
+  if (adapter !== "claude-code" || !message) return false;
+  process.stdout.write(`${JSON.stringify({ systemMessage: message })}\n`);
+  return true;
+}

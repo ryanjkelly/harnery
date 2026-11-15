@@ -1863,13 +1863,16 @@ describe("agent-hook V3 hard cut", () => {
       root,
     );
 
+    // A session that never declared a task is refused once (ADR 0266). The
+    // missing status and reply box are healed by the hook, so the refusal
+    // names only the task.
     expect(stop.status).toBe(2);
     expect(stop.stdout).toBe("");
-    expect(stop.stderr).toContain("Your reply does not show the end-of-turn status.");
-    expect(stop.stderr).toContain("did not finish with the end-of-turn status check");
+    expect(stop.stderr).toContain("did not declare what you are working on");
+    expect(stop.stderr).not.toContain("end-of-turn status");
     // The rule id appears only on the last line, which telemetry reads.
     expect(stop.stderr.trimEnd().split("\n").at(-1)).toBe(
-      "[agent-hook stop]: rule=stop-hook.rule_1_3",
+      "[agent-hook stop]: rule=stop-hook.rule_3_3",
     );
     expect(stop.stderr.trimEnd().split("\n").slice(0, -1).join("\n")).not.toContain("stop-hook.");
     const terminal = readLedgerV3(root)
@@ -2018,7 +2021,7 @@ describe("agent-hook V3 hard cut", () => {
     windowsSlack(30_000),
   );
 
-  test("Claude Stop remediation accumulates recovered status and current assistant-box evidence", () => {
+  test("Claude Stop runs a missing status check itself and shows the box", () => {
     const root = candidateRoot();
     const owner = "zia-remediation-owner";
     const turnId = "zia-original-turn";
@@ -2085,6 +2088,8 @@ describe("agent-hook V3 hard cut", () => {
       }).status,
     ).toBe(0);
 
+    // The status check never ran: the hook runs it itself, allows the stop,
+    // and shows the box to the person (ADR 0266).
     const firstStop = hook("stop", {
       session_id: owner,
       cwd: root,
@@ -2093,67 +2098,18 @@ describe("agent-hook V3 hard cut", () => {
       last_assistant_message: "Inventory complete.",
       stop_hook_active: false,
     });
-    expect(firstStop.status).toBe(2);
-    expect(firstStop.stderr).toContain("rule=stop-hook.rule_1_3");
-
-    expect(
-      hook("pre-tool-use", {
-        session_id: owner,
-        cwd: root,
-        turn_id: turnId,
-        transcript_path: transcript,
-        tool_name: "Bash",
-        tool_use_id: "status-repair",
-        tool_input: { command: "harn agents status" },
-      }).status,
-    ).toBe(0);
-    const statusResult = coord(["agents", "status", "--session-id", owner]);
-    expect(statusResult.status).toBe(0);
-    expect(statusResult.stdout).toContain("┌─ agent-");
-    expect(
-      hook("post-tool-use", {
-        session_id: owner,
-        cwd: root,
-        turn_id: turnId,
-        transcript_path: transcript,
-        tool_name: "Bash",
-        tool_use_id: "status-repair",
-        tool_response: statusResult.stdout,
-      }).status,
-    ).toBe(0);
-
-    const missingPaste = hook("stop", {
-      session_id: owner,
-      cwd: root,
-      turn_id: turnId,
-      transcript_path: transcript,
-      last_assistant_message: "Status checked.",
-      stop_hook_active: true,
-    });
-    expect(missingPaste.status).toBe(2);
-    expect(missingPaste.stderr).toContain("rule=stop-hook.rule_2_3");
-
-    const repaired = hook("stop", {
-      session_id: owner,
-      cwd: root,
-      turn_id: turnId,
-      transcript_path: transcript,
-      last_assistant_message: `\`\`\`\n${statusResult.stdout.trim()}\n\`\`\``,
-      stop_hook_active: true,
-    });
-    expect(repaired.stderr).toBe("");
-    expect(repaired.status).toBe(0);
+    expect(firstStop.stderr).toBe("");
+    expect(firstStop.status).toBe(0);
+    const shown = JSON.parse(firstStop.stdout.trim()) as { systemMessage?: string };
+    expect(shown.systemMessage).toContain("┌─ agent-");
 
     const events = readLedgerV3(root).events.map(({ event }) => event);
-    expect(
-      events.filter(
-        (event) =>
-          event.event_type === "turn.started" &&
-          event.provenance.source_event === "claude-code.recovery",
-      ),
-    ).toHaveLength(1);
     expect(events.filter((event) => event.event_type === "coord.task_changed")).toHaveLength(1);
-    expect(events.filter((event) => event.event_type === "coord.status_observed")).toHaveLength(1);
+    const statuses = events.filter((event) => event.event_type === "coord.status_observed");
+    expect(statuses).toHaveLength(1);
+    expect(statuses[0]?.event_type === "coord.status_observed" && statuses[0].payload.status).toBe(
+      "end_turn_checked",
+    );
   });
 
   test("a Claude reply with no tool call ends without status, paste, or task", () => {
@@ -2474,7 +2430,9 @@ describe("agent-hook V3 hard cut", () => {
           event: "agent_hook.diagnostic",
           fields: {
             skipped: "stop-remediation-cap-exhausted",
-            blocked_rule: "stop-hook.rule_1_3",
+            // A never-declared task is the one ritual refusal left (ADR 0266),
+            // and its first cycle still runs to the cap.
+            blocked_rule: "stop-hook.rule_3_3",
             blocked_count: DEFAULT_STOP_REMEDIATION_CAP + 1,
             session_id: owner,
           },

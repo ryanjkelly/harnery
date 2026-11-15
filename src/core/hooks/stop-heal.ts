@@ -56,6 +56,7 @@ export interface StopHealDependencies {
   readTask?: () => string | undefined;
   /** Record the current task again; true when the event was recorded. */
   carryTask?: (task: string) => boolean;
+  /** True when an earlier stop cycle already carried the no-task refusal. */
   hasNoTaskRefusal?: () => boolean;
   markNoTaskRefusal?: () => void;
 }
@@ -294,4 +295,48 @@ export function formatHealedStatusMessage(box: string, ran: boolean): string {
     ? "Harnery ran the end-of-turn check for this turn:"
     : "End-of-turn status for this turn:";
   return `${lead}\n${box}`;
+}
+
+/**
+ * Heal one Stop verdict for a live session, wiring the real dependencies.
+ * Never throws: any internal failure returns the verdict unchanged.
+ */
+export async function healStopForSession(
+  coordRoot: string,
+  adapter: Adapter,
+  instanceId: string,
+  sessionId: string,
+  verdict: StopVerdict,
+): Promise<StopHealOutcome> {
+  try {
+    const { readLiveCoordinationRow } = await import("../agents/state/live-coordination-view.ts");
+    const { noTaskRefusedEarlier, markNoTaskRefusal } = await import("./remediation-cap.ts");
+    const { recordLiveTaskChangeV3 } = await import("../agents/live-authority-v3.ts");
+    const row = () => readLiveCoordinationRow(coordRoot, instanceId);
+    return healStopVerdict(
+      verdict,
+      { adapter, sessionId },
+      {
+        runCli: makeCliRunner(coordRoot),
+        readTask: () => row()?.task,
+        carryTask: (task) => {
+          // Same authority path as `agents set-task`, with the unchanged task.
+          recordLiveTaskChangeV3({
+            coordRoot,
+            owner: instanceId,
+            nativeSessionId: row()?.session_id ?? instanceId,
+            adapter,
+            task,
+          });
+          return true;
+        },
+        hasNoTaskRefusal: () =>
+          noTaskRefusedEarlier(coordRoot, sessionId, verdict.remediation_cycle_anchor),
+        markNoTaskRefusal: () =>
+          markNoTaskRefusal(coordRoot, sessionId, verdict.remediation_cycle_anchor),
+      },
+    );
+  } catch (err) {
+    return { verdict: stripStopFields(verdict), debug: { heal_error: String(err) } };
+  }
 }
