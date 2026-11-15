@@ -12,6 +12,7 @@ import {
   doctorReport,
   finalizationRootChecks,
   nodeCheck,
+  optionalWhenAnotherAdapterIsInstalled,
   runChecks,
 } from "../../src/commands/doctor.ts";
 import { doctorEnvironmentFindings } from "../../src/core/config.ts";
@@ -281,5 +282,42 @@ describe("harn doctor", () => {
       expect(r.exitCode).toBe(1);
       expect((r.json.checks as Check[]).map((c) => c.name)).toContain("doctor settings");
     });
+  });
+});
+
+describe("missing adapter CLIs", () => {
+  const missing = (name: string): { check: Check; installed: boolean } => ({
+    installed: false,
+    check: {
+      name,
+      scope: "runtime",
+      severity: "warn",
+      detail: "tool missing",
+      hint: "install it",
+    },
+  });
+  const present = (name: string): { check: Check; installed: boolean } => ({
+    installed: true,
+    check: { name, scope: "runtime", severity: "ok", detail: "1.0.0" },
+  });
+
+  test("a missing adapter is optional information when another is installed", () => {
+    const [kept, downgraded] = optionalWhenAnotherAdapterIsInstalled([
+      present("workflow:a"),
+      missing("workflow:b"),
+    ]);
+    expect(kept?.check.severity).toBe("ok");
+    expect(downgraded?.check.severity).toBe("info");
+    expect(downgraded?.check.detail).toBe("tool missing; optional");
+    expect(downgraded?.check.hint).toBeUndefined();
+  });
+
+  test("with no adapter installed the warning and its install hint stay", () => {
+    const result = optionalWhenAnotherAdapterIsInstalled([
+      missing("workflow:a"),
+      missing("workflow:b"),
+    ]);
+    expect(result.map((r) => r.check.severity)).toEqual(["warn", "warn"]);
+    expect(result.every((r) => r.check.hint === "install it")).toBe(true);
   });
 });

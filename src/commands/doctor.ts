@@ -214,7 +214,8 @@ export async function runChecks(): Promise<Check[]> {
   // Probe the adapter CLIs before the hook check runs, not in output order:
   // an unwired adapter only matters if its CLI is actually installed, and
   // probing once here keeps that join to one spawn per CLI.
-  const workflow = BUILTIN_ADAPTER_IDS.map((id) => ({ id, ...checkWorkflowAdapter(id) }));
+  const probed = BUILTIN_ADAPTER_IDS.map((id) => ({ id, ...checkWorkflowAdapter(id) }));
+  const workflow = optionalWhenAnotherAdapterIsInstalled(probed);
   const installed = workflow.filter((w) => w.installed).map((w) => w.id as AdapterId);
   const codexAuthorization = await checkCodexHookAuthorization(installed, codexWslStatus);
   return [
@@ -633,6 +634,26 @@ function checkWorkflowAdapter(adapter: AdapterName): { check: Check; installed: 
     check: { name, scope: "runtime", severity: "ok", detail: `${r.out} — ${billing}` },
     installed: true,
   };
+}
+
+/**
+ * A machine needs one adapter CLI, not all of them. When at least one is
+ * installed, a missing one is reported as optional information without an
+ * install hint, so doctor does not push every person to install tools their
+ * project may not want. With none installed the warning and hint stay.
+ */
+export function optionalWhenAnotherAdapterIsInstalled<
+  T extends { check: Check; installed: boolean },
+>(probed: T[]): T[] {
+  if (!probed.some((p) => p.installed)) return probed;
+  return probed.map((p) => {
+    if (p.installed) return p;
+    const { hint: _hint, ...rest } = p.check;
+    return {
+      ...p,
+      check: { ...rest, severity: "info", detail: `${p.check.detail}; optional` },
+    };
+  });
 }
 
 function checkNode(): Check {
