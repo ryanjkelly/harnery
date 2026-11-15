@@ -149,3 +149,8 @@ cannot see that, because the Git state at each stop is not recorded.
 - The healer never throws: any failure inside it returns the original verdict
   and records the error.
 - The remediation cap still applies to the refusals that remain.
+- Display depends on the client. In a live session Claude Code accepted the
+  `systemMessage` and recorded it as a hook system message. A client built on
+  the agent SDK did not add any item for it to its conversation timeline, so
+  the person saw no status on that healed turn. Treat the hook-side display as
+  best effort, and keep the guidance that asks agents to paste the status.
