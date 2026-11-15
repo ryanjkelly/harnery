@@ -67,6 +67,8 @@ export interface GitFinalizationResult {
   unverifiable_paths: string[];
   unverifiable_repos: string[];
   repos_checked: string[];
+  /** This machine's path index file that could not be read (ADR 0267). */
+  unreadable_path_index?: string;
 }
 
 export type UnsupportedFinalizationReason =
@@ -110,6 +112,8 @@ export interface SessionWriteClaims {
    * them must still reach a remote, with its enclosing gitlinks recorded.
    */
   repositoryOnlyPaths?: string[];
+  /** The path index file that could not be read, when that made the history incomplete. */
+  unreadableIndex?: string;
 }
 
 /** Held, released and handed-off claims use the same ownership boundary at status and Stop. */
@@ -131,6 +135,7 @@ export function readSessionFinalizationScope(
     ),
     complete: history.complete,
     repositoryOnlyPaths: [...handedOff].sort(),
+    ...(history.unreadableIndex ? { unreadableIndex: history.unreadableIndex } : {}),
   };
 }
 
@@ -153,7 +158,7 @@ export function readSessionWriteClaims(
     // machine's index supplies them (ADR 0267). An unreadable index fails closed.
     const index = readFinalizationPathIndex(coordRoot, instanceId, scope.generation_id);
     if (index.state === "corrupt") {
-      return { paths: [], complete: false, repositoryOnlyPaths: [] };
+      return { paths: [], complete: false, repositoryOnlyPaths: [], unreadableIndex: index.file };
     }
     const indexedHeld = index.state === "ok" ? index.held : [];
     const indexedReleased = index.state === "ok" ? index.released : [];
@@ -753,6 +758,8 @@ export function checkGitFinalization(
     reconcilePeerSubmodules?: boolean;
     /** Handed-off paths: check their repositories are pushed, never their dirty state. */
     repositoryOnlyPaths?: readonly string[];
+    /** The unreadable path index file, named in the refusal with the command that clears it. */
+    unreadablePathIndex?: string;
     timeoutMs?: number;
   } = {},
 ): GitFinalizationResult {
@@ -771,6 +778,7 @@ function inspectGitFinalization(
     includeRepositoryFreshness?: boolean;
     reconcilePeerSubmodules?: boolean;
     repositoryOnlyPaths?: readonly string[];
+    unreadablePathIndex?: string;
   },
 ): GitFinalizationResult {
   const root = resolve(coordRoot);
@@ -899,6 +907,7 @@ function inspectGitFinalization(
   const result: GitFinalizationResult = {
     ok: false,
     claim_history_complete: options.claimHistoryComplete ?? true,
+    ...(options.unreadablePathIndex ? { unreadable_path_index: options.unreadablePathIndex } : {}),
     dirty_paths: [...dirtyPaths].sort(),
     unpushed_repos: [...new Set(unpushedRepos)].sort(),
     behind_repos: behindRepos,
@@ -948,6 +957,20 @@ function inspectGitFinalization(
   return result;
 }
 
+/**
+ * Name the unreadable index file and the guarded remove that clears it
+ * (ADR 0267). Removing it drops the claims it recorded from the check, so
+ * the agent first commits and pushes what it changed in extra roots.
+ */
+export function unreadablePathIndexLines(file: string, bin: string): string[] {
+  const coordRoot = dirname(dirname(dirname(file)));
+  const relativeFile = relative(coordRoot, file).replaceAll("\\", "/");
+  return [
+    `This machine's path index for this session cannot be parsed: ${file}. Claims stay recorded; nothing overwrites the file.`,
+    `Commit and push your changes in extra finalization roots, then remove the file with \`${bin} rm --root ${coordRoot} --allow-protected ${relativeFile} ${relativeFile} --yes\`; your next claim there starts a new index.`,
+  ];
+}
+
 export function formatGitFinalizationFailure(
   result: GitFinalizationResult,
   bin: string,
@@ -988,6 +1011,9 @@ export function formatGitFinalizationFailure(
     lines.push(
       "This session's full write-claim history could not be verified: the event ledger, or this machine's finalization path index under `.harnery/finalization-paths/`, could not be read.",
     );
+    if (result.unreadable_path_index) {
+      lines.push(...unreadablePathIndexLines(result.unreadable_path_index, bin));
+    }
   }
   if (result.dirty_paths.length > 0) {
     lines.push("Dirty owned paths:", ...result.dirty_paths.map((path) => `  - ${path}`));

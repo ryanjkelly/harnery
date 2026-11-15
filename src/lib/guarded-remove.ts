@@ -397,7 +397,8 @@ function allowedProtected(
     if (!strictlyInside(root, path))
       throw new Error(`--allow-protected path must be strictly inside --root: ${path}`);
     const localConfig = isLocalConfig(path) && info.isFile();
-    const named = protectedNames.has(basename(path).toLowerCase()) || localConfig;
+    const pathIndex = isPathIndexFile(path) && info.isFile();
+    const named = protectedNames.has(basename(path).toLowerCase()) || localConfig || pathIndex;
     if (!named && !(info.isDirectory() && isRepositoryMetadata(path)))
       throw new Error(`--allow-protected must name a protected path itself: ${path}`);
     for (const dir of live) {
@@ -407,6 +408,14 @@ function allowedProtected(
         const state = resolve(dir, name);
         if (path !== state && !strictlyInside(state, path)) continue;
         if (name === ".harnery" && path === resolve(state, "config.local.jsonc") && localConfig)
+          continue;
+        // One session's machine-local finalization path index: derived,
+        // grants nothing, and must be removable when it cannot be parsed.
+        if (
+          name === ".harnery" &&
+          pathIndex &&
+          dirname(path) === resolve(state, "finalization-paths")
+        )
           continue;
         // Only an explicitly named copied state directory inside one owned
         // artifact may cross the outer live-state ancestor. Other live roots
@@ -469,6 +478,15 @@ function strictlyInside(parent: string, child: string): boolean {
   return rel !== "" && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 }
 
+/** `<dir>/.harnery/finalization-paths/<instance>.json`, the closing check's local path index. */
+function isPathIndexFile(path: string): boolean {
+  return (
+    basename(path).endsWith(".json") &&
+    basename(dirname(path)) === "finalization-paths" &&
+    basename(dirname(dirname(path))) === ".harnery"
+  );
+}
+
 function isLocalConfig(path: string): boolean {
   return basename(path) === "config.local.jsonc" && basename(dirname(path)) === ".harnery";
 }
@@ -489,6 +507,7 @@ function checkedPath(
       protectedNames.has(basename(cursor).toLowerCase()) &&
       !allowed.has(cursor) &&
       !(allowed.has(path) && isLocalConfig(path) && cursor === dirname(path)) &&
+      !(allowed.has(path) && isPathIndexFile(path) && cursor === dirname(dirname(path))) &&
       !insideArtifactWorkspace(path, cursor, isRoot)
     )
       throw new Error(

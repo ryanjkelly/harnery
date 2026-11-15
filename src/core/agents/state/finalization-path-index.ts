@@ -15,7 +15,9 @@
  *
  * The index grants nothing. Only the finalization read uses it; the edit and
  * commit guards never read it, so it cannot block a peer. Writes take a
- * per-file lock directory and replace the file with temp-then-rename.
+ * per-file lock directory and replace the file with temp-then-rename. A write
+ * never replaces a file it cannot parse; the read fails closed on that file
+ * until `rm` removes it (ADR 0267).
  */
 
 import {
@@ -59,6 +61,18 @@ export type FinalizationPathIndexRead =
   | { state: "missing" }
   | { state: "corrupt"; file: string }
   | { state: "ok"; held: string[]; released: string[] };
+
+/**
+ * A write met an index file it cannot parse. The writer never replaces it:
+ * the read side already fails closed on that file, and replacing it would
+ * silently drop the entries it held.
+ */
+export class FinalizationPathIndexUnreadableError extends Error {
+  constructor(readonly file: string) {
+    super(`finalization path index is unreadable: ${file}`);
+    this.name = "FinalizationPathIndexUnreadableError";
+  }
+}
 
 export function finalizationPathIndexDir(coordRoot: string): string {
   return join(coordRoot, ".harnery", "finalization-paths");
@@ -186,11 +200,7 @@ export function recordFinalizationPathClaim(
 ): void {
   const file = indexFile(coordRoot, input.instanceId);
   withIndexLock(file, () => {
-    let prior: FinalizationPathIndexFile | null = null;
-    if (existsSync(file)) {
-      // An unreadable file is replaced: the write below is this generation's truth.
-      prior = parseIndex(readFileSync(file, "utf8"), input.instanceId);
-    }
+    const prior = readForWrite(file, input.instanceId);
     const entries = (prior?.entries ?? []).filter(
       (entry) => entry.generation_id === input.generationId,
     );
@@ -228,6 +238,14 @@ export function recordFinalizationPathClaim(
     atomicWrite(file, `${JSON.stringify(body, null, 2)}\n`);
   });
   pruneFinalizationPathIndex(coordRoot, { now: input.now });
+}
+
+/** The current file for a write, or null when absent. Never replaces an unreadable one. */
+function readForWrite(file: string, instanceId: string): FinalizationPathIndexFile | null {
+  if (!existsSync(file)) return null;
+  const prior = parseIndex(readFileSync(file, "utf8"), instanceId);
+  if (!prior) throw new FinalizationPathIndexUnreadableError(file);
+  return prior;
 }
 
 /** Remove one instance's index file, as session-end cleanup does for sibling state. */

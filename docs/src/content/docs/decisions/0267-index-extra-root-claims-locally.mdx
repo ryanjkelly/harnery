@@ -57,7 +57,18 @@ Edge cases:
   such claims where Git finalization is required.
 - **Missing index.** Nothing is added, which is the earlier behavior.
 - **Unreadable index.** The claim history counts as unverified and the check
-  refuses, naming the index directory in the message.
+  refuses. The message names the file and the command that clears it:
+  `rm --root <coordination root> --allow-protected
+  .harnery/finalization-paths/<instance>.json <same path> --yes`. The guarded
+  remove refuses all other live `.harnery` state; it accepts this one file,
+  named exactly, because the index is derived and grants nothing. Removing it
+  drops the claims it recorded from the check, so the message asks the agent
+  to commit and push its extra-root changes first. The next claim starts a
+  new file.
+- **New claim meets an unreadable index.** The claim is recorded, but the
+  index write refuses to replace the file. Replacing it would silently drop
+  released entries and turn the read's refusal into a pass. The refusal stays
+  until the agent clears the file as above, so it cannot strand the session.
 
 The index grants nothing. The edit and commit guards do not read it, so it can
 never block a peer. No event contract or schema changes.
@@ -71,9 +82,21 @@ never block a peer. No event contract or schema changes.
   temp-then-rename, so several agents on one machine cannot interleave.
 - Index maintenance is best effort. A failed index write never undoes a
   recorded claim; the claim then stays invisible to the check, as before.
-- An acquisition that finds an unreadable file replaces it with this
-  generation's entries, so earlier released entries in that file are lost.
+  This stays open: making the claim fail with the index would let a full
+  disk or a held lock block every edit in extra roots, and recording a
+  separate failure marker would need another file that can fail the same way.
+  A write that fails while the file is readable is rare (lock wait or disk
+  error), and the next successful write for the same path repairs it.
 - A claim made on one machine is checked only on that machine. Sessions do not
   move between machines, so this matches where the obligation lives.
-- Handoffs of extra-root paths still carry no path in the ledger and are not
-  covered here.
+- `agents handoff` does not cover extra-root paths. The V3 contract requires
+  a handoff target to be a workspace path, so the ledger refuses an offer of
+  any other path. The command now refuses it first with
+  `path_outside_repository` and names the route that works today: the sender
+  releases the path (`agents release-claim`), which keeps only its push
+  obligation in the index, and the receiver claims it, which indexes it as
+  held for the receiver. Unlike a handoff, nothing waits for the receiver to
+  accept, so the sender should release only after the receiver agrees to take
+  the file. Supporting a real handoff here needs a contract change allowing
+  `external_path` handoff targets matched by fingerprint; that is left for a
+  separate decision.

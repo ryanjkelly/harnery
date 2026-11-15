@@ -16,7 +16,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, isAbsolute, join, resolve } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
 import {
@@ -24,7 +24,7 @@ import {
   adapterFromPlatform,
   normalizeAdapter as titleAdapter,
 } from "../core/adapter.ts";
-import { stripCoordRoot } from "../core/agents/claim-path.ts";
+import { canonicalClaimPath, stripCoordRoot } from "../core/agents/claim-path.ts";
 import { coordBinPath, spawnCoordBinSync } from "../core/agents/coord-bin.ts";
 import {
   attemptEndTurnSync,
@@ -850,6 +850,7 @@ function runEndSession(opts: {
   const history = readSessionWriteClaims(root, state.instance_id, state.session_id);
   const finalized = checkGitFinalization(root, history.paths, {
     claimHistoryComplete: history.complete,
+    unreadablePathIndex: history.unreadableIndex,
     repositoryOnlyPaths: history.repositoryOnlyPaths,
   });
   if (!finalized.ok) {
@@ -2005,6 +2006,18 @@ function runHandoffOffer(paths: string[], opts: { to?: string }): void {
   const held = new Set(row.files_touched ?? []);
   const canonical = paths.map((path) => stripCoordRoot(root, path));
   for (const path of canonical) {
+    // A handoff target must be a workspace path: the ledger records a path
+    // outside the coordination repository without one (ADR 0267).
+    if (isAbsolute(canonicalClaimPath(root, path))) {
+      emit.error({
+        code: "path_outside_repository",
+        message:
+          `${path} is outside the coordination repository, and a handoff covers only paths inside it; nothing was offered. ` +
+          `Commit and push it yourself, or release it with \`${bin} agents release-claim ${path}\` and have the peer claim it, so their closing check owes the file.`,
+      });
+      process.exitCode = 1;
+      return;
+    }
     if (!held.has(path)) {
       emit.error({
         code: "path_not_claimed",
@@ -2397,6 +2410,7 @@ function runLifecycle(
     const scope = readSessionFinalizationScope(root, hb, myOwner);
     finalization = checkGitFinalization(root, scope.paths, {
       claimHistoryComplete: scope.complete,
+      unreadablePathIndex: scope.unreadableIndex,
       repositoryOnlyPaths: scope.repositoryOnlyPaths,
     });
     // The task is over: release every claim on a clean path now (ADR 0263).
@@ -2657,6 +2671,7 @@ function runStatus(opts: {
     const check = () =>
       checkGitFinalization(root, scope.paths, {
         claimHistoryComplete: scope.complete,
+        unreadablePathIndex: scope.unreadableIndex,
         repositoryOnlyPaths: scope.repositoryOnlyPaths,
         reconcilePeerSubmodules: true,
       });

@@ -39,6 +39,7 @@ export function observeStopGitFinalization(
         result: {
           ok: false,
           claim_history_complete: false,
+          ...(scope.unreadableIndex ? { unreadable_path_index: scope.unreadableIndex } : {}),
           dirty_paths: [],
           unpushed_repos: [],
           behind_repos: [],
@@ -54,6 +55,7 @@ export function observeStopGitFinalization(
     }
     const result = (dependencies.check ?? checkGitFinalization)(coordRoot, scope.paths, {
       claimHistoryComplete: scope.complete,
+      unreadablePathIndex: scope.unreadableIndex,
       repositoryOnlyPaths: scope.repositoryOnlyPaths,
       includeRepositoryFreshness: false,
       timeoutMs: 2_000,
