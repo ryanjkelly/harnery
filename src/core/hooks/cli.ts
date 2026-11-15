@@ -146,6 +146,7 @@ import {
   writeHookHealthCompletion,
 } from "./health.ts";
 import { buildHelperLimitNote } from "./helper-limit-note.ts";
+import { clearStopCapExhaustion } from "./remediation-cap.ts";
 import { adapterPidFromEnv, parsePsChainLine, selectAnchorPid } from "./resolve/anchor.ts";
 import { extractIntentComment, resolveIntent } from "./resolve/intent.ts";
 import { resolveOwner } from "./resolve/owner.ts";
@@ -1400,7 +1401,8 @@ async function handleSessionStarted(run: HookRun): Promise<void> {
 }
 
 function handleSessionEnded(run: HookRun): void {
-  const { coordRoot, behavior, owner } = run;
+  const { coordRoot, behavior, owner, sessionId } = run;
+  clearStopCapExhaustion(coordRoot, sessionId);
   try {
     cleanupSessionEnd(coordRoot, owner.instance_id);
   } catch (err) {
@@ -1519,7 +1521,7 @@ async function handleTurnStarted(run: HookRun): Promise<void> {
   if (!stopRemediation) {
     try {
       const { takeStopCapExhaustion, formatStopCapCue } = await import("./remediation-cap.ts");
-      const exhaustion = takeStopCapExhaustion(sessionId);
+      const exhaustion = takeStopCapExhaustion(coordRoot, sessionId);
       if (exhaustion) stopCapCue = formatStopCapCue(exhaustion, endOfTurnStatusCommand(coordRoot));
     } catch (err) {
       logError(coordRoot, err, { phase: "user-prompt-stop-cap-cue" });
@@ -1653,7 +1655,7 @@ async function handleStop(run: HookRun): Promise<number | undefined> {
           blocked_count: remediation.count - 1,
           at: new Date().toISOString(),
         };
-        recordStopCapExhaustion(sessionId, exhaustion);
+        recordStopCapExhaustion(coordRoot, sessionId, exhaustion);
         const { emitStopCapNotice } = await import("./adapter/output.ts");
         emitStopCapNotice(adapter, formatStopCapNotice(exhaustion));
       } catch (err) {

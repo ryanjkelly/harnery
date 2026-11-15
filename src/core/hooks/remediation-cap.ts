@@ -20,11 +20,13 @@
  * them.
  */
 
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 export const DEFAULT_STOP_REMEDIATION_CAP = 5;
+export const STOP_CAP_CUE_RETENTION_MS = 3 * 24 * 60 * 60 * 1000;
 
 function counterPath(sessionId: string): string {
   const key = (sessionId || "default").replace(/[^A-Za-z0-9_-]/g, "_");
@@ -94,45 +96,93 @@ export interface StopCapExhaustion {
   at: string;
 }
 
-function cuePath(sessionId: string): string {
-  const key = (sessionId || "default").replace(/[^A-Za-z0-9_-]/g, "_");
-  return join(os.tmpdir(), `harnery-stop-cap-cue-${key}.json`);
+function cuePath(coordRoot: string, sessionId: string): string {
+  // Match context continuity's hashed session keys and keep ephemeral hook
+  // state beneath active/, alongside hook-runs/.
+  const key = createHash("sha256").update(sessionId).digest("hex").slice(0, 24);
+  return join(coordRoot, ".harnery", "active", "stop-cap-cues", `${key}.json`);
 }
 
 /** Remember one exhaustion so the session's next prompt can carry a cue. */
-export function recordStopCapExhaustion(sessionId: string, exhaustion: StopCapExhaustion): void {
+export function recordStopCapExhaustion(
+  coordRoot: string,
+  sessionId: string,
+  exhaustion: StopCapExhaustion,
+  nowMs = Date.now(),
+): void {
   try {
-    writeFileSync(cuePath(sessionId), JSON.stringify(exhaustion), "utf8");
+    const path = cuePath(coordRoot, sessionId);
+    mkdirSync(dirname(path), { recursive: true });
+    pruneStopCapCues(dirname(path), nowMs);
+    writeFileSync(path, JSON.stringify(exhaustion), "utf8");
   } catch {
     // best-effort: the debug row still counts the exhaustion in health.
   }
 }
 
-/** Read and clear a pending exhaustion for this session, if any. */
-export function takeStopCapExhaustion(sessionId: string): StopCapExhaustion | null {
-  const path = cuePath(sessionId);
+/** Read and consume a fresh cue. A failed removal must not deliver it twice. */
+export function takeStopCapExhaustion(
+  coordRoot: string,
+  sessionId: string,
+  nowMs = Date.now(),
+): StopCapExhaustion | null {
   let raw: string;
   try {
+    const path = cuePath(coordRoot, sessionId);
     raw = readFileSync(path, "utf8");
+    unlinkSync(path);
   } catch {
     return null;
   }
+  return parseStopCapCue(raw, nowMs);
+}
+
+/** Session end discards a cue that will no longer have a next prompt. */
+export function clearStopCapExhaustion(coordRoot: string, sessionId: string): void {
   try {
-    rmSync(path, { force: true });
+    rmSync(cuePath(coordRoot, sessionId), { force: true });
   } catch {
     // best-effort
   }
+}
+
+function parseStopCapCue(raw: string, nowMs: number): StopCapExhaustion | null {
   try {
     const parsed = JSON.parse(raw) as Partial<StopCapExhaustion> | null;
-    if (!parsed || typeof parsed.rule !== "string") return null;
+    if (
+      !parsed ||
+      typeof parsed.rule !== "string" ||
+      !parsed.rule.trim() ||
+      typeof parsed.at !== "string" ||
+      typeof parsed.blocked_count !== "number" ||
+      !Number.isInteger(parsed.blocked_count) ||
+      parsed.blocked_count < 0
+    ) {
+      return null;
+    }
+    const at = Date.parse(parsed.at);
+    if (!Number.isFinite(at) || at > nowMs || nowMs - at >= STOP_CAP_CUE_RETENTION_MS) return null;
     return {
       rule: parsed.rule,
       ...(typeof parsed.reason === "string" ? { reason: parsed.reason } : {}),
-      blocked_count: typeof parsed.blocked_count === "number" ? parsed.blocked_count : 0,
-      at: typeof parsed.at === "string" ? parsed.at : "",
+      blocked_count: parsed.blocked_count,
+      at: parsed.at,
     };
   } catch {
     return null;
+  }
+}
+
+function pruneStopCapCues(dir: string, nowMs: number): void {
+  // Sessions that never resume still lose their expired cues on later writes.
+  for (const name of readdirSync(dir)) {
+    if (!name.endsWith(".json")) continue;
+    try {
+      const path = join(dir, name);
+      if (!parseStopCapCue(readFileSync(path, "utf8"), nowMs)) rmSync(path, { force: true });
+    } catch {
+      // One unreadable cue must not prevent another session's write.
+    }
   }
 }
 
