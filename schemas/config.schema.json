@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://harnery.com/schemas/config.schema.json",
   "title": "harnery configuration",
-  "description": "Settings file format for harnery. Lives at ~/.config/harnery/config.jsonc (user-global) or <project-root>/.harnery/config.jsonc (project). Project values override user values.",
+  "description": "Settings file format for harnery. Layers: ~/.config/harnery/config.jsonc (user-global), <project-root>/.harnery/config.jsonc (project), then <project-root>/.harnery/config.local.jsonc (machine-local). Later layers win per field unless a setting is project-only.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -39,7 +39,7 @@
         },
         "gitSyncCommand": {
           "type": "string",
-          "description": "The project's safe command for catching a checkout up with its upstream and reconciling submodules. End-turn remediation names it when the checkout is behind; without it the message refers to the host's sync command generically. Single line. Project config only: a user-global file cannot put a command into another project's prompts."
+          "description": "The project's safe command for catching a checkout up with its upstream and reconciling submodules. End-turn remediation names it when the checkout is behind; without it the message refers to the host's sync command generically. Single line. Project config only: neither user-global nor machine-local files may name an executable command."
         },
         "statusStyle": {
           "type": "string",
@@ -50,7 +50,7 @@
         "gitSyncOnEndTurn": {
           "type": "boolean",
           "default": false,
-          "description": "When the only failing end-turn findings are repository freshness (the checkout is behind its upstream, or a submodule checkout is stale), run `gitSyncCommand` once with a bounded timeout and repeat the check. A failed or timed-out sync, a diverged checkout, and session-owned dirty or unpushed work still refuse. Needs `gitSyncCommand`. Project config only (decision record 0256)."
+          "description": "When the only failing end-turn findings are repository freshness (the checkout is behind its upstream, or a submodule checkout is stale), run `gitSyncCommand` once with a bounded timeout and repeat the check. A failed or timed-out sync, a diverged checkout, and session-owned dirty or unpushed work still refuse. Needs `gitSyncCommand`. Project config only; user-global and machine-local files cannot enable command execution. Env override: HARNERY_AGENTS_GIT_SYNC_ON_END_TURN=1|0 (decision record 0256)."
         },
         "finalizationRoots": {
           "type": "array",
@@ -536,14 +536,14 @@
           "type": "array",
           "items": { "type": "string", "minLength": 1 },
           "minItems": 1,
-          "description": "Command (argv) that `files url` runs once, detached from the coord root, when the dashboard does not answer. Concurrent callers share one start through a lease under `.harnery/files-viewer/`; output goes to `.harnery/files-viewer/start.log`. Omit it to keep `files url` from starting anything."
+          "description": "Command (argv) that `files url` runs once, detached from the coord root, when the dashboard does not answer. Project config only: neither user-global nor machine-local files may name an executable command. Concurrent callers share one start through a lease under `.harnery/files-viewer/`; output goes to `.harnery/files-viewer/start.log`. Omit it to keep `files url` from starting anything."
         },
         "start_timeout_seconds": {
           "type": "integer",
           "minimum": 1,
           "maximum": 86400,
           "default": 600,
-          "description": "How long `files url` waits for a started dashboard to answer before it reports `dashboard_unreachable`."
+          "description": "How long `files url` waits for a started dashboard to answer before it reports `dashboard_unreachable`. User < project < machine-local: tuning the wait does not grant permission to run a command."
         }
       }
     },
@@ -707,7 +707,7 @@
         "share": {
           "type": "boolean",
           "default": false,
-          "description": "Publish this machine's waiting decisions, pending run approvals, and recently changed decisions to refs/harnery/docket/<machine> on origin so other machines can read them. Off by default because decision text can be sensitive. Requires presence. Env override: HARNERY_DOCKET_SHARE=1|0."
+          "description": "Publish this machine's waiting decisions, pending run approvals, and recently changed decisions to refs/harnery/docket/<machine> on origin so other machines can read them. Off by default because decision text can be sensitive. Project config only: neither user-global nor machine-local files may consent to publishing. Requires presence. Env override: HARNERY_DOCKET_SHARE=1|0."
         }
       }
     },

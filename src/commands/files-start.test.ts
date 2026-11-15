@@ -20,6 +20,7 @@ import {
 
 const roots: string[] = [];
 const pids: number[] = [];
+const savedXdg = process.env.XDG_CONFIG_HOME;
 
 afterEach(() => {
   for (const pid of pids.splice(0)) {
@@ -28,11 +29,14 @@ afterEach(() => {
     } catch {}
   }
   for (const root of roots.splice(0)) removeDir(root);
+  if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+  else process.env.XDG_CONFIG_HOME = savedXdg;
 });
 
 function tempRoot(): string {
   const root = mkdtempSync(join(tmpdir(), "harnery-files-start-"));
   roots.push(root);
+  process.env.XDG_CONFIG_HOME = join(root, "user-config");
   mkdirSync(join(root, ".harnery"), { recursive: true });
   return root;
 }
@@ -41,8 +45,6 @@ function writeConfig(root: string, files: unknown, name = "config.jsonc"): void 
   writeFileSync(join(root, ".harnery", name), `// comment\n${JSON.stringify({ files })}\n`);
 }
 
-const noUser = "/nonexistent/harnery-user-config.jsonc";
-
 function fakeChild(): ChildProcess & EventEmitter {
   return new EventEmitter() as ChildProcess & EventEmitter;
 }
@@ -50,33 +52,40 @@ function fakeChild(): ChildProcess & EventEmitter {
 describe("readViewerStartConfig", () => {
   test("returns null when no layer names a start command", () => {
     const root = tempRoot();
-    expect(readViewerStartConfig(root, noUser)).toBeNull();
+    expect(readViewerStartConfig(root)).toBeNull();
     writeConfig(root, { deny_globs: [] });
-    expect(readViewerStartConfig(root, noUser)).toBeNull();
+    expect(readViewerStartConfig(root)).toBeNull();
   });
 
   test("reads the project command with the default timeout", () => {
     const root = tempRoot();
     writeConfig(root, { start_command: ["tool", "web", "up"] });
-    expect(readViewerStartConfig(root, noUser)).toEqual({
+    expect(readViewerStartConfig(root)).toEqual({
       command: ["tool", "web", "up"],
       timeoutMs: DEFAULT_VIEWER_START_TIMEOUT_SECONDS * 1000,
     });
   });
 
-  test("lets the machine-local file override the project per key", () => {
+  test("ignores a machine-local command but honours its timeout", () => {
     const root = tempRoot();
     writeConfig(root, { start_command: ["tool", "web", "up"], start_timeout_seconds: 30 });
-    writeConfig(root, { start_command: ["other"] }, "config.local.jsonc");
-    expect(readViewerStartConfig(root, noUser)).toEqual({ command: ["other"], timeoutMs: 30_000 });
+    writeConfig(
+      root,
+      { start_command: ["other"], start_timeout_seconds: 45 },
+      "config.local.jsonc",
+    );
+    expect(readViewerStartConfig(root)).toEqual({
+      command: ["tool", "web", "up"],
+      timeoutMs: 45_000,
+    });
   });
 
   test("rejects malformed values instead of silently ignoring them", () => {
     const root = tempRoot();
     writeConfig(root, { start_command: "tool web up" });
-    expect(() => readViewerStartConfig(root, noUser)).toThrow(ViewerStartConfigError);
+    expect(() => readViewerStartConfig(root)).toThrow(ViewerStartConfigError);
     writeConfig(root, { start_command: ["tool"], start_timeout_seconds: 0 });
-    expect(() => readViewerStartConfig(root, noUser)).toThrow(ViewerStartConfigError);
+    expect(() => readViewerStartConfig(root)).toThrow(ViewerStartConfigError);
   });
 });
 

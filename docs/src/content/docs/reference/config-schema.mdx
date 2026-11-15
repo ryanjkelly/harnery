@@ -24,7 +24,22 @@ Settings resolve from these sources, lowest precedence first (later wins):
 3. `<project>/.harnery/config.local.jsonc`: this machine only, never committed. It overrides the project file field by field, so one machine can lower a value the project sets for everyone
 4. CLI flags + environment variables: per-invocation overrides (see each field's env note)
 
-The config reader (`src/core/config.ts`) merges the three files and owns `binName`, `timeZone`, `hooksSetupHint`, `hooks`, `agents`, `instructions`, `tools`, `doctor`, `workflow`, `skills`, `presence`, `coord`, `logs`, `storage`, `artifacts`, and `backup`; the web layer reads `files`. Ten values are project-only. The `binName` **pin** that `harn init` guards against re-stamping ignores the user file. So do `agents.finalizationRoots`, `agents.gitSyncCommand`, `instructions.promptReminder`, `hooks.promptContext`, `hooks.codexWindowsBridge`, `hooks.portableCommands`, `doctor.environmentFindings`, and `storage.sharing`. A global setting cannot grant filesystem authority, execute a project extension, or carry one project's wording into another. A user-global `binName` is a display fallback, never a project pin. The local file follows the same rule: the nine project-only values ignore it too, so a file nobody reviews cannot widen a trust boundary.
+The config reader (`src/core/config.ts`) owns config layering and validation. It caches parsed
+files by their stat signatures, including dashboard startup and docket settings. The web
+layer separately reads the `files` path policy.
+
+Eighteen settings or sections read only the project file: the `binName` pin,
+`agents.finalizationRoots`, `agents.gitSyncCommand`, `agents.gitSyncOnEndTurn`,
+`files.start_command`, `decision.share`, `instructions.hostAddendumFile`,
+`instructions.promptReminder`, `hooks.promptContext`, `hooks.codexWindowsBridge`,
+`hooks.portableCommands`, `doctor.environmentFindings`, `storage.sharing`,
+`workflow.workerFullAccess`, `computer`, `autoUpdate`, `helpers`, and
+`skills.exclude`. Neither user-global nor machine-local config may change
+these project decisions. A file nobody reviews cannot grant filesystem or
+execution authority, publish decision text, or change committed instructions.
+A user-global or local `binName` remains a display fallback, never a project
+pin. Personal choices in `computer.json` and `preferences.json` are separate
+from these three config layers; see the relevant section below.
 
 ### The machine-local file
 
@@ -62,9 +77,11 @@ Use `.harnery/config.local.jsonc` when one machine needs a different value from 
 | `workflow`     | object  | see below        | Workflow-engine defaults |
 | `skills`       | object  | see below        | Shipped-skill suppression (`skills.exclude`) |
 | `hooks`        | object  | see below        | Optional project-owned hook extensions |
+| `helpers`      | object  | see below        | Project defaults for helper model and reasoning limits |
 | `instructions` | object  | see below        | Host-owned agent instructions and prompt reminder |
 | `presence`     | object  | see below        | Cross-machine presence transports |
-| `files`        | object  | see below        | Web file-viewer path policy (additive deny/allow globs) |
+| `decision`     | object  | see below        | Consent to share docket entries across machines |
+| `files`        | object  | see below        | Dashboard startup and web file-viewer path policy |
 | `web`          | object  | see below        | Standalone Next.js dashboard |
 | `computer`     | object  | see below        | Opt-in desktop control and its approval mode (`computer.mode`) |
 | `autoUpdate`   | object  | see below        | Activity-fired project self-update (`autoUpdate.enabled`) |
@@ -82,10 +99,11 @@ The IANA time zone (for example `"Europe/Berlin"`, `"America/New_York"`, or
 journal entries. Resolution precedence:
 
 1. `HARNERY_TIME_ZONE` env
-2. this field in the project file
-3. this field in the user-global file
-4. the system zone, as the runtime reports it
-5. `"UTC"`
+2. this field in the machine-local file
+3. this field in the project file
+4. this field in the user-global file
+5. the system zone, as the runtime reports it
+6. `"UTC"`
 
 A value that names no zone the runtime knows is skipped with one warning on
 stderr, and the next source applies, so a typo never breaks a hook or a status
@@ -154,6 +172,13 @@ meaning. These substitutions do not let user-global or machine-local config
 grant roots.
 
 Env override per process: `HARNERY_AGENTS_REQUIRE_GIT_FINALIZATION=1|0`.
+
+`gitSyncCommand` and `gitSyncOnEndTurn` read only the project file. A
+machine-local file cannot select a command or turn on unattended execution.
+`HARNERY_AGENTS_GIT_SYNC_ON_END_TURN=1|0` overrides the opt-in per process;
+execution still needs a project-owned command. `statusStyle` is a display
+preference, so it uses user < project < local, then `HARNERY_STATUS_STYLE`.
+Invalid style values fall through to the next valid layer, then `box`.
 
 ## `coord`
 
@@ -526,6 +551,17 @@ Env overrides per process: `HARNERY_PRESENCE=1|0` (whole feature), `HARNERY_PRES
 
 Precedence is `--port`, then `HARNERY_WEB_PORT`, then this config value, then `4276`. An occupied port fails with `web_port_in_use`; Harnery never silently chooses a different URL.
 
+## `helpers`
+
+The project file sets the default helper limit per adapter. A person's choice
+in `preferences.json` wins in either direction. User-global and machine-local
+`config.jsonc` files do not participate.
+
+| Field | Type | Default | Description |
+| ----- | ---- | ------- | ----------- |
+| `<adapter>.max_model` | string | none | Highest model family a helper may use, such as `opus` |
+| `<adapter>.max_effort` | string | none | Highest reasoning effort a helper may use, such as `medium` |
+
 ## `computer`
 
 | Field          | Type   | Default | Description |
@@ -592,6 +628,14 @@ Web file-viewer path-serving policy (the universal file viewer in `harn web`). T
 | `deny_globs`      | string[]  | `[]`    | Extra `**/`-anchored deny patterns on top of the shipped floor (treated as hard-tier: never overridable) |
 | `allow_overrides` | string[]  | `[]`    | Rescue globs consulted only when a deny came from a soft-tier floor pattern; naming a hard secret family is dropped at load |
 
+`start_command` reads only the project file. User-global and machine-local
+files cannot choose an executable. This tightens the original startup rule
+in [ADR 0253](/decisions/0253-start-the-dashboard-from-files-url/) to follow the
+authority boundary in [ADR 0254](/decisions/0254-machine-local-config-and-remote-peer-detail/).
+`start_timeout_seconds` still uses user < project < local, because changing
+the wait does not grant permission to execute anything. It accepts integers
+from 1 through 86,400. There is no env override for either field.
+
 ## `decision`
 
 | Field   | Type | Default | Description |
@@ -601,12 +645,15 @@ Web file-viewer path-serving policy (the universal file viewer in `harn web`). T
 Shared entries are read-only on other machines and carry the label of the
 machine that filed them. Only the filing machine can resolve a decision. See
 [decision record 0255](/decisions/0255-share-the-docket-across-machines/).
+`share` reads only the project file. Neither a user-global nor a machine-local
+file may consent to publishing decision text. `HARNERY_DOCKET_SHARE=1|0`
+overrides per process, but sharing still requires presence to be enabled.
 
 ## How each section is resolved
 
-Most sections above use both config files, merged project-over-user. The
-`agents.finalizationRoots` trust boundary comes only from project config. Env
-vars and CLI flags override other config values per invocation:
+Most sections use user < project < machine-local, merged per field. The
+project-only exceptions listed above ignore both other files. Env vars and
+CLI flags override config per invocation:
 
 | Section | Config keys | Env override | Other |
 | --- | --- | --- | --- |
@@ -621,6 +668,14 @@ vars and CLI flags override other config values per invocation:
 | `backup` | `repo`, `password_file`, `keep_*` | `HARNERY_RESTIC_REPO`, `HARNERY_RESTIC_PASSWORD_FILE` | `--keep-*` flags override the prune policy per run |
 | `files` | `deny_globs`, `allow_overrides` | (none) | read by the web layer, not the core reader |
 | `agents` | `requireGitFinalization`, `finalizationRoots` | `HARNERY_AGENTS_REQUIRE_GIT_FINALIZATION` | `finalizationRoots` is project-only and has no env override |
+| `agents` | `gitSyncCommand` | (none) | project file only; local and user files cannot select an executable |
+| `agents` | `gitSyncOnEndTurn` | `HARNERY_AGENTS_GIT_SYNC_ON_END_TURN=1\|0` | project file only; execution still needs the project command |
+| `agents` | `statusStyle` | `HARNERY_STATUS_STYLE` | user < project < local; invalid values fall through |
+| `presence` | `remote_detail` | `HARNERY_PRESENCE_REMOTE_DETAIL` | user < project < local; invalid effective values use `full` |
+| `files` | `start_command` | (none) | project file only |
+| `files` | `start_timeout_seconds` | (none) | user < project < local |
+| `decision` | `share` | `HARNERY_DOCKET_SHARE=1\|0` | project file only; presence must be enabled |
+| `helpers` | `<adapter>.max_model`, `<adapter>.max_effort` | `HARNERY_HELPER_LIMIT_SKIP=1` skips enforcement | project defaults only; the person's `preferences.json` choice wins |
 | `computer` | `mode`, `enabled`, `driver`, `grant_minutes`, `idle_seconds`, `wait_seconds`, `foreground_quiet_seconds`, `foreground_wait_seconds`, `sign_in`, `browser_attach`, `agent_window` | (none) | project file only; a personal mode, sign-in and browser-attach choice in `computer.json` apply where the project allows them, and personal `agent_window` fields from `computer window` win everywhere; `computer call --wait` overrides `wait_seconds` |
 | `autoUpdate` | `enabled`, `steps`, `dailySteps`, `watch`, `checkMinutes`, `timeoutMinutes`, `cleanup` | `HARNERY_AUTOUPDATE_CHILD=1` skips the tick | project file only |
 

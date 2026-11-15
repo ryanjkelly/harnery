@@ -18,41 +18,13 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { coordEnv } from "../../lib/env.ts";
-import { agentsGitSyncCommand, stripJsonComments } from "../config.ts";
+import { agentsGitSyncCommand, agentsGitSyncOnEndTurn } from "../config.ts";
 import type { GitFinalizationResult } from "./finalization.ts";
 
 /** Upper bound on one automatic sync run. */
 export const END_TURN_SYNC_TIMEOUT_MS = 120_000;
 
-/**
- * Whether the project opted in to the automatic end-of-turn sync.
- *
- * Project config only, like `agents.gitSyncCommand`: the setting makes the
- * closing status execute a command, and a user-global file must not be able to
- * turn that on for another project.
- *
- * `.harnery/config.jsonc`: `{ "agents": { "gitSyncOnEndTurn": true } }`
- *
- * `HARNERY_AGENTS_GIT_SYNC_ON_END_TURN=0` disables it per process; `=1` cannot
- * enable it without a configured sync command.
- */
-export function agentsGitSyncOnEndTurn(coordRoot: string): boolean {
-  const env = coordEnv("AGENTS_GIT_SYNC_ON_END_TURN");
-  if (env === "0") return false;
-  if (env === "1") return true;
-  try {
-    const raw = readFileSync(join(coordRoot, ".harnery", "config.jsonc"), "utf8");
-    const parsed = JSON.parse(stripJsonComments(raw)) as {
-      agents?: { gitSyncOnEndTurn?: unknown };
-    } | null;
-    return parsed?.agents?.gitSyncOnEndTurn === true;
-  } catch {
-    return false;
-  }
-}
+export { agentsGitSyncOnEndTurn } from "../config.ts";
 
 /**
  * True when the result fails only because the checkout is behind its upstream

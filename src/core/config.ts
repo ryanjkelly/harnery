@@ -11,7 +11,8 @@
  *
  * Readers that guard committed output or a trust boundary (`pinnedBinName`,
  * hook command shapes, finalization roots, worker full access, storage
- * sharing, prompt providers, auto-update, doctor policy) read the project file
+ * sharing, prompt providers, auto-update, doctor policy, dashboard start commands,
+ * docket sharing) read the project file
  * alone through `readProjectConfig`, so neither a user file nor a local file
  * can change them. `readAdmissionConfig` reads project plus local.
  *
@@ -124,9 +125,20 @@ interface HarneryConfig {
     finalizationRoots?: AgentFinalizationRoot[];
     /** Project-only; read via `agentsGitSyncCommand()`. */
     gitSyncCommand?: unknown;
-    /** End-of-turn status style, `"box"` or `"plain"`; read by `agents/status-style.ts`. */
+    /** Project-only opt-in; read via `agentsGitSyncOnEndTurn()`. */
+    gitSyncOnEndTurn?: unknown;
+    /** End-of-turn status style, `"box"` or `"plain"`; read via `resolveStatusStyle()`. */
     statusStyle?: unknown;
   };
+  /** Dashboard start policy; serving deny/allow rules remain in the web layer. */
+  files?: {
+    /** Project-only executable authority; read via `readViewerStartConfig()`. */
+    start_command?: unknown;
+    /** User < project < local wait bound; does not grant executable authority. */
+    start_timeout_seconds?: unknown;
+  };
+  /** Project-only consent to publish decision text; read via `docketShareEnabled()`. */
+  decision?: { share?: unknown };
   /** Admission resource defaults and the heavy-command guard. Project config only. */
   admission?: unknown;
   /** Host-owned agent instruction settings. */
@@ -370,15 +382,6 @@ export function localConfigPath(root: string): string {
   return join(root, ".harnery", "config.local.jsonc");
 }
 
-/** File mtime in ms, or -1 when the file can't be stat'd (missing). */
-function statMtime(p: string): number {
-  try {
-    return statSync(p).mtimeMs;
-  } catch {
-    return -1;
-  }
-}
-
 /** Cache signature, or null when the file can't be stat'd (missing). */
 function statSignature(p: string): string | null {
   try {
@@ -389,15 +392,26 @@ function statSignature(p: string): string | null {
   }
 }
 
-/** Parse one JSONC config file to an object; missing/unparseable → `{}`. */
+// Cache raw layers too: project-only and validated per-layer readers must not
+// reparse files or inherit values across their authority boundary.
+const configFileCache = new Map<string, { signature: string | null; cfg: HarneryConfig }>();
+
+/** Parse one JSONC config file, cached by stat signature; missing/unparseable → `{}`. */
 function parseConfigFile(p: string): HarneryConfig {
+  const signature = statSignature(p);
+  const cached = configFileCache.get(p);
+  if (cached && cached.signature === signature) return cached.cfg;
+  let cfg: HarneryConfig = {};
   try {
     const parsed = JSON.parse(stripJsonComments(readFileSync(p, "utf8"))) as HarneryConfig | null;
-    if (parsed && typeof parsed === "object") return parsed;
+    if (parsed && typeof parsed === "object") cfg = parsed;
   } catch {
     /* missing or unparseable → defaults (files-section resolver fails loud; the rest is non-critical) */
   }
-  return {};
+  // A dashboard process may inspect many projects; keep the raw-layer cache bounded.
+  if (configFileCache.size >= 64) configFileCache.delete(configFileCache.keys().next().value!);
+  configFileCache.set(p, { signature, cfg });
+  return cfg;
 }
 
 export interface CoordRunQualityConfigSource {
@@ -515,6 +529,7 @@ function mergeConfig(base: HarneryConfig, override: HarneryConfig): HarneryConfi
 // Stat-signature-keyed per-process cache (all three layers): a stat is cheap, a parse on every render isn't.
 let cache: {
   root: string;
+  userPath: string;
   projSignature: string | null;
   userSignature: string | null;
   localSignature: string | null;
@@ -537,6 +552,7 @@ function readConfig(root: string): HarneryConfig {
   if (
     cache &&
     cache.root === root &&
+    cache.userPath === userPath &&
     cache.projSignature === projSignature &&
     cache.userSignature === userSignature &&
     cache.localSignature === localSignature
@@ -547,7 +563,7 @@ function readConfig(root: string): HarneryConfig {
   const project = projSignature === null ? {} : parseConfigFile(projPath);
   const local = localSignature === null ? {} : parseConfigFile(localPath);
   const cfg = mergeConfig(mergeConfig(user, project), local);
-  cache = { root, projSignature, userSignature, localSignature, cfg };
+  cache = { root, userPath, projSignature, userSignature, localSignature, cfg };
   return cfg;
 }
 
@@ -556,8 +572,7 @@ function readConfig(root: string): HarneryConfig {
  * unparseable. `harn doctor` uses it to name the keys a machine overrides.
  */
 export function readLocalConfig(root: string): HarneryConfig {
-  const p = localConfigPath(root);
-  return statSignature(p) === null ? {} : parseConfigFile(p);
+  return parseConfigFile(localConfigPath(root));
 }
 
 /** Whether a machine-local override file exists for `root`, even an unparseable one. */
@@ -583,8 +598,7 @@ function readProjectAndLocalConfig(root: string): HarneryConfig {
  * committed-output reader uses it for the same reason.
  */
 function readProjectConfig(root: string): HarneryConfig {
-  const p = join(root, ".harnery", "config.jsonc");
-  return statMtime(p) === -1 ? {} : parseConfigFile(p);
+  return parseConfigFile(join(root, ".harnery", "config.jsonc"));
 }
 
 /**
@@ -926,6 +940,96 @@ export function agentsGitSyncCommand(coordRoot?: string | null): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed && !/[\r\n`]/.test(trimmed) ? trimmed : null;
+}
+
+/**
+ * Project-only consent to automatic end-turn catch-up (ADR 0256).
+ * Neither user-global nor machine-local config may enable command execution.
+ * `HARNERY_AGENTS_GIT_SYNC_ON_END_TURN=1|0` overrides per process; the caller
+ * still requires a project-owned `gitSyncCommand` before running anything.
+ */
+export function agentsGitSyncOnEndTurn(coordRoot: string): boolean {
+  const env = coordEnv("AGENTS_GIT_SYNC_ON_END_TURN");
+  if (env === "0") return false;
+  if (env === "1") return true;
+  return readProjectConfig(coordRoot).agents?.gitSyncOnEndTurn === true;
+}
+
+export type StatusStyle = "box" | "plain";
+
+export const STATUS_STYLES: readonly StatusStyle[] = ["box", "plain"];
+
+export function parseStatusStyle(value: unknown): StatusStyle | null {
+  return value === "box" || value === "plain" ? value : null;
+}
+
+/** Env, then valid local, project, user values; invalid values fall through (ADR 0259). */
+export function resolveStatusStyle(root: string | null | undefined): StatusStyle {
+  const env = parseStatusStyle(coordEnv("STATUS_STYLE")?.trim());
+  if (env) return env;
+  if (root) {
+    const local = parseStatusStyle(readLocalConfig(root).agents?.statusStyle);
+    if (local) return local;
+    const project = parseStatusStyle(readProjectConfig(root).agents?.statusStyle);
+    if (project) return project;
+  }
+  return parseStatusStyle(parseConfigFile(userConfigPath()).agents?.statusStyle) ?? "box";
+}
+
+/** Default bound on how long `files url` waits for a started dashboard. */
+export const DEFAULT_VIEWER_START_TIMEOUT_SECONDS = 600;
+
+export interface ViewerStartConfig {
+  /** argv of the start command; run with the coord root as working directory. */
+  command: string[];
+  timeoutMs: number;
+}
+
+export class ViewerStartConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ViewerStartConfigError";
+  }
+}
+
+/**
+ * Project-only dashboard start command; timeout uses user < project < local.
+ * Unreviewed files cannot name an executable, but may tune its wait bound.
+ * Missing command returns null; an invalid effective value throws so a typo
+ * is reported instead of silently disabling the start.
+ */
+export function readViewerStartConfig(coordRoot: string): ViewerStartConfig | null {
+  const command = readProjectConfig(coordRoot).files?.start_command;
+  if (command === undefined || command === null) return null;
+  if (
+    !Array.isArray(command) ||
+    command.length === 0 ||
+    !command.every((part) => typeof part === "string" && part.length > 0)
+  ) {
+    throw new ViewerStartConfigError(
+      "files.start_command must be a non-empty array of non-empty strings",
+    );
+  }
+  let timeout: unknown;
+  for (const layer of [
+    parseConfigFile(userConfigPath()),
+    readProjectConfig(coordRoot),
+    readLocalConfig(coordRoot),
+  ]) {
+    if (isPlainObject(layer.files) && layer.files.start_timeout_seconds !== undefined) {
+      timeout = layer.files.start_timeout_seconds;
+    }
+  }
+  let seconds = DEFAULT_VIEWER_START_TIMEOUT_SECONDS;
+  if (timeout !== undefined) {
+    if (!Number.isInteger(timeout) || (timeout as number) < 1 || (timeout as number) > 86_400) {
+      throw new ViewerStartConfigError(
+        "files.start_timeout_seconds must be an integer from 1 through 86400",
+      );
+    }
+    seconds = timeout as number;
+  }
+  return { command: [...command] as string[], timeoutMs: seconds * 1000 };
 }
 
 /** The status command automatic prompts and Stop remediation should request. */
@@ -1592,22 +1696,6 @@ export function readComputerConfig(
   };
 }
 
-// Project-only parse cache keyed by the file's stat signature. Hooks call the
-// auto-update reader on every prompt, so an unchanged file costs one stat.
-let projectCache: { path: string; signature: string; cfg: HarneryConfig } | null = null;
-
-function readProjectConfigCached(root: string): HarneryConfig {
-  const p = join(root, ".harnery", "config.jsonc");
-  const signature = statSignature(p);
-  if (signature === null) return {};
-  if (projectCache && projectCache.path === p && projectCache.signature === signature) {
-    return projectCache.cfg;
-  }
-  const cfg = parseConfigFile(p);
-  projectCache = { path: p, signature, cfg };
-  return cfg;
-}
-
 function clampInteger(value: unknown, min: number, max: number, fallback: number): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
   return Math.min(max, Math.max(min, Math.round(value)));
@@ -1646,7 +1734,7 @@ function argvList(value: unknown): string[][] {
  * `enabled` is true only when the project sets it to exactly `true`.
  */
 export function readAutoUpdateConfig(coordRoot: string): AutoUpdateConfig | null {
-  const raw = readProjectConfigCached(coordRoot).autoUpdate;
+  const raw = readProjectConfig(coordRoot).autoUpdate;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const record = raw as Record<string, unknown>;
   const watch = Array.isArray(record.watch)
@@ -1728,6 +1816,23 @@ export function presenceEnabled(coordRoot?: string | null): boolean {
   const root = coordRoot ?? findCoordRoot();
   if (!root) return false;
   return readConfig(root).presence?.enabled !== false;
+}
+
+/**
+ * Project-only consent to publish docket text (ADR 0255). Unreviewed user or
+ * machine-local files cannot enable sharing. `HARNERY_DOCKET_SHARE=1|0`
+ * overrides per process, but presence must still be enabled.
+ */
+export function docketShareEnabled(coordRoot: string): boolean {
+  try {
+    if (!presenceEnabled(coordRoot)) return false;
+    const env = coordEnv("DOCKET_SHARE");
+    if (env === "1") return true;
+    if (env === "0") return false;
+    return readProjectConfig(coordRoot).decision?.share === true;
+  } catch {
+    return false;
+  }
 }
 
 /** How much of another machine's sessions reaches agent context. */

@@ -17,92 +17,17 @@
 
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { closeSync, mkdirSync, openSync } from "node:fs";
 import { join } from "node:path";
-import { stripJsonComments } from "../core/config.ts";
+import type { ViewerStartConfig } from "../core/config.ts";
 import { acquireNoClobberLease } from "../core/storage/no-clobber-lease.ts";
 
-/** Default bound on how long `files url` waits for a started dashboard. */
-export const DEFAULT_VIEWER_START_TIMEOUT_SECONDS = 600;
-
-export interface ViewerStartConfig {
-  /** argv of the start command; run with the coord root as working directory. */
-  command: string[];
-  timeoutMs: number;
-}
-
-export class ViewerStartConfigError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "ViewerStartConfigError";
-  }
-}
-
-function readFilesSection(path: string): Record<string, unknown> | undefined {
-  if (!existsSync(path)) return undefined;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(stripJsonComments(readFileSync(path, "utf8")));
-  } catch {
-    return undefined;
-  }
-  if (!parsed || typeof parsed !== "object") return undefined;
-  const files = (parsed as Record<string, unknown>).files;
-  return files && typeof files === "object" && !Array.isArray(files)
-    ? (files as Record<string, unknown>)
-    : undefined;
-}
-
-function userConfigFile(): string {
-  const xdg = process.env.XDG_CONFIG_HOME;
-  const base = xdg?.trim() ? xdg : join(homedir(), ".config");
-  return join(base, "harnery", "config.jsonc");
-}
-
-/**
- * The effective `files.start_command` and `files.start_timeout_seconds`,
- * layered user, then project, then machine-local (later wins per key).
- * Returns null when no layer names a start command. An invalid value throws,
- * so a typo is reported instead of silently disabling the start.
- */
-export function readViewerStartConfig(
-  coordRoot: string,
-  userFile: string = userConfigFile(),
-): ViewerStartConfig | null {
-  let command: unknown;
-  let timeout: unknown;
-  for (const file of [
-    userFile,
-    join(coordRoot, ".harnery", "config.jsonc"),
-    join(coordRoot, ".harnery", "config.local.jsonc"),
-  ]) {
-    const files = readFilesSection(file);
-    if (!files) continue;
-    if (files.start_command !== undefined) command = files.start_command;
-    if (files.start_timeout_seconds !== undefined) timeout = files.start_timeout_seconds;
-  }
-  if (command === undefined || command === null) return null;
-  if (
-    !Array.isArray(command) ||
-    command.length === 0 ||
-    !command.every((part) => typeof part === "string" && part.length > 0)
-  ) {
-    throw new ViewerStartConfigError(
-      "files.start_command must be a non-empty array of non-empty strings",
-    );
-  }
-  let seconds = DEFAULT_VIEWER_START_TIMEOUT_SECONDS;
-  if (timeout !== undefined) {
-    if (!Number.isInteger(timeout) || (timeout as number) < 1 || (timeout as number) > 86_400) {
-      throw new ViewerStartConfigError(
-        "files.start_timeout_seconds must be an integer from 1 through 86400",
-      );
-    }
-    seconds = timeout as number;
-  }
-  return { command: command as string[], timeoutMs: seconds * 1000 };
-}
+export {
+  DEFAULT_VIEWER_START_TIMEOUT_SECONDS,
+  readViewerStartConfig,
+  type ViewerStartConfig,
+  ViewerStartConfigError,
+} from "../core/config.ts";
 
 /** Quote an argv for display in an error or hint. */
 export function displayCommand(command: string[]): string {

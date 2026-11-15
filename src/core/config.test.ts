@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { removeDir } from "../../tests/helpers/remove-dir.ts";
 import {
   agentsFinalizationRoots,
+  agentsGitSyncCommand,
+  agentsGitSyncOnEndTurn,
   agentsRequireGitFinalization,
   artifactDefaultRetentionDays,
   artifactMaxBytes,
@@ -14,6 +16,7 @@ import {
   coordFreshnessSeconds,
   DEFAULT_BIN_NAME,
   DEFAULT_FRESHNESS_SECS,
+  docketShareEnabled,
   endOfTurnStatusCommand,
   eventLedgerArchivePolicy,
   hostPromptContextConfig,
@@ -23,11 +26,14 @@ import {
   MAX_HOST_PROMPT_REMINDER_CHARS,
   pinnedBinName,
   portableHookCommands,
+  presenceRemoteDetail,
   readAdmissionConfig,
   readAutoUpdateConfig,
   readComputerConfig,
   readComputerPreferences,
+  readViewerStartConfig,
   resolveBinName,
+  resolveStatusStyle,
   sessionFinalizationConfig,
   stripJsonComments,
   writeAgentWindowPreference,
@@ -44,6 +50,206 @@ function makeRoot(configBody?: string): string {
   }
   return root;
 }
+
+describe("config reader layer contracts", () => {
+  const cases: {
+    setting: string;
+    section: string;
+    key: string;
+    read: (root: string) => unknown;
+    value: unknown;
+    other: unknown;
+    fallback: unknown;
+    layers: readonly string[];
+    env?: string;
+    overrides?: [string, unknown][];
+  }[] = [
+    {
+      setting: "agents.gitSyncCommand",
+      section: "agents",
+      key: "gitSyncCommand",
+      read: agentsGitSyncCommand,
+      value: "sync-project",
+      other: "sync-other",
+      fallback: null,
+      layers: ["project"],
+    },
+    {
+      setting: "agents.gitSyncOnEndTurn",
+      section: "agents",
+      key: "gitSyncOnEndTurn",
+      read: agentsGitSyncOnEndTurn,
+      value: true,
+      other: false,
+      fallback: false,
+      layers: ["project"],
+      env: "HARNERY_AGENTS_GIT_SYNC_ON_END_TURN",
+      overrides: [
+        ["0", false],
+        ["1", true],
+      ],
+    },
+    {
+      setting: "agents.statusStyle",
+      section: "agents",
+      key: "statusStyle",
+      read: resolveStatusStyle,
+      value: "plain",
+      other: "box",
+      fallback: "box",
+      layers: ["user", "project", "local"],
+      env: "HARNERY_STATUS_STYLE",
+      overrides: [
+        [" box ", "box"],
+        ["plain", "plain"],
+      ],
+    },
+    {
+      setting: "files.start_command",
+      section: "files",
+      key: "start_command",
+      read: (root) => readViewerStartConfig(root)?.command ?? null,
+      value: ["start-project"],
+      other: ["start-other"],
+      fallback: null,
+      layers: ["project"],
+    },
+    {
+      setting: "files.start_timeout_seconds",
+      section: "files",
+      key: "start_timeout_seconds",
+      read: (root) => readViewerStartConfig(root)?.timeoutMs,
+      value: 45,
+      other: 30,
+      fallback: 600_000,
+      layers: ["user", "project", "local"],
+    },
+    {
+      setting: "decision.share",
+      section: "decision",
+      key: "share",
+      read: docketShareEnabled,
+      value: true,
+      other: false,
+      fallback: false,
+      layers: ["project"],
+      env: "HARNERY_DOCKET_SHARE",
+      overrides: [
+        ["0", false],
+        ["1", true],
+      ],
+    },
+    {
+      setting: "presence.remote_detail",
+      section: "presence",
+      key: "remote_detail",
+      read: presenceRemoteDetail,
+      value: "summary",
+      other: "off",
+      fallback: "full",
+      layers: ["user", "project", "local"],
+      env: "HARNERY_PRESENCE_REMOTE_DETAIL",
+      overrides: [
+        [" full ", "full"],
+        ["off", "off"],
+      ],
+    },
+  ];
+  const envKeys = [
+    "XDG_CONFIG_HOME",
+    "HARNERY_PRESENCE",
+    ...cases.flatMap((c) => (c.env ? [c.env] : [])),
+  ];
+  const saved = new Map(envKeys.map((key) => [key, process.env[key]]));
+  const roots: string[] = [];
+  beforeEach(() => {
+    for (const key of envKeys) delete process.env[key];
+  });
+  afterEach(() => {
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    for (const root of roots.splice(0)) removeDir(root);
+  });
+
+  test.each(cases)("$setting honours only its declared layers and env", (c) => {
+    const root = makeRoot();
+    roots.push(root);
+    const xdg = join(root, "user-config");
+    mkdirSync(join(xdg, "harnery"), { recursive: true });
+    process.env.XDG_CONFIG_HOME = xdg;
+    const paths = {
+      user: join(xdg, "harnery", "config.jsonc"),
+      project: join(root, ".harnery", "config.jsonc"),
+      local: join(root, ".harnery", "config.local.jsonc"),
+    };
+    const base = c.key === "start_timeout_seconds" ? { start_command: ["start-project"] } : {};
+    const write = (layer: keyof typeof paths, value?: unknown) =>
+      writeFileSync(
+        paths[layer],
+        JSON.stringify({
+          ...(layer === "project" ? { files: base } : {}),
+          ...(value === undefined
+            ? {}
+            : {
+                [c.section]: {
+                  ...(layer === "project" && c.section === "files" ? base : {}),
+                  [c.key]: value,
+                },
+              }),
+        }),
+      );
+    const expected = (value: unknown) =>
+      c.key === "start_timeout_seconds" ? (value as number) * 1000 : value;
+    const layers = ["user", "project", "local"] as const;
+    for (const layer of layers) {
+      for (const reset of layers) write(reset);
+      write(layer, c.value);
+      expect(c.read(root)).toEqual(c.layers.includes(layer) ? expected(c.value) : c.fallback);
+    }
+    // Competing values establish precedence, including false replacing true.
+    let result = c.fallback;
+    for (const layer of layers) {
+      const value = layer === "project" ? c.other : c.value;
+      write(layer, value);
+      if (c.layers.includes(layer)) result = expected(value);
+    }
+    expect(c.read(root)).toEqual(result);
+    if (c.env) {
+      for (const [value, result] of c.overrides ?? []) {
+        process.env[c.env] = value;
+        expect(c.read(root)).toEqual(result);
+      }
+      process.env[c.env] = "unrecognized";
+      expect(c.read(root)).toEqual(result);
+    }
+    // Malformed JSONC in an allowed higher layer falls through to the lower one.
+    for (const layer of layers) write(layer, c.value);
+    writeFileSync(paths.local, "{ malformed");
+    writeFileSync(paths.user, "{ malformed");
+    expect(c.read(root)).toEqual(expected(c.value));
+    writeFileSync(paths.project, "{ malformed");
+    expect(c.read(root)).toEqual(c.key === "start_timeout_seconds" ? undefined : c.fallback);
+  });
+
+  test("docket env cannot bypass disabled presence", () => {
+    const root = makeRoot('{"presence":{"enabled":false},"decision":{"share":true}}');
+    roots.push(root);
+    process.env.HARNERY_DOCKET_SHARE = "1";
+    expect(docketShareEnabled(root)).toBe(false);
+  });
+
+  test("viewer timeout skips a malformed section and returned argv cannot mutate the cache", () => {
+    const root = makeRoot('{"files":{"start_command":["start"],"start_timeout_seconds":45}}');
+    roots.push(root);
+    writeFileSync(join(root, ".harnery", "config.local.jsonc"), '{"files":null}');
+    const config = readViewerStartConfig(root);
+    expect(config?.timeoutMs).toBe(45_000);
+    config?.command.push("untrusted");
+    expect(readViewerStartConfig(root)?.command).toEqual(["start"]);
+  });
+});
 
 describe("resolveBinName", () => {
   const roots: string[] = [];
