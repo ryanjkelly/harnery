@@ -124,6 +124,8 @@ interface HarneryConfig {
     finalizationRoots?: AgentFinalizationRoot[];
     /** Project-only; read via `agentsGitSyncCommand()`. */
     gitSyncCommand?: unknown;
+    /** End-of-turn status style, `"box"` or `"plain"`; read by `agents/status-style.ts`. */
+    statusStyle?: unknown;
   };
   /** Admission resource defaults and the heavy-command guard. Project config only. */
   admission?: unknown;

@@ -111,6 +111,7 @@ times in each viewer's own display preference, the browser zone by default.
 | `finalizationRoots`      | object[] | `[]`    | Extra project-owned roots with a `git` or `output` end-turn disposition |
 | `gitSyncCommand`         | string   | none    | The project's safe catch-up command, named when the end-turn check finds the checkout behind |
 | `gitSyncOnEndTurn`       | bool     | `false` | Run `gitSyncCommand` once when the only failing end-turn findings are repository freshness, then repeat the check |
+| `statusStyle`            | string   | `"box"` | End-of-turn status style: `box`, or `plain` for at most three everyday lines. Settable per machine in the local file |
 
 When enabled, automatic prompts and Stop remediation request
 `agents status --end-turn` instead of plain `agents status`. The Stop verdict also
