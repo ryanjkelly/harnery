@@ -199,6 +199,16 @@ is marked done. A stored name corrected after the title was applied is not
 pushed to the open thread. The name block uses the corrected name when the
 session is marked done.
 
+The title fields live on the row's local cache file in `.harnery/active/`,
+never in the event ledger. The stale sweep deletes that file once a session has
+been idle past the freshness window, and the next hook rebuilds it from the
+ledger. So that the rebuilt row keeps its title, every cache write also copies
+the title fields to `.harnery/session-titles/<instance>.json`. A rebuild or a
+row read with no cache file reads them back when the session and agent name
+still match. The sweep removes these files only after 30 days without a change.
+Without them, an idle session's next focus declaration minted a fresh title and
+T3 Code renamed the thread mid-session.
+
 ### Adding a client
 
 A new client needs a supported way for the agent or Harnery to set its title.
