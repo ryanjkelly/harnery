@@ -107,15 +107,12 @@ export function emitStopOutcome(
     return 0;
   }
 
-  if (!verdict) return 0;
-  const reason = verdict.reason ?? "End-of-turn coordination ritual incomplete.";
-  // Claude Code re-prompts inside one native Stop remediation cycle, but tools
-  // run after the first terminal are recorded in recovered telemetry turns.
-  // Name the whole ritual so one continuation can repair every required signal.
-  const bin = resolveBinName(coordRoot);
-  const statusCommand = endOfTurnStatusCommand(coordRoot);
-  const remediation = `Repair the whole ritual in this continuation: if the original turn used a tool and task evidence is missing, run \`${bin} agents set-task "<short focus>"\`; then run \`${statusCommand}\` as your last tool call and paste its status box verbatim in your reply.`;
-  process.stderr.write(`${reason}\n${remediation}\n[agent-hook stop]: rule=${verdict.rule}\n`);
+  const reason =
+    verdict.reason ?? "This turn cannot end yet because an end-of-turn step is missing.";
+  // The reason already names every missing step and its exact command, so a
+  // person who sees the block reads one plain message. The rule id stays on
+  // its own trailing line, which bounce telemetry parses.
+  process.stderr.write(`${reason}\n[agent-hook stop]: rule=${verdict.rule}\n`);
   return 2;
 }
 
@@ -140,18 +137,22 @@ function cursorCoordinationRemediation(
   verdict: { reason?: string; rule: string },
   coordRoot?: string,
 ): string {
-  const reason = verdict.reason ?? "End-of-turn coordination ritual incomplete.";
-  // The marker leads the message so the Stop verdict can recognize the turn
-  // Cursor opens from it (`STOP_REMEDIATION_MARKER`), and so the operator can
-  // see in chat that the message came from Harnery rather than from them.
-  // Both commands are named because one message that repairs the whole ritual
-  // ends the chain in a single followup; the failing rule is context.
+  const reason =
+    verdict.reason ?? "This turn cannot end yet because an end-of-turn step is missing.";
+  // Cursor shows this follow-up in the chat as if the person sent it. A short
+  // marker leads so the Stop verdict can recognize the turn Cursor opens from
+  // it (`STOP_REMEDIATION_MARKER`; leading because the recorded prompt text is
+  // clamped) and so the person can see the message came from Harnery. The
+  // plain reason follows, and the rule id sits on its own trailing line.
+  // Both commands are named because one message that repairs the whole
+  // ritual ends the chain in a single follow-up.
   const bin = resolveBinName(coordRoot);
   const statusCommand = endOfTurnStatusCommand(coordRoot);
   const message = [
-    `${STOP_REMEDIATION_MARKER} rule=${verdict.rule}]`,
+    `${STOP_REMEDIATION_MARKER}]`,
     reason,
-    `Repair the ritual in this turn: run \`${bin} agents set-task "<short focus>"\` and then \`${statusCommand}\` as your last tool call.`,
+    `Run \`${bin} agents set-task "<short focus>"\`, then run \`${statusCommand}\` as your last tool call.`,
+    `[agent-hook stop]: rule=${verdict.rule}`,
   ].join("\n");
   return message;
 }

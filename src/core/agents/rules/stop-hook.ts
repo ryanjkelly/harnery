@@ -126,7 +126,11 @@ export function evaluateStopHookV3Events(
   const fallbackStartMs = Math.max(0, endMs - 5 * 60 * 1000);
   const claudeContinuation = req.adapter === "claude-code" && req.stop_hook_active === true;
   const range = resolveTurnRange(ownerEvents, owner, endMs);
-  const resolvedStart = range?.start;
+  const reopened = range ? reopenedTurnOrigin(ownerEvents, range.start, endMs) : undefined;
+  const resolvedStart = reopened?.start ?? range?.start;
+  const ignoredTurnIds = reopened
+    ? new Set([...(range?.ignoredTurnIds ?? [])].filter((id) => !reopened.turnIds.has(id)))
+    : range?.ignoredTurnIds;
   const resolvedStartMs = eventTimeMs(resolvedStart);
   const startMs =
     req.turn_window?.start_ms ??
@@ -140,7 +144,7 @@ export function evaluateStopHookV3Events(
       !(
         "turn_id" in event.scope &&
         typeof event.scope.turn_id === "string" &&
-        range?.ignoredTurnIds.has(event.scope.turn_id)
+        ignoredTurnIds?.has(event.scope.turn_id)
       )
     );
   });
@@ -189,16 +193,16 @@ export function evaluateStopHookV3Events(
     : latestBox === true;
   const ackBlock = () => rule23Block(coordRoot, req.session_id);
 
-  // Pure prose turns keep the human-visible acknowledgement but do not require
-  // task or final-status mutations. This preserves the pre-V3 policy exactly.
+  // A turn with no tool call passes (ADR 0265). Pasting a fresh status needs a
+  // tool call, so demanding one here turned every reply-only turn, including
+  // one opened by a background-task notification, into a forced tool turn
+  // that the prompt-time ritual guidance never asked for.
   if (!usedTool) {
-    if (!ackPresent && req.pending_background_handoff) return backgroundHandoffDeferred();
-    if (!ackPresent) return withCycleAnchor(ackBlock(), cycleAnchor);
     return {
       allow: true,
       exit_code: 0,
       rule: "stop-hook.pure_prose_pass",
-      reason: "no tool calls this turn; task and final-status mutations were not required",
+      reason: "no tool calls this turn; the end-of-turn ritual applies only to tool turns",
     };
   }
 
@@ -317,6 +321,61 @@ function originalTurnEvents(
   });
 }
 
+type TurnStartedEvent = Extract<EventV3, { event_type: "turn.started" }>;
+
+function turnIdOf(event: EventV3): string | undefined {
+  return "turn_id" in event.scope && typeof event.scope.turn_id === "string"
+    ? event.scope.turn_id
+    : undefined;
+}
+
+/**
+ * Find where a reopened turn really began (ADR 0265).
+ *
+ * After a Stop block, Claude Code's continuation opens a linked turn. When a
+ * later tool call still carries the original prompt's native turn id, the
+ * producer closes that continuation and starts the original turn id again
+ * with no continuation link. The link walk then begins at the reopened start,
+ * and evidence recorded earlier in the same prompt (the task declared before
+ * the first block, a status run in the first continuation) falls outside the
+ * window, so the hook repeats a demand the agent already met.
+ *
+ * The extension applies only when that exact pattern holds: the resolved start
+ * reuses a turn id that started earlier in this generation, at least one start
+ * in between continues that turn, and every start in between is either the
+ * same turn id or a linked continuation. A fresh operator prompt in between
+ * always has a new turn id and no link, so it stops the extension.
+ */
+function reopenedTurnOrigin(
+  ownerEvents: readonly EventV3[],
+  resolved: TurnStartedEvent,
+  endMs: number,
+): { start: TurnStartedEvent; turnIds: ReadonlySet<string> } | undefined {
+  const reopenedId = turnIdOf(resolved);
+  if (!reopenedId) return undefined;
+  const starts = ownerEvents.filter(
+    (event): event is TurnStartedEvent =>
+      event.event_type === "turn.started" && eventTimeMs(event) <= endMs,
+  );
+  const resolvedIndex = starts.indexOf(resolved);
+  if (resolvedIndex <= 0) return undefined;
+  const originIndex = starts.findIndex((event) => turnIdOf(event) === reopenedId);
+  if (originIndex < 0 || originIndex >= resolvedIndex) return undefined;
+
+  const chain = new Set<string>([reopenedId]);
+  let continued = false;
+  for (const between of starts.slice(originIndex + 1, resolvedIndex)) {
+    const id = turnIdOf(between);
+    if (id === reopenedId) continue;
+    const link = between.payload.continues_turn_id;
+    if (!id || !link || !chain.has(link)) return undefined;
+    chain.add(id);
+    continued = true;
+  }
+  if (!continued) return undefined;
+  return { start: starts[originIndex]!, turnIds: chain };
+}
+
 function remediationCycleAnchor(
   turnStart: Extract<EventV3, { event_type: "turn.started" }> | undefined,
   startMs: number,
@@ -404,19 +463,16 @@ function mergeStopBlocks(blocks: VerdictResult[]): VerdictResult | undefined {
   const numbered = reasons.map((reason, index) => `${index + 1}. ${reason}`).join("\n");
   return {
     ...primary,
-    reason: `End-of-turn ritual: ${reasons.length} signals are missing from this turn. Repair ALL of them in this continuation, then stop.\n${numbered}`,
+    reason: `This turn cannot end yet because ${reasons.length} end-of-turn steps are missing. Do all of them now, then stop.\n${numbered}`,
   };
 }
 
 function rule13Block(coordRoot?: string, sessionId?: string): VerdictResult {
-  const missingEvidence = agentsRequireGitFinalization(coordRoot)
-    ? "no end_turn_checked coord.status_observed event found in this turn"
-    : "no coord.status_observed event found in this turn";
   return {
     allow: false,
     exit_code: 2,
     rule: "stop-hook.rule_1_3",
-    reason: `End-of-turn rule (1/3): ${missingEvidence}; run \`${endOfTurnStatusCommand(coordRoot)}${sessionIdSuffix(sessionId)}\` as your last tool call.`,
+    reason: `This turn used tools but did not finish with the end-of-turn status check. Run \`${endOfTurnStatusCommand(coordRoot)}${sessionIdSuffix(sessionId)}\` as your last tool call.`,
   };
 }
 
@@ -425,13 +481,13 @@ function rule23Block(coordRoot?: string, sessionId?: string): VerdictResult {
   // machine prints so the remediation matches what the agent sees (ADR 0259).
   const signal =
     resolveStatusStyle(coordRoot) === "plain"
-      ? `the first line starting with \`${PLAIN_STATUS_MARKER.trim()}\` and the lines after it are the detection signal`
-      : "the `┌─ agent-` prefix is the detection signal";
+      ? `its first line starts with \`${PLAIN_STATUS_MARKER.trim()}\``
+      : "its first line starts with `┌─ agent-`";
   return {
     allow: false,
     exit_code: 2,
     rule: "stop-hook.rule_2_3",
-    reason: `End-of-turn rule (2/3): turn.completed did not observe the agent status in your reply text. Paste the \`${endOfTurnStatusCommand(coordRoot)}${sessionIdSuffix(sessionId)}\` output verbatim as a fenced code block (${signal}).`,
+    reason: `Your reply does not show the end-of-turn status. Paste the output of \`${endOfTurnStatusCommand(coordRoot)}${sessionIdSuffix(sessionId)}\` unchanged in a fenced code block at the end of your reply (${signal}).`,
   };
 }
 
@@ -469,12 +525,12 @@ function sessionNameBlock(coordRoot: string, instanceId: string): VerdictResult 
   }
   // The first post-mint reply was already rejected. Repeating its title later
   // cannot change that evidence; the JSON retry result opens a new window.
-  const instruction = `Run \`${resolveBinName(coordRoot)} agents suggest-name --json\` as your only tool call to create a fresh verification boundary, then display its suggested_session_name verbatim by itself in a fenced code block${name ? `: ${name}` : "."}`;
+  const instruction = `Run \`${resolveBinName(coordRoot)} agents suggest-name --json\` as your only tool call, then show its suggested_session_name unchanged by itself in a fenced code block${name ? `: ${name}` : "."}`;
   return {
     allow: false,
     exit_code: 2,
     rule: "stop-hook.session_name",
-    reason: `Session-naming rule: V3 observed that the current session name was required but absent. ${instruction}`,
+    reason: `Your replies have not shown this session's name yet. ${instruction}`,
   };
 }
 
@@ -483,6 +539,6 @@ function rule33Block(coordRoot?: string, sessionId?: string): VerdictResult {
     allow: false,
     exit_code: 2,
     rule: "stop-hook.rule_3_3",
-    reason: `End-of-turn rule (3/3): no coord.task_changed event found in this turn; run \`${resolveBinName(coordRoot)} agents set-task${sessionIdSuffix(sessionId)} "<short focus>"\` to declare what you're working on. Pass an empty string if the turn was purely conversational.`,
+    reason: `This turn used tools but did not declare what you are working on. Run \`${resolveBinName(coordRoot)} agents set-task${sessionIdSuffix(sessionId)} "<short focus>"\`.`,
   };
 }

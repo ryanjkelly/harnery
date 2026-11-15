@@ -114,8 +114,8 @@ describe("Stop supplemental owned Git observation", () => {
       { box: false, task: false, naming: true },
     );
     expect(result.allow).toBe(false);
-    expect(result.reason).toContain("End-of-turn rule (2/3)");
-    expect(result.reason).toContain("End-of-turn rule (3/3)");
+    expect(result.reason).toContain("does not show the end-of-turn status");
+    expect(result.reason).toContain("did not declare what you are working on");
     expect(result.reason).toContain("session");
     expect(verdict(undefined, { status: false })).toMatchObject({
       allow: false,

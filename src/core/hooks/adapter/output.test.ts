@@ -37,7 +37,7 @@ afterEach(() => {
 });
 
 const verdict = {
-  reason: "End-of-turn rule (1/3): run `harn agents status`.",
+  reason: "Run `harn agents status` as your last tool call.",
   rule: "stop-hook.rule_1_3",
 };
 
@@ -112,10 +112,10 @@ describe("emitStopBlock", () => {
     expect(code).toBe(2);
     expect(outChunks.join("")).toBe("");
     expect(errChunks.join("")).toContain("harn agents status");
-    expect(errChunks.join("")).toContain("Repair the whole ritual");
-    expect(errChunks.join("")).toContain("agents set-task");
-    expect(errChunks.join("")).toContain("paste its status box verbatim");
-    expect(errChunks.join("")).toContain("rule=stop-hook.rule_1_3");
+    // One plain reason, then the rule id alone on the last line for telemetry.
+    expect(errChunks.join("")).toBe(
+      "Run `harn agents status` as your last tool call.\n[agent-hook stop]: rule=stop-hook.rule_1_3\n",
+    );
   });
 
   test("codex suppresses the block without writing hook output", () => {
@@ -155,6 +155,11 @@ describe("emitStopBlock", () => {
     // that repairs the whole ritual ends the chain in one pass.
     expect(message).toContain("agents set-task");
     expect(message).toContain("agents status");
+    // The rule id is not in the lines a person reads, only on the last line.
+    const lines = message.split("\n");
+    expect(lines[0]).toBe(`${STOP_REMEDIATION_MARKER}]`);
+    expect(lines.slice(0, -1).join("\n")).not.toContain("stop-hook.");
+    expect(lines.at(-1)).toBe(`[agent-hook stop]: rule=${verdict.rule}`);
   });
 
   test("cursor remediation adds --end-turn only for an opted-in host", () => {

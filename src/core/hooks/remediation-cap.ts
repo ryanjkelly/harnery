@@ -199,9 +199,27 @@ function firstLine(text: string | undefined): string {
 export function formatStopCapNotice(exhaustion: StopCapExhaustion): string {
   return (
     `Harnery let this turn end after ${exhaustion.blocked_count} blocked attempts, ` +
-    `so the work may be unfinished: the end-of-turn rule ${exhaustion.rule} was not met. ` +
+    `so the work may be unfinished: ${plainStopRule(exhaustion.rule)}. ` +
     "The agent will be asked to fix it on your next message."
   );
+}
+
+/** What a blocked Stop rule means, for text a person reads (no rule ids). */
+export function plainStopRule(rule: string): string {
+  switch (rule) {
+    case "stop-hook.rule_1_3":
+      return "the agent did not finish with its end-of-turn status check";
+    case "stop-hook.rule_2_3":
+      return "the agent's reply did not show its end-of-turn status";
+    case "stop-hook.rule_3_3":
+      return "the agent did not declare what it was working on";
+    case "stop-hook.session_name":
+      return "the agent did not show its session name";
+    case "stop-hook.git_not_finalized":
+      return "the agent's Git work was not committed and pushed";
+    default:
+      return "an end-of-turn step was not completed";
+  }
 }
 
 /** The prompt-time cue that tells the agent to repair and report the gap. */

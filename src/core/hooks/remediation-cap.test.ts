@@ -190,7 +190,11 @@ describe("stop cap exhaustion cue", () => {
   test("notice and cue name the rule, the fix, and the report to the operator", () => {
     const notice = formatStopCapNotice(exhaustion);
     expect(notice).toContain("5 blocked attempts");
-    expect(notice).toContain("stop-hook.status_missing");
+    expect(notice).not.toContain("stop-hook.");
+    expect(notice).toContain("an end-of-turn step was not completed");
+    expect(formatStopCapNotice({ ...exhaustion, rule: "stop-hook.rule_2_3" })).toContain(
+      "reply did not show its end-of-turn status",
+    );
     expect(notice).not.toContain("\n");
     const cue = formatStopCapCue(exhaustion, "harn agents status --end-turn");
     expect(cue).toContain("rule stop-hook.status_missing");

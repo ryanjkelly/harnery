@@ -1836,7 +1836,21 @@ describe("agent-hook V3 hard cut", () => {
     hook("user-prompt-submit", {
       session_id: owner,
       cwd: root,
-      prompt: "answer without tools",
+      prompt: "read one file",
+    });
+    hook("pre-tool-use", {
+      session_id: owner,
+      cwd: root,
+      tool_name: "Read",
+      tool_use_id: "enforcement-read",
+      tool_input: { file_path: join(root, "seed.txt") },
+    });
+    hook("post-tool-use", {
+      session_id: owner,
+      cwd: root,
+      tool_name: "Read",
+      tool_use_id: "enforcement-read",
+      tool_response: "",
     });
     const stop = run(
       AGENT_HOOK,
@@ -1851,8 +1865,13 @@ describe("agent-hook V3 hard cut", () => {
 
     expect(stop.status).toBe(2);
     expect(stop.stdout).toBe("");
-    expect(stop.stderr).toContain("End-of-turn rule (2/3)");
-    expect(stop.stderr).toContain("rule=stop-hook.rule_2_3");
+    expect(stop.stderr).toContain("Your reply does not show the end-of-turn status.");
+    expect(stop.stderr).toContain("did not finish with the end-of-turn status check");
+    // The rule id appears only on the last line, which telemetry reads.
+    expect(stop.stderr.trimEnd().split("\n").at(-1)).toBe(
+      "[agent-hook stop]: rule=stop-hook.rule_1_3",
+    );
+    expect(stop.stderr.trimEnd().split("\n").slice(0, -1).join("\n")).not.toContain("stop-hook.");
     const terminal = readLedgerV3(root)
       .events.map(({ event }) => event)
       .find((event) => event.event_type === "turn.completed");
@@ -2137,14 +2156,12 @@ describe("agent-hook V3 hard cut", () => {
     expect(events.filter((event) => event.event_type === "coord.status_observed")).toHaveLength(1);
   });
 
-  test("Claude Stop remediation does not turn a pure-prose reply into a tool-policy turn", () => {
+  test("a Claude reply with no tool call ends without status, paste, or task", () => {
     const root = candidateRoot();
     const owner = "sterling-prose-owner";
     const turnId = "sterling-prose-turn";
     const hook = (event: string, payload: Record<string, unknown>) =>
       run(AGENT_HOOK, [event, "--adapter", "claude-code"], payload, root);
-    const coord = (args: string[]) =>
-      run(HARN, args, {}, root, { HARNERY_AGENT_COORD_SESSION_ID: owner });
 
     expect(hook("session-start", { session_id: owner, cwd: root, source: "startup" }).status).toBe(
       0,
@@ -2157,47 +2174,15 @@ describe("agent-hook V3 hard cut", () => {
         prompt: "say hello",
       }).status,
     ).toBe(0);
-    const firstStop = hook("stop", {
+    const stop = hook("stop", {
       session_id: owner,
       cwd: root,
       turn_id: turnId,
       last_assistant_message: "Hello.",
       stop_hook_active: false,
     });
-    expect(firstStop.status).toBe(2);
-    expect(firstStop.stderr).toContain("rule=stop-hook.rule_2_3");
-
-    expect(
-      hook("pre-tool-use", {
-        session_id: owner,
-        cwd: root,
-        turn_id: turnId,
-        tool_name: "Bash",
-        tool_use_id: "status-repair",
-        tool_input: { command: "harn agents status" },
-      }).status,
-    ).toBe(0);
-    const statusResult = coord(["agents", "status", "--session-id", owner]);
-    expect(statusResult.status).toBe(0);
-    expect(
-      hook("post-tool-use", {
-        session_id: owner,
-        cwd: root,
-        turn_id: turnId,
-        tool_name: "Bash",
-        tool_use_id: "status-repair",
-        tool_response: statusResult.stdout,
-      }).status,
-    ).toBe(0);
-
-    const repaired = hook("stop", {
-      session_id: owner,
-      cwd: root,
-      turn_id: turnId,
-      last_assistant_message: `\`\`\`\n${statusResult.stdout.trim()}\n\`\`\``,
-      stop_hook_active: true,
-    });
-    expect(repaired.status).toBe(0);
+    expect(stop.stderr).toBe("");
+    expect(stop.status).toBe(0);
     expect(readLedgerV3(root).events.map(({ event }) => event.event_type)).not.toContain(
       "coord.task_changed",
     );
@@ -2437,6 +2422,19 @@ describe("agent-hook V3 hard cut", () => {
             prompt: "never paste the required box",
           }).status,
         ).toBe(0);
+        for (const phase of ["pre-tool-use", "post-tool-use"]) {
+          expect(
+            hook(phase, {
+              session_id: owner,
+              cwd: root,
+              turn_id: turnId,
+              tool_name: "Read",
+              tool_use_id: "cap-read",
+              tool_input: { file_path: join(root, "seed.txt") },
+              ...(phase === "post-tool-use" ? { tool_response: "" } : {}),
+            }).status,
+          ).toBe(0);
+        }
 
         for (let block = 1; block <= DEFAULT_STOP_REMEDIATION_CAP; block += 1) {
           const denied = hook("stop", {
@@ -2476,7 +2474,7 @@ describe("agent-hook V3 hard cut", () => {
           event: "agent_hook.diagnostic",
           fields: {
             skipped: "stop-remediation-cap-exhausted",
-            blocked_rule: "stop-hook.rule_2_3",
+            blocked_rule: "stop-hook.rule_1_3",
             blocked_count: DEFAULT_STOP_REMEDIATION_CAP + 1,
             session_id: owner,
           },

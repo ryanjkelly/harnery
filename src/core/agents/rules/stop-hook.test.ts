@@ -61,17 +61,17 @@ describe("evaluateStopHook on the universal V3 ledger", () => {
     ).toMatchObject({ allow: true, rule: "stop-hook.v3_evidence_unavailable" });
   });
 
-  test("requires the visible Claude Code acknowledgement even on a prose-only turn", () => {
+  test("a turn with no tool call passes without a pasted status", () => {
     const missing = [turnStarted(0), turnCompleted(1, ritual(false))];
     expect(verdict("claude-code", missing)).toMatchObject({
-      allow: false,
-      rule: "stop-hook.rule_2_3",
+      allow: true,
+      rule: "stop-hook.pure_prose_pass",
     });
 
     const toolResultOnly = [turnStarted(0), turnCompleted(1, ritual(false, undefined, true))];
     expect(verdict("claude-code", toolResultOnly)).toMatchObject({
-      allow: false,
-      rule: "stop-hook.rule_2_3",
+      allow: true,
+      rule: "stop-hook.pure_prose_pass",
     });
 
     const present = [turnStarted(0), turnCompleted(1, ritual(true))];
@@ -81,16 +81,98 @@ describe("evaluateStopHook on the universal V3 ledger", () => {
     });
   });
 
+  test("a reply-only turn opened by a background-task notification passes after earlier tool turns", () => {
+    // Reduced from a recorded session: a tool turn finished its whole ritual,
+    // then a task-completion notice opened a new turn the agent answered in
+    // prose. That turn was blocked for a missing status paste.
+    const events = [
+      withTurn(turnStarted(0), "a"),
+      withTurn(event("tool.requested", 1), "a"),
+      task(2),
+      withTurn(event("tool.requested", 3), "a"),
+      status(4),
+      withTurn(turnCompleted(5, ritual(true)), "a"),
+      withTurn(turnStarted(150), "b"),
+      withTurn(turnCompleted(153, ritual(false)), "b"),
+    ];
+    expect(verdict("claude-code", events)).toMatchObject({
+      allow: true,
+      rule: "stop-hook.pure_prose_pass",
+    });
+    // A tool call in that notification turn still needs the whole ritual.
+    const withTool = [
+      ...events.slice(0, -1),
+      withTurn(event("tool.requested", 151), "b"),
+      withTurn(turnCompleted(153, ritual(false)), "b"),
+    ];
+    expect(verdict("claude-code", withTool)).toMatchObject({
+      allow: false,
+      rule: "stop-hook.rule_1_3",
+    });
+  });
+
+  test("a reopened turn keeps the task declared before the first block", () => {
+    // Reduced from a recorded session: the first Stop was blocked, the linked
+    // continuation was closed by a later tool call that still carried the
+    // prompt's native turn id, and the producer started that turn id again
+    // with no link. The task from the original turn fell out of the window
+    // and the agent was blocked for a task it had already declared.
+    const reopened = [
+      withTurn(turnStarted(0), "a"),
+      withTurn(event("tool.requested", 1), "a"),
+      task(2),
+      withTurn(turnCompleted(10, ritual(false)), "a"),
+      continuationOf(withTurn(turnStarted(15), "c"), "a"),
+      withTurn(event("tool.requested", 16), "c"),
+      withTurn(turnCompleted(20), "c"),
+      withTurn(turnStarted(21), "a"),
+      withTurn(event("tool.requested", 22), "a"),
+      status(23),
+      withTurn(turnCompleted(30, ritual(true)), "a"),
+    ];
+    for (const stop_hook_active of [true, false]) {
+      expect(
+        verdict("claude-code", reopened, { stop_hook_active, status_box_present_strict: true }),
+      ).toMatchObject({ allow: true, rule: "stop-hook.pass" });
+    }
+
+    // Without the earlier task the same sequence still blocks.
+    const noTask = reopened.filter((item) => item.event_type !== "coord.task_changed");
+    expect(
+      verdict("claude-code", noTask, { stop_hook_active: true, status_box_present_strict: true }),
+    ).toMatchObject({ allow: false, rule: "stop-hook.rule_3_3" });
+
+    // A new operator prompt has its own turn id and no link, so it must not
+    // pull the earlier turn's task forward.
+    const freshPrompt = [
+      ...reopened.slice(0, 7),
+      withTurn(turnStarted(21), "d"),
+      withTurn(event("tool.requested", 22), "d"),
+      status(23),
+      withTurn(turnCompleted(30, ritual(true)), "d"),
+    ];
+    expect(verdict("claude-code", freshPrompt)).toMatchObject({
+      allow: false,
+      rule: "stop-hook.rule_3_3",
+    });
+  });
+
   test("the rule 2/3 remediation names the detection signal of the configured style", () => {
-    const missing = [turnStarted(0), turnCompleted(1, ritual(false))];
+    const missing = [
+      turnStarted(0),
+      event("tool.requested", 1),
+      status(2),
+      task(3),
+      turnCompleted(4, ritual(false)),
+    ];
     const saved = process.env.HARNERY_STATUS_STYLE;
     try {
       process.env.HARNERY_STATUS_STYLE = "plain";
       const plain = verdict("claude-code", missing);
       expect(plain).toMatchObject({ allow: false, rule: "stop-hook.rule_2_3" });
-      expect(plain.reason).toContain("starting with `◇`");
+      expect(plain.reason).toContain("starts with `◇`");
       process.env.HARNERY_STATUS_STYLE = "box";
-      expect(verdict("claude-code", missing).reason).toContain("`┌─ agent-` prefix");
+      expect(verdict("claude-code", missing).reason).toContain("starts with `┌─ agent-`");
     } finally {
       if (saved === undefined) delete process.env.HARNERY_STATUS_STYLE;
       else process.env.HARNERY_STATUS_STYLE = saved;
@@ -120,22 +202,22 @@ describe("evaluateStopHook on the universal V3 ledger", () => {
     // Status, acknowledgement and task all missing: one block, all three named.
     const allMissing = verdict("claude-code", [...base, turnCompleted(5, ritual(false))]);
     expect(allMissing).toMatchObject({ allow: false, rule: "stop-hook.rule_1_3" });
-    expect(allMissing.reason).toContain("End-of-turn rule (1/3)");
-    expect(allMissing.reason).toContain("End-of-turn rule (2/3)");
-    expect(allMissing.reason).toContain("End-of-turn rule (3/3)");
-    expect(allMissing.reason).toContain("Repair ALL of them");
+    expect(allMissing.reason).toContain("did not finish with the end-of-turn status check");
+    expect(allMissing.reason).toContain("does not show the end-of-turn status");
+    expect(allMissing.reason).toContain("did not declare what you are working on");
+    expect(allMissing.reason).toContain("3 end-of-turn steps are missing");
 
     // Acknowledgement and task missing: the verdict keeps the first rule id.
     const two = verdict("claude-code", [...base, status(2), turnCompleted(5, ritual(false))]);
     expect(two).toMatchObject({ allow: false, rule: "stop-hook.rule_2_3" });
-    expect(two.reason).toContain("End-of-turn rule (2/3)");
-    expect(two.reason).toContain("End-of-turn rule (3/3)");
+    expect(two.reason).toContain("does not show the end-of-turn status");
+    expect(two.reason).toContain("did not declare what you are working on");
 
     // A lone failure keeps its original single-rule wording.
     const one = verdict("claude-code", [...base, status(2), turnCompleted(5, ritual(true))]);
     expect(one).toMatchObject({ allow: false, rule: "stop-hook.rule_3_3" });
-    expect(one.reason).toContain("End-of-turn rule (3/3)");
-    expect(one.reason).not.toContain("Repair ALL of them");
+    expect(one.reason).toContain("did not declare what you are working on");
+    expect(one.reason).not.toContain("steps are missing");
   });
 
   test("a pending background handoff defers status and box evidence but not the task", () => {
@@ -150,12 +232,12 @@ describe("evaluateStopHook on the universal V3 ledger", () => {
     // A missing task declaration does not depend on the task and still blocks.
     const noTask = verdict("claude-code", [...base, turnCompleted(5, ritual(false))], pending);
     expect(noTask).toMatchObject({ allow: false, rule: "stop-hook.rule_3_3" });
-    expect(noTask.reason).not.toContain("End-of-turn rule (1/3)");
+    expect(noTask.reason).not.toContain("status check");
 
-    // A prose-only continuation turn also yields while the task runs.
+    // A turn with no tool call passes whether or not a task is running.
     expect(
       verdict("claude-code", [turnStarted(0), turnCompleted(5, ritual(false))], pending),
-    ).toMatchObject({ allow: true, rule: "stop-hook.background_handoff_deferred" });
+    ).toMatchObject({ allow: true, rule: "stop-hook.pure_prose_pass" });
 
     // A complete ritual is an ordinary pass, and the notification turn enforces again.
     expect(
@@ -207,10 +289,15 @@ describe("evaluateStopHook on the universal V3 ledger", () => {
       rule: "stop-hook.pass",
     });
 
-    const frozen = [turnStarted(0), task(1), turnCompleted(2, ritual(false))];
+    const frozen = [
+      turnStarted(0),
+      event("tool.requested", 1),
+      task(1),
+      turnCompleted(2, ritual(false)),
+    ];
     expect(verdict("cursor", frozen)).toMatchObject({
       allow: false,
-      rule: "stop-hook.rule_2_3",
+      rule: "stop-hook.rule_1_3",
     });
     const recoveredFollowup = [
       turnStarted(0),
@@ -395,7 +482,7 @@ describe("evaluateStopHook on the universal V3 ledger", () => {
       const result = evaluateStopHookV3Events(coordRoot, request, events);
       expect(result).toMatchObject({ allow: false, rule: "stop-hook.session_name" });
       expect(result.reason).toContain("agents suggest-name --json");
-      expect(result.reason).toContain("fresh verification boundary");
+      expect(result.reason).toContain("as your only tool call");
     }
   });
 
@@ -490,6 +577,20 @@ function verdict(
     },
     events,
   );
+}
+
+function withTurn(value: EventV3, label: string): EventV3 {
+  fixtureObject(value.scope).turn_id = turnIdFor(label);
+  return value;
+}
+
+function continuationOf(value: EventV3, label: string): EventV3 {
+  fixtureObject(value.payload).continues_turn_id = turnIdFor(label);
+  return value;
+}
+
+function turnIdFor(label: string): string {
+  return `tid_${label.charCodeAt(0).toString(16).padStart(2, "0").repeat(32)}`;
 }
 
 function recoveredTurnStarted(second: number, continues = true): EventV3 {

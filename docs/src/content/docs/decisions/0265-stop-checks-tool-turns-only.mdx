@@ -1,0 +1,77 @@
+---
+title: "0265: Stop checks tool turns only, across reopened turns"
+description: "ADR: a turn with no tool call passes the Stop hook; a turn the adapter reopens after a continuation keeps the evidence from its start; block messages are plain sentences with the rule id on a trailing line."
+---
+
+**Status:** accepted (2026-11-14) · **Scope:** product tier (`core/agents/rules/stop-hook`, `core/hooks/adapter/output`, `core/hooks/remediation-cap`)
+
+## Context
+
+The Stop hook refuses to end a turn until the agent has declared its task, run
+the end-of-turn status and pasted that status in its reply. Each refusal costs
+the person a retry and shows them the hook's text.
+
+A count of two weeks of recorded blocks in one busy project found two causes
+that were Harnery's, not the agent's:
+
+- **Reply-only turns.** About a quarter of all blocks fell on turns with no
+  tool call at all. The verdict still demanded a pasted status on such turns,
+  while the prompt-time guidance says the ritual applies to turns that use
+  tools. A fresh status can only be produced by a tool call, so the demand
+  could be met only by adding one. Turns opened by a background-task
+  notification and answered in prose were blocked the same way.
+- **Reopened turns.** After a block, Claude Code's continuation opens a turn
+  linked to the original. When a later tool call still carries the original
+  prompt's native turn id, the producer closes the continuation and starts the
+  original turn id again, with no continuation link. The verdict's window then
+  began at that restart, so a task declared before the first block no longer
+  counted, and the agent was blocked for a step it had already done.
+
+Block messages also read as internal notes: rule numbers such as `(2/3)`,
+event names such as `turn.completed`, and a second paragraph repeating the
+first. The cap notice shown to the person printed a raw rule id.
+
+## Alternatives considered
+
+- **Keep the reply-only demand and change the guidance.** That would make
+  every reply cost a tool call, so a person's quick question would always
+  carry a status check and a paste.
+- **Fix the turn restart in the producer.** The producer's recovery rules
+  serve every reader of turn boundaries, and changing which turn id a late
+  tool call joins needs its own design. The verdict can recognize the exact
+  pattern without changing what the ledger records.
+- **Treat any repeated turn id as one turn.** Too broad: a repeated id with no
+  continuation in between is an ordinary recovery and must not inherit the
+  earlier turn's evidence.
+
+## Decision
+
+1. A turn whose events contain no tool request passes. The rule id
+   `stop-hook.pure_prose_pass` is unchanged. A turn that used a tool keeps
+   every existing check: status, pasted status, task, session name and Git
+   finalization.
+2. When the turn the verdict resolves reuses a turn id that started earlier in
+   the same generation, the window extends back to that earlier start, but
+   only if at least one start in between is a linked continuation of it and
+   every start in between is either that id again or such a continuation. A
+   new operator prompt in between has its own id and no link, so it stops the
+   extension. Continuation turns inside the extended window are no longer
+   treated as late recoveries.
+3. Each block reason is one plain sentence naming the missing step and the
+   exact command. A merged block lists the steps under one plain lead
+   sentence. The rule id is kept only on the trailing
+   `[agent-hook stop]: rule=...` line that telemetry reads. Cursor's follow-up
+   keeps a short leading `[harnery:stop-remediation]` marker, because the
+   verdict recognizes that turn by it and the recorded prompt text is
+   clamped, and carries the rule id on its last line. The cap notice
+   describes the unmet step in plain words.
+
+## Consequences
+
+- Replaying the verdict over the same two weeks turns every reply-only block
+  and both reopened-turn blocks into passes and changes no verdict on a turn
+  that used a tool.
+- An agent that answers in prose after a tool-using turn is not asked for a
+  status. The status from the earlier turn stays the last one shown.
+- The remaining blocks are a missing status check, a missing paste, a missing
+  task, or unfinished Git work.
