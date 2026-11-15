@@ -81,6 +81,22 @@ describe("evaluateStopHook on the universal V3 ledger", () => {
     });
   });
 
+  test("the rule 2/3 remediation names the detection signal of the configured style", () => {
+    const missing = [turnStarted(0), turnCompleted(1, ritual(false))];
+    const saved = process.env.HARNERY_STATUS_STYLE;
+    try {
+      process.env.HARNERY_STATUS_STYLE = "plain";
+      const plain = verdict("claude-code", missing);
+      expect(plain).toMatchObject({ allow: false, rule: "stop-hook.rule_2_3" });
+      expect(plain.reason).toContain("starting with `◇`");
+      process.env.HARNERY_STATUS_STYLE = "box";
+      expect(verdict("claude-code", missing).reason).toContain("`┌─ agent-` prefix");
+    } finally {
+      if (saved === undefined) delete process.env.HARNERY_STATUS_STYLE;
+      else process.env.HARNERY_STATUS_STYLE = saved;
+    }
+  });
+
   test("enforces status, reply acknowledgement, and task evidence in order on tool turns", () => {
     const base = [turnStarted(0), event("tool.requested", 1)];
     expect(verdict("claude-code", [...base, turnCompleted(5, ritual(true))])).toMatchObject({

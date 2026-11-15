@@ -560,6 +560,37 @@ an earlier clean observation. An unavailable supplemental observer leaves all
 existing Stop rules in force. The status command retains its upstream and
 submodule freshness checks. Codex's Stop hook remains observe-only.
 
+### Plain style
+
+The box is written for engineers. For a person who does not read code, set
+`agents.statusStyle` to `"plain"` and the same command prints at most three
+everyday lines instead:
+
+```text
+◇ Maya · working on: Fix the table · still in progress
+3 other agents are active; none is using the same files · 9:41 AM CDT
+Heads up: this conversation has used 86% of its memory, so it will need a fresh start soon
+```
+
+The first line names the agent, its task, and whether the work is still in
+progress, waiting on something (with the reason), or finished. The second
+counts the other active agents and warns, by name and file, only when one of
+them holds a file this session also touched. The third line appears only when
+something needs attention: a conflicting record of which agent started this
+one, a nearly full conversation, a loaded computer, a run-quality warning, a
+page check, the automatic catch-up described below, or a session end.
+`--full` lists every fact on its own labelled line, still without box drawing.
+
+The setting can live in the project file, the user file, or the machine-local
+`.harnery/config.local.jsonc`, so one person's computer can use the plain
+style while the project keeps the box. `HARNERY_STATUS_STYLE=plain` or `box`
+overrides it for one process. The default is `"box"`.
+
+The Stop hook accepts either style as the pasted evidence, with the same
+strictness. A plain paste counts only inside a closed fenced code block, with
+the `◇` first line followed directly by the rest of the output and its clock
+time. See [ADR 0259](/decisions/0259-plain-end-of-turn-status/).
+
 ### Catching up automatically at the end of a turn
 
 In a repository where several people push to the same branch, the guarded

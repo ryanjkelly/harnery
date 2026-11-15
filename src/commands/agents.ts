@@ -57,6 +57,11 @@ import { qaSignalStatusRow } from "../core/agents/qa-signal.ts";
 import { reconcileCoordinationV3 } from "../core/agents/reconcile-coordination-v3.ts";
 import { formatBox, sanitizeStatusLabel } from "../core/agents/render/status-box.ts";
 import {
+  formatPlainStatus,
+  formatPlainStatusFull,
+  type PlainStatusPeer,
+} from "../core/agents/render/status-plain.ts";
+import {
   listSessionFinalizationRequestsV3,
   observeHostDisappearedV3,
   reconcileSessionFinalizationV3,
@@ -95,6 +100,7 @@ import {
   foldSessionState,
   type TaskState,
 } from "../core/agents/state/session-state.ts";
+import { resolveStatusStyle } from "../core/agents/status-style.ts";
 import { turnChangesStatusRow } from "../core/agents/turn-changes.ts";
 import { turnElapsedStatusRow } from "../core/agents/turn-elapsed.ts";
 import {
@@ -2516,6 +2522,62 @@ function runStatus(opts: {
     : ctxUsage.percentOnly
       ? ctxUsage.usedPercent
       : (ctxUsage.used / ctxUsage.window) * 100;
+  const contextProblem = contextPercent !== null && contextPercent >= STATUS_CONTEXT_WARN_PERCENT;
+  const resourcesProblem =
+    resources.assessment.state === "elevated" || resources.assessment.state === "critical";
+
+  if (resolveStatusStyle(root) === "plain") {
+    const remoteDetail = presenceRemoteDetail(root);
+    const remoteAgents = remoteDetail === "off" ? [] : remoteMachines.flatMap((m) => m.agents);
+    const plain = {
+      name: displayName.replace(/^agent-/, ""),
+      task: hb.task ?? "",
+      state: taskStateOf(hb),
+      stateReason: hb.task_state_reason ?? null,
+      otherAgents: livePeers.length + remoteAgents.length,
+      overlaps: plainStatusOverlaps(filesHeld, [
+        ...livePeers.map((p) => ({ name: p.name ?? "", files: p.files_touched ?? [] })),
+        ...remoteAgents.map((a) => ({ name: a.name ?? "", files: a.files_touched ?? [] })),
+      ]),
+      time: formatShortLocalTime(new Date()),
+      attention: plainStatusAttention({
+        parentProblem: data.parent_reference.state === "conflict",
+        parent: describeParentReference(data.parent_reference),
+        contextPercent: contextProblem ? contextPercent : null,
+        resources: resourcesProblem ? resources : null,
+        quality: quality ?? null,
+        qa: qaSignal?.value ?? null,
+        sync: endTurnSync,
+        sessionEnd: sessionEnd?.state ?? null,
+      }),
+    };
+    const text = opts.full
+      ? formatPlainStatusFull({
+          ...plain,
+          fullTime: timeStr,
+          sessionLength: formatAge(ageSecs),
+          turnLength: turnElapsed?.value ?? null,
+          changes: turnChanges.value,
+          activity: activityOf(hb),
+          startedBy:
+            data.parent_reference.state === "verified"
+              ? (data.parent_reference.parent_name ?? "another agent")
+              : data.parent_reference.state === "conflict"
+                ? "conflicting records"
+                : "not recorded",
+          memory: ctxStr,
+          computer: formatResourceSummary(resources),
+          filesHeld: filesHeld.map((p) => basename(p)),
+          peerNames: [
+            ...livePeers.map((p) => p.name || "unnamed"),
+            ...remoteAgents.map((a) => a.name || "unnamed"),
+          ],
+        })
+      : formatPlainStatus(plain);
+    process.stdout.write(`${text}\n`); // lint-ok-emission: chat-paste path; same contract as the box
+    return;
+  }
+
   const rows = statusBoxRows({
     full: opts.full === true,
     session: formatAge(ageSecs),
@@ -2527,10 +2589,9 @@ function runStatus(opts: {
     parent: describeParentReference(data.parent_reference),
     parentProblem: data.parent_reference.state === "conflict",
     context: ctxStr,
-    contextProblem: contextPercent !== null && contextPercent >= STATUS_CONTEXT_WARN_PERCENT,
+    contextProblem,
     resources: formatResourceSummary(resources),
-    resourcesProblem:
-      resources.assessment.state === "elevated" || resources.assessment.state === "critical",
+    resourcesProblem,
     files: filesStr,
     peers: peersStr,
     time: timeStr,
@@ -2563,6 +2624,96 @@ function runStatus(opts: {
 
 /** Context use at which the compact status box adds its context row. */
 const STATUS_CONTEXT_WARN_PERCENT = 80;
+
+/**
+ * Peers holding a file this session also touched, compared by full path when
+ * both sides carry one and by file name otherwise. The plain style warns only
+ * about these.
+ */
+export function plainStatusOverlaps(
+  mine: string[],
+  peers: Array<{ name: string; files: string[] }>,
+): PlainStatusPeer[] {
+  if (mine.length === 0) return [];
+  const mineSet = new Set(mine);
+  const out: PlainStatusPeer[] = [];
+  for (const peer of peers) {
+    const shared = peer.files.filter((file) => mineSet.has(file)).map((file) => basename(file));
+    if (shared.length > 0)
+      out.push({ name: peer.name || "unnamed", sharedFiles: [...new Set(shared)] });
+  }
+  return out;
+}
+
+/**
+ * Plain sentences for every row the compact box shows only when something is
+ * wrong or worth noting, so the plain style never drops one.
+ */
+export function plainStatusAttention(input: {
+  parentProblem: boolean;
+  parent: string;
+  contextPercent: number | null;
+  resources: { assessment: { state: string; summary: string } } | null;
+  quality: { status: RunQualityStatus; signal_ids: string[] } | null;
+  qa: string | null;
+  sync: EndTurnSyncRun | null;
+  sessionEnd: "queued" | "already_requested" | "recorded" | "already_ended" | null;
+}): string[] {
+  const out: string[] = [];
+  if (input.parentProblem)
+    out.push(`the record of which agent started this one conflicts (${input.parent})`);
+  if (input.contextPercent !== null) {
+    out.push(
+      `this conversation has used ${Math.round(input.contextPercent)}% of its memory, so it will need a fresh start soon`,
+    );
+  }
+  if (input.resources) {
+    const how = input.resources.assessment.state === "critical" ? "badly overloaded" : "busy";
+    out.push(`this computer is ${how}: ${input.resources.assessment.summary}`);
+  }
+  if (
+    input.quality &&
+    (input.quality.status === "attention" || input.quality.status === "critical")
+  ) {
+    const signals =
+      input.quality.signal_ids.length > 0 ? ` (${input.quality.signal_ids.join(", ")})` : "";
+    out.push(
+      `the work quality check ${input.quality.status === "critical" ? "found a serious problem" : "wants a look"}${signals}`,
+    );
+  }
+  if (input.qa) out.push(`latest page check: ${input.qa}`);
+  if (input.sync) out.push(plainSyncSentence(input.sync));
+  if (input.sessionEnd) {
+    out.push(
+      input.sessionEnd === "queued" || input.sessionEnd === "already_requested"
+        ? "this session will close after this turn"
+        : "this session is closed",
+    );
+  }
+  return out;
+}
+
+function plainSyncSentence(sync: EndTurnSyncRun): string {
+  if (sync.outcome === "timed_out")
+    return "tried to bring in other people's latest changes before finishing, but it took too long";
+  if (sync.outcome === "failed")
+    return "tried to bring in other people's latest changes before finishing, but it failed";
+  const n = sync.commits_pulled;
+  const brought =
+    n === null ? "new changes" : n === 0 ? "nothing new" : `${n} new change${n === 1 ? "" : "s"}`;
+  return `brought in other people's latest changes before finishing (${brought})`;
+}
+
+function formatShortLocalTime(d: Date): string {
+  // "9:41 AM CDT", in the same resolved zone as the box's time row.
+  return new Intl.DateTimeFormat("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+    hour12: true,
+    timeZone: resolveTimeZone(),
+  }).format(d);
+}
 
 /**
  * Rows of the status box. The compact default carries what an operator acts

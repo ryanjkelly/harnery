@@ -19,7 +19,9 @@ import { readEventV3ControlState } from "../../events/v3/control.ts";
 import { liveInstanceIdV3 } from "../../events/v3/live-routing.ts";
 import { readLedgerV3 } from "../../events/v3/reader.ts";
 import { formatGitFinalizationFailure } from "../finalization.ts";
+import { PLAIN_STATUS_MARKER } from "../render/status-plain.ts";
 import { readLiveCoordinationRow } from "../state/live-coordination-view.ts";
+import { resolveStatusStyle } from "../status-style.ts";
 import type { StopGitFinalization } from "../stop-finalization.ts";
 import { resolveTurnRange } from "../turn-range.ts";
 
@@ -419,11 +421,17 @@ function rule13Block(coordRoot?: string, sessionId?: string): VerdictResult {
 }
 
 function rule23Block(coordRoot?: string, sessionId?: string): VerdictResult {
+  // Both styles are accepted as evidence; the message names the one this
+  // machine prints so the remediation matches what the agent sees (ADR 0259).
+  const signal =
+    resolveStatusStyle(coordRoot) === "plain"
+      ? `the first line starting with \`${PLAIN_STATUS_MARKER.trim()}\` and the lines after it are the detection signal`
+      : "the `┌─ agent-` prefix is the detection signal";
   return {
     allow: false,
     exit_code: 2,
     rule: "stop-hook.rule_2_3",
-    reason: `End-of-turn rule (2/3): turn.completed did not observe the agent-status box in your reply text. Paste the \`${endOfTurnStatusCommand(coordRoot)}${sessionIdSuffix(sessionId)}\` output verbatim as a fenced code block (the \`┌─ agent-\` prefix is the detection signal).`,
+    reason: `End-of-turn rule (2/3): turn.completed did not observe the agent status in your reply text. Paste the \`${endOfTurnStatusCommand(coordRoot)}${sessionIdSuffix(sessionId)}\` output verbatim as a fenced code block (${signal}).`,
   };
 }
 

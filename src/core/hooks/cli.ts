@@ -35,6 +35,7 @@ import {
   recordLiveClaimChangeV3,
   restoreLiveCoordinationStateAfterEpochV3,
 } from "../agents/live-authority-v3.ts";
+import { textHasPlainStatusHead } from "../agents/render/status-plain.ts";
 import { evaluateStopHook, STOP_REMEDIATION_MARKER } from "../agents/rules/stop-hook.ts";
 import {
   assistantTextStartsWithSessionNameBlock,
@@ -564,13 +565,14 @@ function buildEventData(
         tool_call_count: -1,
         text_length: 0,
         // Box present if the transcript scan finds it OR the final assistant
-        // message carries the `┌─ agent-` prefix. The latter covers codex's
+        // message carries the `┌─ agent-` prefix (or the plain style's head line). The latter covers codex's
         // text-only stop (box in last_assistant_message, no transcript), which
         // the verdict now sees because agent-hook emits this turn.completed itself
         // (the previous path passed those via the no-history fail-open).
         status_box_present:
           scanStatusBoxPresent(p?.transcript_path) ||
-          lastAssistantMessage?.includes("┌─ agent-") === true,
+          lastAssistantMessage?.includes("┌─ agent-") === true ||
+          textHasPlainStatusHead(lastAssistantMessage ?? ""),
         // Assistant-text evidence for the rule-2/3 detector: the loose scan above
         // matches the box prefix ANYWHERE in the transcript tail, including
         // the tool_result row the status command itself writes, so it can

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { statusBoxRows } from "./agents.ts";
+import { plainStatusAttention, plainStatusOverlaps, statusBoxRows } from "./agents.ts";
 
 const base = {
   full: false,
@@ -71,5 +71,88 @@ describe("statusBoxRows", () => {
       "peers",
       "time",
     ]);
+  });
+});
+
+describe("plain style problem rows", () => {
+  const none = {
+    parentProblem: false,
+    parent: "",
+    contextPercent: null,
+    resources: null,
+    quality: null,
+    qa: null,
+    sync: null,
+    sessionEnd: null,
+  } as const;
+
+  test("nothing wrong means nothing to report", () => {
+    expect(plainStatusAttention(none)).toEqual([]);
+  });
+
+  test("every conditional box row has a plain sentence", () => {
+    const out = plainStatusAttention({
+      parentProblem: true,
+      parent: "conflict: two parents recorded",
+      contextPercent: 86.4,
+      resources: { assessment: { state: "critical", summary: "Memory is nearly full." } },
+      quality: { status: "attention", signal_ids: ["retry-loop"] },
+      qa: "pass 2m ago",
+      sync: {
+        command: "sync-all",
+        outcome: "succeeded",
+        exit_code: 0,
+        commits_pulled: 3,
+        submodules_updated: [],
+      } as never,
+      sessionEnd: "queued",
+    });
+    expect(out).toEqual([
+      "the record of which agent started this one conflicts (conflict: two parents recorded)",
+      "this conversation has used 86% of its memory, so it will need a fresh start soon",
+      "this computer is badly overloaded: Memory is nearly full.",
+      "the work quality check wants a look (retry-loop)",
+      "latest page check: pass 2m ago",
+      "brought in other people's latest changes before finishing (3 new changes)",
+      "this session will close after this turn",
+    ]);
+    expect(out.join(" ")).not.toContain("`");
+  });
+
+  test("a failed sync and a recorded session end read plainly", () => {
+    const out = plainStatusAttention({
+      ...none,
+      sync: {
+        command: "sync-all",
+        outcome: "failed",
+        exit_code: 1,
+        commits_pulled: null,
+        submodules_updated: [],
+      } as never,
+      sessionEnd: "recorded",
+    });
+    expect(out).toEqual([
+      "tried to bring in other people's latest changes before finishing, but it failed",
+      "this session is closed",
+    ]);
+  });
+
+  test("a healthy quality check is not a problem", () => {
+    expect(
+      plainStatusAttention({ ...none, quality: { status: "healthy", signal_ids: [] } }),
+    ).toEqual([]);
+  });
+
+  test("overlaps name only peers sharing a file this session touched", () => {
+    expect(
+      plainStatusOverlaps(
+        ["/r/src/a.ts", "/r/src/b.ts"],
+        [
+          { name: "Owen", files: ["/r/src/b.ts", "/r/src/z.ts"] },
+          { name: "Ines", files: ["/r/src/z.ts"] },
+        ],
+      ),
+    ).toEqual([{ name: "Owen", sharedFiles: ["b.ts"] }]);
+    expect(plainStatusOverlaps([], [{ name: "Owen", files: ["/r/a.ts"] }])).toEqual([]);
   });
 });

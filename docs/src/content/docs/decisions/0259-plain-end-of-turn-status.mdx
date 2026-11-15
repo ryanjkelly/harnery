@@ -1,0 +1,75 @@
+---
+title: "0259: Plain end-of-turn status"
+description: "ADR: agents.statusStyle chooses between the status box and a plain style of at most three everyday sentences; the setting can differ per machine, and the Stop hook accepts either paste with the same structural strictness."
+---
+
+**Status:** accepted (2026-11-14) · **Scope:** product tier (`commands/agents`, `core/agents/render`, `core/agents/rules/stop-hook`, `core/hooks/resolve/transcript`)
+
+## Context
+
+Every tool-using turn ends with `agents status --end-turn`, and the agent
+pastes its output into the reply. The person reading that reply sees it on
+every turn. The box was written for engineers: rows labelled `lifecycle`,
+`files 0 held`, platform codes such as `(CC)` beside peer names, and a count of
+`stale` sessions. A reader who does not work with the coordination layer
+cannot tell what those mean, and the box takes five or more lines of every
+reply.
+
+The facts themselves matter to that reader: what the agent is working on,
+whether it is finished or waiting, whether another agent is touching the same
+files, and whether something needs attention.
+
+## Alternatives considered
+
+- **Rewrite the box labels.** Plainer row names inside the same box keep the
+  box drawing and the line count, and the box's structure is what engineers
+  and existing Stop-hook evidence rely on.
+- **Let each agent paraphrase the box.** The Stop hook verifies a verbatim
+  paste. A paraphrase cannot be verified, so this would weaken the check.
+- **One global plain style.** Some readers of the same project read code and
+  want every row. The style is a reading preference of the person at one
+  computer, so it must be settable per machine.
+
+## Decision
+
+A new setting, `agents.statusStyle`, takes `"box"` (the default, unchanged
+output) or `"plain"`. It is read from the user file, the project file, and the
+machine-local `.harnery/config.local.jsonc` (ADR 0254), later layers winning,
+and `HARNERY_STATUS_STYLE` overrides it per process.
+
+The plain style prints the same facts in at most three lines with no box
+drawing:
+
+```text
+◇ Maya · working on: Fix the table · still in progress
+3 other agents are active; none is using the same files · 9:41 AM CDT
+Heads up: this conversation has used 86% of its memory, so it will need a fresh start soon
+```
+
+The state reads `still in progress`, `waiting on something` (with the reason
+when one was given), or `finished`. Other agents appear as a count, with a
+warning naming the agent and file only when a peer holds a file this session
+also touched. Stale sessions are left out. Every row the compact box shows
+only when something is wrong or worth noting (a conflicting parent record,
+context nearly full, a loaded computer, a run-quality warning, a page check,
+the end-of-turn sync, a queued or recorded session end) becomes a plain
+sentence on the third line, so nothing the box would show is dropped.
+`--full` prints one labelled line per fact, still without box drawing.
+
+The Stop hook accepts either paste. The plain detector matches structure the
+way the box detector does: inside a closed fence, a head line that starts
+with `◇ `, a name, and a ` · ` separator, followed by at least one contiguous
+content line, with the clock time every plain status prints. Text outside a
+fence, a head line alone, a block broken by a blank line, a block without the
+clock, and text that appears only in a tool result are all rejected. The rule
+2/3 remediation names the detection signal of the style this machine prints.
+
+## Consequences
+
+- People who do not read code get a short status they can act on; the box and
+  its tests are unchanged for everyone else.
+- The Stop hook's evidence stays a verbatim, structurally checked paste in
+  both styles.
+- A new problem row added to the box must also add a plain sentence, or the
+  plain style would silently drop it. The attention list is built in one
+  helper with a test covering every current row.

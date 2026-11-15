@@ -153,6 +153,25 @@ describe("current-turn status-box detection", () => {
     expect(scanAssistantStatusBoxPresent(undefined, BOX)).toBe(true);
   });
 
+  test("a pasted plain status is accepted with the same structural strictness", () => {
+    const plain =
+      "◇ Maya · working on: fixture · still in progress\nNo other agents are active · 9:41 AM CDT";
+    expect(scanAssistantStatusBoxPresent(undefined, `Done.\n\n\`\`\`\n${plain}\n\`\`\``)).toBe(
+      true,
+    );
+    expect(scanAssistantStatusBoxPresent(undefined, plain)).toBe(false);
+    const toolResultOnly = write([
+      prompt("Prompt"),
+      {
+        type: "user",
+        message: { role: "user", content: [{ type: "tool_result", content: plain }] },
+      },
+    ]);
+    expect(scanAssistantStatusBoxPresent(toolResultOnly, undefined)).toBe(false);
+    const pasted = write([prompt("Prompt"), assistant(`\`\`\`text\n${plain}\n\`\`\``)]);
+    expect(scanAssistantStatusBoxPresent(pasted, undefined)).toBe(true);
+  });
+
   test("a new string or text-block operator prompt discards the earlier box", () => {
     for (const content of ["Next prompt", [{ type: "text", text: "Next prompt" }]]) {
       const path = write([

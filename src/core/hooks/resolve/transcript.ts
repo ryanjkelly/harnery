@@ -1,6 +1,10 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 
+import {
+  containsFencedPlainStatus,
+  textHasPlainStatusHead,
+} from "../../agents/render/status-plain.ts";
 import { toolResponseMintedSessionName } from "../../agents/session-name-display.ts";
 
 export const ASSISTANT_STATUS_BOX_PREFIX = "┌─ agent-";
@@ -22,8 +26,9 @@ export function scanStatusBoxPresent(transcriptPath: string | undefined): boolea
   const text = tailText(readablePath);
   if (text === undefined) return false;
   // The box is rendered as a text content block by the assistant; we look
-  // for the prefix on any line of the trailing window.
-  return text.includes("┌─ agent-");
+  // for the prefix on any line of the trailing window. The plain style's
+  // first line is the equivalent loose signal (ADR 0259).
+  return text.includes("┌─ agent-") || textHasPlainStatusHead(text);
 }
 
 /**
@@ -119,8 +124,16 @@ export function scanAssistantStatusBoxPresent(
   return containsFencedStatusBox(reply);
 }
 
-/** Match line structure, not copied padding or terminal-specific display widths. */
+/**
+ * Match line structure, not copied padding or terminal-specific display widths.
+ * Either end-of-turn style counts: the box, or the plain style (ADR 0259),
+ * each with its own structural check.
+ */
 function containsFencedStatusBox(text: string): boolean {
+  return containsFencedBox(text) || containsFencedPlainStatus(text);
+}
+
+function containsFencedBox(text: string): boolean {
   let fence: { marker: string; length: number } | undefined;
   let box: "none" | "header" | "content" | "complete" = "none";
   for (const line of text.split(/\r?\n/)) {
