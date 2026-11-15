@@ -1,0 +1,137 @@
+---
+title: "0266: The Stop hook heals what it can do itself"
+description: "ADR: when a tool turn ends without the closing status, without the pasted status, or without a repeated task, the Stop hook runs the check, shows the status, or carries the task forward instead of refusing. Unfinished Git work and a never-declared task still refuse."
+---
+
+**Status:** accepted (2026-11-15) · **Scope:** product tier (`core/agents/rules/stop-hook`, `core/hooks/stop-heal`, `core/hooks/cli`, `core/hooks/adapter/output`, `core/hooks/remediation-cap`, `core/agents/render/prompt-context`, `core/agents/end-turn-sync`)
+
+## Context
+
+On a turn that used a tool, the Stop hook refused to end the turn until the
+agent had declared its task, run `agents status --end-turn` as its last tool
+call, and pasted the status in its reply. Each refusal costs the person a
+retry.
+
+Two weeks of recorded Claude Code turns in one busy project, after the fix in
+[ADR 0265](/decisions/0265-stop-checks-tool-turns-only/), left these causes:
+
+| Cause | Refused turns |
+|---|---|
+| Closing status never ran | 91 |
+| Status ran, reply did not paste it | 16 |
+| No task declared this turn | 17 |
+| Git work not committed and pushed | 34 |
+
+Only the last is a control in its own right. The ritual exists to protect two
+things: unfinished Git work is caught before a turn ends, and the person can
+see the session's status. Neither needs the agent to remember a command. The
+hook can run the closing check itself, show the status itself, and record a
+task the session already has.
+
+## Decision
+
+The Stop hook heals instead of refusing when the missing step is one it can do:
+
+1. **No valid closing status.** The status never ran, or a tool was requested
+   after it. The hook runs the same `agents status --end-turn` command for the
+   session. When it passes, the stop is allowed and the rendered status, in the
+   configured `agents.statusStyle`, is shown to the person. When it refuses for
+   Git work, the stop is refused with that command's own message.
+2. **Status ran but was not pasted.** The stop is allowed and the hook shows
+   the status.
+3. **No `set-task` this turn, but the session has a task.** The hook records
+   the same task again, through the same authority path as `agents set-task`,
+   and allows the stop.
+
+Still refused:
+
+- Unfinished Git work, from the hook's own observation or from the closing
+  check.
+- A session that has never declared a task. Session naming depends on the
+  first declaration, so this stays a refusal, but only within one stop cycle
+  per session; the remediation cap still bounds that cycle. Later turns of
+  such a session are allowed and recorded as `stop-hook.no_task_already_refused`.
+- The session-name display.
+
+Healed outcomes carry their own rule names so the rate stays measurable:
+`stop-hook.healed_status_run`, `stop-hook.healed_status_display`, and
+`stop-hook.healed_task_carried`. The hook's debug row records every heal it
+applied. Codex stays observe-only, and OpenCode is unchanged.
+
+**Display channel.** Claude Code's common hook output has a `systemMessage`
+field, documented as a warning shown to the user, which the hook already uses
+for the remediation-cap notice. A healed stop writes the status there with an
+exit code of 0. Cursor's only Stop output is `followup_message`, which would
+start a new agent turn, so on Cursor the stop is simply allowed. The prompt
+guidance still asks agents to run the status last and paste it, because a
+status in the reply is the only display every surface shows.
+
+**How the check runs.** The hook starts the package's own CLI as a child
+process with `agents status --end-turn --session-id <id>`. That is the exact
+code path agents run: finalization, released-claim push obligations, the
+configured end-turn sync, the status event, and the rendering. The command
+writes its status to stdout, which is the hook's own protocol channel, and
+exits the process on failure, so running it inside the hook process would
+corrupt the hook's output. A child process also gives the deadline a hard
+edge.
+
+**Deadline.** Claude Code's default timeout for a command hook is 600
+seconds, and Cursor documents a platform default without a number. The hook
+does not rely on either. The closing check gets 20 seconds in total and is
+killed at that point. Its automatic sync gets 12 seconds through
+`HARNERY_END_TURN_SYNC_TIMEOUT_MS`, which can only lower the sync's normal
+two-minute bound, so a sync that waits behind another session's Git lock
+gives up inside the deadline.
+
+**Which way it fails.** On a deadline or an internal error the stop is
+allowed under the existing `stop-hook.v3_evidence_unavailable` rule, with the
+reason recorded. This is the policy the Stop code already applies when its
+evidence is unavailable: a hook fault must never turn into a refusal loop
+that the agent cannot repair. The Git control is not lost on that path. The
+hook's own observation of owned paths runs before the heal and refuses on
+its own when it sees dirty or unpushed owned work; only the slower upstream
+freshness check is skipped.
+
+## Expected effect
+
+Replaying the same recorded turns against the new rules, counting only the
+Stop demands that were actually recorded: 37 of 2,880 tool and prose turns
+would still be refused (1.3%, down from 7.6%). Of those, 34 are Git work and
+3 are sessions that never declared a task. The Git refusals break down as 11
+committed but unpushed, 7 dirty owned files, 6 both, and 10 where the
+refusal came from the status command's output, which the scan did not keep.
+
+A small number of healed turns could still refuse when the hook's closing
+check finds only upstream freshness and the sync cannot clear it. The replay
+cannot see that, because the Git state at each stop is not recorded.
+
+## Alternatives considered
+
+- **Keep refusing.** The refusal teaches nothing new after the first time;
+  agents that forgot the status once forget it again, and each refusal costs
+  the person a retry while protecting nothing the hook could not check itself.
+- **Drop the paste entirely.** The hook can show the status on Claude Code,
+  but not on Cursor, Codex or OpenCode. A status in the reply is the only
+  display that works everywhere, so agents are still asked for it; a missing
+  paste is just no longer a refusal.
+- **Run the check inside the hook process.** Rejected for the stdout and
+  process-exit reasons above.
+- **Push unpushed commits automatically.** Pushing is an outward-facing
+  action with its own failure modes (rejected pushes, rebases, peers' work).
+  This decision only reports the breakdown; any automatic push needs its own
+  decision.
+- **Refuse a never-declared task on every turn.** The refusal exists to get
+  the session named. One refused cycle makes the request; repeating it on
+  every later turn costs retries without adding information.
+
+## Gotchas
+
+- A healed status run records `coord.status_observed` with
+  `end_turn_checked` from the child process, so ledger readers see the same
+  evidence as when the agent runs the command.
+- A tool requested after the turn's last closing status now makes the hook
+  rerun the check, even though the old verdict passed that turn. This tightens
+  the Git control without refusing anyone.
+- The healer never throws: any failure inside it returns the original verdict
+  and records the error.
+- The remediation cap still applies to the refusals that remain.

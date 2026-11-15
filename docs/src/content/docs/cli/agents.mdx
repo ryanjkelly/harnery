@@ -666,7 +666,8 @@ unfinished. A project can let the guarded status catch up by itself:
 When `gitSyncOnEndTurn` is `true` and the only findings are freshness (behind
 upstream, or a submodule checkout behind its gitlink), the guarded status runs
 `gitSyncCommand` once from the coordination root, with a two-minute limit, and
-then repeats the whole check. The box gains a `sync` row that says which
+then repeats the whole check. When the Stop hook runs the check itself, the
+sync limit is 12 seconds. The box gains a `sync` row that says which
 command ran and what it brought in, for example
 `ran \`sync-all\` to catch up; brought in 3 upstream commits`.
 
@@ -691,12 +692,38 @@ without a status check, a task declaration, or a pasted status. Pasting a
 fresh status needs a tool call, so a demand on such a turn could only be met
 by adding one.
 
-A turn that used a tool must still declare its task, run the end-of-turn
-status, and paste that status in the reply. When a block makes the agent
-continue, the continuation belongs to the same turn: a task or status from
-earlier in that turn still counts, even when the adapter starts the original
-turn again after the continuation. See
+Agents are still asked, on every turn that used a tool, to declare their task,
+run the end-of-turn status last, and paste that status in the reply. When a
+block makes the agent continue, the continuation belongs to the same turn: a
+task or status from earlier in that turn still counts, even when the adapter
+starts the original turn again after the continuation. See
 [ADR 0265](/decisions/0265-stop-checks-tool-turns-only/).
+
+### What the Stop hook does itself
+
+A missing step that the hook can do itself no longer refuses the turn:
+
+- **No closing status, or a tool ran after it.** The hook runs
+  `agents status --end-turn` for the session. When it passes, the turn ends
+  and Claude Code shows the status to the person. When owned work is not
+  committed and pushed, the turn is refused with that command's message.
+- **Status ran but was not pasted.** The turn ends and Claude Code shows the
+  status to the person.
+- **No task declared this turn.** When the session already has a task, the
+  hook records it again and the turn ends.
+
+Two things still refuse: owned Git work that is not committed and pushed, and
+a session that has never declared a task. The second is refused in one stop
+cycle per session, since its purpose is to get the session named.
+
+The hook-side check has a 20-second deadline, and its automatic sync gets 12
+seconds. On a deadline or an internal error the turn ends and the verdict
+records `stop-hook.v3_evidence_unavailable`; the hook's own check of owned
+paths still runs first and refuses on its own. Cursor's only Stop output
+starts a new agent turn, so on Cursor a healed turn simply ends. Healed turns
+record `stop-hook.healed_status_run`, `stop-hook.healed_status_display` or
+`stop-hook.healed_task_carried`. See
+[ADR 0266](/decisions/0266-stop-heals-instead-of-refusing/).
 
 A block names each missing step in one plain sentence with the exact command
 to run. The rule id appears only on the last line
