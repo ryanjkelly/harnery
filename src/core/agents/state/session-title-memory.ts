@@ -75,8 +75,10 @@ function sameFields(a: SessionTitleFields, b: SessionTitleFields): boolean {
 }
 
 /**
- * Mirror `next`'s title fields when they differ from `prior`'s. Best effort:
- * a failure here never blocks the cache write it accompanies.
+ * Mirror `next`'s title fields when they differ from `prior`'s, or when no
+ * memory exists yet (a session titled before this memory existed, or one
+ * whose memory was pruned). Best effort: a failure here never blocks the
+ * cache write it accompanies.
  */
 export function rememberSessionTitle(
   coordRoot: string,
@@ -89,11 +91,16 @@ export function rememberSessionTitle(
     if (!instanceId || !sessionId) return;
     const fields = sessionTitleFields(next);
     if (Object.keys(fields).length === 0) return;
-    if (prior && prior.session_id === sessionId && sameFields(sessionTitleFields(prior), fields)) {
-      return;
-    }
     const path = memoryPath(coordRoot, instanceId);
     if (!path) return;
+    if (
+      prior &&
+      prior.session_id === sessionId &&
+      sameFields(sessionTitleFields(prior), fields) &&
+      existsSync(path)
+    ) {
+      return;
+    }
     const memory: SessionTitleMemory = {
       instance_id: instanceId,
       session_id: sessionId,

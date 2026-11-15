@@ -661,6 +661,25 @@ describe("live V3 coordination", () => {
     });
   });
 
+  test("backfills title memory for a session titled before the memory existed", () => {
+    const root = startedRoot();
+    const title = "Agent unknown - First focus";
+    expect(recordLiveTaskChangeV3(liveInput(root, { task: "First focus" })).state).toBe("recorded");
+    const memory = join(root, ".harnery/session-titles/operator.json");
+    rmSync(memory);
+
+    // Any later cache write restores the memory even though no title field
+    // changed, so a sweep after it still keeps the title.
+    expect(recordLiveTaskChangeV3(liveInput(root, { task: "Second focus" })).state).toBe(
+      "recorded",
+    );
+    expect(existsSync(memory)).toBe(true);
+    rmSync(join(root, ".harnery/active/operator.json"));
+    expect(
+      ensureLiveCoordinationHeartbeat(root, "operator", "native-session", "claude-code"),
+    ).toMatchObject({ suggested_session_name: title });
+  });
+
   test("names a V3 session once while later task changes and clears remain disposable", () => {
     const root = startedRoot();
 
