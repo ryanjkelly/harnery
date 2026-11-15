@@ -2107,8 +2107,10 @@ describe("agent-hook V3 hard cut", () => {
     expect(events.filter((event) => event.event_type === "coord.task_changed")).toHaveLength(1);
     const statuses = events.filter((event) => event.event_type === "coord.status_observed");
     expect(statuses).toHaveLength(1);
+    // This fixture does not require Git finalization, so the repair runs the
+    // ordinary status and never imposes the commit-and-push check.
     expect(statuses[0]?.event_type === "coord.status_observed" && statuses[0].payload.status).toBe(
-      "end_turn_checked",
+      "box_checked",
     );
   });
 

@@ -277,14 +277,17 @@ export function evaluateStopHookV3Events(
       )
     : pending;
   const blocked = mergeStopBlocks(enforced);
-  if (blocked) return { ...withCycleAnchor(blocked, cycleAnchor), pending_blocks: enforced };
+  const staleStatus = statusAfterTools(inTurn, owner) ? { status_after_tools: true } : {};
+  if (blocked) {
+    return { ...withCycleAnchor(blocked, cycleAnchor), pending_blocks: enforced, ...staleStatus };
+  }
   if (enforced.length < pending.length) return backgroundHandoffDeferred();
 
   return {
     allow: true,
     exit_code: 0,
     rule: "stop-hook.pass",
-    ...(statusAfterTools(inTurn, owner) ? { status_after_tools: true } : {}),
+    ...staleStatus,
   };
 }
 

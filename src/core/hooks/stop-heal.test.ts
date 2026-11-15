@@ -47,9 +47,64 @@ function deps(over: Partial<StopHealDependencies> & { runs?: ChildRun[] } = {}) 
   return { d, calls, marks, carried };
 }
 
-const ctx = { adapter: "claude-code" as const, sessionId: "sess-1" };
+const ctx = {
+  adapter: "claude-code" as const,
+  sessionId: "sess-1",
+  requireGitFinalization: true,
+  gitObserved: true,
+};
 
 describe("healStopVerdict", () => {
+  test("timeout with no earlier Git observation keeps the original refusal", () => {
+    const { d } = deps({ runs: [{ status: null, timedOut: true, stdout: "", stderr: "" }] });
+    const out = healStopVerdict(blocked("stop-hook.rule_1_3"), { ...ctx, gitObserved: false }, d);
+    expect(out.verdict.allow).toBe(false);
+    expect(out.verdict.rule).toBe("stop-hook.rule_1_3");
+    expect(out.verdict.remediation_cycle_anchor).toBe("turn-1");
+    expect(out.debug.git_observed).toBe(false);
+  });
+
+  test("internal failure with no earlier Git observation keeps the original refusal", () => {
+    const { d } = deps({ runs: [{ status: 1, timedOut: false, stdout: "", stderr: "boom" }] });
+    const out = healStopVerdict(
+      blocked("stop-hook.rule_1_3", "stop-hook.rule_2_3"),
+      { ...ctx, gitObserved: false },
+      d,
+    );
+    expect(out.verdict.allow).toBe(false);
+    expect(out.verdict.rule).toBe("stop-hook.rule_1_3");
+  });
+
+  test("timeout after a successful Git observation still allows the stop", () => {
+    const { d } = deps({ runs: [{ status: null, timedOut: true, stdout: "", stderr: "" }] });
+    const out = healStopVerdict(blocked("stop-hook.rule_1_3"), ctx, d);
+    expect(out.verdict.allow).toBe(true);
+    expect(out.verdict.rule).toBe("stop-hook.v3_evidence_unavailable");
+  });
+
+  test("a project without Git finalization gets the ordinary status, never the Git check", () => {
+    const { d, calls } = deps();
+    const out = healStopVerdict(
+      blocked("stop-hook.rule_1_3"),
+      { ...ctx, requireGitFinalization: false, gitObserved: false },
+      d,
+    );
+    expect(out.verdict.allow).toBe(true);
+    expect(out.verdict.rule).toBe("stop-hook.healed_status_run");
+    expect(calls[0]!.args).toEqual(["agents", "status", "--session-id", "sess-1"]);
+  });
+
+  test("a stale status on a blocked verdict reruns the check instead of only displaying", () => {
+    const { d, calls } = deps();
+    const out = healStopVerdict(
+      { ...blocked("stop-hook.rule_2_3"), status_after_tools: true },
+      ctx,
+      d,
+    );
+    expect(out.verdict.rule).toBe("stop-hook.healed_status_run");
+    expect(calls[0]!.args).toContain("--end-turn");
+  });
+
   test("missing status: runs the closing check and shows its box", () => {
     const { d, calls } = deps();
     const out = healStopVerdict(blocked("stop-hook.rule_1_3"), ctx, d);
@@ -57,7 +112,9 @@ describe("healStopVerdict", () => {
     expect(out.verdict.rule).toBe("stop-hook.healed_status_run");
     expect(out.userMessage).toContain(BOX);
     expect(calls[0]!.args).toEqual(["agents", "status", "--end-turn", "--session-id", "sess-1"]);
-    expect(Number(calls[0]!.env.HARNERY_END_TURN_SYNC_TIMEOUT_MS)).toBeLessThan(calls[0]!.timeoutMs);
+    expect(Number(calls[0]!.env.HARNERY_END_TURN_SYNC_TIMEOUT_MS)).toBeLessThan(
+      calls[0]!.timeoutMs,
+    );
   });
 
   test("status before a later tool call: reruns the check on a passing verdict", () => {

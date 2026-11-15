@@ -1637,10 +1637,16 @@ async function handleStop(run: HookRun): Promise<number | undefined> {
     owner.instance_id,
     sessionId,
     rawVerdict,
+    finalGitState?.state === "observed",
   );
   const verdict = heal.verdict;
   if (Object.keys(heal.debug).length > 0) {
-    appendDebug(coordRoot, { ...debugBase, effect: "stop-heal", rule: verdict.rule, ...heal.debug });
+    appendDebug(coordRoot, {
+      ...debugBase,
+      effect: "stop-heal",
+      rule: verdict.rule,
+      ...heal.debug,
+    });
   }
   if (verdict.rule === "stop-hook.background_handoff_deferred") {
     appendDebug(coordRoot, {

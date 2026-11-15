@@ -27,7 +27,11 @@
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { Adapter } from "../adapter.ts";
-import { HEALABLE_STOP_RULES, mergeStopBlocks, type StopVerdict } from "../agents/rules/stop-hook.ts";
+import {
+  HEALABLE_STOP_RULES,
+  mergeStopBlocks,
+  type StopVerdict,
+} from "../agents/rules/stop-hook.ts";
 import type { VerdictResult } from "../agents/rules/verdict.ts";
 
 /** Whole budget for one hook-side status run. */
@@ -64,6 +68,18 @@ export interface StopHealDependencies {
 export interface StopHealContext {
   adapter: Adapter;
   sessionId: string;
+  /**
+   * Whether this project requires Git finalization at the end of a turn. When
+   * it does not, the hook runs the ordinary status and never imposes the
+   * commit-and-push check the project opted out of.
+   */
+  requireGitFinalization: boolean;
+  /**
+   * Whether the hook's own owned-work observation succeeded before healing.
+   * When it did not, a hook-side check that fails or times out has nothing to
+   * fall back on, so the original refusal stands.
+   */
+  gitObserved: boolean;
   deadlineMs?: number;
   syncTimeoutMs?: number;
 }
@@ -139,7 +155,9 @@ export function healStopVerdict(
 
   if (needsRun) {
     const run = runCli(
-      ["agents", "status", "--end-turn", "--session-id", ctx.sessionId],
+      ctx.requireGitFinalization
+        ? ["agents", "status", "--end-turn", "--session-id", ctx.sessionId]
+        : ["agents", "status", "--session-id", ctx.sessionId],
       deadline,
       { HARNERY_END_TURN_SYNC_TIMEOUT_MS: String(ctx.syncTimeoutMs ?? STOP_HEAL_SYNC_TIMEOUT_MS) },
     );
@@ -149,7 +167,7 @@ export function healStopVerdict(
       return allowHealed(healed, debug, box);
     }
     const error = parseCliError(run.stderr);
-    if (!run.timedOut && error?.code === "git_not_finalized") {
+    if (!run.timedOut && ctx.requireGitFinalization && error?.code === "git_not_finalized") {
       return {
         verdict: {
           allow: false,
@@ -163,9 +181,30 @@ export function healStopVerdict(
         debug: { ...debug, healed, heal_check: "git_not_finalized" },
       };
     }
-    // Deadline or internal failure: the existing unavailable-evidence policy
-    // allows the stop. The hook's own Git observation already ran before this
-    // and refuses on its own when it saw unfinished owned work.
+    // Deadline or internal failure. When the hook's own Git observation ran
+    // before this, it already refused any unfinished owned work, so the
+    // existing unavailable-evidence policy allows the stop. When that
+    // observation was itself unavailable, nothing has established that owned
+    // work is finished: keep the original refusal, which the remediation cap
+    // still bounds.
+    const unverified = pending.find((b) => b.rule === "stop-hook.rule_1_3");
+    if (ctx.requireGitFinalization && !ctx.gitObserved && unverified) {
+      return {
+        verdict: {
+          ...unverified,
+          ...(verdict.remediation_cycle_anchor
+            ? { remediation_cycle_anchor: verdict.remediation_cycle_anchor }
+            : {}),
+        },
+        debug: {
+          ...debug,
+          healed,
+          heal_check: run.timedOut ? "timeout" : "unavailable",
+          refused_rules: [unverified.rule],
+          git_observed: false,
+        },
+      };
+    }
     const detail = run.timedOut
       ? `the hook-side closing check passed its ${Math.round(deadline / 1000)}s deadline`
       : `the hook-side closing check could not run (${error?.code ?? run.error ?? `exit ${run.status}`})`;
@@ -307,15 +346,22 @@ export async function healStopForSession(
   instanceId: string,
   sessionId: string,
   verdict: StopVerdict,
+  gitObserved: boolean,
 ): Promise<StopHealOutcome> {
   try {
+    const { agentsRequireGitFinalization } = await import("../config.ts");
     const { readLiveCoordinationRow } = await import("../agents/state/live-coordination-view.ts");
     const { noTaskRefusedEarlier, markNoTaskRefusal } = await import("./remediation-cap.ts");
     const { recordLiveTaskChangeV3 } = await import("../agents/live-authority-v3.ts");
     const row = () => readLiveCoordinationRow(coordRoot, instanceId);
     return healStopVerdict(
       verdict,
-      { adapter, sessionId },
+      {
+        adapter,
+        sessionId,
+        requireGitFinalization: agentsRequireGitFinalization(coordRoot),
+        gitObserved,
+      },
       {
         runCli: makeCliRunner(coordRoot),
         readTask: () => row()?.task,
