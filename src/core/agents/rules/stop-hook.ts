@@ -29,6 +29,24 @@ export type { VerdictResult } from "./verdict.ts";
 
 import type { VerdictResult } from "./verdict.ts";
 
+/**
+ * A Stop verdict plus the structure the Stop handler needs to heal it
+ * (ADR 0266). `pending_blocks` lists every enforced missing step behind a
+ * blocked verdict; `status_after_tools` marks a passing verdict whose closing
+ * status ran before a later tool call, so the check no longer covers the end
+ * of the turn.
+ */
+export type StopVerdict = VerdictResult & {
+  pending_blocks?: VerdictResult[];
+  status_after_tools?: boolean;
+};
+
+export const HEALABLE_STOP_RULES: ReadonlySet<string> = new Set([
+  "stop-hook.rule_1_3",
+  "stop-hook.rule_2_3",
+  "stop-hook.rule_3_3",
+]);
+
 export interface StopHookRequest {
   rule: "stop-hook";
   instance_id: string;
@@ -54,7 +72,7 @@ export interface StopHookRequest {
 
 export const STOP_REMEDIATION_MARKER = "[harnery:stop-remediation";
 
-export function evaluateStopHook(coordRoot: string, req: StopHookRequest): VerdictResult {
+export function evaluateStopHook(coordRoot: string, req: StopHookRequest): StopVerdict {
   const unconditional = unconditionalVerdict(req);
   if (unconditional) return unconditional;
 
@@ -90,7 +108,7 @@ export function evaluateStopHookV3Events(
   coordRoot: string,
   req: StopHookRequest,
   events: readonly EventV3[],
-): VerdictResult {
+): StopVerdict {
   const unconditional = unconditionalVerdict(req);
   if (unconditional) return unconditional;
 
@@ -259,10 +277,38 @@ export function evaluateStopHookV3Events(
       )
     : pending;
   const blocked = mergeStopBlocks(enforced);
-  if (blocked) return withCycleAnchor(blocked, cycleAnchor);
+  if (blocked) return { ...withCycleAnchor(blocked, cycleAnchor), pending_blocks: enforced };
   if (enforced.length < pending.length) return backgroundHandoffDeferred();
 
-  return { allow: true, exit_code: 0, rule: "stop-hook.pass" };
+  return {
+    allow: true,
+    exit_code: 0,
+    rule: "stop-hook.pass",
+    ...(statusAfterTools(inTurn, owner) ? { status_after_tools: true } : {}),
+  };
+}
+
+/**
+ * True when a tool was requested after the turn's last closing status check.
+ * The check's own tool request precedes its status event, so only a later
+ * request counts.
+ */
+function statusAfterTools(inTurn: readonly EventV3[], owner: string): boolean {
+  let lastStatusMs = Number.NEGATIVE_INFINITY;
+  let lastToolMs = Number.NEGATIVE_INFINITY;
+  for (const event of inTurn) {
+    const time = eventTimeMs(event);
+    if (
+      event.event_type === "coord.status_observed" &&
+      event.payload.subject_instance_id === owner &&
+      event.payload.status === "end_turn_checked"
+    ) {
+      lastStatusMs = Math.max(lastStatusMs, time);
+    } else if (event.event_type === "tool.requested") {
+      lastToolMs = Math.max(lastToolMs, time);
+    }
+  }
+  return Number.isFinite(lastStatusMs) && lastToolMs > lastStatusMs;
 }
 
 function backgroundHandoffDeferred(): VerdictResult {
@@ -448,7 +494,7 @@ function sessionIdSuffix(sessionId?: string): string {
  * reason enumerates the rest so a single continuation can repair all of them.
  * Duplicate rules are folded so one continuation repairs every missing signal.
  */
-function mergeStopBlocks(blocks: VerdictResult[]): VerdictResult | undefined {
+export function mergeStopBlocks(blocks: VerdictResult[]): VerdictResult | undefined {
   let primary: VerdictResult | undefined;
   const seen = new Set<string>();
   const reasons: string[] = [];

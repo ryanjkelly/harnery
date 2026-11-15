@@ -3,6 +3,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import { join } from "node:path";
 import {
+  END_TURN_SYNC_TIMEOUT_MS,
+  endTurnSyncTimeoutMs,
   agentsGitSyncOnEndTurn,
   attemptEndTurnSync,
   formatEndTurnSyncRefusal,
@@ -161,6 +163,7 @@ describe("attemptEndTurnSync", () => {
       exit_code: 0,
       commits_pulled: 3,
       submodules_updated: ["lib", "vendor"],
+      timeout_ms: 5_000,
     });
     expect(formatEndTurnSyncSummary(out!.sync)).toBe(
       "ran `sync-all` to catch up; brought in 3 upstream commits and updated submodules lib, vendor",
@@ -234,5 +237,24 @@ describe("attemptEndTurnSync with a real command", () => {
     );
     expect(out?.sync.outcome).toBe("succeeded");
     expect(Bun.file(join(root, "marker.txt")).size).toBeGreaterThan(0);
+  });
+});
+
+describe("endTurnSyncTimeoutMs", () => {
+  const key = "HARNERY_END_TURN_SYNC_TIMEOUT_MS";
+  afterEach(() => {
+    delete process.env[key];
+  });
+  test("defaults to the full bound", () => {
+    delete process.env[key];
+    expect(endTurnSyncTimeoutMs()).toBe(END_TURN_SYNC_TIMEOUT_MS);
+  });
+  test("an override can only lower the bound", () => {
+    process.env[key] = "9000";
+    expect(endTurnSyncTimeoutMs()).toBe(9_000);
+    process.env[key] = String(END_TURN_SYNC_TIMEOUT_MS * 10);
+    expect(endTurnSyncTimeoutMs()).toBe(END_TURN_SYNC_TIMEOUT_MS);
+    process.env[key] = "junk";
+    expect(endTurnSyncTimeoutMs()).toBe(END_TURN_SYNC_TIMEOUT_MS);
   });
 });

@@ -154,3 +154,22 @@ describe("Stop supplemental owned Git observation", () => {
     });
   });
 });
+
+describe("Stop heal signals (ADR 0266)", () => {
+  test("a pass whose status preceded a later tool call is marked for a fresh check", () => {
+    expect(verdict({ state: "observed", result: clean })).toMatchObject({
+      allow: true,
+      rule: "stop-hook.pass",
+      status_after_tools: true,
+    });
+  });
+
+  test("a blocked verdict lists every enforced missing step", () => {
+    const result = verdict(undefined, { status: false, box: false, task: false });
+    expect(result.pending_blocks?.map((b) => b.rule)).toEqual([
+      "stop-hook.rule_1_3",
+      "stop-hook.rule_2_3",
+      "stop-hook.rule_3_3",
+    ]);
+  });
+});

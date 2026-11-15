@@ -18,11 +18,23 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { coordEnv } from "../../lib/env.ts";
 import { agentsGitSyncCommand, agentsGitSyncOnEndTurn } from "../config.ts";
 import type { GitFinalizationResult } from "./finalization.ts";
 
 /** Upper bound on one automatic sync run. */
 export const END_TURN_SYNC_TIMEOUT_MS = 120_000;
+
+/**
+ * Effective bound for one automatic sync. The Stop hook runs the closing check
+ * under its own deadline (ADR 0266) and passes a shorter bound through
+ * `HARNERY_END_TURN_SYNC_TIMEOUT_MS`, so a sync waiting behind a peer's Git
+ * lock cannot outlive the hook. The value can only lower the default.
+ */
+export function endTurnSyncTimeoutMs(): number {
+  const raw = Number.parseInt(coordEnv("END_TURN_SYNC_TIMEOUT_MS") ?? "", 10);
+  return Number.isFinite(raw) && raw > 0 ? Math.min(raw, END_TURN_SYNC_TIMEOUT_MS) : END_TURN_SYNC_TIMEOUT_MS;
+}
 
 export { agentsGitSyncOnEndTurn } from "../config.ts";
 
@@ -53,6 +65,8 @@ export interface EndTurnSyncRun {
   commits_pulled: number | null;
   /** Submodule checkouts that were stale before the sync and are current after it. */
   submodules_updated: string[];
+  /** Bound the sync ran under. */
+  timeout_ms?: number;
   /** Last lines of the command's combined output when it did not succeed. */
   output_tail?: string;
 }
@@ -126,7 +140,7 @@ export function attemptEndTurnSync(
   initial: GitFinalizationResult,
   recheck: () => GitFinalizationResult,
   dependencies: EndTurnSyncDependencies = {},
-  timeoutMs = END_TURN_SYNC_TIMEOUT_MS,
+  timeoutMs = endTurnSyncTimeoutMs(),
 ): { sync: EndTurnSyncRun; result: GitFinalizationResult } | null {
   if (!isFreshnessOnlyFailure(initial)) return null;
   if (!agentsGitSyncOnEndTurn(coordRoot)) return null;
@@ -157,6 +171,7 @@ export function attemptEndTurnSync(
     commits_pulled:
       before && after ? (before === after ? 0 : countCommits(coordRoot, before, after)) : null,
     submodules_updated: initial.stale_submodules.filter((path) => !stillStale.has(path)),
+    timeout_ms: timeoutMs,
     ...(outcome === "succeeded" ? {} : { output_tail: tail(ran.output) }),
   };
   // A failed or timed-out command never counts as a pass, even when the
@@ -170,7 +185,7 @@ export function attemptEndTurnSync(
 /** One plain line describing what the sync did, for the status box. */
 export function formatEndTurnSyncSummary(sync: EndTurnSyncRun): string {
   if (sync.outcome === "timed_out") {
-    return `ran \`${sync.command}\`; it timed out after ${Math.round(END_TURN_SYNC_TIMEOUT_MS / 1000)}s`;
+    return `ran \`${sync.command}\`; it timed out after ${Math.round((sync.timeout_ms ?? END_TURN_SYNC_TIMEOUT_MS) / 1000)}s`;
   }
   if (sync.outcome === "failed") {
     return `ran \`${sync.command}\`; it failed (exit ${sync.exit_code ?? "unknown"})`;

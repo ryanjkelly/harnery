@@ -231,3 +231,52 @@ export function formatStopCapCue(exhaustion: StopCapExhaustion, statusCommand: s
     `Fix that first in this turn, finish with \`${statusCommand}\`, and tell the operator in one plain sentence what was left unfinished and whether it is now fixed.`,
   ].join("\n");
 }
+
+/**
+ * A session that has never declared a task is refused once (ADR 0266): the
+ * refusal exists so the session gets a name, and repeating it every turn only
+ * costs retries. The marker lives beside the cap cues, keyed by a hash of the
+ * session id.
+ */
+function noTaskRefusalPath(coordRoot: string, sessionId: string): string {
+  const key = createHash("sha256").update(sessionId).digest("hex").slice(0, 24);
+  return join(coordRoot, ".harnery", "active", "stop-no-task-refused", key);
+}
+
+/** True when this session already received its one no-task refusal. */
+export function hasNoTaskRefusal(coordRoot: string, sessionId: string): boolean {
+  try {
+    readFileSync(noTaskRefusalPath(coordRoot, sessionId), "utf8");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Remember that this session received its no-task refusal. Best-effort. */
+export function markNoTaskRefusal(coordRoot: string, sessionId: string, nowMs = Date.now()): void {
+  try {
+    const path = noTaskRefusalPath(coordRoot, sessionId);
+    mkdirSync(dirname(path), { recursive: true });
+    pruneNoTaskRefusals(dirname(path), nowMs);
+    writeFileSync(path, new Date(nowMs).toISOString(), "utf8");
+  } catch {
+    // A missing marker only means one more refusal later; never a crash.
+  }
+}
+
+function pruneNoTaskRefusals(dir: string, nowMs: number): void {
+  try {
+    for (const name of readdirSync(dir)) {
+      const path = join(dir, name);
+      try {
+        const at = Date.parse(readFileSync(path, "utf8"));
+        if (!Number.isFinite(at) || nowMs - at > STOP_CAP_CUE_RETENTION_MS) unlinkSync(path);
+      } catch {
+        // skip unreadable entries
+      }
+    }
+  } catch {
+    // best-effort
+  }
+}
