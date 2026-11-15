@@ -1,0 +1,78 @@
+---
+title: "0264: Keep released claims in the push check"
+description: "ADR: the V3 projection keeps a record of each session's released write claims, and the end-turn check treats released and handed-off paths as repository obligations: no commit touching them may be missing from every remote, and submodule commits touching them must be recorded in the parent gitlink."
+---
+
+**Status:** accepted (2026-11-14) · **Scope:** product tier (`core/agents/finalization`, `core/events/v3` projection and coordination view, `commands/agents` release-claim help)
+
+## Context
+
+The end-turn check reads the session's write claims from the V3 coordination
+view. Releasing a claim deleted it from the projection, so the released path
+left the check entirely. Claims are released routinely: the post-commit hook
+releases clean paths, `agents lifecycle done` releases clean paths, and
+`agents release-claim` releases on request. A session could commit a file,
+have its claim released, never push, and pass its closing check. The
+repository-wide push check ran only for repositories that still held a claimed
+path, so nothing else caught it. Comments and help text said the opposite.
+
+Tests reproduced the gap for a path in the coordination repository and for a
+path in a submodule. They also showed a separate gap: a claim outside the
+coordination repository is an `external_path` target, which the contract
+records without a path, so a path in an extra finalization root never reaches
+the check, held or released.
+
+## Alternatives considered
+
+- **Keep released paths as full held paths.** A released path would stay in
+  the dirty-file check. A session that released a file another session is
+  still editing could never finish, which is the deadlock ADR 0263 removed,
+  and with no claim left it could not hand the file off either.
+- **Run the whole-repository push check for every repository a session ever
+  touched.** Simple, but in a shared checkout any peer's unpushed commit would
+  block every session that once wrote in that repository.
+- **Fold released paths from the raw ledger at each check.** Equivalent
+  result, but a second fold of the full history on every end of turn.
+- **Record a display path for external targets inside configured roots.** It
+  would close the extra-root gap, but readers on older builds reject a display
+  on an `external_path` target and would fail the ledger closed for every
+  session. Left for a separate decision.
+
+## Decision
+
+The V3 safety projection keeps `released`: for each instance and target, the
+display path of a write claim it released, removed when the instance claims
+the path again. It is one entry per distinct path, grants no authority, and is
+never read by the edit or commit guards, so a released path blocks no peer.
+The coordination view exposes it as `released_paths` on a live session,
+excluding paths held or handed off now. The event contract is unchanged.
+
+Finalization treats released paths and accepted handoffs the same way, as
+repository obligations:
+
+- No commit reachable from the repository's HEAD that touches the path may be
+  missing from every remote ref (`git rev-list HEAD --not --remotes -- <paths>`).
+  A repository with no remote owes nothing.
+- For each enclosing superproject, a child commit touching the path that the
+  parent's staged gitlink does not record is reported as a dirty gitlink, and
+  unpushed parent commits touching the gitlink are reported as unpushed.
+- There is no dirty-file obligation. Releasing a path with uncommitted changes
+  gives them up; `agents handoff` is the way to pass them on.
+
+A repository that also holds a claimed path keeps its existing whole-repository
+check.
+
+## Consequences
+
+- A committed, released, unpushed path in the coordination repository or a
+  submodule now fails the end-turn check, Stop's supplemental check, and
+  `agents lifecycle done` until it is pushed and its pointer recorded.
+- Handed-off paths now use the precise check too, so a peer's unpushed commit
+  to an unrelated path no longer blocks a sender.
+- Cost per end of turn: the finalization roots are read once per check, each
+  directory's repository is discovered once, and each repository with released
+  paths takes one `rev-list` plus one per enclosing gitlink.
+- Paths in extra finalization roots are still invisible to the check, held or
+  released. Tests mark that as a known failure.
+- A ledger epoch boundary restores held claims but not release records, so
+  releases from before the boundary leave the check.

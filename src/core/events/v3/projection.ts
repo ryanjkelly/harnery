@@ -138,6 +138,14 @@ export interface SafetyProjectionV3 {
    * path is no longer its dirty-file obligation.
    */
   handed_off: Record<string, string>;
+  /**
+   * `instance\0target_digest` to the display path of a write claim that
+   * instance released, until it claims the path again (ADR 0264). A release
+   * record grants no authority and blocks no peer; finalization reads it so a
+   * released path's commits stay in its holder's push check. One entry per
+   * distinct path, so it never outgrows the release events it folds.
+   */
+  released: Record<string, string>;
   decisions: Record<string, string>;
   identities: Record<string, string>;
   health: Record<string, { severity: string; condition: string; event_id: string }>;
@@ -162,6 +170,7 @@ export function reduceSafetyProjectionV3(read: ReadLedgerV3Result): SafetyProjec
     delegations: {},
     handoffs: {},
     handed_off: {},
+    released: {},
     decisions: {},
     identities: {},
     health: {},
@@ -503,6 +512,16 @@ function applyClaim(
       });
       return;
     }
+    const releasedClaim = projection.claims[key]!;
+    if (
+      releasedClaim.access === "write" &&
+      releasedClaim.target_kind === "workspace_path" &&
+      releasedClaim.target_display !== undefined
+    ) {
+      projection.released[
+        `${event.payload.subject_instance_id}\0${event.payload.target.fingerprint.digest}`
+      ] = releasedClaim.target_display;
+    }
     delete projection.claims[key];
     return;
   }
@@ -530,6 +549,12 @@ function applyClaim(
   delete projection.handed_off[
     `${event.payload.subject_instance_id}\0${event.payload.target.fingerprint.digest}`
   ];
+  // A held claim supersedes the release record for the same path.
+  if (event.payload.access === "write") {
+    delete projection.released[
+      `${event.payload.subject_instance_id}\0${event.payload.target.fingerprint.digest}`
+    ];
+  }
   // A re-acquire by the current holder is idempotent (the guard may re-assert
   // a holding it cannot see across an epoch boundary): refresh, never conflict.
   projection.claims[key] = {

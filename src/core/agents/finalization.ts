@@ -1,9 +1,14 @@
 /**
  * Ownership-aware Git completion checks for the end-of-turn status ritual.
  *
- * The heartbeat's durable `files_touched` ledger is the ownership boundary. We
- * inspect only those paths, plus any enclosing submodule gitlinks, so a peer's
- * active edits elsewhere in a shared checkout do not block this session.
+ * The ownership boundary is every write path this session claimed, read from
+ * the V3 coordination view. A path it holds now must be clean, committed and
+ * pushed. A path it released or handed to a peer (ADR 0263, ADR 0264) is a
+ * repository obligation only: no commit reachable from its repository's HEAD
+ * that touches the path may be missing from every remote, and the enclosing
+ * gitlinks must record and push such commits. We inspect only those paths and
+ * their gitlinks, so a peer's edits elsewhere in a shared checkout do not block
+ * this session.
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -99,14 +104,14 @@ export interface SessionWriteClaims {
   paths: string[];
   complete: boolean;
   /**
-   * Paths handed to a peer that accepted them (ADR 0263). Their dirty-file
-   * obligation moved to the receiver; their repositories and enclosing
-   * gitlinks stay in this session's commit-and-push check.
+   * Paths this session released (ADR 0264) or handed to a peer that accepted
+   * them (ADR 0263). They carry no dirty-file obligation; any commit touching
+   * them must still reach a remote, with its enclosing gitlinks recorded.
    */
   repositoryOnlyPaths?: string[];
 }
 
-/** Current and released claims use the same ownership boundary at status and Stop. */
+/** Held, released and handed-off claims use the same ownership boundary at status and Stop. */
 export function readSessionFinalizationScope(
   coordRoot: string,
   row: Pick<Heartbeat, "instance_id" | "files_touched" | "native_session_id" | "session_id">,
@@ -129,10 +134,10 @@ export function readSessionFinalizationScope(
 }
 
 /**
- * Read this session's current write claims from the V3 coordination view,
- * plus the paths it handed to a peer that accepted them. A released claim
- * leaves the view, so it is not part of this read; accepted handoffs stay
- * as repository-only obligations until the session claims the path again.
+ * Read this session's write claims from the V3 coordination view: the paths
+ * it holds now, and as repository-only obligations the paths it released or
+ * handed to a peer that accepted them. A release or handoff stays in this
+ * read until the session claims the path again.
  */
 export function readSessionWriteClaims(
   coordRoot: string,
@@ -146,7 +151,9 @@ export function readSessionWriteClaims(
     return {
       paths: scope.files_touched,
       complete: true,
-      repositoryOnlyPaths: scope.handed_off_paths,
+      repositoryOnlyPaths: [
+        ...new Set([...scope.handed_off_paths, ...scope.released_paths]),
+      ].sort(),
     };
   } catch {
     return { paths: [], complete: false, repositoryOnlyPaths: [] };
@@ -236,12 +243,16 @@ function resolveHeldPath(coordRoot: string, heldPath: string): string {
 function discoverRepo(
   authorityRoot: string,
   absolutePath: string,
+  toplevels?: Map<string, string | null>,
 ): { root: string; path: string } | null {
   const probeDir = existingProbeDir(authorityRoot, absolutePath);
   if (!probeDir) return null;
-  const rootResult = git(["rev-parse", "--show-toplevel"], probeDir);
-  if (rootResult.status !== 0) return null;
-  const repoRoot = physicalPath(resolve(rootResult.stdout.trim()));
+  let repoRoot = toplevels?.get(probeDir);
+  if (repoRoot === undefined) {
+    const rootResult = git(["rev-parse", "--show-toplevel"], probeDir);
+    repoRoot = rootResult.status === 0 ? physicalPath(resolve(rootResult.stdout.trim())) : null;
+    toplevels?.set(probeDir, repoRoot);
+  }
   if (!repoRoot || !pathInside(authorityRoot, repoRoot) || !pathInside(repoRoot, absolutePath)) {
     return null;
   }
@@ -337,8 +348,17 @@ export function classifyWriteClaimFinalization(
   heldPath: string,
 ): ClaimFinalizationDecision {
   const root = resolve(coordRoot);
+  return classifyWithRoots(root, heldPath, finalizationRoots(root));
+}
+
+/** One inspection reads the configured roots once and discovers each directory's repository once. */
+function classifyWithRoots(
+  root: string,
+  heldPath: string,
+  roots: readonly FinalizationRoot[],
+  toplevels?: Map<string, string | null>,
+): ClaimFinalizationDecision {
   const absolutePath = resolveHeldPath(root, heldPath);
-  const roots = finalizationRoots(root);
   const lexicalMatches = roots.filter((entry) => pathInside(entry.lexicalRoot, absolutePath));
   if (lexicalMatches.length === 0) {
     return { allow: false, path: heldPath, reason: "outside_finalization_roots" };
@@ -383,7 +403,7 @@ export function classifyWriteClaimFinalization(
     };
   }
 
-  const repo = discoverRepo(selected.physicalRoot!, physical);
+  const repo = discoverRepo(selected.physicalRoot!, physical, toplevels);
   if (!repo) {
     return { allow: false, path: heldPath, reason: "git_repository_unavailable" };
   }
@@ -417,16 +437,85 @@ function addSuperprojects(
   repos: Map<string, RepoWork>,
   leafRoot: string,
 ): void {
+  for (const link of superprojectChain(authorityRoot, leafRoot)) {
+    addRepoPath(repos, link.parentRoot, link.gitlink, true);
+  }
+}
+
+interface SuperprojectLink {
+  parentRoot: string;
+  gitlink: string;
+  childRoot: string;
+}
+
+/** Enclosing superprojects inside the authority root, nearest first. */
+function superprojectChain(
+  authorityRoot: string,
+  leafRoot: string,
+  cache?: Map<string, SuperprojectLink | null>,
+): SuperprojectLink[] {
+  const chain: SuperprojectLink[] = [];
   let childRoot = leafRoot;
   for (;;) {
-    const result = git(["rev-parse", "--show-superproject-working-tree"], childRoot);
-    if (result.status !== 0 || result.stdout.trim().length === 0) return;
-    const parentRoot = physicalPath(resolve(result.stdout.trim()));
-    if (!parentRoot || !pathInside(authorityRoot, parentRoot) || parentRoot === childRoot) return;
-    const gitlink = relative(parentRoot, childRoot).replaceAll("\\", "/");
-    addRepoPath(repos, parentRoot, gitlink, true);
-    childRoot = parentRoot;
+    let link = cache?.get(childRoot);
+    if (link === undefined) {
+      link = null;
+      const result = git(["rev-parse", "--show-superproject-working-tree"], childRoot);
+      if (result.status === 0 && result.stdout.trim().length > 0) {
+        const parentRoot = physicalPath(resolve(result.stdout.trim()));
+        if (parentRoot && pathInside(authorityRoot, parentRoot) && parentRoot !== childRoot) {
+          const gitlink = relative(parentRoot, childRoot).replaceAll("\\", "/");
+          link = { parentRoot, gitlink, childRoot };
+        }
+      }
+      cache?.set(childRoot, link);
+    }
+    if (!link) return chain;
+    chain.push(link);
+    childRoot = link.parentRoot;
   }
+}
+
+/**
+ * Does HEAD reach a commit touching these paths that no remote ref contains?
+ * A repository without a remote, or with no commit yet, owes nothing.
+ */
+function repoPathsUnpushed(
+  repoRoot: string,
+  paths: readonly string[],
+): "synced" | "unpushed" | "unverifiable" {
+  const hasRemote = repoHasRemote(repoRoot);
+  if (hasRemote === null) return "unverifiable";
+  if (!hasRemote || paths.length === 0) return "synced";
+  const result = git(
+    ["--literal-pathspecs", "rev-list", "-n", "1", "HEAD", "--not", "--remotes", "--", ...paths],
+    repoRoot,
+  );
+  if (result.status === 0) return result.stdout.trim().length > 0 ? "unpushed" : "synced";
+  return git(["rev-parse", "--verify", "HEAD"], repoRoot).status === 0 ? "unverifiable" : "synced";
+}
+
+/**
+ * Does the child's HEAD carry a commit touching these paths that the parent's
+ * staged gitlink does not record? Such a commit still needs its pointer bump.
+ */
+function gitlinkOwesPointer(
+  parentRoot: string,
+  gitlink: string,
+  childRoot: string,
+  childPaths: readonly string[],
+): boolean {
+  if (childPaths.length === 0) return false;
+  const index = git(["ls-files", "--stage", "--", gitlink], parentRoot);
+  const recorded = /^160000 ([0-9a-f]{40}) 0\t/.exec(index.stdout.trim())?.[1];
+  if (index.status !== 0 || !recorded) return false;
+  const result = git(
+    ["--literal-pathspecs", "rev-list", "-n", "1", `${recorded}..HEAD`, "--", ...childPaths],
+    childRoot,
+  );
+  // A recorded commit the child does not have is a stale checkout, which the
+  // freshness check reports; it is not this session's pointer to bump.
+  return result.status === 0 && result.stdout.trim().length > 0;
 }
 
 function repoHasRemote(repoRoot: string): boolean | null {
@@ -681,9 +770,11 @@ function inspectGitFinalization(
   const hostOutputPaths = new Set<string>();
   const unsupportedPaths: UnsupportedFinalizationPath[] = [];
   const unverifiablePaths: string[] = [];
+  const roots = finalizationRoots(root);
+  const toplevels = new Map<string, string | null>();
 
   for (const heldPath of heldPaths) {
-    const decision = classifyWriteClaimFinalization(root, heldPath);
+    const decision = classifyWithRoots(root, heldPath, roots, toplevels);
     if (!decision.allow) {
       unsupportedPaths.push({ path: heldPath, reason: decision.reason });
       continue;
@@ -700,26 +791,57 @@ function inspectGitFinalization(
     addSuperprojects(decision.authorityRoot, repos, decision.repo.root);
   }
 
+  // Released and handed-off paths: repository obligations, never dirty-file
+  // ones. Gather their repositories and every enclosing gitlink, then ask each
+  // repository one question about exactly those paths.
   const held = new Set(heldPaths);
-  for (const handedOff of options.repositoryOnlyPaths ?? []) {
-    if (held.has(handedOff)) continue;
-    const decision = classifyWriteClaimFinalization(root, handedOff);
+  const obligations = new Map<string, Set<string>>();
+  const pointerLinks = new Map<string, SuperprojectLink>();
+  const superprojects = new Map<string, SuperprojectLink | null>();
+  const owe = (repoRoot: string, path: string) => {
+    const paths = obligations.get(repoRoot) ?? new Set<string>();
+    paths.add(path);
+    obligations.set(repoRoot, paths);
+  };
+  for (const obligation of options.repositoryOnlyPaths ?? []) {
+    if (held.has(obligation)) continue;
+    const decision = classifyWithRoots(root, obligation, roots, toplevels);
     if (!decision.allow || decision.descriptor.disposition === "output" || !decision.repo) {
       continue;
     }
-    if (!repos.has(decision.repo.root)) {
-      repos.set(decision.repo.root, {
-        root: decision.repo.root,
-        paths: new Set<string>(),
-        gitlinks: new Set<string>(),
-      });
+    owe(decision.repo.root, decision.repo.path);
+    for (const link of superprojectChain(
+      decision.authorityRoot,
+      decision.repo.root,
+      superprojects,
+    )) {
+      owe(link.parentRoot, link.gitlink);
+      pointerLinks.set(`${link.parentRoot}\0${link.gitlink}`, link);
     }
-    addSuperprojects(decision.authorityRoot, repos, decision.repo.root);
   }
 
   const dirtyPaths = new Set<string>();
   const unpushedRepos: string[] = [];
   const unverifiableRepos: string[] = [];
+
+  for (const link of pointerLinks.values()) {
+    if (
+      gitlinkOwesPointer(link.parentRoot, link.gitlink, link.childRoot, [
+        ...(obligations.get(link.childRoot) ?? []),
+      ])
+    ) {
+      const label = repoLabel(labelRoot, link.parentRoot);
+      dirtyPaths.add(label === "." ? link.gitlink : `${label}/${link.gitlink}`);
+    }
+  }
+  for (const [repoRoot, paths] of obligations) {
+    // A repository with a held path already gets the whole-repository check.
+    if (repos.has(repoRoot)) continue;
+    const state = repoPathsUnpushed(repoRoot, [...paths]);
+    const label = repoLabel(labelRoot, repoRoot);
+    if (state === "unpushed") unpushedRepos.push(label);
+    if (state === "unverifiable") unverifiableRepos.push(label);
+  }
 
   for (const work of repos.values()) {
     for (const repoPath of work.paths) {
@@ -770,7 +892,9 @@ function inspectGitFinalization(
     ),
     unverifiable_paths: [...new Set(unverifiablePaths)].sort(),
     unverifiable_repos: [...new Set(unverifiableRepos)].sort(),
-    repos_checked: [...repos.keys()].map((repo) => repoLabel(labelRoot, repo)).sort(),
+    repos_checked: [...new Set([...repos.keys(), ...obligations.keys()])]
+      .map((repo) => repoLabel(labelRoot, repo))
+      .sort(),
   };
   result.ok =
     result.claim_history_complete &&

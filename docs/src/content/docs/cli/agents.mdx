@@ -469,8 +469,21 @@ ended mid-edit) and a peer is now blocked on a path you no longer care about.
 
 `release-claim --all` drops every claim your session still holds and reports
 the released paths. It touches only your own session's claims and fails if any
-claim remains afterward. Pass exactly one of `<path>` or `--all`. Durable claim
-history is unchanged, so the end-turn Git check still covers released paths.
+claim remains afterward. Pass exactly one of `<path>` or `--all`.
+
+A released path grants nothing and blocks no peer's edit or commit. It leaves
+the end-turn dirty-file check, so releasing a path with uncommitted changes
+gives those changes up; use `handoff` to pass them to a peer instead. Its
+commits stay yours: until the session claims the path again, the end-turn check
+refuses while a commit reachable from the repository's HEAD that touches the
+path is missing from every remote ref, and while a submodule commit touching it
+is not yet recorded in the parent's gitlink. A peer's unpushed commit to a
+different path does not count against you. The same rule covers paths you
+handed to a peer. See [ADR 0264](/decisions/0264-keep-released-claims-in-the-push-check/).
+
+Claims on paths outside the coordination repository, such as an extra Git root
+in `agents.finalizationRoots`, are recorded without a path, so the end-turn
+check does not yet see them, held or released.
 
 ### handoff
 
@@ -663,6 +676,25 @@ while other sessions edit the same checkout. Set
 `HARNERY_AGENTS_GIT_SYNC_ON_END_TURN=0` to switch the behavior off for one
 process. The default is `false`.
 
+### Which turns the Stop hook checks
+
+The Stop hook checks only turns that used a tool. A turn the agent answers in
+prose alone, including one opened by a background-task notification, ends
+without a status check, a task declaration, or a pasted status. Pasting a
+fresh status needs a tool call, so a demand on such a turn could only be met
+by adding one.
+
+A turn that used a tool must still declare its task, run the end-of-turn
+status, and paste that status in the reply. When a block makes the agent
+continue, the continuation belongs to the same turn: a task or status from
+earlier in that turn still counts, even when the adapter starts the original
+turn again after the continuation. See
+[ADR 0265](/decisions/0265-stop-checks-tool-turns-only/).
+
+A block names each missing step in one plain sentence with the exact command
+to run. The rule id appears only on the last line
+(`[agent-hook stop]: rule=...`), which telemetry reads.
+
 ### When the Stop hook stops retrying
 
 A Stop hook that keeps blocking a turn retries a bounded number of times (five
@@ -671,7 +703,8 @@ land cannot loop forever. That turn may have left work unfinished, so Harnery
 does three things:
 
 - In Claude Code, the Stop response carries a `systemMessage` that tells the
-  person the turn ended after the retries ran out and which rule was unmet.
+  person the turn ended after the retries ran out and, in plain words, which
+  step was not done.
   Cursor's Stop output can only start a new agent turn, and Codex and OpenCode
   have no Stop notice, so those adapters show nothing at that moment.
 - On the session's next prompt, the agent receives a cue naming the unmet rule.

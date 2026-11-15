@@ -554,8 +554,11 @@ export function registerAgentsCommand(
         "PostToolUseFailure didn't fire (e.g., session ended mid-Edit) and a " +
         "peer is now blocked on a path you no longer care about. Same write " +
         "agent-hook's auto-release uses on failed Edit. --all releases every " +
-        "claim this session still holds; durable claim history stays in the " +
-        "Git finalization check.",
+        "claim this session still holds. A released path blocks no peer and " +
+        "leaves the end-turn dirty-file check, so its uncommitted changes are " +
+        "no longer yours; any commit touching it must still be pushed, with " +
+        "its submodule pointer recorded. To pass uncommitted changes on, use " +
+        "`agents handoff` instead.",
     )
     .option("--all", "Release every file claim this session still holds")
     .action((path: string | undefined, opts: { all?: boolean }) => {
@@ -2440,7 +2443,8 @@ function runLifecycle(
     const heldClaims = hb.files_touched ?? [];
     if (heldClaims.length > 0) {
       // A done task that still holds claims blocks peers on files it finished.
-      // Durable claim history keeps released paths in the Git check above.
+      // Releasing them is safe: a released path's commits stay in the Git
+      // check above until they reach a remote (ADR 0264).
       emit.error({
         code: "claims_held",
         message:

@@ -46,6 +46,12 @@ export interface CoordinationGenerationViewV3 {
    * commit-and-push check.
    */
   handed_off_paths?: string[];
+  /**
+   * Write paths this live session claimed and later released, and does not
+   * hold or hand off now (ADR 0264). They grant nothing and block no peer;
+   * finalization keeps their commits in this session's push check.
+   */
+  released_paths?: string[];
   progress_count: number;
   last_context_event_id?: string;
   provisional_termination?: GenerationSafetyStateV3["provisional_termination"];
@@ -158,6 +164,19 @@ export function projectCoordinationViewV3(read: ReadLedgerV3Result): Coordinatio
       .filter((path): path is string => path !== undefined)
       .filter((path, index, all) => all.indexOf(path) === index)
       .sort();
+    const releasedPaths =
+      state.phase === "live"
+        ? Object.entries(safety.released)
+            .filter(([key]) => key.startsWith(`${state.instance_id}\0`))
+            .map(([, path]) => path)
+            .filter(
+              (path, index, all) =>
+                all.indexOf(path) === index &&
+                !filesTouched.includes(path) &&
+                !handedOffPaths.includes(path),
+            )
+            .sort()
+        : [];
     const view: CoordinationGenerationViewV3 = {
       contract_major: 2,
       instance_id: state.instance_id,
@@ -195,6 +214,7 @@ export function projectCoordinationViewV3(read: ReadLedgerV3Result): Coordinatio
       ...(state.phase === "live" && handedOffPaths.length > 0
         ? { handed_off_paths: handedOffPaths }
         : {}),
+      ...(releasedPaths.length > 0 ? { released_paths: releasedPaths } : {}),
       progress_count: state.progress_event_ids.length,
       last_context_event_id: state.last_context_event_id,
       provisional_termination: state.provisional_termination,

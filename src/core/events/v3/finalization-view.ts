@@ -26,6 +26,8 @@ export interface FinalizationScopeV3 {
   files_touched: string[];
   /** Accepted handoffs: repository obligations only, never dirty-file ones. */
   handed_off_paths: string[];
+  /** Released write claims: repository obligations only, never dirty-file ones (ADR 0264). */
+  released_paths: string[];
   source_event_id: string;
   source_position: { segment_ordinal: number; byte_offset: number };
 }
@@ -64,6 +66,7 @@ function finalizationScopeFromCoordinationViewV3(
     lifecycle_state: instance.lifecycle_state,
     files_touched: [...instance.files_touched],
     handed_off_paths: [...(instance.handed_off_paths ?? [])],
+    released_paths: [...(instance.released_paths ?? [])],
     source_event_id: instance.last_event_id,
     source_position: { ...instance.source_position },
   };
