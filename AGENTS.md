@@ -43,7 +43,7 @@ When writing README/docs/marketing copy, coordination leads and the toolkit is f
 ```bash
 bun install
 bun test <paths...>      # edit loop: run only the behavior you changed
-bun run test             # full unit + alongside-source suite, with browser process isolation
+bun run test             # full core + dashboard suite, with browser process isolation
 bun run test:list        # list the full runner's partitions without executing them
 bun run test --keep-going # run every partition and list all failing ones (platform sweeps)
 bun run test:integration
@@ -61,7 +61,10 @@ browser-backed files fresh Bun processes because accumulated Playwright state
 can stall Chromium in one long process. An unscoped `bun test` bypasses that
 isolation and is not the full-suite command. A root-level sentinel rejects that
 unsafe form before the suite starts. The full runner prints every partition's
-elapsed time and a slowest-first summary.
+elapsed time and a slowest-first summary. It also runs the whole dashboard
+suite in a separate process from `web/`, including its reader tests. This
+partition needs `web/node_modules`; without it, the runner prints a skip and
+the install command (`cd web && bun install`). It does not build the dashboard.
 
 ## Runtime: Bun for dev, Node for ship
 

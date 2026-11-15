@@ -21,6 +21,14 @@ bin/harn --help
 bun run build        # optional: produce dist/ and exercise the Node path (tsc + dts fixup)
 ```
 
+`bun run test` runs the core tests with browser process isolation and the whole
+dashboard test suite in a separate process from `web/`. Install dashboard
+dependencies with `cd web && bun install` to include that partition. If
+`web/node_modules` is missing, the runner prints a skip with that command and
+continues. It does not build the dashboard. `bun run test:list` lists the
+partitions; `bun run test --keep-going` runs every partition before reporting
+failures. Timings include the dashboard partition.
+
 ## Code style
 
 [Biome](https://biomejs.dev/) handles lint + format. CI runs both on every PR (see `.github/workflows/ci.yml`); run them locally before pushing:
@@ -64,7 +72,7 @@ checks before releasing:
 bun run check:local
 ```
 
-This command runs lint, typechecking, the isolated core test suite, integration
+This command runs lint, typechecking, the isolated full test suite, integration
 tests, the packed Node package smoke test, and the dashboard tests and production
 build. It stops on the first failure and never publishes or opens a release PR.
 GitHub CI and the Web workflow call the same groups. For a focused check, use

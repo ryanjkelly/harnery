@@ -7,20 +7,7 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
-// Dashboard reader regressions live outside the core discovery roots. Keep
-// their worker lifecycle and fixture caches isolated from the other suites.
-const dashboardReaderFiles = [
-  "web/lib/dashboard-reader-client.test.ts",
-  "web/lib/event-query-reader.test.ts",
-  "web/lib/events-stream.test.ts",
-  "web/lib/home-snapshot-reader.test.ts",
-  "web/lib/page-snapshot-reader.test.ts",
-];
-for (const file of dashboardReaderFiles) {
-  if (!existsSync(join(repoRoot, file))) {
-    throw new Error(`dashboard reader test partition is stale; missing: ${file}`);
-  }
-}
+const dashboardRoot = join(repoRoot, "web");
 
 // Playwright keeps process-wide browser transport state. Running these files
 // after the large unit/integration graph in the same Bun process eventually
@@ -165,8 +152,11 @@ function warnOnConcurrentSuite() {
 function discoverTests(dir) {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     const path = join(dir, entry.name);
-    if (entry.isDirectory()) return discoverTests(path);
-    if (!entry.isFile() || !entry.name.endsWith(".test.ts")) return [];
+    if (entry.isDirectory()) {
+      if (entry.name === "node_modules" || entry.name === ".next") return [];
+      return discoverTests(path);
+    }
+    if (!entry.isFile() || !/\.(test|spec)\.[cm]?[jt]sx?$/.test(entry.name)) return [];
     return [relative(repoRoot, path).split(sep).join("/")];
   });
 }
@@ -176,12 +166,20 @@ function discoverTests(dir) {
 const keepGoing = process.argv.includes("--keep-going");
 const failedPartitions = [];
 
-function run(label, files, extraArgs = []) {
+function run({ label, files, extraArgs = [], cwd = repoRoot, wholeSuite = false }) {
+  if (wholeSuite && !existsSync(join(cwd, "node_modules"))) {
+    process.stdout.write(
+      `=== ${label} skipped: web/node_modules is missing; run \`cd web && bun install\` to enable it. ===\n`,
+    );
+    partitionTimings.push({ label, files: files.length, durationMs: 0, skipped: true });
+    return;
+  }
   process.stdout.write(`\n=== ${label} (${files.length} files) ===\n`);
   const startedAt = performance.now();
-  const result = spawnSync(process.execPath, ["test", ...files, ...extraArgs], {
-    cwd: repoRoot,
+  const result = spawnSync(process.execPath, ["test", ...(wholeSuite ? [] : files), ...extraArgs], {
+    cwd,
     stdio: "inherit",
+    windowsHide: true,
     // Page loads are human-paced by default (ADR 0184). Tests that reach a
     // real site must not sleep between loads or write the operator's ledger.
     // Pace tests build their own policy, so this pin does not affect them.
@@ -231,9 +229,11 @@ if (isolatedBrowserFiles.length + isolatedBrowserProcessFiles.length !== browser
 
 const partitionPlan = [
   {
-    label: "dashboard reader test partition",
-    files: dashboardReaderFiles,
+    label: "dashboard test partition",
+    files: discoverTests(dashboardRoot),
     extraArgs: recorderTestArgs,
+    cwd: dashboardRoot,
+    wholeSuite: true,
   },
   ...isolatedBrowserProcessFiles.map((file) => ({
     label: `browser process partition: ${file}`,
@@ -262,13 +262,13 @@ if (process.argv.includes("--list")) {
 warnOnConcurrentSuite();
 
 for (const partition of partitionPlan) {
-  run(partition.label, partition.files, partition.extraArgs);
+  run(partition);
 }
 
 process.stdout.write("\n=== Test partition timings (slowest first) ===\n");
 for (const timing of partitionTimings.toSorted((a, b) => b.durationMs - a.durationMs)) {
   process.stdout.write(
-    `- ${timing.label}: ${formatDuration(timing.durationMs)} (${timing.files} files)\n`,
+    `- ${timing.label}: ${timing.skipped ? "skipped" : formatDuration(timing.durationMs)} (${timing.files} files)\n`,
   );
 }
 
