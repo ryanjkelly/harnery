@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -17,6 +17,7 @@ const roots: string[] = [];
 function git(root: string, args: string[], input?: string): string {
   return execFileSync("git", args, {
     cwd: root,
+    windowsHide: true,
     input,
     encoding: "utf8",
     env: {
@@ -183,7 +184,7 @@ describe("readRemoteDocketSnapshot", () => {
         presenceEnabled: () => false,
         readRemoteDockets: () => {
           read = true;
-          return [];
+          return { dockets: [], skipped: [] };
         },
       }),
     );
@@ -209,4 +210,29 @@ describe("readRemoteDocketSnapshot", () => {
     expect(findRemoteDecisionRow(snap, "low-2026-11-13-aaaa", "other")).toBeNull();
     expect(findRemoteDecisionRow(snap, "missing")).toBeNull();
   });
+});
+
+test("dashboard uses one core read and never creates local machine state", () => {
+  const root = rootWithRefs({ laptop: blob(), broken: "{not json" });
+  const snap = readRemoteDocketSnapshot(deps(root));
+  expect(snap.malformed).toEqual(["broken"]);
+  expect(snap.waiting).toHaveLength(2);
+  expect(existsSync(join(root, ".harnery"))).toBe(false);
+  let reads = 0;
+  const fromCore = readRemoteDocketSnapshot(
+    deps(root, {
+      readRemoteDockets: () => {
+        reads++;
+        return {
+          dockets: [],
+          skipped: [
+            { ref: "only-in-core", reason: "invalid_blob" },
+            { ref: "gone", reason: "withdrawn" },
+          ],
+        };
+      },
+    }),
+  );
+  expect(reads).toBe(1);
+  expect(fromCore.malformed).toEqual(["only-in-core"]);
 });

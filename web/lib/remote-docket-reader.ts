@@ -15,11 +15,9 @@ import {
   docketContact,
   docketShareEnabled,
   docketSourceLabel,
-  parseDocketBlob,
-  type RemoteDocket,
+  type RemoteDocketsResult,
   readRemoteDockets,
 } from "../../src/core/presence/docket";
-import { DOCKET_REF_PREFIX, readMachineRefs } from "../../src/core/presence/git";
 import { readRemoteMachines } from "../../src/core/presence/index";
 import { coordRoot } from "./coord-reader";
 
@@ -86,8 +84,7 @@ export interface RemoteDocketDeps {
   now?: Date;
   presenceEnabled?: (root: string) => boolean;
   docketShareEnabled?: (root: string) => boolean;
-  readRemoteDockets?: (root: string, opts: { now?: Date }) => RemoteDocket[];
-  readDocketRefs?: (root: string) => Array<{ machine: string; message: string }>;
+  readRemoteDockets?: (root: string, opts: { now?: Date }) => RemoteDocketsResult;
   readPresenceAgents?: (
     root: string,
   ) => Array<{ machine: string; agents: Array<{ name?: string }> }>;
@@ -113,12 +110,14 @@ export function readRemoteDocketSnapshot(deps: RemoteDocketDeps = {}): RemoteDoc
   if (!presence) return { ...EMPTY, presence, sharing, error: null };
 
   try {
-    const dockets = (deps.readRemoteDockets ?? readRemoteDockets)(root, { now: deps.now });
-    const refs = safe(
-      () => (deps.readDocketRefs ?? ((r: string) => readMachineRefs(r, DOCKET_REF_PREFIX)))(root),
-      [],
-    );
-    const malformed = refs.filter((r) => parseDocketBlob(r.message) === null).map((r) => r.machine);
+    const { dockets, skipped } = (deps.readRemoteDockets ?? readRemoteDockets)(root, {
+      now: deps.now,
+    });
+    const malformed = skipped
+      .filter((entry) =>
+        ["invalid_json", "invalid_blob", "unsupported_version"].includes(entry.reason),
+      )
+      .map((entry) => entry.ref);
     const presenceAgents = safe(
       () =>
         (deps.readPresenceAgents ?? ((r: string) => readRemoteMachines(r, { includeStale: true })))(

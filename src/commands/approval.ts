@@ -160,7 +160,7 @@ export function registerApprovalCommand(program: Command, emit: EmitContext): vo
             );
           }
         } catch (err) {
-          const hit = findRemoteApproval(readRemoteDockets(coordRoot), approvalId);
+          const hit = findRemoteApproval(readRemoteDockets(coordRoot).dockets, approvalId);
           if (hit) {
             const row = remoteApprovalRow(coordRoot, hit.approval, hit.source);
             emit.error({
@@ -239,7 +239,7 @@ function loadRemoteDockets(coordRoot: string): RemoteDocket[] {
   } catch {
     /* fail open */
   }
-  return readRemoteDockets(coordRoot);
+  return readRemoteDockets(coordRoot).dockets;
 }
 
 function approvalNextActionHint(approval: WorkflowApproval): string {

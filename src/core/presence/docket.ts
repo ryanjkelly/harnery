@@ -12,7 +12,7 @@
  *
  * Authority never moves: resolution, approval, and denial still happen only on
  * the filing machine. Every entry point here is fail-silent. A malformed blob
- * is dropped, a failed push or fetch leaves local behavior unchanged, and
+ * is reported as skipped, a failed push or fetch leaves local behavior unchanged, and
  * nothing in this module throws into a hook.
  */
 
@@ -25,9 +25,8 @@ import {
   listDecisions,
   showDecision,
 } from "../../lib/decision/index.ts";
-import { coordEnv } from "../../lib/env.ts";
 import { resolveMachineLabel } from "../../lib/machine.ts";
-import { presenceEnabled, stripJsonComments } from "../config.ts";
+import { docketShareEnabled, presenceEnabled } from "../config.ts";
 import { listWorkflowApprovals, type WorkflowApproval } from "../run/approvals.ts";
 import {
   DOCKET_REF_PREFIX,
@@ -136,25 +135,7 @@ export interface DocketBlob {
 
 // ─── Config ─────────────────────────────────────────────────────────────────
 
-/**
- * Whether this machine publishes its docket. Project config
- * `{ "decision": { "share": true } }`; default off because decision text can
- * be sensitive. `HARNERY_DOCKET_SHARE=1|0` overrides per process. Requires
- * presence, whose transport carries the blob.
- */
-export function docketShareEnabled(coordRoot: string): boolean {
-  try {
-    if (!presenceEnabled(coordRoot)) return false;
-    const env = coordEnv("DOCKET_SHARE");
-    if (env === "1") return true;
-    if (env === "0") return false;
-    const raw = readFileSync(join(coordRoot, ".harnery", "config.jsonc"), "utf8");
-    const parsed = JSON.parse(stripJsonComments(raw)) as { decision?: { share?: unknown } };
-    return parsed?.decision?.share === true;
-  } catch {
-    return false;
-  }
-}
+export { docketShareEnabled } from "../config.ts";
 
 // ─── Local state ────────────────────────────────────────────────────────────
 
@@ -196,15 +177,21 @@ function writeState(coordRoot: string, state: DocketState): void {
   }
 }
 
-/** This clone's stable random id, created on first use. */
-export function docketMachineId(coordRoot: string): string {
-  const p = join(presenceDir(coordRoot), "docket-machine-id");
+/** Read this clone's id without creating or repairing local state. */
+function readDocketMachineId(coordRoot: string): string | null {
   try {
-    const existing = readFileSync(p, "utf8").trim();
-    if (/^[a-f0-9]{12}$/.test(existing)) return existing;
+    const existing = readFileSync(join(presenceDir(coordRoot), "docket-machine-id"), "utf8").trim();
+    return /^[a-f0-9]{12}$/.test(existing) ? existing : null;
   } catch {
-    /* create below */
+    return null;
   }
+}
+
+/** This clone's stable random id, created when publishing first needs it. */
+export function docketMachineId(coordRoot: string): string {
+  const existing = readDocketMachineId(coordRoot);
+  if (existing) return existing;
+  const p = join(presenceDir(coordRoot), "docket-machine-id");
   const id = randomBytes(6).toString("hex");
   try {
     mkdirSync(presenceDir(coordRoot), { recursive: true });
@@ -522,19 +509,26 @@ export function chooseDocketRef(
 
 /** Validate a docket blob; drops malformed items, returns null for a bad blob. */
 export function parseDocketBlob(message: string): DocketBlob | null {
+  const parsed = parseDocketResult(message);
+  return "blob" in parsed ? parsed.blob : null;
+}
+
+type DocketParseFailure = "invalid_json" | "invalid_blob" | "unsupported_version";
+
+function parseDocketResult(message: string): { blob: DocketBlob } | { reason: DocketParseFailure } {
   let raw: unknown;
   try {
     raw = JSON.parse(message);
   } catch {
-    return null;
+    return { reason: "invalid_json" };
   }
-  if (!isRecord(raw)) return null;
-  if (raw.v !== DOCKET_BLOB_VERSION || raw.kind !== "docket") return null;
+  if (!isRecord(raw) || raw.kind !== "docket") return { reason: "invalid_blob" };
+  if (raw.v !== DOCKET_BLOB_VERSION) return { reason: "unsupported_version" };
   const machine = str(raw.machine);
   const machineId = str(raw.machine_id);
   const publishedAt = str(raw.published_at);
   if (!machine || !machineId || !publishedAt || !Number.isFinite(Date.parse(publishedAt))) {
-    return null;
+    return { reason: "invalid_blob" };
   }
   const decisions = Array.isArray(raw.decisions)
     ? raw.decisions.map(parseDecision).filter((d): d is DocketDecision => d !== null)
@@ -544,19 +538,21 @@ export function parseDocketBlob(message: string): DocketBlob | null {
     : [];
   const t = isRecord(raw.truncated) ? raw.truncated : {};
   return {
-    v: DOCKET_BLOB_VERSION,
-    kind: "docket",
-    machine,
-    machine_id: machineId,
-    published_at: publishedAt,
-    ...(raw.withdrawn === true ? { withdrawn: true } : {}),
-    decisions,
-    approvals,
-    truncated: {
-      waiting: count(t.waiting),
-      recent: count(t.recent),
-      approvals: count(t.approvals),
-      briefs: count(t.briefs),
+    blob: {
+      v: DOCKET_BLOB_VERSION,
+      kind: "docket",
+      machine,
+      machine_id: machineId,
+      published_at: publishedAt,
+      ...(raw.withdrawn === true ? { withdrawn: true } : {}),
+      decisions,
+      approvals,
+      truncated: {
+        waiting: count(t.waiting),
+        recent: count(t.recent),
+        approvals: count(t.approvals),
+        briefs: count(t.briefs),
+      },
     },
   };
 }
@@ -633,31 +629,51 @@ export interface RemoteDocket {
   truncated: DocketTruncation;
 }
 
+export interface SkippedDocketRef {
+  ref: string;
+  reason: DocketParseFailure | "withdrawn" | "self" | "expired";
+}
+
+export interface RemoteDocketsResult {
+  dockets: RemoteDocket[];
+  skipped: SkippedDocketRef[];
+}
+
 /**
- * Every other machine's docket from the locally fetched refs. Self (by clone
- * id), withdrawn, and expired dockets are excluded; stale ones are kept and
- * flagged. Never throws.
+ * Every other machine's docket from the locally fetched refs, with a reason
+ * for every skipped ref. Self (by an existing clone id), withdrawn, and expired
+ * dockets are excluded; stale ones are kept and flagged. Never writes or throws.
  */
 export function readRemoteDockets(
   coordRoot: string,
   opts: { now?: Date; includeSelf?: boolean } = {},
-): RemoteDocket[] {
+): RemoteDocketsResult {
   try {
     const now = (opts.now ?? new Date()).getTime();
-    let selfId: string | null = null;
-    try {
-      selfId = docketMachineId(coordRoot);
-    } catch {
-      selfId = null;
-    }
-    const out: RemoteDocket[] = [];
+    const selfId = readDocketMachineId(coordRoot);
+    const dockets: RemoteDocket[] = [];
+    const skipped: SkippedDocketRef[] = [];
     for (const { machine: ref, message } of readMachineRefs(coordRoot, DOCKET_REF_PREFIX)) {
-      const blob = parseDocketBlob(message);
-      if (!blob || blob.withdrawn) continue;
-      if (!opts.includeSelf && blob.machine_id === selfId) continue;
+      const parsed = parseDocketResult(message);
+      if ("reason" in parsed) {
+        skipped.push({ ref, reason: parsed.reason });
+        continue;
+      }
+      const { blob } = parsed;
+      if (blob.withdrawn) {
+        skipped.push({ ref, reason: "withdrawn" });
+        continue;
+      }
+      if (!opts.includeSelf && blob.machine_id === selfId) {
+        skipped.push({ ref, reason: "self" });
+        continue;
+      }
       const ageSecs = Math.max(0, Math.floor((now - Date.parse(blob.published_at)) / 1000));
-      if (ageSecs > DOCKET_EXPIRE_SECS) continue;
-      out.push({
+      if (ageSecs > DOCKET_EXPIRE_SECS) {
+        skipped.push({ ref, reason: "expired" });
+        continue;
+      }
+      dockets.push({
         ref,
         machine: blob.machine,
         machine_id: blob.machine_id,
@@ -671,16 +687,17 @@ export function readRemoteDockets(
       });
     }
     const byLabel = new Map<string, number>();
-    for (const d of out) {
+    for (const d of dockets) {
       const key = sanitizeRefComponent(d.machine);
       byLabel.set(key, (byLabel.get(key) ?? 0) + 1);
     }
-    for (const d of out)
+    for (const d of dockets)
       d.label_collision = (byLabel.get(sanitizeRefComponent(d.machine)) ?? 0) > 1;
-    out.sort((a, b) => a.ref.localeCompare(b.ref));
-    return out;
+    dockets.sort((a, b) => a.ref.localeCompare(b.ref));
+    skipped.sort((a, b) => a.ref.localeCompare(b.ref));
+    return { dockets, skipped };
   } catch {
-    return [];
+    return { dockets: [], skipped: [] };
   }
 }
 

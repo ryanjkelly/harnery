@@ -1,6 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { removeDir } from "../../../tests/helpers/remove-dir.ts";
@@ -28,7 +35,7 @@ import { fetchPresence, publishPresence } from "./index.ts";
  */
 
 function git(cwd: string, ...args: string[]): string {
-  const r = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
+  const r = spawnSync("git", ["-C", cwd, ...args], { windowsHide: true, encoding: "utf8" });
   if (r.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${r.stderr}`);
   return r.stdout;
 }
@@ -179,7 +186,7 @@ describe("publish → fetch → read", () => {
 
     process.env.HARNERY_MACHINE = "machine-b";
     expect(fetchPresence(cloneB, { force: true, sync: true }).status).toBe("fetched");
-    const dockets = readRemoteDockets(cloneB);
+    const { dockets } = readRemoteDockets(cloneB);
     expect(dockets).toHaveLength(1);
     expect(dockets[0]).toMatchObject({
       machine: "machine-a",
@@ -192,7 +199,7 @@ describe("publish → fetch → read", () => {
 
     // A reads its own fetched ref: excluded by clone id.
     fetchPresence(cloneA, { force: true, sync: true });
-    expect(readRemoteDockets(cloneA)).toHaveLength(0);
+    expect(readRemoteDockets(cloneA).dockets).toHaveLength(0);
   });
 
   test("unchanged docket is skipped; turning sharing off withdraws it", () => {
@@ -209,7 +216,7 @@ describe("publish → fetch → read", () => {
     expect(publishDocket(cloneA, { sync: true, now: t2 }).status).toBe("published");
     process.env.HARNERY_MACHINE = "machine-b";
     fetchPresence(cloneB, { force: true, sync: true });
-    expect(readRemoteDockets(cloneB, { now: t2 })).toHaveLength(0);
+    expect(readRemoteDockets(cloneB, { now: t2 }).dockets).toHaveLength(0);
     // Already withdrawn: nothing further to say.
     expect(publishDocket(cloneA, { sync: true }).status).toBe("skipped");
   });
@@ -227,7 +234,7 @@ describe("publish → fetch → read", () => {
 
     process.env.HARNERY_MACHINE = "machine-b";
     fetchPresence(cloneB, { force: true, sync: true });
-    const dockets = readRemoteDockets(cloneB);
+    const { dockets } = readRemoteDockets(cloneB);
     expect(dockets.map((d) => d.ref)).toEqual(["machine-a"]);
     expect(dockets[0]!.stale).toBe(true);
   });
@@ -236,7 +243,7 @@ describe("publish → fetch → read", () => {
     git(cloneB, "remote", "set-url", "origin", join(base, "missing.git"));
     const r = fetchPresence(cloneB, { force: true, sync: true });
     expect(r.status).toBe("error");
-    expect(readRemoteDockets(cloneB)).toEqual([]);
+    expect(readRemoteDockets(cloneB)).toEqual({ dockets: [], skipped: [] });
   });
 });
 
@@ -257,10 +264,10 @@ describe("label collisions", () => {
     });
 
     fetchPresence(cloneA, { force: true, sync: true });
-    const seenByA = readRemoteDockets(cloneA);
+    const { dockets: seenByA } = readRemoteDockets(cloneA);
     expect(seenByA).toHaveLength(1);
     expect(seenByA[0]!.label_collision).toBe(false);
-    const all = readRemoteDockets(cloneA, { includeSelf: true });
+    const { dockets: all } = readRemoteDockets(cloneA, { includeSelf: true });
     expect(all).toHaveLength(2);
     expect(all.every((d) => d.label_collision)).toBe(true);
   });
@@ -303,5 +310,49 @@ describe("parseDocketBlob", () => {
     expect(blob?.truncated.waiting).toBe(0);
     expect(parseDocketBlob("[]")).toBeNull();
     expect(parseDocketBlob(JSON.stringify({ v: 2, kind: "docket" }))).toBeNull();
+  });
+});
+
+describe("read-only docket diagnostics", () => {
+  test("reports every skipped ref and keeps valid dockets in one result", () => {
+    const now = new Date("2026-11-14T12:00:00Z");
+    const { blob } = buildDocketBlob(cloneA, { now, machine: "remote", machineId: "abcdef123456" });
+    const messages = {
+      good: JSON.stringify(blob),
+      broken: "{not json",
+      partial: JSON.stringify({ v: 1, kind: "docket" }),
+      oldver: JSON.stringify({ ...blob, v: 9 }),
+      withdrawn: JSON.stringify({ ...blob, withdrawn: true }),
+      expired: JSON.stringify({ ...blob, published_at: "2026-01-01T00:00:00Z" }),
+      self: JSON.stringify({ ...blob, machine_id: docketMachineId(cloneB) }),
+    };
+    for (const [ref, message] of Object.entries(messages)) {
+      const sha = writePresenceCommit(cloneB, message);
+      git(cloneB, "update-ref", `${DOCKET_REF_PREFIX}${ref}`, sha!);
+    }
+    const result = readRemoteDockets(cloneB, { now });
+    expect(result.dockets.map((d) => d.ref)).toEqual(["good"]);
+    expect(result.skipped).toEqual([
+      { ref: "broken", reason: "invalid_json" },
+      { ref: "expired", reason: "expired" },
+      { ref: "oldver", reason: "unsupported_version" },
+      { ref: "partial", reason: "invalid_blob" },
+      { ref: "self", reason: "self" },
+      { ref: "withdrawn", reason: "withdrawn" },
+    ]);
+  });
+
+  test("does not create state or repair an absent or malformed machine id", () => {
+    const before = readdirSync(join(cloneB, ".harnery"), { recursive: true });
+    readRemoteDockets(cloneB);
+    expect(readdirSync(join(cloneB, ".harnery"), { recursive: true })).toEqual(before);
+    const idPath = join(cloneB, ".harnery", "presence", "docket-machine-id");
+    expect(existsSync(idPath)).toBe(false);
+    mkdirSync(join(cloneB, ".harnery", "presence"));
+    writeFileSync(idPath, "invalid id");
+    readRemoteDockets(cloneB);
+    expect(readFileSync(idPath, "utf8")).toBe("invalid id");
+    expect(docketMachineId(cloneB)).toMatch(/^[a-f0-9]{12}$/);
+    expect(readFileSync(idPath, "utf8").trim()).toMatch(/^[a-f0-9]{12}$/);
   });
 });

@@ -441,7 +441,7 @@ function loadRemoteDockets(coordRoot: string): RemoteDocket[] {
   } catch {
     /* fail open: read whatever refs are already local */
   }
-  return readRemoteDockets(coordRoot);
+  return readRemoteDockets(coordRoot).dockets;
 }
 
 function docketMeta(d: RemoteDocket): Record<string, unknown> {
@@ -498,7 +498,7 @@ function summarizeRemote(d: DocketDecision, source: RemoteDocket): Record<string
  */
 function failMutation(coordRoot: string, id: string, code: string, reason?: string): never {
   if (reason?.startsWith("no decision")) {
-    const hit = findRemoteDecision(readRemoteDockets(coordRoot), id);
+    const hit = findRemoteDecision(readRemoteDockets(coordRoot).dockets, id);
     if (hit) {
       const src = remoteSource(hit.source, hit.decision.filed_by);
       fail(
