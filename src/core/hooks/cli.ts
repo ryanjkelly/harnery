@@ -47,6 +47,7 @@ import {
   toolResponseMintedSessionName,
 } from "../agents/session-name-display.ts";
 import { NAME_BLOCK_SURFACE_ID } from "../agents/session-title/types.ts";
+import { removeFinalizationPathIndex } from "../agents/state/finalization-path-index.ts";
 import type { Heartbeat } from "../agents/state/heartbeat-reader.ts";
 import {
   readHeartbeat,
@@ -2588,6 +2589,7 @@ function releaseClaimOnFailure(
 }
 
 function cleanupSessionEnd(coordRoot: string, instanceId: string): void {
+  removeFinalizationPathIndex(coordRoot, instanceId);
   // Sweep pid-map entries pointing to this instance
   const pidmapDir = join(coordRoot, ".harnery", "pid-map");
   if (existsSync(pidmapDir)) {

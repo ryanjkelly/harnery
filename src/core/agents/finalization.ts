@@ -19,6 +19,7 @@ import { type AgentFinalizationDisposition, agentsFinalizationRoots } from "../c
 import { readFinalizationScopeV3 } from "../events/v3/finalization-view.ts";
 import { liveInstanceIdV3, resolveLiveEventLedgerRouteV3 } from "../events/v3/live-routing.ts";
 import { nativeSessionIdentity } from "./canonical-emit.ts";
+import { readFinalizationPathIndex } from "./state/finalization-path-index.ts";
 import type { Heartbeat } from "./state/heartbeat-reader.ts";
 
 const gitDeadline = new AsyncLocalStorage<number>();
@@ -148,12 +149,22 @@ export function readSessionWriteClaims(
   if (route.state === "blocked") return { paths: [], complete: false, repositoryOnlyPaths: [] };
   try {
     const scope = readFinalizationScopeV3(coordRoot, liveInstanceIdV3(instanceId));
+    // Claims in extra finalization roots carry no path in the ledger; this
+    // machine's index supplies them (ADR 0267). An unreadable index fails closed.
+    const index = readFinalizationPathIndex(coordRoot, instanceId, scope.generation_id);
+    if (index.state === "corrupt") {
+      return { paths: [], complete: false, repositoryOnlyPaths: [] };
+    }
+    const indexedHeld = index.state === "ok" ? index.held : [];
+    const indexedReleased = index.state === "ok" ? index.released : [];
     return {
-      paths: scope.files_touched,
+      paths: [...new Set([...scope.files_touched, ...indexedHeld])],
       complete: true,
       repositoryOnlyPaths: [
-        ...new Set([...scope.handed_off_paths, ...scope.released_paths]),
-      ].sort(),
+        ...new Set([...scope.handed_off_paths, ...scope.released_paths, ...indexedReleased]),
+      ]
+        .filter((path) => !indexedHeld.includes(path))
+        .sort(),
     };
   } catch {
     return { paths: [], complete: false, repositoryOnlyPaths: [] };
@@ -806,9 +817,16 @@ function inspectGitFinalization(
   for (const obligation of options.repositoryOnlyPaths ?? []) {
     if (held.has(obligation)) continue;
     const decision = classifyWithRoots(root, obligation, roots, toplevels);
-    if (!decision.allow || decision.descriptor.disposition === "output" || !decision.repo) {
+    if (!decision.allow) {
+      // A released path outside the coordination repository comes from the
+      // path index (ADR 0267). Name it rather than pass silently when its root
+      // is gone from the configuration or its repository is unavailable.
+      if (!pathInside(root, resolveHeldPath(root, obligation))) {
+        unsupportedPaths.push({ path: obligation, reason: decision.reason });
+      }
       continue;
     }
+    if (decision.descriptor.disposition === "output" || !decision.repo) continue;
     owe(decision.repo.root, decision.repo.path);
     for (const link of superprojectChain(
       decision.authorityRoot,
@@ -967,7 +985,9 @@ export function formatGitFinalizationFailure(
         : "Owned work is not finalized; the status box was not issued.",
   ];
   if (!result.claim_history_complete) {
-    lines.push("This session's full write-claim history could not be verified.");
+    lines.push(
+      "This session's full write-claim history could not be verified: the event ledger, or this machine's finalization path index under `.harnery/finalization-paths/`, could not be read.",
+    );
   }
   if (result.dirty_paths.length > 0) {
     lines.push("Dirty owned paths:", ...result.dirty_paths.map((path) => `  - ${path}`));

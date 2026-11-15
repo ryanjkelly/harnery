@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { removeDir } from "../../../tests/helpers/remove-dir.ts";
@@ -16,6 +23,12 @@ import { checkGitFinalization, readSessionFinalizationScope } from "./finalizati
 import { recordLiveClaimChangeV3 } from "./live-authority-v3.ts";
 import { evaluateClaim } from "./rules/claim-conflict.ts";
 import { evaluateCommit } from "./rules/commit-conflict.ts";
+import {
+  finalizationPathIndexDir,
+  pruneFinalizationPathIndex,
+  readFinalizationPathIndex,
+  removeFinalizationPathIndex,
+} from "./state/finalization-path-index.ts";
 import { setIdentityCache } from "./state/heartbeat-writer.ts";
 import { readLiveCoordinationRow } from "./state/live-coordination-view.ts";
 import { ensureLiveCoordinationHeartbeat } from "./state/live-coordination-writer.ts";
@@ -228,11 +241,10 @@ describe("released claims stay in the closing check", () => {
     });
   });
 
-  // Known gap, not fixed here: a claim outside the coordination root is an
-  // external_path target, which the contract records without a path. Neither
-  // a held nor a released claim in an extra finalization root reaches the
-  // closing check. This flips to passing once that gap is closed.
-  test.failing("(d) a committed, released, unpushed path in an extra finalization root", () => {
+  // A claim outside the coordination root is an external_path target, which
+  // the contract records without a path. The machine-local path index
+  // (ADR 0267) gives the closing check those paths, held or released.
+  test("(d) a committed, released, unpushed path in an extra finalization root", () => {
     const { repo, sibling } = fixture();
     claim(repo, ADA, "../sibling/owned.txt", "acquired");
     writeFileSync(join(sibling, "owned.txt"), "ada\n");
@@ -247,7 +259,7 @@ describe("released claims stay in the closing check", () => {
     expect(finalization(repo, ADA).result.ok).toBe(true);
   });
 
-  test.failing("(d, held) a dirty, held path in an extra finalization root", () => {
+  test("(d, held) a dirty, held path in an extra finalization root", () => {
     const { repo, sibling } = fixture();
     claim(repo, ADA, "../sibling/owned.txt", "acquired");
     writeFileSync(join(sibling, "owned.txt"), "ada\n");
@@ -300,5 +312,119 @@ describe("released claims stay in the closing check", () => {
       paths: ["owned.txt"],
       repositoryOnlyPaths: [],
     });
+  });
+});
+
+describe("claims in extra finalization roots use the machine-local path index", () => {
+  test("a held path committed but not pushed refuses until pushed", () => {
+    const { repo, sibling } = fixture();
+    claim(repo, ADA, "../sibling/owned.txt", "acquired");
+    writeFileSync(join(sibling, "owned.txt"), "ada\n");
+    commit(sibling, "ada", "owned.txt");
+    const unpushed = finalization(repo, ADA).result;
+    expect(unpushed).toMatchObject({ ok: false, dirty_paths: [], unpushed_repos: ["../sibling"] });
+    git(sibling, "push", "--quiet", "origin", "next");
+    expect(finalization(repo, ADA).result.ok).toBe(true);
+  });
+
+  test("a released path claimed again is held: dirty work refuses again", () => {
+    const { repo, sibling } = fixture();
+    claim(repo, ADA, "../sibling/owned.txt", "acquired");
+    claim(repo, ADA, "../sibling/owned.txt", "released");
+    writeFileSync(join(sibling, "owned.txt"), "dirty after release\n");
+    // Released: no dirty-file obligation, nothing committed, so nothing owed.
+    expect(finalization(repo, ADA).result.ok).toBe(true);
+
+    claim(repo, ADA, "../sibling/owned.txt", "acquired");
+    const held = finalization(repo, ADA);
+    expect(held.scope.repositoryOnlyPaths).toEqual([]);
+    expect(held.result.dirty_paths).toEqual(["../sibling/owned.txt"]);
+  });
+
+  test("a root without a remote still checks dirty files but owes no push", () => {
+    const { repo, sibling } = fixture();
+    git(sibling, "remote", "remove", "origin");
+    claim(repo, ADA, "../sibling/owned.txt", "acquired");
+    writeFileSync(join(sibling, "owned.txt"), "ada\n");
+    expect(finalization(repo, ADA).result.dirty_paths).toEqual(["../sibling/owned.txt"]);
+    commit(sibling, "ada", "owned.txt");
+    expect(finalization(repo, ADA).result.ok).toBe(true);
+    claim(repo, ADA, "../sibling/owned.txt", "released");
+    expect(finalization(repo, ADA).result.ok).toBe(true);
+  });
+
+  test("a path outside every configured root is not indexed", () => {
+    const { repo } = fixture();
+    const outside = join(repo, "..", "elsewhere", "note.txt");
+    mkdirSync(join(repo, "..", "elsewhere"), { recursive: true });
+    writeFileSync(outside, "x\n");
+    claim(repo, ADA, outside, "acquired");
+    expect(existsSync(join(finalizationPathIndexDir(repo), `${ADA}.json`))).toBe(false);
+  });
+
+  test("a released path whose root left the configuration is named, not passed", () => {
+    const { repo, sibling } = fixture();
+    claim(repo, ADA, "../sibling/owned.txt", "acquired");
+    writeFileSync(join(sibling, "owned.txt"), "ada\n");
+    commit(sibling, "ada", "owned.txt");
+    claim(repo, ADA, "../sibling/owned.txt", "released");
+    writeFileSync(
+      join(repo, ".harnery", "config.jsonc"),
+      JSON.stringify({ binName: "harn", agents: { finalizationRoots: [] } }),
+    );
+    const result = finalization(repo, ADA).result;
+    expect(result.ok).toBe(false);
+    expect(result.unsupported_paths).toEqual([
+      {
+        path: join(sibling, "owned.txt").replaceAll("\\", "/"),
+        reason: "outside_finalization_roots",
+      },
+    ]);
+  });
+
+  test("a missing index changes nothing; a corrupt one fails closed", () => {
+    const { repo, sibling } = fixture();
+    claim(repo, ADA, "../sibling/owned.txt", "acquired");
+    writeFileSync(join(sibling, "owned.txt"), "ada\n");
+    expect(removeFinalizationPathIndex(repo, ADA)).toBe(true);
+    expect(finalization(repo, ADA).result.ok).toBe(true);
+
+    mkdirSync(finalizationPathIndexDir(repo), { recursive: true });
+    writeFileSync(join(finalizationPathIndexDir(repo), `${ADA}.json`), "{not json");
+    const corrupt = finalization(repo, ADA);
+    expect(corrupt.scope.complete).toBe(false);
+    expect(corrupt.result.ok).toBe(false);
+    expect(corrupt.result.claim_history_complete).toBe(false);
+  });
+
+  test("the index blocks no peer, and entries from another generation are ignored", () => {
+    const { repo, sibling } = fixture();
+    claim(repo, ADA, "../sibling/owned.txt", "acquired");
+    writeFileSync(join(sibling, "owned.txt"), "ada\n");
+    commit(sibling, "ada", "owned.txt");
+    claim(repo, ADA, "../sibling/owned.txt", "released");
+    expect(
+      evaluateClaim(repo, {
+        rule: "claim",
+        instance_id: BO,
+        session_id: BO,
+        path: "../sibling/owned.txt",
+      }).allow,
+    ).toBe(true);
+    expect(readFinalizationPathIndex(repo, ADA, "gen_other")).toEqual({
+      state: "ok",
+      held: [],
+      released: [],
+    });
+  });
+
+  test("old index files are pruned by age", () => {
+    const { repo } = fixture();
+    claim(repo, ADA, "../sibling/owned.txt", "acquired");
+    const file = join(finalizationPathIndexDir(repo), `${ADA}.json`);
+    const old = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    utimesSync(file, old, old);
+    expect(pruneFinalizationPathIndex(repo)).toEqual([`${ADA}.json`]);
+    expect(existsSync(file)).toBe(false);
   });
 });

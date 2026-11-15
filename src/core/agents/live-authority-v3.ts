@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isAbsolute } from "node:path";
 import type { Adapter } from "../adapter.ts";
 import { EVENT_ADAPTER_IDS_V3 } from "../events/v3/adapter-id.ts";
 import type { AuthorityMutationV3 } from "../events/v3/authority-outbox.ts";
@@ -33,6 +34,8 @@ import {
   scanHookProducerStateRecordsV3,
 } from "../events/v3/producers/recorder.ts";
 import { canonicalClaimPath } from "./claim-path.ts";
+import { classifyWriteClaimFinalization } from "./finalization.ts";
+import { recordFinalizationPathClaim } from "./state/finalization-path-index.ts";
 import {
   acquireClaim,
   type Heartbeat,
@@ -581,9 +584,11 @@ export function recordLiveClaimChangeV3(
           (path) => canonicalClaimPath(input.coordRoot, path) !== canonical,
         );
   const desired: Heartbeat = { ...before, files_touched: desiredFiles };
-  if (coordinationAuthorityStateDigestV3(before) === coordinationAuthorityStateDigestV3(desired))
+  if (coordinationAuthorityStateDigestV3(before) === coordinationAuthorityStateDigestV3(desired)) {
+    indexExternalClaim(input, subject, before, canonical);
     return { state: "unchanged" };
-  return recordLiveAuthority(
+  }
+  const recorded = recordLiveAuthority(
     input,
     "claim-changed",
     {
@@ -602,6 +607,49 @@ export function recordLiveClaimChangeV3(
       if (!result) throw new LiveCoordinationAuthorityV3Error("claim_materialization_failed");
     },
   );
+  indexExternalClaim(input, subject, before, canonical, recorded);
+  return recorded;
+}
+
+/**
+ * Keep the machine-local path index (ADR 0267) for a claim in an extra Git
+ * finalization root, whose ledger target carries no path. Best effort: the
+ * index grants nothing, and a failure here must not undo a recorded claim.
+ */
+function indexExternalClaim(
+  input: { coordRoot: string; operation: "acquired" | "released"; access?: "read" | "write" },
+  subject: string,
+  before: Heartbeat,
+  canonical: string,
+  recorded?: LiveCoordinationAuthorityV3Result,
+): void {
+  if ((input.access ?? "write") !== "write" || !isAbsolute(canonical)) return;
+  const generationId = before.v3_generation_id;
+  if (!generationId) return;
+  try {
+    let root = "";
+    if (input.operation === "acquired") {
+      const decision = classifyWriteClaimFinalization(input.coordRoot, canonical);
+      if (!decision.allow || decision.descriptor.disposition !== "git") return;
+      root = decision.descriptor.root;
+    }
+    const event = recorded?.state === "recorded" ? recorded.result : undefined;
+    const target =
+      event?.state === "recorded"
+        ? (event.event.payload as { target?: { fingerprint?: { digest?: unknown } } }).target
+        : undefined;
+    const digest = target?.fingerprint?.digest;
+    recordFinalizationPathClaim(input.coordRoot, {
+      instanceId: subject,
+      generationId,
+      operation: input.operation,
+      path: canonical,
+      root,
+      ...(typeof digest === "string" ? { targetDigest: digest } : {}),
+    });
+  } catch {
+    /* the closing check reports what the index cannot show */
+  }
 }
 
 /**
