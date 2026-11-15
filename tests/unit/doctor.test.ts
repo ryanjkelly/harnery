@@ -68,7 +68,7 @@ describe("harn doctor", () => {
 
   test("every check has a severity", () => {
     for (const c of checks) {
-      expect(["ok", "warn", "fail"]).toContain(c.severity);
+      expect(["ok", "info", "warn", "fail"]).toContain(c.severity);
     }
   });
 

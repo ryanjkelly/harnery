@@ -5,6 +5,7 @@
  * version, and OS-specific install hints. Returns a checklist:
  *
  *   ✓ ok: dep is present and recent enough
+ *   ℹ info: a configured feature is not set up on this machine
  *   ⚠ warn: optional dep missing (feature degrades)
  *   ✗ fail: required dep missing (commands will throw)
  *
@@ -23,7 +24,9 @@ import path from "node:path";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
 import { BUILTIN_ADAPTER_IDS } from "../core/adapters/index.ts";
+import { inspectBackupSetup } from "../core/backup/setup.ts";
 import {
+  backupConfig,
   codexWindowsBridgeConfig,
   type DoctorEnvironmentFindings,
   doctorEnvironmentFindings,
@@ -62,7 +65,7 @@ import type { AdapterName } from "../core/run/types.ts";
 import { checkGitHooks, gitHooksInstalled } from "../lib/instructions/git-hooks.ts";
 import { findRg, installRg, managedRgPath, rgInstallSupported } from "../lib/tools/ripgrep.ts";
 
-type Severity = "ok" | "warn" | "fail";
+type Severity = "ok" | "info" | "warn" | "fail";
 
 /**
  * `runtime`: Harnery cannot run safely or correctly while this fails.
@@ -126,6 +129,7 @@ export function doctorReport(
     summary: {
       total: all.length,
       ok: count("ok"),
+      info: count("info"),
       warn: count("warn"),
       fail: count("fail"),
       runtimeFail: outcome.runtimeFail,
@@ -135,7 +139,7 @@ export function doctorReport(
     outcome: outcome.outcome,
   };
 
-  const symbols: Record<Severity, string> = { ok: "✓", warn: "⚠", fail: "✗" };
+  const symbols: Record<Severity, string> = { ok: "✓", info: "ℹ", warn: "⚠", fail: "✗" };
   const widest = Math.max(...all.map((c) => c.name.length));
   const lines: string[] = [];
   for (const c of all) {
@@ -149,7 +153,8 @@ export function doctorReport(
       );
     }
   }
-  let summary = `\n${count("ok")} ok, ${count("warn")} warn, ${count("fail")} fail`;
+  const infoSummary = count("info") ? `${count("info")} info, ` : "";
+  let summary = `\n${count("ok")} ok, ${infoSummary}${count("warn")} warn, ${count("fail")} fail`;
   if (outcome.outcome === "reported") {
     summary += ` (${outcome.environmentFail} environment finding${
       outcome.environmentFail === 1 ? "" : "s"
@@ -205,6 +210,7 @@ export async function runChecks(): Promise<Check[]> {
   const codexWslBridge = codexWslBridgeCheck(codexWslStatus, recentCodexMidFlightCount);
   const codexHookRuns = codexHookRunsCheck(root);
   const codexWindowsRoute = codexWindowsBridgeCheck(root);
+  const backupSetup = backupSetupCheck(root);
   // Probe the adapter CLIs before the hook check runs, not in output order:
   // an unwired adapter only matters if its CLI is actually installed, and
   // probing once here keeps that join to one spawn per CLI.
@@ -228,9 +234,26 @@ export async function runChecks(): Promise<Check[]> {
     ...(codexHookRuns ? [codexHookRuns] : []),
     ...workflow.map((w) => w.check),
     checkRestic(),
+    ...(backupSetup ? [backupSetup] : []),
     checkPlaywright(),
     checkPython(),
   ];
+}
+
+/** Presence-only setup inspection for the backup feature Harnery uses itself. */
+export function backupSetupCheck(root: string | null): Check | null {
+  if (!root) return null;
+  const config = backupConfig(root);
+  if (!config.schedule) return null;
+  const { missing } = inspectBackupSetup(config);
+  return {
+    name: "backup",
+    scope: "runtime",
+    severity: missing.length ? "info" : "ok",
+    detail: missing.length
+      ? `not set up on this machine (${missing.map((piece) => piece.message).join("; ")})`
+      : "set up on this machine",
+  };
 }
 
 /** Unknown root tokens remain literal in both the write guard and finalization. */

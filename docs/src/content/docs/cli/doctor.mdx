@@ -20,6 +20,7 @@ Harnery's own tools directory (`~/.local/share/harnery/tools`), which
 ## Severity model
 
 - `✓ ok`: present and recent enough
+- `ℹ info`: a configured feature is not set up on this machine; never fails doctor
 - `⚠ warn`: optional dep missing (the dependent feature degrades; Harnery's core still works)
 - `✗ fail`: required dep missing (Node, git); commands will throw
 
@@ -93,8 +94,29 @@ scope, and `environmentFindings` echoes the setting in effect.
 | `codex:hook runs` | optional | Warns about Codex hook runs from the last 24 hours that started but never finished. Codex kills a hook at its `timeout` and the tool proceeds without that hook's checks |
 | `workflow:claude-code` / `workflow:codex` / `workflow:cursor` / `workflow:opencode` | optional | Spawn targets for [`harn run`](/cli/run/): is the adapter CLI installed, and how will headless children bill (subscription login vs API key)? A missing CLI warns with the vendor's official install one-liner + login command; installed-but-unauthenticated warns with the login hint |
 | `restic`       | optional | Required for `harn backup` |
+| `backup`       | optional | Shown only when a backup schedule is configured. Scope `runtime`. Reports missing local setup as `info`, or `ok` when every prerequisite is present |
 | `playwright`   | optional | Required for `harn browse` (module + browsers installed) |
 | `python3`      | optional | Some examples shell out to Python. Scope `environment` |
+
+### Backup setup on this machine
+
+When `backup.schedule.if_stale` is configured, doctor calls the same local setup
+inspection as scheduled backups. Missing restic, a password file, rclone, or a
+named rclone remote produces an informational finding:
+
+```text
+ℹ backup  not set up on this machine (restic is not on PATH; rclone is not on PATH)
+```
+
+Doctor lists every missing piece the inspection reports. The finding appears as
+`"severity": "info"` in JSON and contributes to `summary.info`. It never fails
+doctor, including when `doctor.environmentFindings` is `"fail"`. Backup is a
+runtime check because Harnery uses these tools itself.
+
+When every prerequisite is present, the line reads
+`✓ backup  set up on this machine`. This checks local setup only; it does not
+contact the repository or prove that a snapshot has succeeded. With no schedule,
+doctor omits the `backup` line. The separate `restic` tool check still runs.
 
 ## Examples
 
