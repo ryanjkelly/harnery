@@ -93,6 +93,24 @@ export interface ClaimProjectionV3 {
   transaction_id: string;
 }
 
+/**
+ * One named handoff of a claimed workspace path (ADR 0263). An offer changes
+ * no ownership. An acceptance moves the path's dirty-file obligation from the
+ * sender to the receiver; the sender keeps its repository obligations.
+ */
+export interface HandoffProjectionV3 {
+  handoff_id: string;
+  sender_instance_id: string;
+  receiver_instance_id: string;
+  target_digest: string;
+  target_display?: string;
+  state: "offered" | "accepted";
+  offered_event_id: string;
+  offered_at: string;
+  accepted_event_id?: string;
+  accepted_at?: string;
+}
+
 export interface DelegationProjectionV3 {
   delegation_id: string;
   parent_generation_id: string;
@@ -113,6 +131,13 @@ export interface SafetyProjectionV3 {
   current_generation_by_instance: Record<string, string>;
   claims: Record<string, ClaimProjectionV3>;
   delegations: Record<string, DelegationProjectionV3>;
+  handoffs: Record<string, HandoffProjectionV3>;
+  /**
+   * `sender\0target_digest` to the accepted handoff id, until the sender
+   * claims that path again. A claim the sender still shows on a handed-off
+   * path is no longer its dirty-file obligation.
+   */
+  handed_off: Record<string, string>;
   decisions: Record<string, string>;
   identities: Record<string, string>;
   health: Record<string, { severity: string; condition: string; event_id: string }>;
@@ -135,6 +160,8 @@ export function reduceSafetyProjectionV3(read: ReadLedgerV3Result): SafetyProjec
     current_generation_by_instance: {},
     claims: {},
     delegations: {},
+    handoffs: {},
+    handed_off: {},
     decisions: {},
     identities: {},
     health: {},
@@ -181,6 +208,9 @@ function applyEvent(projection: SafetyProjectionV3, positioned: PositionedEventV
       return;
     case "coord.claim_changed":
       applyClaim(projection, event);
+      return;
+    case "coord.handoff_changed":
+      applyHandoff(projection, event);
       return;
     case "decision.state_changed":
       if (!authorityAttributionVerified(event)) {
@@ -496,6 +526,10 @@ function applyClaim(
     });
     return;
   }
+  // Claiming a handed-off path again makes it this session's obligation again.
+  delete projection.handed_off[
+    `${event.payload.subject_instance_id}\0${event.payload.target.fingerprint.digest}`
+  ];
   // A re-acquire by the current holder is idempotent (the guard may re-assert
   // a holding it cannot see across an epoch boundary): refresh, never conflict.
   projection.claims[key] = {
@@ -509,6 +543,51 @@ function applyClaim(
     acquired_event_id: event.event_id,
     transaction_id: event.payload.authority.transaction_id!,
   };
+}
+
+/**
+ * Handoffs are advisory until accepted and never fail the ledger closed: a
+ * malformed or out-of-order handoff row changes no ownership, so it cannot
+ * strand anyone's claims. The command validates before it records.
+ */
+function applyHandoff(
+  projection: SafetyProjectionV3,
+  event: Extract<EventV3, { event_type: "coord.handoff_changed" }>,
+): void {
+  const payload = event.payload;
+  if (!authorityAttributionVerified(event, payload.actor_instance_id)) return;
+  if (payload.sender_instance_id === payload.receiver_instance_id) return;
+  const digest = payload.target.fingerprint.digest;
+  const existing = projection.handoffs[payload.handoff_id];
+  if (payload.operation === "offered") {
+    if (existing || payload.actor_instance_id !== payload.sender_instance_id) return;
+    const generationId = projection.current_generation_by_instance[payload.sender_instance_id];
+    if (projection.generations[generationId ?? ""]?.phase !== "live") return;
+    projection.handoffs[payload.handoff_id] = {
+      handoff_id: payload.handoff_id,
+      sender_instance_id: payload.sender_instance_id,
+      receiver_instance_id: payload.receiver_instance_id,
+      target_digest: digest,
+      target_display: payload.target.display,
+      state: "offered",
+      offered_event_id: event.event_id,
+      offered_at: event.time.observed_at,
+    };
+    return;
+  }
+  if (
+    existing?.state !== "offered" ||
+    payload.actor_instance_id !== payload.receiver_instance_id ||
+    existing.sender_instance_id !== payload.sender_instance_id ||
+    existing.receiver_instance_id !== payload.receiver_instance_id ||
+    existing.target_digest !== digest
+  ) {
+    return;
+  }
+  existing.state = "accepted";
+  existing.accepted_event_id = event.event_id;
+  existing.accepted_at = event.time.observed_at;
+  projection.handed_off[`${payload.sender_instance_id}\0${digest}`] = payload.handoff_id;
 }
 
 function applyProvisionalTermination(

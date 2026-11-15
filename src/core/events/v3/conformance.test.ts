@@ -218,6 +218,10 @@ function relationalFixture(fixture: Fixture): Fixture {
   if (fixture.event_type === "decision.state_changed") {
     object(payload.authority).record_id = "fixture";
   }
+  if (fixture.event_type === "coord.handoff_changed") {
+    object(payload.authority).transaction_id = `txn_${uuid}`;
+    payload.receiver_instance_id = "inst_receiver";
+  }
   if (fixture.event_type === "coord.claim_changed") {
     object(payload.target).access = payload.access;
     if (payload.operation !== "denied") {

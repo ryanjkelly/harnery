@@ -103,7 +103,7 @@ export function evaluateClaim(coordRoot: string, req: ClaimRequest): VerdictResu
         allow: false,
         exit_code: 2,
         rule: "claim.authority_conflict",
-        reason: `File ${req.path} is currently being edited by agent-${conflict.name ?? conflict.instance_id.slice(0, 8)}. Wait for them to finish or pick a different file. Set HARNERY_AGENT_COORD_OFF=1 to bypass (not recommended).`,
+        reason: claimConflictReason(coordRoot, req.path, conflict, myPeer),
       };
     }
   }
@@ -174,6 +174,28 @@ export function evaluateClaim(coordRoot: string, req: ClaimRequest): VerdictResu
   }
 
   return { allow: true, exit_code: 0, rule: "claim.pass" };
+}
+
+/**
+ * Name the holder, the handoff that would make this session the owner, and
+ * the existing bypass. An accepted handoff moves the claim at once, so the
+ * retried edit passes without any bypass (ADR 0263).
+ */
+export function claimConflictReason(
+  coordRoot: string,
+  path: string,
+  holder: Pick<PeerView, "name" | "instance_id">,
+  self: Pick<PeerView, "name" | "instance_id"> | undefined,
+): string {
+  const bin = resolveBinName(coordRoot);
+  const holderName = holder.name ?? holder.instance_id.slice(0, 8);
+  const selfName = self?.name ?? "<your name>";
+  return (
+    `File ${path} is currently being edited by agent-${holderName}. Wait for them to finish or pick a different file. ` +
+    `If you should finish it, ask agent-${holderName} to run \`${bin} agents handoff ${path} --to ${selfName}\`, ` +
+    `then run \`${bin} agents handoff accept ${path}\` and retry. ` +
+    "Set HARNERY_AGENT_COORD_OFF=1 to bypass (not recommended)."
+  );
 }
 
 function readPeers(coordRoot: string): PeerView[] {

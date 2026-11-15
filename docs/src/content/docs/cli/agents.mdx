@@ -46,6 +46,8 @@ harn agents ping <name> <msg>   # message an agent by name, live or not
 harn agents wait <name>         # block until a peer releases its files (or exits)
 harn agents release-claim <path> # drop a file claim from your own heartbeat (escape hatch)
 harn agents release-claim --all  # drop every claim your session still holds
+harn agents handoff <path>... --to <name> # offer claimed, dirty paths to a live peer
+harn agents handoff accept <path>...     # take over paths a peer offered you
 harn agents health              # one-screen coord-layer health rollup
 harn agents heal-events         # PIDMAP_HEAL telemetry (how often self-heal fixed drift)
 harn agents heal                # repair this session's disposable cache from V3
@@ -276,10 +278,11 @@ command fail without changing lifecycle or recording an event. The gate checks
 repository hygiene; it does not certify tests, deployment, or the business
 outcome.
 
-After the Git check passes, `done` also refuses while the session still holds
-file claims, because a finished task would otherwise keep peers blocked on its
-files. Run `harn agents release-claim --all` first. Released paths stay in the
-durable claim history, so a later Git check still covers them.
+Finishing a task releases the session's claims on clean paths, because a
+finished task would otherwise keep peers blocked on its files. When the only
+finding is dirty paths, `done` still releases the clean ones, keeps a claim on
+each dirty path, and says which path kept its claim and why. Commit the dirty
+path, or hand it to a live peer with `harn agents handoff`.
 
 A successful transition records one durable `coord.lifecycle_changed` event and
 projects it into the live heartbeat. Repeating the same state and reason is a
@@ -468,6 +471,38 @@ ended mid-edit) and a peer is now blocked on a path you no longer care about.
 the released paths. It touches only your own session's claims and fails if any
 claim remains afterward. Pass exactly one of `<path>` or `--all`. Durable claim
 history is unchanged, so the end-turn Git check still covers released paths.
+
+### handoff
+
+Several sessions can add lines to the same file. Each one's end-turn check
+then fails on the file even after its own lines are committed, and no session
+should commit another's lines. A handoff names who finishes the file:
+
+```bash
+harn agents handoff schemas/settings.json --to Ada   # run by each holder
+harn agents handoff accept schemas/settings.json     # run by Ada
+```
+
+The offer moves nothing. The paths stay in the sender's end-turn check until
+the receiver accepts. On acceptance the receiver holds the claim and must
+commit and push the paths before its own end-turn check passes. The sender
+keeps its repository obligations: its own commits must still be pushed. A
+sender that edits the file again takes it back.
+
+`handoff` refuses a path this session does not claim, a clean path (release it
+with `release-claim` instead), and a receiver that is not live, is ambiguous,
+or is this session. Offering the same path to the same peer again is a no-op.
+`accept` refuses a path nobody offered this session. Each step records a
+`coord.handoff_changed` event with the sender, the receiver, the path, and a
+content-free Git summary of the path. The receiver's status box shows waiting
+offers with the accept command. See
+[ADR 0263](/decisions/0263-hand-off-claimed-dirty-paths/).
+
+When the end-turn check refuses a dirty path that a live peer also holds, it
+names the peer and prints the exact handoff command. When a commit to the path
+landed after this session claimed it, the refusal says the remaining changes
+are not this session's. The edit and commit guards print the handoff command
+next to their bypass variable.
 
 ### health, heal-events
 

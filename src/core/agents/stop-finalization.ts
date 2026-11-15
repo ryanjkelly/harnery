@@ -54,6 +54,7 @@ export function observeStopGitFinalization(
     }
     const result = (dependencies.check ?? checkGitFinalization)(coordRoot, scope.paths, {
       claimHistoryComplete: scope.complete,
+      repositoryOnlyPaths: scope.repositoryOnlyPaths,
       includeRepositoryFreshness: false,
       timeoutMs: 2_000,
     });

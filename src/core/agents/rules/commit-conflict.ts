@@ -24,7 +24,7 @@ import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { adapterFromPlatform as sharedAdapterFromPlatform } from "../../adapter.ts";
-import { coordFreshnessSeconds } from "../../config.ts";
+import { coordFreshnessSeconds, resolveBinName } from "../../config.ts";
 import { resolveOwner } from "../../hooks/resolve/owner.ts";
 import { recordLiveClaimChangeV3 } from "../live-authority-v3.ts";
 import { readLiveCoordinationRows } from "../state/live-coordination-view.ts";
@@ -84,6 +84,11 @@ export interface CommitVerdictResult {
   message: string;
   /** When true, conflicts were detected but suppressed (self-attribution). */
   suppressed_self_attribution?: boolean;
+  /**
+   * On a block: per holder, the handoff that makes the committer the owner.
+   * An accepted handoff moves the claim at once, so the retried commit passes.
+   */
+  handoff_commands?: string[];
 }
 
 export function evaluateCommit(coordRoot: string, req: CommitVerdictRequest): CommitVerdictResult {
@@ -210,12 +215,19 @@ export function evaluateCommit(coordRoot: string, req: CommitVerdictRequest): Co
   // paths through the existing post-commit hook.
   retainBlockedStagedPaths(coordRoot, me, mySession, req.staged_paths, peers);
 
+  const bin = resolveBinName(coordRoot);
+  const selfName = peers.find((peer) => peer.instance_id === me)?.name ?? "<your name>";
   return {
     allow: false,
     exit_code: 1,
     rule: "commit.conflict",
     instance_id: me,
     conflicts,
+    handoff_commands: conflicts.map(
+      (c) =>
+        `${c.short_name}: ${bin} agents handoff ${c.claimed_path} --to ${selfName}; ` +
+        `then you: ${bin} agents handoff accept ${c.claimed_path}`,
+    ),
     log_lines: conflicts.map((c) => `COMMIT_BLOCKED  path=${c.staged_path} owner=${c.short_name}`),
     message:
       "✗ Commit blocked by multi-agent coordination (E guard).\n\n" +

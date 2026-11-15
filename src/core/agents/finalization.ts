@@ -98,6 +98,12 @@ export type ClaimFinalizationDecision =
 export interface SessionWriteClaims {
   paths: string[];
   complete: boolean;
+  /**
+   * Paths handed to a peer that accepted them (ADR 0263). Their dirty-file
+   * obligation moved to the receiver; their repositories and enclosing
+   * gitlinks stay in this session's commit-and-push check.
+   */
+  repositoryOnlyPaths?: string[];
 }
 
 /** Current and released claims use the same ownership boundary at status and Stop. */
@@ -112,16 +118,21 @@ export function readSessionFinalizationScope(
     row.instance_id,
     nativeSessionIdentity(row, fallbackSessionId),
   );
+  const handedOff = new Set(history.repositoryOnlyPaths ?? []);
   return {
-    paths: [...new Set([...(row.files_touched ?? []), ...history.paths])],
+    paths: [...new Set([...(row.files_touched ?? []), ...history.paths])].filter(
+      (path) => !handedOff.has(path),
+    ),
     complete: history.complete,
+    repositoryOnlyPaths: [...handedOff].sort(),
   };
 }
 
 /**
- * Read every write claim made by this session, including claims released after
- * a commit. Current heartbeat claims describe dirty ownership; this history is
- * what keeps the touched repository in scope until its commits are pushed.
+ * Read this session's current write claims from the V3 coordination view,
+ * plus the paths it handed to a peer that accepted them. A released claim
+ * leaves the view, so it is not part of this read; accepted handoffs stay
+ * as repository-only obligations until the session claims the path again.
  */
 export function readSessionWriteClaims(
   coordRoot: string,
@@ -129,12 +140,16 @@ export function readSessionWriteClaims(
   _sessionId: string,
 ): SessionWriteClaims {
   const route = resolveLiveEventLedgerRouteV3(coordRoot);
-  if (route.state === "blocked") return { paths: [], complete: false };
+  if (route.state === "blocked") return { paths: [], complete: false, repositoryOnlyPaths: [] };
   try {
     const scope = readFinalizationScopeV3(coordRoot, liveInstanceIdV3(instanceId));
-    return { paths: scope.files_touched, complete: true };
+    return {
+      paths: scope.files_touched,
+      complete: true,
+      repositoryOnlyPaths: scope.handed_off_paths,
+    };
   } catch {
-    return { paths: [], complete: false };
+    return { paths: [], complete: false, repositoryOnlyPaths: [] };
   }
 }
 
@@ -636,6 +651,8 @@ export function checkGitFinalization(
     includeRepositoryFreshness?: boolean;
     /** End-turn may fast-forward clean peer submodules after owned work is finalized. */
     reconcilePeerSubmodules?: boolean;
+    /** Handed-off paths: check their repositories are pushed, never their dirty state. */
+    repositoryOnlyPaths?: readonly string[];
     timeoutMs?: number;
   } = {},
 ): GitFinalizationResult {
@@ -653,6 +670,7 @@ function inspectGitFinalization(
     claimHistoryComplete?: boolean;
     includeRepositoryFreshness?: boolean;
     reconcilePeerSubmodules?: boolean;
+    repositoryOnlyPaths?: readonly string[];
   },
 ): GitFinalizationResult {
   const root = resolve(coordRoot);
@@ -679,6 +697,23 @@ function inspectGitFinalization(
       continue;
     }
     addRepoPath(repos, decision.repo.root, decision.repo.path);
+    addSuperprojects(decision.authorityRoot, repos, decision.repo.root);
+  }
+
+  const held = new Set(heldPaths);
+  for (const handedOff of options.repositoryOnlyPaths ?? []) {
+    if (held.has(handedOff)) continue;
+    const decision = classifyWriteClaimFinalization(root, handedOff);
+    if (!decision.allow || decision.descriptor.disposition === "output" || !decision.repo) {
+      continue;
+    }
+    if (!repos.has(decision.repo.root)) {
+      repos.set(decision.repo.root, {
+        root: decision.repo.root,
+        paths: new Set<string>(),
+        gitlinks: new Set<string>(),
+      });
+    }
     addSuperprojects(decision.authorityRoot, repos, decision.repo.root);
   }
 
@@ -776,6 +811,8 @@ export function formatGitFinalizationFailure(
   bin: string,
   phase: "status" | "stop" = "status",
   syncCommand: string | null = null,
+  /** Plain sentences naming peers that hold a dirty path, with the handoff command. */
+  dirtyPathNotes: readonly string[] = [],
 ): string {
   const statusCommand = `${bin} agents status --end-turn`;
   const ownedFindings =
@@ -810,6 +847,7 @@ export function formatGitFinalizationFailure(
   }
   if (result.dirty_paths.length > 0) {
     lines.push("Dirty owned paths:", ...result.dirty_paths.map((path) => `  - ${path}`));
+    lines.push(...dirtyPathNotes);
   }
   if (result.unpushed_repos.length > 0) {
     lines.push(

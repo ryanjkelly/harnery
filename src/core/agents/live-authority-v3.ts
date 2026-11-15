@@ -3,12 +3,14 @@ import type { Adapter } from "../adapter.ts";
 import { EVENT_ADAPTER_IDS_V3 } from "../events/v3/adapter-id.ts";
 import type { AuthorityMutationV3 } from "../events/v3/authority-outbox.ts";
 import { canonicalJsonV3, normalizeNativeIdV3, sha256V3 } from "../events/v3/canonical.ts";
+import type { HandoffGitStateV3 } from "../events/v3/contract.ts";
 import { type EventV3WriteMode, readEventV3ControlState } from "../events/v3/control.ts";
 import {
   readCoordinationViewV3,
   requireAuthoritySafeCoordinationViewV3,
 } from "../events/v3/coordination-view.ts";
 import { fingerprintContextV3 } from "../events/v3/fingerprint-keys.ts";
+import { nativeInstanceIdV3 } from "../events/v3/live-route-observer.ts";
 import {
   LIVE_HOOK_V3_PRODUCER_ID,
   liveInstanceIdV3,
@@ -598,6 +600,52 @@ export function recordLiveClaimChangeV3(
           ? acquireClaim(input.coordRoot, subject, canonical)
           : releaseClaim(input.coordRoot, subject, canonical);
       if (!result) throw new LiveCoordinationAuthorityV3Error("claim_materialization_failed");
+    },
+  );
+}
+
+/**
+ * Record one handoff offer or acceptance (ADR 0263). The actor is the owner:
+ * the sender offers, the receiver accepts. The event itself changes no
+ * heartbeat cache; an acceptance's claim acquisition is a separate
+ * `recordLiveClaimChangeV3` call by the receiver.
+ */
+export function recordLiveHandoffChangeV3(
+  input: Omit<LiveAuthorityBaseV3, "subject"> & {
+    operation: "offered" | "accepted";
+    handoffId: string;
+    sender: string;
+    receiver: string;
+    path: string;
+    git: HandoffGitStateV3;
+  },
+): LiveCoordinationAuthorityV3Result {
+  liveCoordinationWriteModeV3(input.coordRoot);
+  const before = requireHeartbeat(input, input.owner);
+  return recordLiveAuthority(
+    input,
+    "handoff-changed",
+    {
+      native_observation_id: input.observationId ?? `handoff-${randomUUID()}`,
+      handoff_id: input.handoffId,
+      operation: input.operation,
+      sender_instance_id: liveInstanceIdV3(input.sender),
+      receiver_instance_id: liveInstanceIdV3(input.receiver),
+      target: canonicalClaimPath(input.coordRoot, input.path),
+      git: input.git,
+    },
+    before,
+    before,
+    () => {
+      // The sender's disposable cache must match the view, which no longer
+      // lists the path, so the sender's next claim on it is a real change.
+      if (input.operation === "accepted") {
+        releaseClaim(
+          input.coordRoot,
+          nativeInstanceIdV3(liveInstanceIdV3(input.sender)),
+          canonicalClaimPath(input.coordRoot, input.path),
+        );
+      }
     },
   );
 }

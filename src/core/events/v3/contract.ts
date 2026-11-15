@@ -187,6 +187,41 @@ export const HealthCapabilityDriftV3Schema = eventV3("health.observed", {
   }),
 });
 
+/**
+ * A named handoff of one claimed workspace path from a sender session to a
+ * receiver session (ADR 0263). `offered` changes no ownership; `accepted`
+ * moves the path's dirty-file obligation to the receiver. The Git state is a
+ * privacy-safe summary of the path at that moment, never file content.
+ */
+export const HandoffGitStateV3Schema = StrictObject({
+  head: Type.Optional(Type.String({ pattern: "^[0-9a-f]{40}([0-9a-f]{24})?$" })),
+  worktree: Type.Union([
+    Type.Literal("clean"),
+    Type.Literal("staged"),
+    Type.Literal("unstaged"),
+    Type.Literal("staged_and_unstaged"),
+    Type.Literal("untracked"),
+    Type.Literal("missing"),
+    Type.Literal("unknown"),
+  ]),
+});
+
+const claimPayloadProperties = basePayload("coord.claim_changed").properties;
+
+export const CoordHandoffChangedV3Schema = eventV3("coord.claim_changed", {
+  eventType: "coord.handoff_changed",
+  payload: StrictObject({
+    handoff_id: SafeToken,
+    operation: Type.Union([Type.Literal("offered"), Type.Literal("accepted")]),
+    actor_instance_id: claimPayloadProperties.actor_instance_id!,
+    sender_instance_id: claimPayloadProperties.subject_instance_id!,
+    receiver_instance_id: claimPayloadProperties.subject_instance_id!,
+    target: claimPayloadProperties.target!,
+    git: HandoffGitStateV3Schema,
+    authority: claimPayloadProperties.authority!,
+  }),
+});
+
 const replacedBaseTypes = new Set([
   "session.ended",
   "turn.completed",
@@ -222,6 +257,7 @@ export const EventV3Schema = Type.Union(
     WaitStartedV3Schema,
     WaitEndedV3Schema,
     HealthCapabilityDriftV3Schema,
+    CoordHandoffChangedV3Schema,
   ],
   { $id: EVENT_V3_SCHEMA_ID },
 );
@@ -233,6 +269,7 @@ export const EVENT_V3_CORE_EVENT_TYPES = [
   "wait.started",
   "wait.ended",
   "health.capability_drift",
+  "coord.handoff_changed",
 ] as const;
 
 export type EventTypeV3 = (typeof EVENT_V3_CORE_EVENT_TYPES)[number];
@@ -315,6 +352,21 @@ type HealthCapabilityDriftEventV3 = ReplaceEventV3<
     generation_ended: boolean;
   }
 >;
+export type HandoffGitStateV3 = Static<typeof HandoffGitStateV3Schema>;
+type CoordHandoffChangedEventV3 = ReplaceEventV3<
+  "coord.claim_changed",
+  "coord.handoff_changed",
+  {
+    handoff_id: string;
+    operation: "offered" | "accepted";
+    actor_instance_id: EventOfTypeV3Base<"coord.claim_changed">["payload"]["actor_instance_id"];
+    sender_instance_id: EventOfTypeV3Base<"coord.claim_changed">["payload"]["subject_instance_id"];
+    receiver_instance_id: EventOfTypeV3Base<"coord.claim_changed">["payload"]["subject_instance_id"];
+    target: EventOfTypeV3Base<"coord.claim_changed">["payload"]["target"];
+    git: HandoffGitStateV3;
+    authority: EventOfTypeV3Base<"coord.claim_changed">["payload"]["authority"];
+  }
+>;
 export type EventOfTypeV3<T extends EventTypeV3> = T extends "session.ended"
   ? SessionEndedEventV3
   : T extends "turn.completed"
@@ -333,9 +385,11 @@ export type EventOfTypeV3<T extends EventTypeV3> = T extends "session.ended"
                 ? WaitEndedEventV3
                 : T extends "health.capability_drift"
                   ? HealthCapabilityDriftEventV3
-                  : T extends EventTypeV3Base
-                    ? WithContractV3<EventOfTypeV3Base<T>>
-                    : never;
+                  : T extends "coord.handoff_changed"
+                    ? CoordHandoffChangedEventV3
+                    : T extends EventTypeV3Base
+                      ? WithContractV3<EventOfTypeV3Base<T>>
+                      : never;
 /**
  * TypeBox cannot preserve the discriminated union through the generated
  * schema-branch spread above. Rebuild the static union from the authoritative
@@ -363,7 +417,8 @@ export type EventV3 =
   | AgentCompletedEventV3
   | WaitStartedEventV3
   | WaitEndedEventV3
-  | HealthCapabilityDriftEventV3;
+  | HealthCapabilityDriftEventV3
+  | CoordHandoffChangedEventV3;
 export type EventPayloadV3<T extends EventTypeV3> = EventOfTypeV3<T>["payload"];
 export type SpanSummaryV3 = Static<typeof SpanSummaryV3Schema>;
 export type TurnUsageV3 = Static<typeof TurnUsageV3Schema>;

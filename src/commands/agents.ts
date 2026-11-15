@@ -19,7 +19,11 @@ import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
-import { type Adapter, normalizeAdapter as titleAdapter } from "../core/adapter.ts";
+import {
+  type Adapter,
+  adapterFromPlatform,
+  normalizeAdapter as titleAdapter,
+} from "../core/adapter.ts";
 import { stripCoordRoot } from "../core/agents/claim-path.ts";
 import { coordBinPath, spawnCoordBinSync } from "../core/agents/coord-bin.ts";
 import {
@@ -35,6 +39,17 @@ import {
   readSessionFinalizationScope,
   readSessionWriteClaims,
 } from "../core/agents/finalization.ts";
+import {
+  describeDirtyPathPeers,
+  findLivePeerByName,
+  formatDirtyPathPeers,
+  handoffGitState,
+  handoffPathIsClean,
+  newHandoffId,
+  normalizePeerName,
+  outgoingHandoffsFrom,
+  pendingHandoffsFor,
+} from "../core/agents/handoff.ts";
 import { collectEventQueueHealthV3, type EventQueueHealthV3 } from "../core/agents/health.ts";
 import {
   emitEventV3,
@@ -50,6 +65,8 @@ import {
 import {
   bootstrapLiveCoordinationAuthorityV3,
   LiveCoordinationAuthorityV3Error,
+  recordLiveClaimChangeV3,
+  recordLiveHandoffChangeV3,
   reopenLiveCoordinationGenerationV3,
   restoreLiveCoordinationStateAfterEpochV3,
 } from "../core/agents/live-authority-v3.ts";
@@ -545,6 +562,29 @@ export function registerAgentsCommand(
       runReleaseClaim(path, opts);
     });
 
+  const handoff = cmd
+    .command("handoff")
+    .argument("[paths...]", "Claimed, dirty paths to hand over")
+    .description(
+      "Offer your claimed, dirty paths to a named live peer, who finishes and " +
+        "commits them. Nothing moves until the peer runs `agents handoff accept`; " +
+        "then the paths leave your end-turn check and join theirs. Your own " +
+        "commits must still be pushed.",
+    )
+    .option("--to <name>", "The live peer that will take over the paths")
+    .action((paths: string[], opts: { to?: string }) => {
+      runHandoffOffer(paths, opts);
+    });
+  handoff
+    .command("accept <paths...>")
+    .description(
+      "Accept paths a peer offered you. You become their owner at once: you " +
+        "must commit and push them before your own end-turn check passes.",
+    )
+    .action((paths: string[]) => {
+      runHandoffAccept(paths);
+    });
+
   cmd
     .command("ping <name> <message...>")
     .description(
@@ -807,6 +847,7 @@ function runEndSession(opts: {
   const history = readSessionWriteClaims(root, state.instance_id, state.session_id);
   const finalized = checkGitFinalization(root, history.paths, {
     claimHistoryComplete: history.complete,
+    repositoryOnlyPaths: history.repositoryOnlyPaths,
   });
   if (!finalized.ok) {
     return failCommand(
@@ -816,6 +857,7 @@ function runEndSession(opts: {
         resolveBinName(root),
         "status",
         agentsGitSyncCommand(root),
+        dirtyPathNotes(root, state.instance_id, finalized.dirty_paths),
       ),
     );
   }
@@ -1824,6 +1866,281 @@ function runReleaseClaim(path: string | undefined, opts: { all?: boolean } = {})
   process.stdout.write(releaseOne(canonical)); // lint-ok-emission: raw JSON pass-through from agent-coord release-claim; mirrors runSetTask which writes the same envelope
 }
 
+/** Release this session's claims on paths with nothing left to commit; returns them. */
+function releaseCleanClaims(root: string, owner: string, held: readonly string[]): string[] {
+  const clean = held.filter((path) => handoffPathIsClean(handoffGitState(root, path)));
+  if (clean.length === 0) return [];
+  const helper = coordBinPath("agent-coord", root);
+  if (!helper) return [];
+  const released: string[] = [];
+  for (const path of clean) {
+    const result = spawnCoordBinSync(helper, ["release-claim", owner, path], {
+      encoding: "utf8",
+      ...coordHelperOpts(root),
+    });
+    if (result.status === 0) released.push(path);
+  }
+  return released;
+}
+
+/** Plain sentences for dirty paths a live peer also holds, with the handoff command. */
+function dirtyPathNotes(root: string, owner: string, dirtyPaths: readonly string[]): string[] {
+  if (dirtyPaths.length === 0) return [];
+  try {
+    return formatDirtyPathPeers(
+      describeDirtyPathPeers(root, owner, dirtyPaths, readLiveCoordinationRows(root)),
+      resolveBinName(root),
+    );
+  } catch {
+    return [];
+  }
+}
+
+/** One status-box line for open handoff offers to or from this session. */
+function handoffStatusRow(root: string, owner: string): string | null {
+  let view: ReturnType<typeof readCoordinationViewV3>;
+  try {
+    view = readCoordinationViewV3(root);
+  } catch {
+    return null;
+  }
+  const incoming = pendingHandoffsFor(view, owner);
+  const outgoing = outgoingHandoffsFrom(view, owner);
+  if (incoming.length === 0 && outgoing.length === 0) return null;
+  const names = handoffNameIndex(root);
+  const parts: string[] = [];
+  if (incoming.length > 0) {
+    const paths = [...new Set(incoming.map((h) => h.target_display ?? "?"))];
+    const from = [...new Set(incoming.map((h) => names.get(h.sender_instance_id) ?? "a peer"))];
+    parts.push(
+      `${paths.join(", ")} offered by ${from.join(", ")}; accept: ${resolveBinName(root)} agents handoff accept ${paths.join(" ")}`,
+    );
+  }
+  if (outgoing.length > 0) {
+    const waiting = outgoing.map(
+      (h) => `${h.target_display ?? "?"} to ${names.get(h.receiver_instance_id) ?? "a peer"}`,
+    );
+    parts.push(`waiting for acceptance: ${waiting.join(", ")}`);
+  }
+  return parts.map(sanitizeStatusLabel).join("; ");
+}
+
+function handoffNameIndex(root: string): Map<string, string> {
+  const names = new Map<string, string>();
+  for (const row of readLiveCoordinationRows(root)) {
+    if (row.name) names.set(liveInstanceIdV3(row.instance_id), `agent-${row.name}`);
+  }
+  return names;
+}
+
+function requireHandoffSession(root: string | null): {
+  root: string;
+  owner: string;
+  row: LiveCoordinationRow;
+} | null {
+  if (!root) {
+    emit.error({
+      code: "not_in_repo",
+      message: "not in an agent session; coord_root() returned null",
+    });
+    process.exitCode = 1;
+    return null;
+  }
+  ensureAdapterSession(root);
+  const owner = resolveOwner() ?? sessionIdentityFromEnv();
+  if (!owner) {
+    emit.error(
+      sessionResolutionFailure(root, "not in an agent session; ppid walk found no pid-map entry"),
+    );
+    process.exitCode = 1;
+    return null;
+  }
+  const row = readCurrentCoordinationRow(owner);
+  if (!row) {
+    emit.error({ code: "no_live_generation", message: noLiveGenerationMessage(root, owner) });
+    process.exitCode = 1;
+    return null;
+  }
+  return { root, owner, row };
+}
+
+function runHandoffOffer(paths: string[], opts: { to?: string }): void {
+  const session = requireHandoffSession(monorepoRoot());
+  if (!session) return;
+  const { root, owner, row } = session;
+  const bin = resolveBinName(root);
+  if (!opts.to || paths.length === 0) {
+    emit.error({
+      code: "invalid_arguments",
+      message: `pass one or more paths and --to <name>: \`${bin} agents handoff <path>... --to <name>\``,
+    });
+    process.exitCode = 2;
+    return;
+  }
+  const lookup = findLivePeerByName(
+    readLiveCoordinationRows(root),
+    opts.to,
+    owner,
+    coordFreshnessSeconds(root),
+  );
+  if (lookup.state !== "found") {
+    const name = normalizePeerName(opts.to);
+    const message =
+      lookup.state === "self"
+        ? `agent-${name} is this session; hand the paths to another live peer`
+        : lookup.state === "ambiguous"
+          ? `${lookup.count} live sessions are named ${name}; nothing was offered`
+          : `no live session is named ${name}. A handoff goes only to a live peer that can accept and commit the paths; nothing was offered. Run \`${bin} agents status\` to see who is live.`;
+    emit.error({
+      code: lookup.state === "not_live" ? "receiver_not_live" : `receiver_${lookup.state}`,
+      message,
+    });
+    process.exitCode = 1;
+    return;
+  }
+  const receiver = lookup.peer;
+  const held = new Set(row.files_touched ?? []);
+  const canonical = paths.map((path) => stripCoordRoot(root, path));
+  for (const path of canonical) {
+    if (!held.has(path)) {
+      emit.error({
+        code: "path_not_claimed",
+        message: `this session holds no claim on ${path}, so it has nothing to hand over; nothing was offered`,
+      });
+      process.exitCode = 1;
+      return;
+    }
+    if (handoffPathIsClean(handoffGitState(root, path))) {
+      emit.error({
+        code: "path_clean",
+        message: `${path} has no uncommitted changes; release it with \`${bin} agents release-claim ${path}\` instead. Nothing was offered.`,
+      });
+      process.exitCode = 1;
+      return;
+    }
+  }
+  const view = readCoordinationViewV3(root);
+  const open = outgoingHandoffsFrom(view, owner);
+  const receiverId = liveInstanceIdV3(receiver.instance_id);
+  const offered: Array<{ handoff_id: string; path: string; recorded: boolean }> = [];
+  for (const path of canonical) {
+    const existing = open.find(
+      (h) => h.receiver_instance_id === receiverId && h.target_display === path,
+    );
+    if (existing) {
+      offered.push({ handoff_id: existing.handoff_id, path, recorded: false });
+      continue;
+    }
+    const handoffId = newHandoffId();
+    try {
+      recordLiveHandoffChangeV3({
+        coordRoot: root,
+        owner,
+        nativeSessionId: nativeSessionIdentity(row, owner),
+        adapter: adapterFromPlatform(row.platform, { context: "handoff" }),
+        operation: "offered",
+        handoffId,
+        sender: owner,
+        receiver: receiver.instance_id,
+        path,
+        git: handoffGitState(root, path),
+      });
+    } catch (error) {
+      emit.error({
+        code: "handoff_not_recorded",
+        message: `the coordination ledger refused the offer of ${path} (${error instanceof Error ? error.message : String(error)}); ownership did not change`,
+      });
+      process.exitCode = 1;
+      return;
+    }
+    offered.push({ handoff_id: handoffId, path, recorded: true });
+  }
+  const acceptCommand = `${bin} agents handoff accept ${canonical.join(" ")}`;
+  emit.data({
+    instance_id: owner,
+    receiver: receiver.name ? `agent-${receiver.name}` : receiver.instance_id,
+    receiver_instance_id: receiver.instance_id,
+    offered,
+    accept_command: acceptCommand,
+    message:
+      `Offered to agent-${receiver.name ?? receiver.instance_id}. Ownership has not moved: ` +
+      `the paths stay in your end-turn check until they run \`${acceptCommand}\`. ` +
+      `Tell them with \`${bin} agents ping ${receiver.name ?? receiver.instance_id} "<message>"\`.`,
+  });
+}
+
+function runHandoffAccept(paths: string[]): void {
+  const session = requireHandoffSession(monorepoRoot());
+  if (!session) return;
+  const { root, owner, row } = session;
+  const bin = resolveBinName(root);
+  const view = readCoordinationViewV3(root);
+  const pending = pendingHandoffsFor(view, owner);
+  const canonical = paths.map((path) => stripCoordRoot(root, path));
+  const matched = canonical.map((path) => ({
+    path,
+    offers: pending.filter((h) => h.target_display === path),
+  }));
+  const missing = matched.filter((entry) => entry.offers.length === 0).map((entry) => entry.path);
+  if (missing.length > 0) {
+    emit.error({
+      code: "no_handoff_offer",
+      message:
+        `no live peer has offered you ${missing.join(", ")}; nothing was accepted. ` +
+        `Its holder offers it with \`${bin} agents handoff <path> --to ${row.name ?? owner}\`.`,
+    });
+    process.exitCode = 1;
+    return;
+  }
+  const nativeSessionId = nativeSessionIdentity(row, owner);
+  const adapter = adapterFromPlatform(row.platform, { context: "handoff" });
+  const accepted: Array<{ handoff_id: string; path: string; sender_instance_id: string }> = [];
+  for (const { path, offers } of matched) {
+    try {
+      for (const offer of offers) {
+        recordLiveHandoffChangeV3({
+          coordRoot: root,
+          owner,
+          nativeSessionId,
+          adapter,
+          operation: "accepted",
+          handoffId: offer.handoff_id,
+          sender: offer.sender_instance_id,
+          receiver: owner,
+          path,
+          git: handoffGitState(root, path),
+        });
+        accepted.push({
+          handoff_id: offer.handoff_id,
+          path,
+          sender_instance_id: offer.sender_instance_id,
+        });
+      }
+      recordLiveClaimChangeV3({
+        coordRoot: root,
+        owner,
+        nativeSessionId,
+        adapter,
+        operation: "acquired",
+        path,
+        access: "write",
+      });
+    } catch (error) {
+      emit.error({
+        code: "handoff_not_recorded",
+        message: `the coordination ledger refused the acceptance of ${path} (${error instanceof Error ? error.message : String(error)})`,
+      });
+      process.exitCode = 1;
+      return;
+    }
+  }
+  emit.data({
+    instance_id: owner,
+    accepted,
+    message: `You now own ${canonical.join(", ")}: commit and push them before \`${bin} agents status --end-turn\` passes.`,
+  });
+}
+
 function runSetTask(task: string, opts?: { sessionId?: string }): void {
   task = sanitizeStatusLabel(task);
   const root = monorepoRoot();
@@ -2074,28 +2391,52 @@ function runLifecycle(
 
   let finalization: GitFinalizationResult | null = null;
   if (state === "done") {
-    const history = readSessionWriteClaims(
-      root,
-      hb.instance_id,
-      nativeSessionIdentity(hb, myOwner),
-    );
-    const touchedPaths = [...new Set([...(hb.files_touched ?? []), ...history.paths])];
-    finalization = checkGitFinalization(root, touchedPaths, {
-      claimHistoryComplete: history.complete,
+    const scope = readSessionFinalizationScope(root, hb, myOwner);
+    finalization = checkGitFinalization(root, scope.paths, {
+      claimHistoryComplete: scope.complete,
+      repositoryOnlyPaths: scope.repositoryOnlyPaths,
     });
+    // The task is over: release every claim on a clean path now (ADR 0263).
+    // When the only finding is dirty paths, the clean paths' repositories are
+    // already pushed, so releasing them cannot hide unpushed work.
+    const onlyDirty =
+      !finalization.ok &&
+      finalization.claim_history_complete &&
+      finalization.unpushed_repos.length === 0 &&
+      finalization.behind_repos.length === 0 &&
+      finalization.stale_submodules.length === 0 &&
+      finalization.diverged_submodules.length === 0 &&
+      finalization.unsupported_paths.length === 0 &&
+      finalization.unverifiable_paths.length === 0 &&
+      finalization.unverifiable_repos.length === 0;
+    const releasedClean =
+      finalization.ok || onlyDirty ? releaseCleanClaims(root, myOwner, hb.files_touched ?? []) : [];
     if (!finalization.ok) {
+      const notes = dirtyPathNotes(root, myOwner, finalization.dirty_paths);
+      const kept =
+        finalization.dirty_paths.length > 0
+          ? "Each dirty path keeps its claim because it has uncommitted changes; commit it, or hand it to a live peer."
+          : null;
       emit.error({
         code: "git_not_finalized",
-        message: formatGitFinalizationFailure(
-          finalization,
-          resolveBinName(root),
-          "status",
-          agentsGitSyncCommand(root),
-        ).replace("the status box was not issued", "lifecycle was not changed"),
+        message: [
+          formatGitFinalizationFailure(
+            finalization,
+            resolveBinName(root),
+            "status",
+            agentsGitSyncCommand(root),
+            notes,
+          ).replace("the status box was not issued", "lifecycle was not changed"),
+          ...(releasedClean.length > 0
+            ? [`Released claims on clean paths: ${releasedClean.join(", ")}.`]
+            : []),
+          ...(kept ? [kept] : []),
+        ].join("\n"),
       });
       process.exitCode = 1;
       return;
     }
+    hb = readCurrentCoordinationRow(myOwner) ?? hb;
     const heldClaims = hb.files_touched ?? [];
     if (heldClaims.length > 0) {
       // A done task that still holds claims blocks peers on files it finished.
@@ -2312,6 +2653,7 @@ function runStatus(opts: {
     const check = () =>
       checkGitFinalization(root, scope.paths, {
         claimHistoryComplete: scope.complete,
+        repositoryOnlyPaths: scope.repositoryOnlyPaths,
         reconcilePeerSubmodules: true,
       });
     finalization = check();
@@ -2330,6 +2672,7 @@ function runStatus(opts: {
         resolveBinName(root),
         "status",
         agentsGitSyncCommand(root),
+        dirtyPathNotes(root, myOwner, finalization.dirty_paths),
       );
       emit.error({
         code: "git_not_finalized",
@@ -2604,6 +2947,18 @@ function runStatus(opts: {
   if (qaSignal) {
     const idx = rows.findIndex((row) => row[0] === "time");
     rows.splice(idx, 0, ["qa", qaSignal.value]);
+  }
+  const handoffNote = handoffStatusRow(root, myOwner);
+  if (handoffNote) {
+    // Handoffs are claim facts, so they extend the files row.
+    const files = rows.find((row) => row[0] === "files");
+    if (files) files[1] = `${files[1]}; handoffs: ${handoffNote}`;
+    else
+      rows.splice(
+        rows.findIndex((row) => row[0] === "time"),
+        0,
+        ["files", `handoffs: ${handoffNote}`],
+      );
   }
   if (endTurnSync) {
     const idx = rows.findIndex((row) => row[0] === "time");

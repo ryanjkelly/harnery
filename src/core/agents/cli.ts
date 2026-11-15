@@ -967,9 +967,15 @@ async function handleGitHook(fallbackRoot: string, rest: string[]): Promise<numb
         process.stdout.write("\n");
       }
       if (!result.allow) {
+        const handoffs = result.handoff_commands ?? [];
         process.stdout.write(
           "  Wait for them to finish, split the commit, or set\n" +
-            "  HARNERY_AGENT_COORD_BYPASS=1 to force this commit through.\n\n",
+            "  HARNERY_AGENT_COORD_BYPASS=1 to force this commit through.\n" +
+            (handoffs.length > 0
+              ? "  To finish their lines yourself, have each holder hand the path to you:\n" +
+                handoffs.map((line) => `    ${line}\n`).join("")
+              : "") +
+            "\n",
         );
         return result.exit_code || 1;
       }

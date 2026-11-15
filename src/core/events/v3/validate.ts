@@ -111,7 +111,7 @@ function validateBaseSemantics(event: EventShape): string[] {
   const targets =
     event.event_type === "tool.requested"
       ? arrayOfRecords(event.payload.targets)
-      : event.event_type === "coord.claim_changed"
+      : event.event_type === "coord.claim_changed" || event.event_type === "coord.handoff_changed"
         ? [record(event.payload.target)]
         : [];
   for (const [index, target] of targets.entries()) {
@@ -199,6 +199,17 @@ function validateBaseSemantics(event: EventShape): string[] {
     !record(event.payload.authority).transaction_id
   ) {
     issues.push("/payload/authority/transaction_id:required_for_authority_transition");
+  }
+  if (event.event_type === "coord.handoff_changed") {
+    if (!record(event.payload.authority).transaction_id) {
+      issues.push("/payload/authority/transaction_id:required_for_authority_transition");
+    }
+    if (record(event.payload.target).kind !== "workspace_path") {
+      issues.push("/payload/target/kind:handoff_requires_workspace_path");
+    }
+    if (event.payload.sender_instance_id === event.payload.receiver_instance_id) {
+      issues.push("/payload/receiver_instance_id:must_differ_from_sender");
+    }
   }
   if (
     event.event_type === "coord.claim_changed" &&

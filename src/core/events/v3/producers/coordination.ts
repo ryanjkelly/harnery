@@ -1,7 +1,7 @@
 import type { AuthorityMutationV3 } from "../authority-outbox.ts";
 import { buildEventV3 } from "../builder.ts";
 import { type FingerprintContextV3, fingerprintV3, normalizeNativeIdV3 } from "../canonical.ts";
-import type { EventV3, SpanSummaryV3 } from "../contract.ts";
+import type { EventV3, HandoffGitStateV3, SpanSummaryV3 } from "../contract.ts";
 import { eventIdV3 } from "../ids.ts";
 import { describePathTargetV3 } from "../targets.ts";
 
@@ -9,6 +9,7 @@ export type CoordinationAuthoritySignalV3 =
   | "task-changed"
   | "lifecycle-changed"
   | "claim-changed"
+  | "handoff-changed"
   | "identity-attested"
   | "decision-state-changed"
   | "wait-started"
@@ -65,6 +66,16 @@ export interface ClaimChangedObservationV3 extends CoordinationObservationBaseV3
   access: "read" | "write";
 }
 
+export interface HandoffChangedObservationV3 extends CoordinationObservationBaseV3 {
+  handoff_id: string;
+  operation: "offered" | "accepted";
+  sender_instance_id: `inst_${string}`;
+  receiver_instance_id: `inst_${string}`;
+  /** Canonical workspace path; only its fingerprint and safe display enter the ledger. */
+  target: string;
+  git: HandoffGitStateV3;
+}
+
 export interface IdentityAttestedObservationV3 extends CoordinationObservationBaseV3 {
   identity_id: string;
   method: string;
@@ -99,6 +110,7 @@ export interface CoordinationObservationBySignalV3 {
   "task-changed": TaskChangedObservationV3;
   "lifecycle-changed": LifecycleChangedObservationV3;
   "claim-changed": ClaimChangedObservationV3;
+  "handoff-changed": HandoffChangedObservationV3;
   "identity-attested": IdentityAttestedObservationV3;
   "decision-state-changed": DecisionStateChangedObservationV3;
   "wait-started": WaitStartedObservationV3;
@@ -260,6 +272,40 @@ export function normalizeCoordinationAuthorityV3<S extends CoordinationAuthority
           operation: input.operation,
           target_fingerprint: target.fingerprint.digest as `sha256:${string}`,
           access: input.access,
+        },
+      };
+    }
+    case "handoff-changed": {
+      const input = observation as HandoffChangedObservationV3;
+      const target = describePathTargetV3({
+        coordRoot: context.coordRoot,
+        value: input.target,
+        access: "write",
+        fingerprintContext: context.fingerprintContext,
+        extractorVersion: "agent-coord-claim-v3",
+      });
+      const handoffId = safeToken(input.handoff_id);
+      return {
+        event: buildEventV3("coord.handoff_changed", {
+          ...common,
+          payload: {
+            handoff_id: handoffId,
+            operation: input.operation,
+            actor_instance_id: context.actor_instance_id,
+            sender_instance_id: input.sender_instance_id,
+            receiver_instance_id: input.receiver_instance_id,
+            target,
+            git: input.git,
+            authority,
+          },
+        }) as EventV3,
+        mutation: {
+          kind: "handoff.transition",
+          operation: input.operation,
+          handoff_id: handoffId,
+          target_fingerprint: target.fingerprint.digest as `sha256:${string}`,
+          sender_instance_id: input.sender_instance_id,
+          receiver_instance_id: input.receiver_instance_id,
         },
       };
     }

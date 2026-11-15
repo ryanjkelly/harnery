@@ -24,6 +24,8 @@ export interface FinalizationScopeV3 {
   generation_id: string;
   lifecycle_state?: string;
   files_touched: string[];
+  /** Accepted handoffs: repository obligations only, never dirty-file ones. */
+  handed_off_paths: string[];
   source_event_id: string;
   source_position: { segment_ordinal: number; byte_offset: number };
 }
@@ -61,6 +63,7 @@ function finalizationScopeFromCoordinationViewV3(
     generation_id: instance.generation_id,
     lifecycle_state: instance.lifecycle_state,
     files_touched: [...instance.files_touched],
+    handed_off_paths: [...(instance.handed_off_paths ?? [])],
     source_event_id: instance.last_event_id,
     source_position: { ...instance.source_position },
   };

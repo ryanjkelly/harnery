@@ -1,0 +1,72 @@
+---
+title: "0263: Hand off claimed dirty paths to a named peer"
+description: "ADR: a session offers a claimed, dirty path to a named live peer with agents handoff; after the peer accepts, the path leaves the sender's dirty-file check and joins the receiver's, recorded as a coord.handoff_changed event. Finishing a task releases clean claims."
+---
+
+**Status:** accepted (2026-11-14) · **Scope:** product tier (`commands/agents`, `core/agents/finalization`, `core/agents/handoff`, `core/agents/rules`, `core/events/v3`)
+
+## Context
+
+Several sessions in one checkout can add separate lines to the same file. Each
+session's end-turn check counts every claimed path whose Git status is not
+clean, so a session whose own lines were already committed still failed while
+peers' lines sat in the file. No session would commit a peer's lines, which is
+correct. Each also held a claim that made the edit and commit guards block the
+others. The only way out was the coordination bypass.
+
+Hunk-level ownership would need edit tracking through formatting, rebases, and
+overlapping changes. The sessions involved also had no recorded parent link or
+`agent.completed` event: the delegating client started them as independent
+top-level sessions, so Harnery saw no delegation it could close.
+
+## Alternatives considered
+
+- **Track hunks per session.** Precise in simple cases, fragile in real ones,
+  and a large privacy surface for the ledger.
+- **Release claims automatically when a session's own commit lands.** Nobody
+  would then be responsible for the remaining lines, and a later pathspec
+  commit could sweep them silently.
+- **Let the receiver take a path without the sender.** Ownership would move
+  without the current owner agreeing that its work is in a state to pass on.
+
+## Decision
+
+`agents handoff <path>... --to <name>` offers claimed, dirty paths to one live
+peer. The receiver runs `agents handoff accept <path>...`. Until it does,
+nothing changes. On acceptance the path leaves the sender's dirty-file check
+and joins the receiver's, and the receiver holds the claim. The sender keeps
+its repository obligations: its own commits, and any enclosing submodule
+pointer, must still be pushed. A sender that claims the path again takes the
+obligation back.
+
+Both steps are recorded as one additive V3 event type, `coord.handoff_changed`
+(`offered` or `accepted`), naming the sender, the receiver, the path's target
+fingerprint and display, and a content-free Git summary: the repository HEAD
+and whether the path was clean, staged, unstaged, both, untracked, or missing.
+The projection never fails the ledger closed on a handoff row; a malformed or
+unmatched row moves nothing. A handoff to a session that is not live, to
+itself, or of a clean or unclaimed path is refused before anything is written.
+
+When finalization refuses a dirty path that a live peer also holds, the
+refusal names the peer in one sentence and prints the handoff command. When a
+commit to the path landed after this session claimed it, the sentence says the
+remaining changes are not this session's. That reading is best effort: claim
+times and commit times, not hunks.
+
+`agents lifecycle done` now releases claims on clean paths itself. When the
+only finding is dirty paths, it releases the clean ones, keeps the dirty ones,
+and says which path kept its claim and why. Session end and delegated
+completion already drop a session's claims from the coordination view. The
+edit and commit guards read that view, so an accepted handoff makes the
+receiver the owner at once, and both refusals print the handoff command next
+to the existing bypass variable.
+
+## Consequences
+
+- Shared-file work finishes without the coordination bypass: senders hand the
+  file to an integrator, who commits the combined result.
+- A delegating client that starts workers as independent sessions still gives
+  Harnery no parent link; lifecycle `done`, session end, and freshness are what
+  end those workers' claims.
+- A session that ends with a dirty claimed path drops the claim from the view,
+  as before. Keeping it would block peers on a file nobody can finish.

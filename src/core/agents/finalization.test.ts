@@ -348,7 +348,11 @@ describe("checkGitFinalization", () => {
       return { paths: ["released.ts", "both.ts"], complete: false };
     });
     expect(observed).toEqual([temp, "operator", "native"]);
-    expect(result).toEqual({ paths: ["current.ts", "both.ts", "released.ts"], complete: false });
+    expect(result).toEqual({
+      paths: ["current.ts", "both.ts", "released.ts"],
+      complete: false,
+      repositoryOnlyPaths: [],
+    });
   });
 
   test("checks an authorized sibling Git repository through dirty, local, unpushed, and pushed states", () => {

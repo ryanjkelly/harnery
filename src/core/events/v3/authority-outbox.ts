@@ -48,6 +48,14 @@ export type AuthorityMutationV3 =
       access: "read" | "write";
     }
   | {
+      kind: "handoff.transition";
+      operation: "offered" | "accepted";
+      handoff_id: string;
+      target_fingerprint: `sha256:${string}`;
+      sender_instance_id: `inst_${string}`;
+      receiver_instance_id: `inst_${string}`;
+    }
+  | {
       kind: "identity.assume";
       identity_id: string;
     }
@@ -369,6 +377,23 @@ function validateMutation(value: unknown): AuthorityMutationV3 {
     ) {
       throw new Error("authority claim mutation is invalid");
     }
+  } else if (mutation.kind === "handoff.transition") {
+    if (
+      Object.keys(mutation).sort().join("\0") !==
+        "handoff_id\0kind\0operation\0receiver_instance_id\0sender_instance_id\0target_fingerprint" ||
+      !["offered", "accepted"].includes(String(mutation.operation)) ||
+      typeof mutation.handoff_id !== "string" ||
+      !SAFE_ID_PATTERN.test(mutation.handoff_id) ||
+      typeof mutation.target_fingerprint !== "string" ||
+      !SHA256_PATTERN.test(mutation.target_fingerprint) ||
+      typeof mutation.sender_instance_id !== "string" ||
+      !INSTANCE_PATTERN.test(mutation.sender_instance_id) ||
+      typeof mutation.receiver_instance_id !== "string" ||
+      !INSTANCE_PATTERN.test(mutation.receiver_instance_id) ||
+      mutation.sender_instance_id === mutation.receiver_instance_id
+    ) {
+      throw new Error("authority handoff mutation is invalid");
+    }
   } else if (mutation.kind === "identity.assume") {
     if (
       Object.keys(mutation).sort().join("\0") !== "identity_id\0kind" ||
@@ -468,6 +493,21 @@ function validateTransactionBinding(transaction: AuthorityTransactionV3, event: 
       event.payload.access !== mutation.access
     ) {
       throw new Error("authority claim transaction does not match its event");
+    }
+    return;
+  }
+  if (mutation.kind === "handoff.transition") {
+    if (
+      event.event_type !== "coord.handoff_changed" ||
+      event.payload.actor_instance_id !== transaction.actor_instance_id ||
+      event.payload.authority.transaction_id !== transaction.transaction_id ||
+      event.payload.operation !== mutation.operation ||
+      event.payload.handoff_id !== mutation.handoff_id ||
+      event.payload.target.fingerprint.digest !== mutation.target_fingerprint ||
+      event.payload.sender_instance_id !== mutation.sender_instance_id ||
+      event.payload.receiver_instance_id !== mutation.receiver_instance_id
+    ) {
+      throw new Error("authority handoff transaction does not match its event");
     }
     return;
   }

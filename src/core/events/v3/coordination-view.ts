@@ -2,6 +2,7 @@ import type { EventV3, RuntimeAttestationV3 } from "./contract.ts";
 import {
   EVENT_V3_SAFETY_REDUCER_BUILD,
   type GenerationSafetyStateV3,
+  type HandoffProjectionV3,
   reduceSafetyProjectionV3,
   type SafetyProjectionDiagnosticV3,
   type SafetyProjectionV3,
@@ -39,6 +40,12 @@ export interface CoordinationGenerationViewV3 {
   source_position: { segment_ordinal: number; byte_offset: number };
   waits: WaitProjectionV3[];
   files_touched: string[];
+  /**
+   * Paths this live session handed to a peer that accepted them (ADR 0263).
+   * They leave its dirty-file obligation; their repositories stay in its
+   * commit-and-push check.
+   */
+  handed_off_paths?: string[];
   progress_count: number;
   last_context_event_id?: string;
   provisional_termination?: GenerationSafetyStateV3["provisional_termination"];
@@ -60,6 +67,8 @@ export interface CoordinationViewV3 {
   instances: Record<string, CoordinationGenerationViewV3>;
   terminal_generations: Record<string, CoordinationGenerationViewV3>;
   delegations: SafetyProjectionV3["delegations"];
+  /** Every recorded handoff by id: open offers and accepted transfers. */
+  handoffs?: Record<string, HandoffProjectionV3>;
   decisions: SafetyProjectionV3["decisions"];
   health: SafetyProjectionV3["health"];
 }
@@ -137,9 +146,16 @@ export function projectCoordinationViewV3(read: ReadLedgerV3Result): Coordinatio
           claim.subject_instance_id === state.instance_id &&
           claim.access === "write" &&
           claim.target_kind === "workspace_path" &&
-          claim.target_display !== undefined,
+          claim.target_display !== undefined &&
+          safety.handed_off[`${claim.subject_instance_id}\0${claim.target_digest}`] === undefined,
       )
       .map((claim) => claim.target_display!)
+      .filter((path, index, all) => all.indexOf(path) === index)
+      .sort();
+    const handedOffPaths = Object.entries(safety.handed_off)
+      .filter(([key]) => key.startsWith(`${state.instance_id}\0`))
+      .map(([, handoffId]) => safety.handoffs[handoffId]?.target_display)
+      .filter((path): path is string => path !== undefined)
       .filter((path, index, all) => all.indexOf(path) === index)
       .sort();
     const view: CoordinationGenerationViewV3 = {
@@ -176,6 +192,9 @@ export function projectCoordinationViewV3(read: ReadLedgerV3Result): Coordinatio
         left.started_event_id.localeCompare(right.started_event_id),
       ),
       files_touched: state.phase === "live" ? filesTouched : [],
+      ...(state.phase === "live" && handedOffPaths.length > 0
+        ? { handed_off_paths: handedOffPaths }
+        : {}),
       progress_count: state.progress_event_ids.length,
       last_context_event_id: state.last_context_event_id,
       provisional_termination: state.provisional_termination,
@@ -205,6 +224,7 @@ export function projectCoordinationViewV3(read: ReadLedgerV3Result): Coordinatio
     instances,
     terminal_generations: terminalGenerations,
     delegations: safety.delegations,
+    handoffs: safety.handoffs,
     decisions: safety.decisions,
     health: safety.health,
   };

@@ -27124,6 +27124,609 @@
           }
         }
       }
+    },
+    {
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "contract",
+        "event_id",
+        "event_type",
+        "time",
+        "producer",
+        "scope",
+        "attestation_id",
+        "links",
+        "provenance",
+        "payload"
+      ],
+      "properties": {
+        "contract": {
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "name",
+            "major",
+            "schema_digest"
+          ],
+          "properties": {
+            "name": {
+              "const": "harnery.event",
+              "type": "string"
+            },
+            "major": {
+              "const": 3,
+              "type": "number"
+            },
+            "schema_digest": {
+              "pattern": "^sha256:[a-f0-9]{64}$",
+              "type": "string"
+            }
+          }
+        },
+        "event_id": {
+          "pattern": "^evt_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "event_type": {
+          "const": "coord.handoff_changed",
+          "type": "string"
+        },
+        "time": {
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "observed_at",
+            "recorded_at",
+            "clock_id",
+            "skew"
+          ],
+          "properties": {
+            "observed_at": {
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+              "type": "string"
+            },
+            "recorded_at": {
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+              "type": "string"
+            },
+            "monotonic_ns": {
+              "pattern": "^[0-9]+$",
+              "type": "string"
+            },
+            "clock_id": {
+              "pattern": "^clk_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            },
+            "skew": {
+              "anyOf": [
+                {
+                  "const": "normal",
+                  "type": "string"
+                },
+                {
+                  "const": "regressed",
+                  "type": "string"
+                },
+                {
+                  "const": "unknown",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        "producer": {
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "producer_id",
+            "boot_id",
+            "sequence",
+            "component",
+            "build_id",
+            "platform"
+          ],
+          "properties": {
+            "producer_id": {
+              "pattern": "^prd_[a-zA-Z0-9._-]{1,128}$",
+              "type": "string"
+            },
+            "boot_id": {
+              "pattern": "^boot_[a-zA-Z0-9._-]{1,128}$",
+              "type": "string"
+            },
+            "sequence": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "component": {
+              "anyOf": [
+                {
+                  "const": "agent-hook",
+                  "type": "string"
+                },
+                {
+                  "const": "agent-coord",
+                  "type": "string"
+                },
+                {
+                  "const": "session-tee",
+                  "type": "string"
+                },
+                {
+                  "const": "projector",
+                  "type": "string"
+                },
+                {
+                  "const": "health",
+                  "type": "string"
+                },
+                {
+                  "const": "recovery",
+                  "type": "string"
+                }
+              ]
+            },
+            "build_id": {
+              "pattern": "^build_[a-zA-Z0-9._-]{1,128}$",
+              "type": "string"
+            },
+            "platform": {
+              "anyOf": [
+                {
+                  "const": "linux",
+                  "type": "string"
+                },
+                {
+                  "const": "windows",
+                  "type": "string"
+                },
+                {
+                  "const": "macos",
+                  "type": "string"
+                },
+                {
+                  "const": "unknown",
+                  "type": "string"
+                }
+              ]
+            },
+            "bridge": {
+              "const": "codex-wsl",
+              "type": "string"
+            }
+          }
+        },
+        "scope": {
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "root_id",
+            "instance_id",
+            "session_id",
+            "generation_id"
+          ],
+          "properties": {
+            "root_id": {
+              "pattern": "^root_[a-zA-Z0-9._-]{1,128}$",
+              "type": "string"
+            },
+            "instance_id": {
+              "pattern": "^inst_[a-zA-Z0-9._-]{1,128}$",
+              "type": "string"
+            },
+            "run_id": {
+              "pattern": "^run_[a-zA-Z0-9._-]{1,128}$",
+              "type": "string"
+            },
+            "workflow_id": {
+              "pattern": "^wf_[a-zA-Z0-9._-]{1,128}$",
+              "type": "string"
+            },
+            "workflow_agent_id": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+              "type": "string"
+            },
+            "session_id": {
+              "pattern": "^(sid|tid|hid)_[a-f0-9]{64}$",
+              "type": "string"
+            },
+            "generation_id": {
+              "pattern": "^gen_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            },
+            "turn_id": {
+              "pattern": "^(sid|tid|hid)_[a-f0-9]{64}$",
+              "type": "string"
+            }
+          }
+        },
+        "attestation_id": {
+          "pattern": "^att_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "links": {
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "caused_by"
+          ],
+          "properties": {
+            "caused_by": {
+              "maxItems": 64,
+              "uniqueItems": true,
+              "type": "array",
+              "items": {
+                "pattern": "^evt_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "type": "string"
+              }
+            },
+            "span_id": {
+              "pattern": "^span_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            },
+            "parent_span_id": {
+              "pattern": "^span_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            },
+            "parent_generation_id": {
+              "pattern": "^gen_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            },
+            "delegation_id": {
+              "pattern": "^del_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        },
+        "provenance": {
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "source_event",
+            "attestation",
+            "confidence",
+            "attribution"
+          ],
+          "properties": {
+            "source_event": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+              "type": "string"
+            },
+            "attestation": {
+              "anyOf": [
+                {
+                  "const": "native",
+                  "type": "string"
+                },
+                {
+                  "const": "derived",
+                  "type": "string"
+                },
+                {
+                  "const": "inferred",
+                  "type": "string"
+                },
+                {
+                  "const": "operator",
+                  "type": "string"
+                }
+              ]
+            },
+            "confidence": {
+              "anyOf": [
+                {
+                  "const": "exact",
+                  "type": "string"
+                },
+                {
+                  "const": "high",
+                  "type": "string"
+                },
+                {
+                  "const": "medium",
+                  "type": "string"
+                },
+                {
+                  "const": "low",
+                  "type": "string"
+                }
+              ]
+            },
+            "source_record_id": {
+              "pattern": "^(sid|tid|hid)_[a-f0-9]{64}$",
+              "type": "string"
+            },
+            "attribution": {
+              "additionalProperties": false,
+              "type": "object",
+              "required": [
+                "method",
+                "state"
+              ],
+              "properties": {
+                "method": {
+                  "anyOf": [
+                    {
+                      "const": "session_env",
+                      "type": "string"
+                    },
+                    {
+                      "const": "native_payload",
+                      "type": "string"
+                    },
+                    {
+                      "const": "heartbeat_match",
+                      "type": "string"
+                    },
+                    {
+                      "const": "explicit_argument",
+                      "type": "string"
+                    },
+                    {
+                      "const": "unattributed",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "state": {
+                  "anyOf": [
+                    {
+                      "const": "verified",
+                      "type": "string"
+                    },
+                    {
+                      "const": "unverified",
+                      "type": "string"
+                    },
+                    {
+                      "const": "conflict",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "observer_instance_id": {
+                  "pattern": "^inst_[a-zA-Z0-9._-]{1,128}$",
+                  "type": "string"
+                },
+                "subject_instance_id": {
+                  "pattern": "^inst_[a-zA-Z0-9._-]{1,128}$",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "payload": {
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "handoff_id",
+            "operation",
+            "actor_instance_id",
+            "sender_instance_id",
+            "receiver_instance_id",
+            "target",
+            "git",
+            "authority"
+          ],
+          "properties": {
+            "handoff_id": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+              "type": "string"
+            },
+            "operation": {
+              "anyOf": [
+                {
+                  "const": "offered",
+                  "type": "string"
+                },
+                {
+                  "const": "accepted",
+                  "type": "string"
+                }
+              ]
+            },
+            "actor_instance_id": {
+              "pattern": "^inst_[a-zA-Z0-9._-]{1,128}$",
+              "type": "string"
+            },
+            "sender_instance_id": {
+              "pattern": "^inst_[a-zA-Z0-9._-]{1,128}$",
+              "type": "string"
+            },
+            "receiver_instance_id": {
+              "pattern": "^inst_[a-zA-Z0-9._-]{1,128}$",
+              "type": "string"
+            },
+            "target": {
+              "additionalProperties": false,
+              "type": "object",
+              "required": [
+                "kind",
+                "access",
+                "fingerprint",
+                "extractor_version"
+              ],
+              "properties": {
+                "kind": {
+                  "anyOf": [
+                    {
+                      "const": "workspace_path",
+                      "type": "string"
+                    },
+                    {
+                      "const": "external_path",
+                      "type": "string"
+                    },
+                    {
+                      "const": "url",
+                      "type": "string"
+                    },
+                    {
+                      "const": "query",
+                      "type": "string"
+                    },
+                    {
+                      "const": "pattern",
+                      "type": "string"
+                    },
+                    {
+                      "const": "artifact",
+                      "type": "string"
+                    },
+                    {
+                      "const": "service",
+                      "type": "string"
+                    },
+                    {
+                      "const": "resource",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "access": {
+                  "anyOf": [
+                    {
+                      "const": "read",
+                      "type": "string"
+                    },
+                    {
+                      "const": "write",
+                      "type": "string"
+                    },
+                    {
+                      "const": "execute",
+                      "type": "string"
+                    },
+                    {
+                      "const": "publish",
+                      "type": "string"
+                    },
+                    {
+                      "const": "delete",
+                      "type": "string"
+                    },
+                    {
+                      "const": "unknown",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "display": {
+                  "maxLength": 240,
+                  "type": "string"
+                },
+                "fingerprint": {
+                  "additionalProperties": false,
+                  "type": "object",
+                  "required": [
+                    "algorithm",
+                    "canonicalizer",
+                    "key_epoch",
+                    "scope",
+                    "digest"
+                  ],
+                  "properties": {
+                    "algorithm": {
+                      "const": "hmac-sha256",
+                      "type": "string"
+                    },
+                    "canonicalizer": {
+                      "const": "harnery-jcs-nfc-v1",
+                      "type": "string"
+                    },
+                    "key_epoch": {
+                      "pattern": "^pep_[a-zA-Z0-9._-]{1,128}$",
+                      "type": "string"
+                    },
+                    "scope": {
+                      "anyOf": [
+                        {
+                          "const": "generation",
+                          "type": "string"
+                        },
+                        {
+                          "const": "root",
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "digest": {
+                      "pattern": "^sha256:[a-f0-9]{64}$",
+                      "type": "string"
+                    }
+                  }
+                },
+                "extractor_version": {
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+                  "type": "string"
+                }
+              }
+            },
+            "git": {
+              "additionalProperties": false,
+              "type": "object",
+              "required": [
+                "worktree"
+              ],
+              "properties": {
+                "head": {
+                  "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$",
+                  "type": "string"
+                },
+                "worktree": {
+                  "anyOf": [
+                    {
+                      "const": "clean",
+                      "type": "string"
+                    },
+                    {
+                      "const": "staged",
+                      "type": "string"
+                    },
+                    {
+                      "const": "unstaged",
+                      "type": "string"
+                    },
+                    {
+                      "const": "staged_and_unstaged",
+                      "type": "string"
+                    },
+                    {
+                      "const": "untracked",
+                      "type": "string"
+                    },
+                    {
+                      "const": "missing",
+                      "type": "string"
+                    },
+                    {
+                      "const": "unknown",
+                      "type": "string"
+                    }
+                  ]
+                }
+              }
+            },
+            "authority": {
+              "additionalProperties": false,
+              "type": "object",
+              "properties": {
+                "transaction_id": {
+                  "pattern": "^txn_[0-9a-f-]{36}$",
+                  "type": "string"
+                },
+                "record_id": {
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   ]
 }
