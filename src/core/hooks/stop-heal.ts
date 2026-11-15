@@ -187,7 +187,13 @@ export function healStopVerdict(
     // observation was itself unavailable, nothing has established that owned
     // work is finished: keep the original refusal, which the remediation cap
     // still bounds.
-    const unverified = pending.find((b) => b.rule === "stop-hook.rule_1_3");
+    // This covers every blocked turn, not only a missing status: a status
+    // that ran before a later edit satisfies the status rule, yet says nothing
+    // about that edit.
+    const statusBlocks = pending.filter(
+      (b) => b.rule === "stop-hook.rule_1_3" || b.rule === "stop-hook.rule_2_3",
+    );
+    const unverified = mergeStopBlocks(statusBlocks.length > 0 ? statusBlocks : pending);
     if (ctx.requireGitFinalization && !ctx.gitObserved && unverified) {
       return {
         verdict: {

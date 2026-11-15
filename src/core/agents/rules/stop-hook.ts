@@ -277,7 +277,12 @@ export function evaluateStopHookV3Events(
       )
     : pending;
   const blocked = mergeStopBlocks(enforced);
-  const staleStatus = statusAfterTools(inTurn, owner) ? { status_after_tools: true } : {};
+  // No rerun while a backgrounded command is still running: the check would
+  // refuse on its in-flight commit, which is the loop the deferral prevents.
+  const staleStatus =
+    !req.pending_background_handoff && statusAfterTools(inTurn, owner)
+      ? { status_after_tools: true }
+      : {};
   if (blocked) {
     return { ...withCycleAnchor(blocked, cycleAnchor), pending_blocks: enforced, ...staleStatus };
   }

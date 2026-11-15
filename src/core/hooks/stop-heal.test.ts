@@ -75,6 +75,37 @@ describe("healStopVerdict", () => {
     expect(out.verdict.rule).toBe("stop-hook.rule_1_3");
   });
 
+  test("stale status with only the paste missing: an unchecked timeout keeps the refusal", () => {
+    const { d } = deps({ runs: [{ status: null, timedOut: true, stdout: "", stderr: "" }] });
+    const out = healStopVerdict(
+      { ...blocked("stop-hook.rule_2_3"), status_after_tools: true },
+      { ...ctx, gitObserved: false },
+      d,
+    );
+    expect(out.verdict.allow).toBe(false);
+    expect(out.verdict.rule).toBe("stop-hook.rule_2_3");
+  });
+
+  test("stale status with only the task missing: an unchecked failure keeps a refusal", () => {
+    const { d } = deps({ runs: [{ status: 1, timedOut: false, stdout: "", stderr: "boom" }] });
+    const out = healStopVerdict(
+      { ...blocked("stop-hook.rule_3_3"), status_after_tools: true },
+      { ...ctx, gitObserved: false },
+      d,
+    );
+    expect(out.verdict.allow).toBe(false);
+  });
+
+  test("a passing turn with a stale status still passes when nothing could be checked", () => {
+    const { d } = deps({ runs: [{ status: null, timedOut: true, stdout: "", stderr: "" }] });
+    const out = healStopVerdict(
+      { allow: true, exit_code: 0, rule: "stop-hook.pass", status_after_tools: true },
+      { ...ctx, gitObserved: false },
+      d,
+    );
+    expect(out.verdict.allow).toBe(true);
+  });
+
   test("timeout after a successful Git observation still allows the stop", () => {
     const { d } = deps({ runs: [{ status: null, timedOut: true, stdout: "", stderr: "" }] });
     const out = healStopVerdict(blocked("stop-hook.rule_1_3"), ctx, d);

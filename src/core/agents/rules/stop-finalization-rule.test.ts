@@ -164,6 +164,20 @@ describe("Stop heal signals (ADR 0266)", () => {
     });
   });
 
+  test("a blocked verdict whose status preceded a later tool call carries the same mark", () => {
+    const result = verdict({ state: "observed", result: clean }, { task: false });
+    expect(result.allow).toBe(false);
+    expect(result.status_after_tools).toBe(true);
+  });
+
+  test("no fresh check is requested while a backgrounded command is still running", () => {
+    const blocked = verdict({ state: "observed", result: clean }, { task: false, pending: true });
+    expect(blocked.allow).toBe(false);
+    expect(blocked.status_after_tools).toBeUndefined();
+    const passing = verdict({ state: "observed", result: clean }, { pending: true });
+    expect(passing.status_after_tools).toBeUndefined();
+  });
+
   test("a blocked verdict lists every enforced missing step", () => {
     const result = verdict(undefined, { status: false, box: false, task: false });
     expect(result.pending_blocks?.map((b) => b.rule)).toEqual([
