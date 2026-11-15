@@ -182,7 +182,8 @@ export function projectHeartbeatV3(
     kind:
       cache?.kind ??
       durableIdentity?.kind ??
-      (generation.parent_generation_id || generation.delegation_id
+      ((generation.parent_generation_id || generation.delegation_id) &&
+      generation.parent_link !== "delegation_key"
         ? "subagent"
         : generation.workflow_id
           ? "workflow-child"

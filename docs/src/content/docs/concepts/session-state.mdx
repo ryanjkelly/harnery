@@ -100,6 +100,30 @@ Automatic policy ends clean coordination state but do not qualify as
 run-quality evidence. Verified archive ends require an independent ambiguity
 review before corpus admission.
 
+## Delegated workers
+
+Some clients start a worker as a separate native session through a delegate
+tool of their own, instead of the harness's subagent callback. Harnery links
+such a worker to the session that delegated it when the client exposes one
+opaque identifier on both sides: the parent sees it in the delegate tool's
+result and the worker finds it in its environment. T3 Code is the first such
+client; its `delegate_task` result carries `childThreadId`, and the worker
+starts with the same value in `T3CODE_THREAD_ID`.
+
+Each side records only a fingerprint of that identifier, never the identifier
+or any task text. Harnery links a parent and a worker when their fingerprints
+match, in either order, and writes the same `agent.started` event a native
+subagent gets. A fingerprint seen on one side links nothing, and a key named
+by two parents links nothing. Start times and names are never used.
+
+A linked worker then shares its parent's group, as a native subagent does: the
+parent and its delegated workers stop blocking one another's file claims and
+commits, and status tables list them as one group. The worker keeps its own
+name, rituals and lifecycle commands. When it ends, or declares `lifecycle
+done` and goes idle, Harnery records `agent.completed` for the delegation, and
+the finalizer ends the worker's session. Unlike a native subagent, a worker is
+not ended when its parent ends. See [ADR 0268](../decisions/0268-link-client-delegated-workers/).
+
 ## Session-name projection
 
 A lifecycle change is title-silent unless it marks the session done:

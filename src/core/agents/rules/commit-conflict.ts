@@ -124,7 +124,12 @@ export function evaluateCommit(coordRoot: string, req: CommitVerdictRequest): Co
     passed && passedSession
       ? passedSession
       : (peers.find((peer) => peer.instance_id === me)?.session_id ?? me);
-  const myGroup = new Set(me === "__unattributed__" ? [] : [me, mySession]);
+  // A key-linked delegated worker (ADR 0268) passes its own native session,
+  // while its projected row carries its parent's: both name its group.
+  const myRowSession = peers.find((peer) => peer.instance_id === me)?.session_id;
+  const myGroup = new Set(
+    me === "__unattributed__" ? [] : [me, mySession, ...(myRowSession ? [myRowSession] : [])],
+  );
   const cutoffMs = Date.now() - coordFreshnessSeconds(coordRoot) * 1000;
   const stagedSet = new Set(req.staged_paths);
   const gitlinkSet = new Set(req.staged_gitlinks ?? []);

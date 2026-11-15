@@ -1,4 +1,5 @@
 import type { EventV3 } from "./contract.ts";
+import { isDelegationLinkEventV3 } from "./delegation-keys.ts";
 import type { PositionedEventV3, ReadLedgerV3Result } from "./reader.ts";
 
 export const EVENT_V3_SAFETY_REDUCER_BUILD = "event-v3-safety-reducer-v2" as const;
@@ -119,6 +120,8 @@ export interface DelegationProjectionV3 {
   started_event_id: string;
   completed_event_id?: string;
   outcome?: string;
+  /** Present when a client delegation key, not the native hook, linked the child (ADR 0268). */
+  link?: "delegation_key";
 }
 
 export interface SafetyProjectionV3 {
@@ -280,6 +283,10 @@ function applyEvent(projection: SafetyProjectionV3, positioned: PositionedEventV
       return;
     case "agent.completed":
       applyAgentCompleted(projection, event);
+      return;
+    case "agent.delegation_keyed":
+      // One side of a client delegation (ADR 0268). It changes no generation
+      // state; the linking `agent.started` carries the relationship.
       return;
   }
 
@@ -671,6 +678,7 @@ function applyAgentStarted(
     child_generation_id: event.payload.child_generation_id,
     role: event.payload.role,
     started_event_id: event.event_id,
+    ...(isDelegationLinkEventV3(event) ? { link: "delegation_key" as const } : {}),
   };
 }
 

@@ -222,6 +222,22 @@ export const CoordHandoffChangedV3Schema = eventV3("coord.claim_changed", {
   }),
 });
 
+/**
+ * One side of a client-mediated delegation (ADR 0268). The parent records the
+ * key its delegate tool returned; the child records the key its client put in
+ * its environment. Only a root-scoped fingerprint of that opaque key is
+ * stored, never the key itself or any task text. Equal fingerprints from one
+ * parent and one child link them through a later `agent.started`.
+ */
+export const AgentDelegationKeyedV3Schema = eventV3("agent.delegated", {
+  eventType: "agent.delegation_keyed",
+  payload: StrictObject({
+    side: Type.Union([Type.Literal("parent"), Type.Literal("child")]),
+    surface: SafeToken,
+    delegation_key: basePayload("agent.delegated").properties.ownership_fingerprint!,
+  }),
+});
+
 const replacedBaseTypes = new Set([
   "session.ended",
   "turn.completed",
@@ -258,6 +274,7 @@ export const EventV3Schema = Type.Union(
     WaitEndedV3Schema,
     HealthCapabilityDriftV3Schema,
     CoordHandoffChangedV3Schema,
+    AgentDelegationKeyedV3Schema,
   ],
   { $id: EVENT_V3_SCHEMA_ID },
 );
@@ -270,6 +287,7 @@ export const EVENT_V3_CORE_EVENT_TYPES = [
   "wait.ended",
   "health.capability_drift",
   "coord.handoff_changed",
+  "agent.delegation_keyed",
 ] as const;
 
 export type EventTypeV3 = (typeof EVENT_V3_CORE_EVENT_TYPES)[number];
@@ -367,6 +385,15 @@ type CoordHandoffChangedEventV3 = ReplaceEventV3<
     authority: EventOfTypeV3Base<"coord.claim_changed">["payload"]["authority"];
   }
 >;
+type AgentDelegationKeyedEventV3 = ReplaceEventV3<
+  "agent.delegated",
+  "agent.delegation_keyed",
+  {
+    side: "parent" | "child";
+    surface: string;
+    delegation_key: EventOfTypeV3Base<"agent.delegated">["payload"]["ownership_fingerprint"];
+  }
+>;
 export type EventOfTypeV3<T extends EventTypeV3> = T extends "session.ended"
   ? SessionEndedEventV3
   : T extends "turn.completed"
@@ -387,9 +414,11 @@ export type EventOfTypeV3<T extends EventTypeV3> = T extends "session.ended"
                   ? HealthCapabilityDriftEventV3
                   : T extends "coord.handoff_changed"
                     ? CoordHandoffChangedEventV3
-                    : T extends EventTypeV3Base
-                      ? WithContractV3<EventOfTypeV3Base<T>>
-                      : never;
+                    : T extends "agent.delegation_keyed"
+                      ? AgentDelegationKeyedEventV3
+                      : T extends EventTypeV3Base
+                        ? WithContractV3<EventOfTypeV3Base<T>>
+                        : never;
 /**
  * TypeBox cannot preserve the discriminated union through the generated
  * schema-branch spread above. Rebuild the static union from the authoritative
@@ -418,7 +447,8 @@ export type EventV3 =
   | WaitStartedEventV3
   | WaitEndedEventV3
   | HealthCapabilityDriftEventV3
-  | CoordHandoffChangedEventV3;
+  | CoordHandoffChangedEventV3
+  | AgentDelegationKeyedEventV3;
 export type EventPayloadV3<T extends EventTypeV3> = EventOfTypeV3<T>["payload"];
 export type SpanSummaryV3 = Static<typeof SpanSummaryV3Schema>;
 export type TurnUsageV3 = Static<typeof TurnUsageV3Schema>;

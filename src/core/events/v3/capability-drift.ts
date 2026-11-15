@@ -5,6 +5,7 @@ import {
   type CapabilitySupportV3,
 } from "./capabilities.ts";
 import type { EventPayloadV3, EventV3 } from "./contract.ts";
+import { isDelegationLinkEventV3 } from "./delegation-keys.ts";
 
 export interface CapabilityDeliveryV3 {
   signal: AdapterSignalV3;
@@ -61,6 +62,9 @@ function measurableDeliveries(events: readonly EventV3[]): CapabilityDeliveryV3[
     map.set(key, (map.get(key) ?? 0) + 1);
 
   for (const event of events) {
+    // Key-linked delegation events are written by a later pass, not by a
+    // native hook, so they say nothing about the adapter's hook channels.
+    if (isDelegationLinkEventV3(event as { provenance?: { source_event?: string } })) continue;
     const type = eventType(event);
     const payload = record((event as { payload?: unknown }).payload);
     switch (type) {

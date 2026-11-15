@@ -440,7 +440,12 @@ export function reopenLiveCoordinationGenerationV3(input: {
   if (terminal.adapter === "openclaw") {
     throw new LiveCoordinationAuthorityV3Error("lifecycle_not_human_facing");
   }
-  if (terminalView.parent_generation_id || terminalView.delegation_id || terminalView.workflow_id) {
+  // A client-delegated worker (ADR 0268) is its own native session that its
+  // client may message again, so it keeps the human-facing reopen.
+  const nativeChild =
+    terminalView.parent_link !== "delegation_key" &&
+    Boolean(terminalView.parent_generation_id || terminalView.delegation_id);
+  if (nativeChild || terminalView.workflow_id) {
     throw new LiveCoordinationAuthorityV3Error("lifecycle_not_human_facing");
   }
   const reopened = recordHookSignalV3({

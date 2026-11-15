@@ -75,6 +75,11 @@ export function resolveAgentParentReference(
           })
         : ({ state: "unknown", reason: "native_child_identity_unavailable" } as const);
     if (canonical) {
+      // A client delegation key (ADR 0268) is invisible to native metadata,
+      // which reports such a child as a top-level session.
+      if (generation.parent_link === "delegation_key") {
+        return reference(coordRoot, view, canonical.instance_id, canonical, "v3-session-link");
+      }
       if (
         native.state === "none" ||
         (native.state === "observed" &&

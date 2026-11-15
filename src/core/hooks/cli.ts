@@ -1040,6 +1040,23 @@ async function main(): Promise<number> {
   recordSignal(run);
   recordContextTelemetry(run);
 
+  // Client-delegated workers (ADR 0268): a child's start or a parent's
+  // delegate tool result records one side of the link. Fails open.
+  try {
+    const { observeHookDelegationV3 } = await import("../agents/delegation-link-v3.ts");
+    observeHookDelegationV3({
+      coordRoot: run.coordRoot,
+      eventType: norm.event_type,
+      eventName,
+      generationId: run.recordedGenerationId,
+      adapter: run.adapter,
+      toolName: run.payload?.tool_name,
+      toolResponse: run.payload?.tool_response,
+    });
+  } catch (err) {
+    logError(run.coordRoot, err, { phase: "client-delegation-link" });
+  }
+
   // Phase 8: SessionStart post-emit: project the event so the heartbeat
   // lands synchronously, run stale-sweep, and emit the adapter-shaped
   // systemMessage JSON (peer table + peer inbox + wiring check).

@@ -1,0 +1,101 @@
+---
+title: "0268: Link client-delegated workers to their parent"
+description: "ADR: a worker started through a client's delegate tool is linked to the delegating session by a fingerprint of one opaque key both sides observe, then recorded with the existing agent.started and agent.completed events."
+---
+
+**Status:** accepted (2026-11-14) · **Scope:** product tier (`core/agents/delegation-surface`, `core/agents/delegation-link-v3`, `core/events/v3` contract, projection and coordination view, the PostToolUse and SessionStart call site in `core/hooks`)
+
+## Context
+
+A harness's own subagent callback tells Harnery which session started a
+subagent. The parent's hook writes `agent.started`, mints the child generation,
+and the child's `session.started` carries `parent_generation_id`. Every reader
+that groups sessions uses that link: the claim and commit rules exclude a
+session's own group, the status table groups rows by the projected session,
+and the session finalizer ends a child once `agent.completed` names it.
+
+Some clients start workers another way. T3 Code's `delegate_task` launches a
+worker as a new native session. Its `session.started` had no parent, no
+`agent.completed` ever named it, and Harnery treated it as an unrelated peer.
+Workers of one orchestrator blocked each other's edits to a shared file, and a
+finished worker's session stayed live with its claims.
+
+The client does expose one identifier on both sides. The delegate tool's result
+carries `childThreadId`, and the worker starts with the same value in
+`T3CODE_THREAD_ID`, for Claude Code and Codex workers alike.
+
+## Alternatives considered
+
+- **Match by start time or session names.** Rejected. Two workers started
+  together, or a worker started while another session opened, would be linked
+  to the wrong parent, and a wrong link silently waives claim protection.
+- **Have the parent put its own identity in the task prompt.** Rejected. A
+  prompt is text the model can copy, mangle, or repeat into another task, so a
+  claim made from it is not evidence. It would also make the link depend on
+  every orchestrator's wording.
+- **Add the key to `agent.delegated` or `agent.started`.** Rejected. Both name
+  the child generation, which the parent does not know when its tool returns:
+  the worker mints its own generation, sometimes after the parent's tool
+  result and sometimes before.
+- **Join keys in the projection on every read.** Rejected. Every reader would
+  repeat the join, and completion still needs an event the finalizer acts on.
+
+## Decision
+
+A small registry of delegation surfaces sits beside the title surfaces. A
+surface names its delegate tool, reads the child key from that tool's result,
+and reads a child's key from its environment. Only the opaque key is read;
+task text in the same result is never examined past the key field.
+
+Each side writes one `agent.delegation_keyed` event in its own generation:
+`side` (parent or child), `surface`, and a root-scoped HMAC fingerprint of the
+key. The key itself never enters the ledger. The hook writes the parent side on
+PostToolUse of the delegate tool and the child side on SessionStart.
+
+A link pass reads the ledger and joins equal fingerprints. When exactly one
+parent generation and a child generation in another instance hold the same
+key, the pass writes the existing `agent.started` event in the parent's scope,
+with `parent_generation_id`, a new delegation id, and role
+`delegated:<surface>`. Both arrival orders converge on the same pass, which
+runs after each side records and on every session-start reconciliation. A
+lease serializes the pass, and it recomputes from the ledger, so repeated runs
+write nothing new. The coordination view takes the parent from that
+delegation when the child's own start names none, and marks it
+`parent_link: "delegation_key"`.
+
+From there a delegated worker behaves like a native subagent wherever the
+recorded parent is used: the projected row carries the parent's session and
+`parent_instance_id`, so claim and commit rules, status groups and parent
+references treat the parent and all of its workers as one group. The commit
+rule also counts the committer's own projected session, because a worker's
+hooks pass its own native session rather than its parent's.
+
+When a linked worker's generation ends, or it declares `lifecycle done` and is
+idle, the pass writes `agent.completed` for that delegation. The existing
+finalizer then ends the worker's session through its `agent_completed` route.
+
+## Consequences
+
+- Delegated workers that share a checkout stop blocking each other's file
+  claims and commits, as native subagents of one parent already do. Commit-time
+  pathspec protection is unchanged: each worker still commits only the paths
+  it names, so a sibling's uncommitted hunks stay out of its commit unless it
+  stages that file.
+- A worker keeps its own row kind, name, turn rituals and lifecycle commands,
+  and may reopen its lifecycle after the finalizer ends it, because its client
+  can message it again.
+- A worker is not cancelled when its parent ends, unlike a native subagent: it
+  is a separate process its client may keep running.
+- Older ledgers have no keyed events, so every reader sees exactly what it saw
+  before. The new event type joins the current schema lineage group.
+
+## Gotchas
+
+- A key fingerprinted under one privacy epoch never matches one fingerprinted
+  under another. Such a pair links nothing.
+- A key recorded by two parents is ambiguous and links nothing. A child that
+  already has a native parent is never relinked.
+- Completion after `lifecycle done` waits until the worker is idle, because
+  the finalizer ignores a completion older than the child's last event.
+- A hook process that does not inherit the client's environment records no
+  child side, and the worker stays unlinked.

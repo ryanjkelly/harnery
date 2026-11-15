@@ -171,6 +171,8 @@ export function describeEventV3(event: EventRow): EventDisplayV3 {
         `${event.data.role} · ${event.data.child_generation_id}`,
         "accent",
       );
+    case "agent.delegation_keyed":
+      return display("delegation key", `${event.data.side} · ${event.data.surface}`, "accent");
     case "agent.started":
       return display(
         "agent start",

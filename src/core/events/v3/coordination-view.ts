@@ -24,6 +24,12 @@ export interface CoordinationGenerationViewV3 {
   identity_id?: string;
   runtime_attestation: RuntimeAttestationV3;
   parent_generation_id?: string;
+  /**
+   * `delegation_key` when the parent came from a client delegation key rather
+   * than the child's own start event (ADR 0268). Such a child is a separate
+   * native session: it keeps its own rituals and may reopen its lifecycle.
+   */
+  parent_link?: "delegation_key";
   delegation_id?: string;
   delegation_role?: string;
   phase: "live" | "terminal";
@@ -146,6 +152,9 @@ export function projectCoordinationViewV3(read: ReadLedgerV3Result): Coordinatio
     const delegation = Object.values(safety.delegations).find(
       (candidate) => candidate.child_generation_id === state.generation_id,
     );
+    const startParent = (started.links as { parent_generation_id?: string }).parent_generation_id;
+    const keyedParent =
+      delegation?.link === "delegation_key" ? delegation.parent_generation_id : undefined;
     const filesTouched = Object.values(safety.claims)
       .filter(
         (claim) =>
@@ -188,8 +197,8 @@ export function projectCoordinationViewV3(read: ReadLedgerV3Result): Coordinatio
       workflow_agent_id: started.scope.workflow_agent_id,
       identity_id: safety.identities[state.instance_id],
       runtime_attestation: started.payload.runtime_attestation,
-      parent_generation_id: (started.links as { parent_generation_id?: string })
-        .parent_generation_id,
+      parent_generation_id: startParent ?? keyedParent,
+      ...(!startParent && keyedParent ? { parent_link: "delegation_key" as const } : {}),
       delegation_id: delegation?.delegation_id,
       delegation_role: delegation?.role,
       phase: state.phase,
