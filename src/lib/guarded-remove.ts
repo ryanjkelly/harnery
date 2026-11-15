@@ -22,7 +22,7 @@ export interface RemoveOptions {
    * each. A protected path that is not named is still refused.
    */
   allowProtected?: string[];
-  /** Directories whose own Git metadata and Harnery state may never be allowed (the live workspace). */
+  /** Live workspaces whose Git metadata and coordination state stay protected, except local settings. */
   liveRoots?: string[];
   /** Command-layer validation of the current caller's ownership of this exact managed artifact root. */
   assertOwnedArtifact?: (root: string) => void;
@@ -168,6 +168,7 @@ export function guardedRemove(
       const info = lstatSync(path);
       if (basename(path) === ARTIFACT_RECORD && insideArtifactWorkspace(path, null))
         throw new Error(`An artifact's record is managed by the artifact commands: ${path}`);
+      if (allowed.has(path)) removedProtected.add(path);
       if (protectedNames.has(basename(path).toLowerCase())) {
         if (options.cleanClone && basename(path) === ".git") {
           const clone = dirname(path);
@@ -368,7 +369,8 @@ function insideAllowed(path: string, allowed: ReadonlySet<string>): boolean {
 /**
  * Resolves the caller's --allow-protected paths. Each must be one exact
  * protected path strictly inside the root, reached without symlinks, and
- * never the Git metadata or Harnery state of a live workspace root.
+ * never live Git metadata or coordination state. Exact local settings files
+ * may be named because they are user configuration, not coordination state.
  */
 function allowedProtected(
   paths: string[],
@@ -394,7 +396,8 @@ function allowedProtected(
     if (info.isSymbolicLink()) throw new Error(`--allow-protected path is a symlink: ${path}`);
     if (!strictlyInside(root, path))
       throw new Error(`--allow-protected path must be strictly inside --root: ${path}`);
-    const named = protectedNames.has(basename(path).toLowerCase());
+    const localConfig = isLocalConfig(path) && info.isFile();
+    const named = protectedNames.has(basename(path).toLowerCase()) || localConfig;
     if (!named && !(info.isDirectory() && isRepositoryMetadata(path)))
       throw new Error(`--allow-protected must name a protected path itself: ${path}`);
     for (const dir of live) {
@@ -403,6 +406,8 @@ function allowedProtected(
       for (const name of [".git", ".harnery"]) {
         const state = resolve(dir, name);
         if (path !== state && !strictlyInside(state, path)) continue;
+        if (name === ".harnery" && path === resolve(state, "config.local.jsonc") && localConfig)
+          continue;
         // Only an explicitly named copied state directory inside one owned
         // artifact may cross the outer live-state ancestor. Other live roots
         // (including a checkout inside that artifact) still veto the path.
@@ -464,6 +469,10 @@ function strictlyInside(parent: string, child: string): boolean {
   return rel !== "" && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 }
 
+function isLocalConfig(path: string): boolean {
+  return basename(path) === "config.local.jsonc" && basename(dirname(path)) === ".harnery";
+}
+
 function checkedPath(
   input: string,
   allowed: ReadonlySet<string> = new Set(),
@@ -479,6 +488,7 @@ function checkedPath(
     if (
       protectedNames.has(basename(cursor).toLowerCase()) &&
       !allowed.has(cursor) &&
+      !(allowed.has(path) && isLocalConfig(path) && cursor === dirname(path)) &&
       !insideArtifactWorkspace(path, cursor, isRoot)
     )
       throw new Error(

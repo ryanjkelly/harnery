@@ -853,3 +853,75 @@ test("the refusal for a live workspace's own state names no impossible override"
   }
   expect(existsSync(other)).toBe(true);
 });
+
+test("live local settings require the exact protected file and preview before applying", () => {
+  const { root } = fixture();
+  const state = join(root, ".harnery");
+  mkdirSync(state);
+  const local = join(state, "config.local.jsonc");
+  writeFileSync(local, "{}");
+  const options = { root, liveRoots: [root] };
+  expect(() => guardedRemove([local], options)).toThrow("Protected state");
+  const allowed = { ...options, allowProtected: [local] };
+  expect(guardedRemove([local], allowed)).toMatchObject({ applied: false, protected: [local] });
+  expect(existsSync(local)).toBe(true);
+  expect(guardedRemove([local], { ...allowed, yes: true, dryRun: true }).applied).toBe(false);
+  expect(existsSync(local)).toBe(true);
+  expect(guardedRemove([local], { ...allowed, yes: true }).applied).toBe(true);
+  expect(existsSync(local)).toBe(false);
+  expect(existsSync(state)).toBe(true);
+});
+
+for (const neighbour of ["config.jsonc", "ledgers", "identities", "active", "journal"]) {
+  test(`live local settings permission does not allow ${neighbour}`, () => {
+    const { root } = fixture();
+    const state = join(root, ".harnery");
+    mkdirSync(state);
+    const local = join(state, "config.local.jsonc");
+    const other = join(state, neighbour);
+    writeFileSync(local, "{}");
+    writeFileSync(other, "retained state");
+    for (const allowProtected of [[local], [other], [state]]) {
+      expect(() =>
+        guardedRemove([other], {
+          root,
+          liveRoots: [root],
+          allowProtected,
+          yes: true,
+        }),
+      ).toThrow();
+      expect(existsSync(other)).toBe(true);
+      expect(existsSync(local)).toBe(true);
+    }
+  });
+}
+
+test("local settings permission refuses a directory or symlink in place of the file", () => {
+  const { root, file } = fixture();
+  const state = join(root, ".harnery");
+  mkdirSync(state);
+  const local = join(state, "config.local.jsonc");
+  mkdirSync(local);
+  expect(() =>
+    guardedRemove([local], {
+      root,
+      liveRoots: [root],
+      allowProtected: [local],
+      recursive: true,
+      yes: true,
+    }),
+  ).toThrow();
+  const nested = join(local, ".harnery");
+  mkdirSync(nested);
+  const link = join(nested, "config.local.jsonc");
+  symlinkSync(file, link);
+  expect(() =>
+    guardedRemove([link], {
+      root,
+      liveRoots: [root],
+      allowProtected: [link],
+      yes: true,
+    }),
+  ).toThrow("symlink");
+  expect(existsSync(file)).toBe(true);
+});

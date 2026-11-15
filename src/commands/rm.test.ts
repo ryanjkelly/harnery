@@ -465,3 +465,31 @@ test("CLI refusal for the live .harnery names the retire command, not --allow-pr
   expect(error.message).toContain("storage retire");
   expect(existsSync(join(state, "work", "record.json"))).toBe(true);
 });
+
+test("CLI previews and removes only explicitly allowed live local settings", async () => {
+  const { root } = fixture();
+  initializeV3Fixture(root);
+  const local = join(root, ".harnery", "config.local.jsonc");
+  writeFileSync(local, "{}");
+  for (const yes of [false, true]) {
+    const output = capture();
+    const program = createHarneryProgram({ emit: output.emit, context: { repoRoot: root } });
+    await program.parseAsync(
+      [
+        "rm",
+        "--root",
+        root,
+        "--allow-protected",
+        local,
+        "--json",
+        ...(yes ? ["--yes"] : []),
+        "--",
+        local,
+      ],
+      { from: "user" },
+    );
+    expect(output.errors).toEqual([]);
+    expect(output.data[0]).toMatchObject({ applied: yes, protected: [local] });
+    expect(existsSync(local)).toBe(!yes);
+  }
+});

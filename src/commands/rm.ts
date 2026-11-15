@@ -72,7 +72,8 @@ export function registerRmCommand(
           }
         };
         // The workspace this command coordinates, and the checkout it runs in:
-        // their own .git and .harnery can never be allowed.
+        // their own .git and coordination state can never be allowed.
+        // Only the exact user-editable local settings file is exempt.
         const liveRoots = [coordRoot, gitTopLevel(process.cwd())].filter((dir): dir is string =>
           Boolean(dir),
         );

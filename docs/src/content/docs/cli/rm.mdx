@@ -36,7 +36,17 @@ Links inside a recursive target are removed as links; their destinations stay
 untouched.
 
 Protected paths need an exact `--allow-protected <path>` for each one. Live
-Git and coordination state cannot be allowed. Copied coordination state has
+Git and coordination state cannot be allowed. The one exception is the
+user-editable `.harnery/config.local.jsonc` file. Name that exact regular file
+with `--allow-protected`; the committed `config.jsonc`, ledgers, identities,
+active state and journals remain protected. For example, from the workspace
+root, preview local settings removal with:
+
+```bash
+harn rm --root . --allow-protected .harnery/config.local.jsonc -- .harnery/config.local.jsonc
+```
+
+Review the preview, then repeat with `--yes` to delete it. Copied coordination state has
 its existing exact-path and artifact-ownership restrictions. An artifact's
 root, record and holds stay in place when its disposable contents are pruned.
 
