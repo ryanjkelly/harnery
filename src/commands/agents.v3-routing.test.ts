@@ -13,6 +13,7 @@ import { repairEventV3ControlPair } from "../core/events/v3/control-writer.ts";
 import { loadOrCreateFingerprintKeyStoreV3 } from "../core/events/v3/fingerprint-keys.ts";
 import { EVENT_V3_SCHEMA_DIGEST } from "../core/events/v3/generated.ts";
 import {
+  formatParentCopyLine,
   formatPeerRecipientReceipt,
   readAgentDiagnosticEventsInWindow,
   traceInstanceIdsForEventSource,
@@ -51,6 +52,26 @@ describe("agents command V3 diagnostic routing", () => {
     expect(formatPeerRecipientReceipt(remote)).not.toContain("retries");
     expect(formatPeerRecipientReceipt({ ...remote, delivery_state: "pending" })).toContain(
       "Publication is not confirmed",
+    );
+  });
+  test("a skipped parent copy names the recipient whose parent was looked up", () => {
+    const child = {
+      ok: true as const,
+      target: { instance_id: "top-level-id", name: "Lead", delivery: "written-live" as const },
+      state: "written-live" as const,
+      message_id: "msg_child",
+      body_bytes: 4,
+      synced: true as const,
+    };
+    const skipped = { state: "skipped" as const, reason: "native_child_identity_unavailable" };
+    expect(formatParentCopyLine(skipped, child)).toBe(
+      "parent copy: skipped; no verified parent for agent-Lead (top-level-id) (native_child_identity_unavailable)",
+    );
+    expect(
+      formatParentCopyLine({ state: "skipped", reason: "parent_not_addressable" }, child),
+    ).toBe("parent copy: skipped; the parent of agent-Lead (top-level-id) is not addressable");
+    expect(formatParentCopyLine(child, child)).toBe(
+      `parent copy: ${formatPeerRecipientReceipt(child)}`,
     );
   });
   test("name-history native IDs map to the prefixed V3 scope identity", () => {

@@ -5398,6 +5398,24 @@ export function describeParentReference(reference: AgentParentReference): string
     : `${reference.state}: ${reference.reason}`;
 }
 
+/**
+ * The parent copy goes to the recipient's parent, never the sender's. A skipped
+ * copy names the recipient so a delegated sender cannot read the reason as a
+ * statement about its own parent.
+ */
+export function formatParentCopyLine(
+  parentCopy: PeerRecipientResult | { state: "skipped"; reason: string },
+  child: PeerRecipientResult,
+): string {
+  if ("ok" in parentCopy) return `parent copy: ${formatPeerRecipientReceipt(parentCopy)}`;
+  const recipient = child.ok
+    ? `agent-${child.target.name} (${child.target.instance_id})`
+    : "the recipient";
+  return parentCopy.reason === "parent_not_addressable"
+    ? `parent copy: skipped; the parent of ${recipient} is not addressable`
+    : `parent copy: skipped; no verified parent for ${recipient} (${parentCopy.reason})`;
+}
+
 export function formatPeerRecipientReceipt(recipient: PeerRecipientResult): string {
   if (!recipient.ok) return `${recipient.code}: ${recipient.message}`;
   const address = `agent-${recipient.target.name} (${recipient.target.instance_id})`;
@@ -5547,15 +5565,7 @@ function runPing(
   }
   emit.data(data);
   if (!sent.complete) process.exitCode = 1;
-  emit.text(
-    `parent copy: ${
-      "ok" in sent.parent_copy
-        ? sent.parent_copy.ok
-          ? formatPeerRecipientReceipt(sent.parent_copy)
-          : `${sent.parent_copy.code}: ${sent.parent_copy.message}`
-        : `skipped (${sent.parent_copy.reason})`
-    }\n`,
-  );
+  emit.text(`${formatParentCopyLine(sent.parent_copy, sent.child)}\n`);
   emit.text(`${formatPeerRecipientReceipt(sent.child)}\n`);
 }
 
