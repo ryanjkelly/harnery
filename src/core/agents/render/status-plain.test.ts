@@ -1,10 +1,13 @@
 import { describe, expect, test } from "bun:test";
+import { plainStatusAttention, statusBoxRows } from "../../../commands/agents.ts";
 import {
   containsFencedPlainStatus,
   formatPlainStatus,
   formatPlainStatusFull,
   type PlainStatusInput,
   plainPeersSentence,
+  STATUS_PROBLEM_ROWS,
+  type StatusProblemRow,
   textHasPlainStatusHead,
 } from "./status-plain.ts";
 
@@ -155,5 +158,93 @@ describe("containsFencedPlainStatus", () => {
   test("the loose head signal matches only a structured head", () => {
     expect(textHasPlainStatusHead(plain)).toBe(true);
     expect(textHasPlainStatusHead("◇ a diamond in prose")).toBe(false);
+  });
+});
+
+describe("box problem row coverage", () => {
+  type AttentionInput = Parameters<typeof plainStatusAttention>[0];
+  const none: AttentionInput = {
+    parentProblem: false,
+    parent: "",
+    contextPercent: null,
+    resources: null,
+    quality: null,
+    qa: null,
+    sync: null,
+    sessionEnd: null,
+  };
+  const cases = {
+    parent: {
+      input: { parentProblem: true, parent: "conflict" },
+      sentence: "the record of which agent started this one conflicts (conflict)",
+    },
+    context: {
+      input: { contextPercent: 86 },
+      sentence: "this conversation has used 86% of its memory, so it will need a fresh start soon",
+    },
+    resources: {
+      input: {
+        resources: { assessment: { state: "critical", summary: "Memory is nearly full." } },
+      },
+      sentence: "this computer is badly overloaded: Memory is nearly full.",
+    },
+    quality: {
+      input: { quality: { status: "attention", signal_ids: ["retry-loop"] } },
+      sentence: "the work quality check wants a look (retry-loop)",
+    },
+    qa: { input: { qa: "pass 2m ago" }, sentence: "latest page check: pass 2m ago" },
+    sync: {
+      input: { sync: { outcome: "failed" } as AttentionInput["sync"] },
+      sentence: "tried to bring in other people's latest changes before finishing, but it failed",
+    },
+    "session end": {
+      input: { sessionEnd: "queued" },
+      sentence: "this session will close after this turn",
+    },
+  } satisfies Record<StatusProblemRow, { input: Partial<AttentionInput>; sentence: string }>;
+
+  test("every shared problem identifier has a case and exactly one plain sentence", () => {
+    expect(Object.keys(cases)).toEqual([...STATUS_PROBLEM_ROWS]);
+    for (const row of STATUS_PROBLEM_ROWS) {
+      const { input, sentence } = cases[row];
+      expect(plainStatusAttention({ ...none, ...input })).toEqual([sentence]);
+    }
+  });
+
+  test("conditional diagnostic rows in the box belong to the shared identifiers", () => {
+    const box = {
+      full: false,
+      session: "15m",
+      turn: null,
+      changes: "none",
+      task: "",
+      activity: "working",
+      lifecycle: "active",
+      parent: "conflict",
+      context: "86%",
+      resources: "busy",
+      files: "0 held",
+      peers: "none",
+      time: "9:41 AM CDT",
+    };
+    const ordinary = new Set(
+      statusBoxRows({
+        ...box,
+        parentProblem: false,
+        contextProblem: false,
+        resourcesProblem: false,
+      }).map(([id]) => id),
+    );
+    const problems = statusBoxRows({
+      ...box,
+      parentProblem: true,
+      contextProblem: true,
+      resourcesProblem: true,
+    })
+      .filter(([id]) => !ordinary.has(id))
+      .map(([id]) => id);
+    expect(problems).toEqual(
+      STATUS_PROBLEM_ROWS.filter((id) => ["parent", "context", "resources"].includes(id)),
+    );
   });
 });

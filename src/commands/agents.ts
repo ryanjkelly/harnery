@@ -60,6 +60,7 @@ import {
   formatPlainStatus,
   formatPlainStatusFull,
   type PlainStatusPeer,
+  type StatusBoxRowId,
 } from "../core/agents/render/status-plain.ts";
 import {
   listSessionFinalizationRequestsV3,
@@ -2739,12 +2740,12 @@ export function statusBoxRows(input: {
   files: string;
   peers: string;
   time: string;
-}): Array<[string, string]> {
-  const task: Array<[string, string]> = input.task ? [["task", input.task]] : [];
+}): Array<[StatusBoxRowId, string]> {
+  const task: Array<[StatusBoxRowId, string]> = input.task ? [["task", input.task]] : [];
   if (input.full) {
     return [
       ["session", input.session],
-      ...(input.turn ? ([["turn", input.turn]] as Array<[string, string]>) : []),
+      ...(input.turn ? ([["turn", input.turn]] as Array<[StatusBoxRowId, string]>) : []),
       ["changes", input.changes],
       ...task,
       ["activity", input.activity],
@@ -2757,7 +2758,7 @@ export function statusBoxRows(input: {
       ["time", input.time],
     ];
   }
-  const rows: Array<[string, string]> = [...task, ["lifecycle", input.lifecycle]];
+  const rows: Array<[StatusBoxRowId, string]> = [...task, ["lifecycle", input.lifecycle]];
   if (input.parentProblem) rows.push(["parent", input.parent]);
   if (input.contextProblem) rows.push(["context", input.context]);
   if (input.resourcesProblem) rows.push(["resources", input.resources]);

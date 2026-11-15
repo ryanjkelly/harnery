@@ -18,6 +18,32 @@ import { sanitizeStatusLabel } from "./status-box.ts";
 /** First characters of a plain status; the Stop hook looks for them. */
 export const PLAIN_STATUS_MARKER = "◇ ";
 
+/** Conditional box rows that must each have a plain attention sentence. */
+export const STATUS_PROBLEM_ROWS = [
+  "parent",
+  "context",
+  "resources",
+  "quality",
+  "qa",
+  "sync",
+  "session end",
+] as const;
+
+export type StatusProblemRow = (typeof STATUS_PROBLEM_ROWS)[number];
+
+/** All box row identifiers; adding a problem row also extends the coverage contract. */
+export type StatusBoxRowId =
+  | "session"
+  | "turn"
+  | "changes"
+  | "task"
+  | "activity"
+  | "lifecycle"
+  | "files"
+  | "peers"
+  | "time"
+  | StatusProblemRow;
+
 /** One other agent, reduced to what the plain style needs. */
 export interface PlainStatusPeer {
   name: string;
