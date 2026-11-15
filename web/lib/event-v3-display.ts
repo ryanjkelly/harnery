@@ -211,6 +211,12 @@ export function describeEventV3(event: EventRow): EventDisplayV3 {
         `${event.data.operation} · ${event.data.target.display ?? event.data.target.kind}`,
         event.data.operation === "denied" ? "destructive" : "secondary",
       );
+    case "coord.handoff_changed":
+      return display(
+        "handoff",
+        `${event.data.operation} · ${event.data.target.display ?? event.data.target.kind}`,
+        "secondary",
+      );
     case "coord.presence_changed":
       return display("presence", event.data.new_state, "secondary");
     case "coord.message_observed":

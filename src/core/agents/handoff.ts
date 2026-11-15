@@ -218,11 +218,11 @@ function ownClaimTimes(coordRoot: string, selfInstanceId: string): Map<string, n
     const observed = new Map<string, string>();
     for (const { event } of read.events) observed.set(event.event_id, event.time.observed_at);
     const self = liveInstanceIdV3(selfInstanceId);
-    for (const claim of Object.values(reduceSafetyProjectionV3(read).claims)) {
-      if (claim.subject_instance_id !== self || claim.target_display === undefined) continue;
-      const at = Date.parse(observed.get(claim.acquired_event_id) ?? "");
+    for (const held of Object.values(reduceSafetyProjectionV3(read).claims)) {
+      if (held.subject_instance_id !== self || held.target_display === undefined) continue;
+      const at = Date.parse(observed.get(held.acquired_event_id) ?? "");
       // Git commit times have one-second precision; compare at that grain.
-      if (Number.isFinite(at)) times.set(claim.target_display, Math.floor(at / 1000) * 1000);
+      if (Number.isFinite(at)) times.set(held.target_display, Math.floor(at / 1000) * 1000);
     }
   } catch {
     // Best effort: without claim times the explanation stays conservative.

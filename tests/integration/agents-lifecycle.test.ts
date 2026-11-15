@@ -481,13 +481,8 @@ describe("harn agents lifecycle on the V3 ledger", () => {
     spawnSync("git", ["add", "owned.txt"], { cwd: root, stdio: "ignore" });
     spawnSync("git", ["commit", "-qm", "complete"], { cwd: root, stdio: "ignore" });
     // No post-commit hook runs in this sandbox, so the claim outlives the commit.
-    const held = harn(root, ["agents", "lifecycle", "done", "--session-id", OWNER]);
-    expect(held.status).not.toBe(0);
-    expect(outputObject(held).error).toMatchObject({ code: "claims_held" });
-    expect(String((outputObject(held).error as { message: string }).message)).toContain(
-      "agents release-claim --all",
-    );
-    expect(lifecycleEvents(root)).toHaveLength(0);
+    // `done` would now release a claim on a clean path itself; the explicit
+    // release below keeps the release-claim command covered.
 
     const release = (args: string[]) =>
       spawnSync(process.execPath, [HARN, "agents", "release-claim", ...args], {
