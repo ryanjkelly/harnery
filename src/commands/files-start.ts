@@ -157,6 +157,7 @@ function defaultSpawn(command: string[], cwd: string, logPath: string): ChildPro
     const child = spawn(command[0]!, command.slice(1), {
       cwd,
       detached: true,
+      windowsHide: true,
       stdio: ["ignore", fd, fd],
       env: process.env,
     });

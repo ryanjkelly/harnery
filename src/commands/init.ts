@@ -1065,6 +1065,7 @@ export function ensureLocalConfigIgnored(projectRoot: string, dryRun: boolean): 
   const rel = ".harnery/config.local.jsonc";
   const probe = spawnSync("git", ["-C", projectRoot, "check-ignore", "-q", "--no-index", rel], {
     encoding: "utf8",
+    windowsHide: true,
     stdio: ["ignore", "ignore", "ignore"],
   });
   // 0 = already ignored; anything but 1 (not ignored) means no usable git here.

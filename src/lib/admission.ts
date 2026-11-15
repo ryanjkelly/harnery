@@ -560,6 +560,7 @@ const psStartReader: AdmissionStartReader = (pid) => {
     const out = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], {
       encoding: "utf8",
       timeout: 2_000,
+      windowsHide: true,
       env: { ...process.env, TZ: "UTC", LC_ALL: "C" },
     });
     const value = out.status === 0 ? out.stdout.split("\n")[0]?.trim().replace(/\s+/g, " ") : "";

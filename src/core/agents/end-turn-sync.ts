@@ -106,6 +106,7 @@ function defaultRun(
     encoding: "utf8",
     timeout: timeoutMs,
     killSignal: "SIGTERM",
+    windowsHide: true,
     stdio: ["ignore", "pipe", "pipe"],
     maxBuffer: 8 * 1024 * 1024,
   });
@@ -120,12 +121,20 @@ function defaultRun(
 }
 
 function defaultHead(cwd: string): string | null {
-  const r = spawnSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" });
+  const r = spawnSync("git", ["rev-parse", "HEAD"], {
+    cwd,
+    encoding: "utf8",
+    windowsHide: true,
+  });
   return r.status === 0 ? r.stdout.trim() : null;
 }
 
 function defaultCountCommits(cwd: string, from: string, to: string): number | null {
-  const r = spawnSync("git", ["rev-list", "--count", `${from}..${to}`], { cwd, encoding: "utf8" });
+  const r = spawnSync("git", ["rev-list", "--count", `${from}..${to}`], {
+    cwd,
+    encoding: "utf8",
+    windowsHide: true,
+  });
   if (r.status !== 0) return null;
   const n = Number.parseInt(r.stdout.trim(), 10);
   return Number.isFinite(n) ? n : null;
