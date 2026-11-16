@@ -7,7 +7,11 @@ export const AUTOUPDATE_CUE_PREFIX = "Auto-update: ";
 
 export interface AutoUpdateCueDeps {
   tick: (coordRoot: string) => TickResult;
-  pendingNotices: (coordRoot: string, sessionKey: string) => AutoUpdateNotice[];
+  pendingNotices: (
+    coordRoot: string,
+    sessionKey: string,
+    options?: { sessionStart?: boolean },
+  ) => AutoUpdateNotice[];
 }
 
 export interface AutoUpdateCueOptions {
@@ -16,6 +20,11 @@ export interface AutoUpdateCueOptions {
    * still runs but notices stay queued for a session that can read them.
    */
   deliver?: boolean;
+  /**
+   * The hook is a session start. The session loads current hooks and
+   * instructions now, so notices asking it to reload them are not shown.
+   */
+  sessionStart?: boolean;
   /** Test seam; production loads the engine lazily. */
   deps?: AutoUpdateCueDeps;
   /** Receives tick or delivery failures. The cue itself never throws. */
@@ -26,7 +35,7 @@ async function loadDeps(): Promise<AutoUpdateCueDeps> {
   const engine = await import("../autoupdate/index.ts");
   return {
     tick: (root) => engine.autoUpdateTick(root),
-    pendingNotices: (root, key) => engine.pendingNotices(root, key),
+    pendingNotices: (root, key, opts) => engine.pendingNotices(root, key, Date.now(), opts),
   };
 }
 
@@ -61,7 +70,7 @@ export async function autoUpdateHookContext(
   if (options.deliver === false || !sessionKey) return "";
   try {
     return deps
-      .pendingNotices(coordRoot, sessionKey)
+      .pendingNotices(coordRoot, sessionKey, { sessionStart: options.sessionStart === true })
       .map((notice) => `${AUTOUPDATE_CUE_PREFIX}${notice.text.trim()}`)
       .filter((line) => line.length > AUTOUPDATE_CUE_PREFIX.length)
       .join("\n");

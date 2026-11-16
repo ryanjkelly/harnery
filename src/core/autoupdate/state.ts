@@ -145,14 +145,30 @@ export function addNotice(
 }
 
 /**
+ * Kinds that ask a running session to reload something its harness reads only
+ * at launch. A session that is starting now already loads the current copy.
+ */
+const LOAD_TIME_KINDS: ReadonlySet<NoticeKind> = new Set(["instructions", "hooks"]);
+
+export interface PendingNoticeOptions {
+  /**
+   * The session is starting now, so it already reads the current hooks and
+   * instructions. Earlier load-time notices are marked delivered without being
+   * shown; telling a new session to restart itself is a false alarm.
+   */
+  sessionStart?: boolean;
+}
+
+/**
  * Notices this session has not seen yet, marked delivered. A session key with
  * no record sees only the last 24 hours. Cheap when there is nothing to say:
- * no write happens unless a notice is returned.
+ * no write happens unless a notice is pending.
  */
 export function pendingNotices(
   coordRoot: string,
   sessionKey: string,
   now: number = Date.now(),
+  options: PendingNoticeOptions = {},
 ): AutoUpdateNotice[] {
   const state = readAutoUpdateState(coordRoot);
   if (state.notices.length === 0) return [];
@@ -171,7 +187,7 @@ export function pendingNotices(
       }
     }
   });
-  return fresh;
+  return options.sessionStart ? fresh.filter((n) => !LOAD_TIME_KINDS.has(n.kind)) : fresh;
 }
 
 // ---------------------------------------------------------------- run lock

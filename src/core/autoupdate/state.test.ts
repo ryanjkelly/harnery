@@ -71,6 +71,22 @@ describe("notices", () => {
     expect(pendingNotices(root, "session-a", NOW + 2000).map((n) => n.text)).toEqual(["newer"]);
   });
 
+  test("a starting session skips load-time notices but still marks them delivered", () => {
+    mutateAutoUpdateState(root, (s) => {
+      addNotice(s, "hooks", "restart for hooks", NOW - 3600_000);
+      addNotice(s, "instructions", "re-read AGENTS.md", NOW - 3600_000);
+      addNotice(s, "failure", "step failed", NOW - 1800_000);
+    });
+    const shown = pendingNotices(root, "new-session", NOW, { sessionStart: true });
+    expect(shown.map((n) => n.text)).toEqual(["step failed"]);
+    expect(pendingNotices(root, "new-session", NOW + 1000)).toEqual([]);
+    expect(pendingNotices(root, "running-session", NOW).map((n) => n.kind)).toEqual([
+      "hooks",
+      "instructions",
+      "failure",
+    ]);
+  });
+
   test("prunes delivery records older than 7 days", () => {
     mutateAutoUpdateState(root, (s) => {
       s.delivered.ancient = new Date(NOW - 8 * 86400_000).toISOString();

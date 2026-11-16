@@ -1368,6 +1368,7 @@ async function handleSessionStarted(run: HookRun): Promise<void> {
   // this session ride the same context as the backup cue.
   const autoUpdateCue = await autoUpdateHookContext(coordRoot, owner.instance_id, {
     deliver: coordEnv("WORKFLOW_CHILD") !== "1",
+    sessionStart: true,
     onError: (err, phase) => logError(coordRoot, err, { phase }),
   });
   // Storage maintenance can walk large stores. It runs in a detached worker so
