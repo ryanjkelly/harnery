@@ -26,6 +26,11 @@ export function parsePluginConfig(
         (agent): agent is string => typeof agent === "string" && agent.length > 0,
       )
     : ["main"];
+  const excludeAgents = Array.isArray(config.excludeAgents)
+    ? config.excludeAgents.filter(
+        (agent): agent is string => typeof agent === "string" && agent.length > 0,
+      )
+    : [];
   return {
     mode: config.mode === "record" ? "record" : "capture",
     ledgerRoot: resolve(
@@ -39,6 +44,7 @@ export function parsePluginConfig(
         : resolve(stateRoot, "logs", "harnery"),
     ),
     agents,
+    excludeAgents,
     debug: typeof config.debug === "boolean" ? config.debug : true,
     recorderFault: config.recorderFault === true,
     queueCapacity: boundedCapacity(config.queueCapacity),

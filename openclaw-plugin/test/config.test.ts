@@ -42,4 +42,12 @@ describe("OpenClaw plugin configuration", () => {
         .queueCapacity,
     ).toBe(DEFAULT_RECORD_QUEUE_CAPACITY);
   });
+
+  test("parses excludeAgents and defaults it to none", () => {
+    const runtime = { env: {}, home: "/portable/runtime-user" };
+    expect(parsePluginConfig({}, runtime).excludeAgents).toEqual([]);
+    expect(
+      parsePluginConfig({ agents: [], excludeAgents: ["account-help", "", 3] }, runtime).excludeAgents,
+    ).toEqual(["account-help"]);
+  });
 });

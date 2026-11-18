@@ -38,6 +38,8 @@ export interface HarneryOpenClawConfig {
   ledgerRoot: string;
   logRoot: string;
   agents: readonly string[];
+  /** Agents never recorded, even when `agents` is empty (record all). */
+  excludeAgents: readonly string[];
   debug: boolean;
   recorderFault: boolean;
   queueCapacity: number;

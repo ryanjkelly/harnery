@@ -52,6 +52,18 @@ describe("Harnery OpenClaw plugin", () => {
     );
   });
 
+  test("excludeAgents skips an agent even when every agent is recorded", () => {
+    const harness = pluginHarness({ mode: "record", agents: [], excludeAgents: ["account-help"] });
+    harness.handlers.get("before_prompt_build")?.(
+      { prompt: "customer orders" },
+      { sessionKey: "session-a", runId: "run-a", agentId: "account-help" },
+    );
+    expect(harness.queued).toEqual([]);
+    expect(JSON.stringify(harness.logs)).not.toContain("customer orders");
+    harness.handlers.get("session_start")?.({}, { sessionKey: "session-b", agentId: "main" });
+    expect(harness.queued).toEqual([expect.objectContaining({ hook: "session_start" })]);
+  });
+
   test("capture mode logs only a redacted skeleton", () => {
     const harness = pluginHarness({ mode: "capture" });
     harness.handlers.get("before_prompt_build")?.(

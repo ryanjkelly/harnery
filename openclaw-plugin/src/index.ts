@@ -59,7 +59,10 @@ export function createPluginDefinition(dependencies: PluginRuntimeDependencies =
               typeof context.agentId === "string" && context.agentId.length > 0
                 ? context.agentId
                 : "main";
-            if (config.agents.length > 0 && !config.agents.includes(agentId)) {
+            if (
+              config.excludeAgents.includes(agentId) ||
+              (config.agents.length > 0 && !config.agents.includes(agentId))
+            ) {
               queue.log("agent_skipped", { hook, agent_id: agentId });
               return undefined;
             }

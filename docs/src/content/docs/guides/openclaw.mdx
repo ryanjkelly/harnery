@@ -45,6 +45,7 @@ The config keys are:
 | `ledgerRoot` | Optional project root under which the plugin creates `.harnery/ledgers/v3`. The default is `harnery/` under `OPENCLAW_STATE_DIR`, or under the runtime user's `.openclaw/` directory when that variable is unset. |
 | `logRoot` | Optional debug and boot log directory. It uses the same portable state-directory lookup as `ledgerRoot`. |
 | `agents` | Agent ids allowed to produce evidence. An empty list allows all agents. |
+| `excludeAgents` | Agent ids that never produce evidence, even when `agents` is empty. Use it for agents whose prompts carry personal data, such as a customer-facing assistant. The default is none. |
 | `debug` | Enables the JSONL debug log. |
 | `recorderFault` | Test switch that forces recorder failures without failing the OpenClaw turn. |
 | `queueCapacity` | Maximum outstanding worker messages. The default is 128 and the accepted range is 1 to 4096. |

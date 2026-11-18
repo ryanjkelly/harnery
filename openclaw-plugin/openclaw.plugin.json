@@ -27,6 +27,12 @@
         "items": { "type": "string" },
         "default": ["main"]
       },
+      "excludeAgents": {
+        "type": "array",
+        "items": { "type": "string" },
+        "default": [],
+        "description": "Agents never recorded, even when agents is empty (record every agent). Use it for agents whose prompts carry personal data."
+      },
       "debug": {
         "type": "boolean",
         "default": true

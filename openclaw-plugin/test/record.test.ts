@@ -21,6 +21,7 @@ const config: HarneryOpenClawConfig = {
   ledgerRoot: "/tmp/harnery-openclaw-record-test",
   logRoot: "/tmp/harnery-openclaw-record-test-logs",
   agents: ["main"],
+  excludeAgents: [],
   debug: true,
   recorderFault: false,
   queueCapacity: 2,
