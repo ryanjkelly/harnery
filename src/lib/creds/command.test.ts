@@ -3,7 +3,11 @@ import { Command } from "commander";
 import { type CredsCommandIO, registerCredsCommand } from "./command.ts";
 import { type CredsEngine, CredsTargetError, OpMissingError } from "./engine.ts";
 
-function harness(engine: Partial<CredsEngine>, healExtras?: () => Record<string, unknown>) {
+function harness(
+  engine: Partial<CredsEngine>,
+  healExtras?: () => Record<string, unknown>,
+  store?: { name: string; missing: string; installHint?: string },
+) {
   const out = {
     data: [] as unknown[],
     errors: [] as Array<{ code: string; hint?: string }>,
@@ -22,13 +26,14 @@ function harness(engine: Partial<CredsEngine>, healExtras?: () => Record<string,
     },
     progress: (m) => out.progress.push(m),
   };
-  const full = { config: { binName: "harn" }, ...engine } as unknown as CredsEngine;
+  const full = { config: { binName: "harn", store }, ...engine } as unknown as CredsEngine;
+  let program = new Command();
   const run = async (...args: string[]) => {
-    const program = new Command().exitOverride();
+    program = new Command().exitOverride();
     registerCredsCommand(program, { engine: full, io, healExtras });
     await program.parseAsync(["node", "test", "creds", ...args]);
   };
-  return { out, run };
+  return { out, run, program: () => program };
 }
 
 describe("registerCredsCommand", () => {
@@ -111,5 +116,32 @@ describe("registerCredsCommand", () => {
     await h.run("verify");
     expect(h.out.rows).toBe(1);
     expect(h.out.exit).toBe(1);
+  });
+
+  test("help and the missing-tool hint name the host's store", async () => {
+    const h = harness(
+      {
+        verify: async () => {
+          throw new OpMissingError("example-store tool not found.");
+        },
+      },
+      undefined,
+      {
+        name: "Example Store",
+        missing: "example-store tool not found.",
+        installHint: "Install it.",
+      },
+    );
+    await h.run("verify");
+    expect(h.out.errors[0]).toEqual({
+      code: "op_cli_missing",
+      message: "example-store tool not found.",
+      hint: "Install it.",
+    } as never);
+    const creds = h.program().commands.find((c) => c.name() === "creds");
+    expect(creds?.description()).toBe("Credential management (Example Store)");
+    expect(creds?.commands.find((c) => c.name() === "pull")?.description()).toContain(
+      "from Example Store",
+    );
   });
 });

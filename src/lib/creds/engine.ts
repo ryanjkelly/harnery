@@ -24,9 +24,9 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { parseEnv } from "node:util";
 import { JSON_SCHEMA, load as loadYaml } from "js-yaml";
-import type { OpClient } from "../op/client.ts";
 import type { LocalCredentials } from "../op/local-credentials.ts";
 import { runProcess } from "../op/process.ts";
+import type { OpTarget } from "../op/types.ts";
 import {
   groupByItem,
   healBackoffHours,
@@ -43,10 +43,33 @@ import {
 import type {
   CredentialFileSpec,
   CredentialSource,
+  CredentialStoreLabel,
   CredsHostConfig,
   ProbeResult,
   ProbeStatus,
 } from "./types.ts";
+
+/** The default store label: 1Password through its `op` CLI. */
+export const ONE_PASSWORD_STORE: CredentialStoreLabel = {
+  name: "1Password",
+  missing: "1Password CLI (op / op.exe) not found.",
+  installHint: "Install: https://developer.1password.com/docs/cli/get-started/",
+};
+
+/**
+ * What the engine needs from a password store: whether its tool is present,
+ * and which field labels an item holds (for `verify`). Harnery's 1Password
+ * client satisfies it; a host may supply another store.
+ */
+export interface CredentialStoreClient {
+  /** Path of the store's command-line tool, or null when it is missing. */
+  detectOp(): string | null;
+  /** Field labels of one item. Values may be omitted or empty when `reveal` is false. */
+  getItemFields(
+    target: OpTarget,
+    opts?: { reveal?: boolean },
+  ): Promise<{ fields: Record<string, unknown> }>;
+}
 
 /** One file the registry expects, with the source that recreates it (if any). */
 export interface ExpectedFile {
@@ -77,7 +100,8 @@ export type ScriptRunner = (
 ) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
 
 export interface CredsEngineDeps {
-  op: OpClient;
+  /** The password store: Harnery's 1Password client or a host-supplied one. */
+  op: CredentialStoreClient;
   /** Mirrors validated structurally when a registered file is one of them. */
   local?: LocalCredentials;
   /** Runs a pull script. Defaults to spawning it directly with a 60-second limit. */
@@ -96,8 +120,8 @@ export class CredsTargetError extends Error {
 }
 
 export class OpMissingError extends Error {
-  constructor() {
-    super("1Password CLI (op / op.exe) not found.");
+  constructor(message: string = ONE_PASSWORD_STORE.missing) {
+    super(message);
     this.name = "OpMissingError";
   }
 }
@@ -120,6 +144,7 @@ function usableCredentialValue(value: unknown): boolean {
 export function createCredsEngine(config: CredsHostConfig, deps: CredsEngineDeps) {
   const runScript = deps.runScript ?? defaultRunScript;
   const now = deps.now ?? Date.now;
+  const store = config.store ?? ONE_PASSWORD_STORE;
 
   function repoRoot(repo?: string | null): string {
     if (!repo) return config.repoRoot;
@@ -138,8 +163,13 @@ export function createCredsEngine(config: CredsHostConfig, deps: CredsEngineDeps
       : resolve(repoRoot(spec.repo), spec.path);
   }
 
-  function scriptPath(source: CredentialSource): string {
+  function scriptPath(source: CredentialSource & { script: string }): string {
     return resolve(repoRoot(source.repo), source.script);
+  }
+
+  /** What a report shows for a source: its script, or a note that the host pulls it in code. */
+  function pullLabel(source: CredentialSource): string {
+    return source.script ?? `${store.name} (built in)`;
   }
 
   /** True when the file exists, is non-empty, and holds usable values for its required keys. */
@@ -261,8 +291,12 @@ export function createCredsEngine(config: CredsHostConfig, deps: CredsEngineDeps
   function pullScriptMtimeMs(key: string): number | null {
     let newest: number | null = null;
     for (const source of config.sources.filter((s) => s.key === key)) {
+      if (!source.script) continue;
       try {
-        newest = Math.max(newest ?? 0, statSync(scriptPath(source)).mtimeMs);
+        newest = Math.max(
+          newest ?? 0,
+          statSync(scriptPath({ ...source, script: source.script })).mtimeMs,
+        );
       } catch {
         // A missing script is reported by the pull itself.
       }
@@ -273,9 +307,13 @@ export function createCredsEngine(config: CredsHostConfig, deps: CredsEngineDeps
   async function runSource(
     source: CredentialSource,
   ): Promise<{ ok: boolean; detail?: string; transport: boolean }> {
-    const abs = scriptPath(source);
-    if (!existsSync(abs))
+    const script = source.script;
+    const pullFunction = script ? undefined : config.hooks?.pull?.[source.key];
+    const abs = script ? scriptPath({ ...source, script }) : null;
+    if (abs && !existsSync(abs))
       return { ok: false, detail: "registered pull script is missing", transport: false };
+    if (!abs && !pullFunction)
+      return { ok: false, detail: "no pull script or pull function registered", transport: false };
     // Keep every usable output, so a failed run cannot leave a broken copy
     // behind (a multi-file pull may overwrite one file before it fails).
     const prior = source.files.flatMap((spec) => {
@@ -285,7 +323,11 @@ export function createCredsEngine(config: CredsHostConfig, deps: CredsEngineDeps
     });
     let r: { exitCode: number; stdout: string; stderr: string };
     try {
-      r = await runScript(abs, repoRoot(source.repo));
+      if (abs) r = await runScript(abs, repoRoot(source.repo));
+      else {
+        await pullFunction?.();
+        r = { exitCode: 0, stdout: "", stderr: "" };
+      }
     } catch (error) {
       r = {
         exitCode: 1,
@@ -336,13 +378,13 @@ export function createCredsEngine(config: CredsHostConfig, deps: CredsEngineDeps
       if (!opts.refresh && sourceReady(source)) {
         results.push({
           key: source.key,
-          script: source.script,
+          script: pullLabel(source),
           description: source.description,
           status: "local",
         });
       } else toRun.push(source);
     }
-    if (toRun.length > 0 && !deps.op.detectOp()) throw new OpMissingError();
+    if (toRun.length > 0 && !deps.op.detectOp()) throw new OpMissingError(store.missing);
     const pulledKeys: string[] = [];
     for (const source of toRun) {
       const r = await runSource(source);
@@ -351,14 +393,14 @@ export function createCredsEngine(config: CredsHostConfig, deps: CredsEngineDeps
         pulledKeys.push(source.key);
         results.push({
           key: source.key,
-          script: source.script,
+          script: pullLabel(source),
           description: source.description,
           status: "ok",
         });
       } else {
         results.push({
           key: source.key,
-          script: source.script,
+          script: pullLabel(source),
           description: source.description,
           status: "fail",
           stderr: r.detail,
@@ -543,7 +585,7 @@ export function createCredsEngine(config: CredsHostConfig, deps: CredsEngineDeps
 
   /** Confirm every manifest item and field still resolves in 1Password. */
   async function verify(account?: string) {
-    if (!deps.op.detectOp()) throw new OpMissingError();
+    if (!deps.op.detectOp()) throw new OpMissingError(store.missing);
     const chosen = account ?? config.defaultAccount;
     const groups = groupByItem(config.manifest);
     const rows: {
@@ -577,7 +619,7 @@ export function createCredsEngine(config: CredsHostConfig, deps: CredsEngineDeps
             field,
             status: "unreadable",
             scripts,
-            reason: "1Password CLI transport failure after retries",
+            reason: `${store.name} CLI transport failure after retries`,
           });
         }
         continue;

@@ -436,3 +436,100 @@ describe("verify", () => {
     ]);
   });
 });
+
+describe("sources pulled in code", () => {
+  const storeLabel = {
+    name: "Example Store",
+    missing: "example-store tool not found.",
+    installHint: "Install it.",
+  };
+
+  test("pull and heal run the host's pull function for a source with no script", async () => {
+    const calls: string[] = [];
+    const e = engine(
+      [
+        {
+          key: "api",
+          description: "API key",
+          files: [{ path: ".credentials/api.env", requiredKeys: ["API_KEY"] }],
+        },
+      ],
+      {
+        store: storeLabel,
+        hooks: {
+          pull: {
+            api: async () => {
+              calls.push("api");
+              writeFile(join(root, ".credentials/api.env"), "API_KEY=abc\n");
+            },
+          },
+        },
+      },
+    );
+    const pulled = await e.pull();
+    expect(pulled.ok).toBe(true);
+    expect(pulled.results).toEqual([
+      { key: "api", script: "Example Store (built in)", description: "API key", status: "ok" },
+    ]);
+    expect(calls).toEqual(["api"]);
+    rmSync(join(root, ".credentials/api.env"));
+    const healed = await e.heal();
+    expect(healed.rows).toEqual([{ pull_key: "api", status: "healed" }]);
+    expect(calls).toEqual(["api", "api"]);
+  });
+
+  test("a failing pull function keeps the earlier file and reports its message", async () => {
+    writeFile(join(root, ".credentials/api.env"), "API_KEY=old\n");
+    const e = engine(
+      [
+        {
+          key: "api",
+          description: "API key",
+          files: [{ path: ".credentials/api.env", requiredKeys: ["API_KEY"] }],
+        },
+      ],
+      {
+        hooks: {
+          pull: {
+            api: async () => {
+              writeFile(join(root, ".credentials/api.env"), "API_KEY=\n");
+              throw new Error("no item named api");
+            },
+          },
+        },
+      },
+    );
+    const report = await e.pull(undefined, { refresh: true });
+    expect(report.ok).toBe(false);
+    expect(report.results[0]?.stderr).toBe("no item named api");
+    expect(readFileSync(join(root, ".credentials/api.env"), "utf8")).toBe("API_KEY=old\n");
+  });
+
+  test("a source with neither a script nor a pull function fails clearly", async () => {
+    const e = engine([
+      { key: "api", description: "API key", files: [{ path: ".credentials/api.env" }] },
+    ]);
+    const report = await e.pull();
+    expect(report.results[0]).toMatchObject({
+      status: "fail",
+      stderr: "no pull script or pull function registered",
+    });
+  });
+
+  test("a missing store tool names the host's store", async () => {
+    const e = engine(
+      [
+        {
+          key: "api",
+          description: "API key",
+          files: [{ path: ".credentials/api.env" }],
+          script: "scripts/pull-api.sh",
+        },
+      ],
+      { store: storeLabel },
+      op({ detectOp: () => null }),
+    );
+    await expect(e.pull()).rejects.toThrow("example-store tool not found.");
+    await expect(e.verify()).rejects.toThrow("example-store tool not found.");
+  });
+});

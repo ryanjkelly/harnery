@@ -1,8 +1,9 @@
 /**
  * Contracts for the credential toolkit (`harnery/lib/creds`).
  *
- * A host keeps a registry of pull scripts, each of which reads secrets from
- * 1Password and writes machine-local files. The toolkit runs those scripts,
+ * A host keeps a registry of pull scripts, each of which reads secrets from a
+ * password store (1Password by default) and writes machine-local files. A
+ * source can instead be pulled in code, through `hooks.pull`. The toolkit runs those scripts,
  * checks that their files exist and hold usable values, re-pulls files whose
  * registered revision moved, and backs off a script that keeps failing so a
  * session start does not prompt for it every time. The host supplies every
@@ -37,12 +38,15 @@ export interface CredentialFileSpec {
   revision?: number;
 }
 
-/** One pull script and the files it produces. */
+/** One pull script (or pull function) and the files it produces. */
 export interface CredentialSource {
   /** Stable key used on the command line, such as `pull <key>`. */
   key: string;
-  /** Script path relative to the owning repository. */
-  script: string;
+  /**
+   * Script path relative to the owning repository. Absent when the host pulls
+   * this source in code through `hooks.pull[key]`.
+   */
+  script?: string;
   /** Owning repository; see `CredentialFileSpec.repo`. */
   repo?: string | null;
   description: string;
@@ -72,7 +76,7 @@ export interface StandaloneCredentialFile extends CredentialFileSpec {
   description: string;
 }
 
-/** One 1Password item a pull script reads, for `verify`. */
+/** One password-store item a pull reads, for `verify`. */
 export interface CredManifestEntry {
   vault: string;
   item: string;
@@ -117,12 +121,31 @@ export interface ProbeResult {
  */
 export type Probe = () => Promise<ProbeResult>;
 
+/**
+ * Writes one source's files from the password store, for a source with no
+ * script. Throws on failure; the message becomes the reported detail, so it
+ * must never contain a secret.
+ */
+export type PullFunction = () => Promise<void>;
+
 /** Points where a host adds behavior the toolkit does not own. */
 export interface CredHooks {
   /** Live probes keyed by source key. */
   probes?: Record<string, Probe>;
+  /** Pull functions keyed by source key, for sources that have no script. */
+  pull?: Record<string, PullFunction>;
   /** Runs after a successful pull, for example to rebuild a derived cache. */
   afterPull?: (keys: string[]) => Promise<void>;
+}
+
+/** How messages name the host's password store. */
+export interface CredentialStoreLabel {
+  /** Name used in help and messages, such as "1Password". */
+  name: string;
+  /** Error message when the store's command-line tool is not available. */
+  missing: string;
+  /** Hint printed with that error, such as where to install the tool. */
+  installHint?: string;
 }
 
 /** Everything host-specific the credential toolkit needs. */
@@ -135,8 +158,10 @@ export interface CredsHostConfig {
   repoName: string;
   /** Absolute paths of other repositories named by `repo` fields. */
   repoPaths?: Record<string, string>;
-  /** Default 1Password account for `verify`. */
+  /** Default password-store account for `verify`. */
   defaultAccount?: string;
+  /** How messages name the password store. Absent means 1Password. */
+  store?: CredentialStoreLabel;
   sources: CredentialSource[];
   standaloneFiles?: StandaloneCredentialFile[];
   manifest: CredManifestEntry[];

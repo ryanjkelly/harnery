@@ -4,7 +4,12 @@
  */
 
 import type { Command } from "commander";
-import { type CredsEngine, CredsTargetError, OpMissingError } from "./engine.ts";
+import {
+  type CredsEngine,
+  CredsTargetError,
+  ONE_PASSWORD_STORE,
+  OpMissingError,
+} from "./engine.ts";
 
 /**
  * Output methods the builder calls. `data`, `error` and `setExitCode` match a
@@ -28,12 +33,11 @@ export interface CredsCommandOptions {
   accountEnv?: string[];
 }
 
-const OP_INSTALL_HINT = "Install: https://developer.1password.com/docs/cli/get-started/";
-
 /** Register `creds` on `program` and return it, so a host can add its own subcommands. */
 export function registerCredsCommand(program: Command, options: CredsCommandOptions): Command {
   const { engine, io } = options;
   const bin = engine.config.binName;
+  const store = engine.config.store ?? ONE_PASSWORD_STORE;
   const accountEnv = options.accountEnv ?? ["OP_ACCOUNT"];
   const progress = (message: string) => io.progress?.(message);
 
@@ -45,29 +49,29 @@ export function registerCredsCommand(program: Command, options: CredsCommandOpti
         hint: `Known keys: ${err.known.join(", ")}.`,
       });
     } else if (err instanceof OpMissingError) {
-      io.error({ code: "op_cli_missing", message: err.message, hint: OP_INSTALL_HINT });
+      io.error({ code: "op_cli_missing", message: err.message, hint: store.installHint });
     } else {
       io.error({ code: "creds_error", message: err instanceof Error ? err.message : String(err) });
     }
     io.setExitCode(1);
   };
 
-  const creds = program.command("creds").description("Credential management (1Password)");
+  const creds = program.command("creds").description(`Credential management (${store.name})`);
 
   creds
     .command("pull [target]")
     .description(
-      "Ensure credentials exist locally, pulling only missing ones from 1Password. Target is a credential key " +
+      `Ensure credentials exist locally, pulling only missing ones from ${store.name}. Target is a credential key ` +
         "or a repository name; no target ensures everything. Use --refresh to replace existing local copies.",
     )
-    .option("--refresh", "Replace existing local credential files from 1Password")
+    .option("--refresh", `Replace existing local credential files from ${store.name}`)
     .action(async (target: string | undefined, opts: { refresh?: boolean }) => {
       try {
         const report = await engine.pull(target, opts);
         if (!report.contacted) {
           progress(
             `Reused ${report.counts.local} local credential ${report.counts.local === 1 ? "copy" : "copies"}; ` +
-              "1Password was not contacted. Use --refresh to replace them.",
+              `${store.name} was not contacted. Use --refresh to replace them.`,
           );
         }
         io.data(report);
@@ -111,7 +115,7 @@ export function registerCredsCommand(program: Command, options: CredsCommandOpti
           if (report.counts.dead > 0) {
             hints.push(
               "A dead credential is not a stale file. Read live_detail: an expired grant needs re-authorization, " +
-                `which \`${bin} creds pull\` cannot fix because the 1Password copy is dead too.`,
+                `which \`${bin} creds pull\` cannot fix because the ${store.name} copy is dead too.`,
             );
           }
           if (report.counts.skipped > 0)
@@ -140,7 +144,7 @@ export function registerCredsCommand(program: Command, options: CredsCommandOpti
         io.data({ ...report, ...(options.healExtras?.() ?? {}) });
       } catch (err) {
         // Fail open: heal runs at session start, and a clone that cannot reach
-        // 1Password must still get a usable session.
+        // the password store must still get a usable session.
         io.data({
           ok: false,
           healed: 0,
@@ -153,10 +157,10 @@ export function registerCredsCommand(program: Command, options: CredsCommandOpti
   creds
     .command("verify")
     .description(
-      "Verify every item and field the pull scripts read still exists in 1Password, catching renames " +
+      `Verify every item and field the pull scripts read still exists in ${store.name}, catching renames ` +
         `before \`${bin} creds pull\` breaks.`,
     )
-    .option("--account <account>", "1Password account")
+    .option("--account <account>", `${store.name} account`)
     .action(async (opts: { account?: string }) => {
       try {
         const account = opts.account ?? accountEnv.map((n) => process.env[n]).find(Boolean);
@@ -168,8 +172,8 @@ export function registerCredsCommand(program: Command, options: CredsCommandOpti
           const hints: string[] = [];
           if (resolved > 0) {
             hints.push(
-              `${resolved} reference(s) no longer resolve in 1Password (account ${report.account ?? "default"}). ` +
-                "Fix the item or field in 1Password, or update the registry if a rename was intentional.",
+              `${resolved} reference(s) no longer resolve in ${store.name} (account ${report.account ?? "default"}). ` +
+                `Fix the item or field in ${store.name}, or update the registry if a rename was intentional.`,
             );
           }
           if (unreadable > 0) {
@@ -183,7 +187,7 @@ export function registerCredsCommand(program: Command, options: CredsCommandOpti
           io.setExitCode(1);
         } else {
           progress(
-            `All ${report.counts.fields} credential references across ${report.counts.items} items resolve in 1Password.`,
+            `All ${report.counts.fields} credential references across ${report.counts.items} items resolve in ${store.name}.`,
           );
         }
       } catch (err) {
