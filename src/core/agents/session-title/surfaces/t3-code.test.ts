@@ -333,3 +333,72 @@ describe("done request", () => {
 function renamedTo(title: string): string {
   return JSON.stringify({ threadId: THREAD, action: "rename", title });
 }
+
+describe("agent name change request", () => {
+  const CC_READ = "mcp__t3-code__t3_thread_read";
+  const KEPT = "Agent Mavis - Portal build";
+  const OWED = "Agent Orion - Portal build";
+  const kept: TitleSurfaceContext = { ...claude, appliedTitle: KEPT };
+  const renamed = (title: string) => JSON.stringify({ threadId: THREAD, action: "rename", title });
+  const allows = (toolName: string, input: unknown, ctx = kept) =>
+    t3CodeSurface.allowsWhilePending?.({ toolName, toolInput: input }, [OWED], ctx);
+  const confirm = (title: string, ctx = kept) =>
+    t3CodeSurface.confirmFromTool?.(
+      done(CC_TOOL, { action: "rename", title }, renamed(title)),
+      [OWED],
+      ctx,
+    ) ?? null;
+
+  test("the instruction reads the current title and changes only the name", () => {
+    const text = t3CodeSurface.instruction(OWED, kept);
+    const read = text.indexOf(`\`t3_thread_read\` with \`threadId: "${THREAD}"\``);
+    const update = text.indexOf('`t3_thread_update` with `action: "rename"`');
+    expect(read).toBeGreaterThan(0);
+    expect(update).toBeGreaterThan(read);
+    expect(text).toContain("the name after `Agent ` replaced by `Orion`");
+    expect(text).toContain(`the current title is \`${KEPT}\`, so the new title is exactly:`);
+    expect(text).toContain(`\n${OWED}\n`);
+    expect(text).toContain("do not rename the thread; send the fenced block below instead");
+    expect(text).toContain(sessionNameDisplayBlock(OWED));
+    expect(text).toContain("leave the thread title alone");
+  });
+  test("the reminder names the read, the rename and the expected title", () => {
+    const text = t3CodeSurface.reminder(OWED, kept);
+    expect(text).toContain(CC_READ);
+    expect(text).toContain(CC_TOOL);
+    expect(text).toContain("replaced by `Orion`");
+    expect(text).toContain(`\n${OWED}\n`);
+  });
+  test("a start or done title with no kept title keeps its own wording", () => {
+    expect(t3CodeSurface.instruction(OWED, claude)).not.toContain("t3_thread_read");
+    // A done title is never a name change: the done marker differs.
+    const doneText = t3CodeSurface.instruction(`[DONE] ${OWED}`, kept);
+    expect(doneText).toContain("This session is marked done");
+    expect(doneText).toContain(`\n[DONE] ${KEPT}\n`);
+  });
+  test("allows loading both tools, reading this thread, and a rename that carries the name", () => {
+    expect(allows("ToolSearch", { query: `select:${CC_READ},${CC_TOOL}` })).toBe(true);
+    expect(allows(CC_READ, { threadId: THREAD, limit: 1 })).toBe(true);
+    expect(allows(CC_TOOL, { action: "rename", title: OWED })).toBe(true);
+    expect(allows(CC_TOOL, { action: "rename", title: "Agent Orion - Hand edited" })).toBe(true);
+    expect(allows(CC_TOOL, { action: "rename", title: "[DONE] Agent Orion - Portal build" })).toBe(
+      true,
+    );
+  });
+  test("refuses another agent name, another form, another thread, and a read elsewhere", () => {
+    expect(allows(CC_TOOL, { action: "rename", title: "Agent Vela - Portal build" })).toBe(false);
+    expect(allows(CC_TOOL, { action: "rename", title: "Portal build" })).toBe(false);
+    expect(allows(CC_TOOL, { action: "rename", title: OWED, threadId: "other" })).toBe(false);
+    expect(allows(CC_TOOL, { action: "regenerate_title" })).toBe(false);
+    expect(allows(CC_READ, { threadId: "other" })).toBe(false);
+    // Without a kept title the read stays gated.
+    expect(allows(CC_READ, { threadId: THREAD }, claude)).toBe(false);
+  });
+  test("confirms the title actually written when it carries the name", () => {
+    expect(confirm(OWED)).toBe(OWED);
+    expect(confirm("Agent Orion - Hand edited")).toBe("Agent Orion - Hand edited");
+    expect(confirm("Agent Vela - Portal build")).toBeNull();
+    expect(confirm("Portal build")).toBeNull();
+    expect(confirm("Agent Orion - Hand edited", claude)).toBeNull();
+  });
+});

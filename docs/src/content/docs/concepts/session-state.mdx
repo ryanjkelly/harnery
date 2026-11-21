@@ -190,26 +190,29 @@ A title is written at the start of a session and when the session is marked
 done, and at no other time. A title minted in the middle of a session would
 describe one turn of work and be too narrow to name the whole session. When a
 writing surface confirms a title, Harnery records it on the row as
-`session_title_applied_for`. After that, the only title change allowed is the
-terminal one with `[DONE] ` prepended, and `session_title_applied_for` then
-holds the done title actually written. In a T3 Code thread the done title keeps
+`session_title_applied_for`. After that, two title changes are allowed: the
+same title with a different agent name, and the terminal one with `[DONE] `
+prepended. `session_title_applied_for` then holds the title actually written. In a T3 Code thread the done title keeps
 the thread's current wording, so a title the person edited by hand during the
 session only gains the prefix. This costs one extra read call when the session
-is marked done. A stored name corrected after the title was applied is not
-pushed to the open thread. The name block uses the corrected name when the
-session is marked done.
+is marked done. A stored name corrected after the title was applied, such as
+an `Agent unknown - ...` name fixed once identity resolves, is an agent-name
+change and is owed as soon as it is known.
 
 A client thread can host more than one session. A T3 Code thread that switches
 account or provider keeps its thread id and starts a new native session, which
 Harnery registers as a new agent. The thread's title belongs to the thread, so
-that session does not retitle it. When `agents set-task` mints the new
-session's name, Harnery looks for a title an earlier session already confirmed
-on the same surface and thread id. If it finds one, it records that title as
-the new session's `session_title_applied_for`, marks the session's own name as
-shown, and asks for no rename. The command returns `first_of_session: false`
-with the kept title in `kept_thread_title`. Only the terminal `[DONE] ` title
-may follow, and a thread already marked done keeps its title as it is. The
-kept title can therefore name an agent that no longer runs in the thread
+that session keeps its description and changes only the agent name. When
+`agents set-task` mints the new session's name, Harnery looks for a title an
+earlier session already confirmed on the same surface and thread id. If it
+finds one, it records that title as the new session's
+`session_title_applied_for` and returns it in `kept_thread_title`. When the
+kept title has the form `Agent <name> - <description>` with another agent's
+name, the session takes that title with its own name and owes it. The agent
+reads the thread's current title and renames the thread to that title with
+the name replaced, so wording a person edited by hand is kept. A kept title
+that already carries this agent's name, or that a person reworded out of that
+form, is left as it is
 ([ADR 0269](/decisions/0269-keep-a-thread-title-across-sessions/)).
 
 The title fields live on the row's local cache file in `.harnery/active/`,

@@ -1,9 +1,9 @@
 ---
 title: "0269: Keep a client thread's title across the sessions it hosts"
-description: "ADR: a session that starts in a client thread an earlier session already titled keeps that title, so a thread's title changes only when the thread starts and when it is marked done."
+description: "ADR: a session that starts in a client thread an earlier session already titled keeps that title's wording and changes only the agent name, so a thread's description changes only when the thread starts and when it is marked done."
 ---
 
-**Status:** accepted (2026-11-21); extends [ADR 0247](/decisions/0247-set-the-session-title-on-the-client/) and keeps [ADR 0086](/decisions/0086-limit-session-name-changes-to-start-and-done/) · **Scope:** product tier (`core/agents/session-title`, `core/agents/state/session-title-memory`, `commands/agents`)
+**Status:** accepted (2026-11-21); amends [ADR 0247](/decisions/0247-set-the-session-title-on-the-client/), which held a corrected agent name back until done, and narrows the two-write limit in [ADR 0086](/decisions/0086-limit-session-name-changes-to-start-and-done/) to a title's description · **Scope:** product tier (`core/agents/session-title`, `core/agents/state/session-title-memory`, `commands/agents`)
 
 ## Context
 
@@ -34,10 +34,14 @@ session caused it.
 the title lives on the thread, and the person tracks threads, not native
 sessions.
 
-**Give the new session the earlier session's agent name.** Rejected for this
-change. It would keep the title accurate, but identity continuity across
-accounts is a larger decision with its own risks, and it is not needed to stop
-the rename.
+**Keep the earlier title untouched, agent name included.** Tried first and
+rejected by the operator the same day. The title then names an agent that no
+longer runs in the thread, and the name is how a person matches a thread to
+the agent in the status display and the dashboard.
+
+**Give the new session the earlier session's agent name.** Rejected. It would
+keep the title accurate, but identity continuity across accounts is a larger
+decision with its own risks, and changing the name in the title is enough.
 
 **Ask the agent to read the thread's title before deciding to rename.**
 Rejected because a thread always has some title. The client fills in a
@@ -50,47 +54,68 @@ that carries the surface, the thread id and the confirmed title.
 
 ## Decision
 
-A client thread's title belongs to the thread. When `agents set-task` mints a
-session's name and the resolved surface writes titles to a client thread,
-Harnery looks through the title memory in `.harnery/session-titles/` for a
-title already confirmed on the same surface and thread id. The newest one
-wins.
+A client thread's title belongs to the thread, and the agent name in it
+follows the agent that holds the thread. A title has the form
+`Agent <name> - <description>`. The description is written once, when the
+thread starts. The name may change. `[DONE] ` is prepended when a session in
+the thread is marked done.
+
+When `agents set-task` mints a session's name and the resolved surface writes
+titles to a client thread, Harnery looks through the title memory in
+`.harnery/session-titles/` for a title already confirmed on the same surface
+and thread id. The newest one wins. The lookup reads the memory before the
+naming mutation runs, because that mutation rewrites the session's own memory
+file.
 
 When one exists, the command records it as the new session's
-`session_title_applied_for` and marks the session's own name as shown. It
-returns `first_of_session: false`, a null `suggested_session_name`, the kept
-title in `kept_thread_title`, and a note telling the agent to leave the thread
-title unchanged. No rename is asked for and the pending-title gate has nothing
-to hold.
+`session_title_applied_for` and returns it in `kept_thread_title`. What
+happens next depends on the kept title:
 
-The lookup reads the memory before the naming mutation runs, because that
-mutation rewrites the session's own memory file. This also covers a session
-whose agent name changed while its cache was gone, which
-`recallSessionTitle()` deliberately does not restore.
+| Kept title | What the command does |
+| --- | --- |
+| Harnery's form, with another agent's name | Stores the kept title with this session's name as the session's own name and owes that title. It returns `first_of_session: true` with the new title in `suggested_session_name`. |
+| Harnery's form, already with this agent's name | Asks for nothing. It returns `first_of_session: false` and a note to leave the title unchanged. |
+| Any other wording, such as a title a person typed | Asks for nothing, as above. |
 
-From there the existing policy applies unchanged. `titleChangeAllowed()`
-permits only the terminal `[DONE] ` title. If the kept title already starts
-with `[DONE] `, nothing further is asked for at all, which matches ADR 0086's
-rule that reopening does not remove the marker.
+`titleChangeAllowed()` now permits one more change after a title is applied:
+the same title with a different agent name. `isAgentNameChange()` requires the
+description and the done marker to match, so a new task still cannot retitle
+the thread. The terminal `[DONE] ` title stays allowed as before.
+
+A person may have edited the thread's wording, and Harnery's hooks cannot read
+the client's title. The T3 Code instruction for a name change therefore works
+like the done instruction. The agent reads the current title with
+`t3_thread_read` and renames the thread to that title with the name after
+`Agent ` replaced. The pending-title gate lets the read through, and
+PostToolUse confirms a successful rename of the session's own thread to any
+title in Harnery's form that carries the new name. If the current title is no
+longer in that form, the agent leaves the thread alone and sends the name
+block, which closes the request.
+
+The same rule covers a title that was applied as `Agent unknown - ...` before
+the session's identity resolved. ADR 0247 held the corrected name back until
+done. It is now owed as soon as the name is known, which is what the name
+block has always done.
 
 The done instruction for T3 Code already tells the agent to read the thread's
 current title and prefix it. Its wording also quotes the title Harnery expects
 to find. That quote now comes from the applied title on the row, carried to
-the surface as `appliedTitle` on the title surface context, so the instruction
-names the title the thread really has.
+the surface as `appliedTitle` on the title surface context.
 
 Surfaces with `display` delivery are unchanged. The name block has no client
 thread id, and a person copies each block by hand.
 
 ## Result
 
-A T3 Code thread's title is written when the thread's first session declares
-its focus and when a session in it is marked done, and at no other time.
+A T3 Code thread's description is written when the thread's first session
+declares its focus, and it does not change afterwards. A later session in the
+thread changes only the agent name, and `[DONE] ` is prepended when a session
+in the thread is marked done.
 
-The kept title can name an agent that no longer runs in the thread. After an
-account switch the thread still reads `Agent <earlier name> - <earlier task>`
-while the session answering in it has a different name. The coordination row,
-the status display and the dashboard show the current name.
+A thread that changes hands shows the new agent's name on work the earlier
+agent described. The description can be stale for the new session's task, and
+that is accepted: a description that tracked each session's task is the
+mid-thread retitling this decision removes.
 
 The lookup depends on the title memory, which is pruned after 30 days without
 a change. A thread resumed after that is titled again as if it were new.

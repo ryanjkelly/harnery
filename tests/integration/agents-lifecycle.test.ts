@@ -268,11 +268,10 @@ describe("harn agents lifecycle on the V3 ledger", () => {
     });
   });
 
-  test("a new session in an already-titled T3 thread keeps that thread's title", () => {
+  test("a new session in an already-titled T3 thread changes only the agent name", () => {
     const thread = "0f8c5c3e-6a3b-4c1e-9d43-2f0a7b9e1c55";
     const earlier = "7d1b7a0e-52a4-4d0b-8f43-0d5f6f3f9a10";
-    const kept = "Agent Mavis - Earlier account's work";
-    const rememberEarlier = (root: string, clientThread: string) => {
+    const rememberEarlier = (root: string, clientThread: string, title: string) => {
       const dir = path.join(root, ".harnery", "session-titles");
       mkdirSync(dir, { recursive: true });
       writeFileSync(
@@ -281,59 +280,82 @@ describe("harn agents lifecycle on the V3 ledger", () => {
           instance_id: earlier,
           session_id: earlier,
           name: "Mavis",
-          suggested_session_name: kept,
-          session_name_seen_for: kept,
+          suggested_session_name: title,
+          session_name_seen_for: title,
           session_title_surface: "t3-code",
           session_title_client_thread: clientThread,
-          session_title_applied_for: kept,
+          session_title_applied_for: title,
         }),
       );
     };
+    const setTask = (root: string) =>
+      harn(root, ["agents", "set-task", "Recovered focus", "--session-id", OWNER], {
+        T3CODE_THREAD_ID: thread,
+      });
 
+    // An earlier agent titled the thread: the description stays and the name
+    // becomes this session's.
+    const kept = "Agent Mavis - Earlier account's work";
+    const owed = "Agent Anna - Earlier account's work";
     const root = makeMidFlightSandbox(true, "claude-code");
-    rememberEarlier(root, thread);
-    const result = harn(root, ["agents", "set-task", "Recovered focus", "--session-id", OWNER], {
-      T3CODE_THREAD_ID: thread,
-    });
+    rememberEarlier(root, thread, kept);
+    const result = setTask(root);
     expect(result.status).toBe(0);
-    const out = outputObject(result);
-    expect(out).toMatchObject({
+    expect(outputObject(result)).toMatchObject({
       name: "Anna",
-      first_of_session: false,
-      suggested_session_name: null,
+      first_of_session: true,
+      suggested_session_name: owed,
       title_surface: "t3-code",
       kept_thread_title: kept,
-      note: KEPT_THREAD_TITLE_NOTE,
+      note: t3CodeSurface.note,
     });
-    // Nothing is owed: the session's own name is recorded as shown, and the
-    // thread's title is this session's applied title.
     expect(heartbeat(root)).toMatchObject({
-      suggested_session_name: "Agent Anna - Recovered focus",
-      session_name_seen_for: "Agent Anna - Recovered focus",
+      suggested_session_name: owed,
       session_title_surface: "t3-code",
       session_title_client_thread: thread,
       session_title_applied_for: kept,
     });
+    expect(heartbeat(root).session_name_seen_for).not.toBe(owed);
     const retry = harn(root, ["agents", "suggest-name", "--json", "--session-id", OWNER]);
-    expect(outputObject(retry)).toMatchObject({ session_name_retry: false });
+    expect(outputObject(retry)).toMatchObject({
+      session_name_retry: true,
+      suggested_session_name: owed,
+    });
 
-    // The terminal done title is still asked for.
+    // Once the renamed title is confirmed, the done title builds on it.
+    stampSessionTitleApplied(root, OWNER, owed, "t3-code");
     const done = harn(root, ["agents", "lifecycle", "done", "--session-id", OWNER]);
     expect(done.status).toBe(0);
     expect(outputObject(done)).toMatchObject({
       name_reminted: true,
-      suggested_session_name: "[DONE] Agent Anna - Recovered focus",
+      suggested_session_name: `[DONE] ${owed}`,
       title_surface: "t3-code",
       note: t3CodeSurface.note,
     });
 
+    // A title that already carries this agent's name, or one a person reworded
+    // out of Harnery's form, is left exactly as it is.
+    for (const unchanged of ["Agent Anna - Earlier work", "Portal work"]) {
+      const same = makeMidFlightSandbox(true, "claude-code");
+      rememberEarlier(same, thread, unchanged);
+      const out = outputObject(setTask(same));
+      expect(out).toMatchObject({
+        first_of_session: false,
+        suggested_session_name: null,
+        kept_thread_title: unchanged,
+        note: KEPT_THREAD_TITLE_NOTE,
+      });
+      expect(heartbeat(same)).toMatchObject({
+        suggested_session_name: "Agent Anna - Recovered focus",
+        session_name_seen_for: "Agent Anna - Recovered focus",
+        session_title_applied_for: unchanged,
+      });
+    }
+
     // A title confirmed on a different thread does not carry over.
     const fresh = makeMidFlightSandbox(true, "claude-code");
-    rememberEarlier(fresh, "another-thread");
-    const minted = harn(fresh, ["agents", "set-task", "Recovered focus", "--session-id", OWNER], {
-      T3CODE_THREAD_ID: thread,
-    });
-    const mintedOut = outputObject(minted);
+    rememberEarlier(fresh, "another-thread", kept);
+    const mintedOut = outputObject(setTask(fresh));
     expect(mintedOut).toMatchObject({
       first_of_session: true,
       suggested_session_name: "Agent Anna - Recovered focus",

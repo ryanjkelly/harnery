@@ -87,7 +87,11 @@ import {
   type SessionFinalizationRequestV3,
 } from "../core/agents/session-finalizer-v3.ts";
 import { sessionNameDisplayPending } from "../core/agents/session-name-display.ts";
-import { KEPT_THREAD_TITLE_NOTE, titleChangeAllowed } from "../core/agents/session-title/policy.ts";
+import {
+  KEPT_THREAD_TITLE_NOTE,
+  titleChangeAllowed,
+  withAgentName,
+} from "../core/agents/session-title/policy.ts";
 import {
   resolveTitleSurface,
   titleSurfaceContext,
@@ -101,6 +105,7 @@ import {
   readHeartbeat as readHeartbeatCache,
   stampSessionTitleApplied,
   stampSessionTitleSurface,
+  stampSuggestedSessionName,
 } from "../core/agents/state/heartbeat-writer.ts";
 import {
   describeLiveAuthorityBlockV3,
@@ -2262,8 +2267,9 @@ function runSetTask(task: string, opts?: { sessionId?: string }): void {
     titleSurfaceId = surface.id;
     titleNote = surface.note;
     // The thread already carries a title an earlier session wrote. Record it
-    // as this session's applied title, so nothing is owed now and only the
-    // terminal done title may follow (ADR 0086, ADR 0269).
+    // as this session's applied title: its description stays, and the only
+    // changes that may follow are this session's agent name and the terminal
+    // done marker (ADR 0086, ADR 0269).
     const keptTitle =
       surface.delivery === "display"
         ? undefined
@@ -2271,9 +2277,17 @@ function runSetTask(task: string, opts?: { sessionId?: string }): void {
     if (keptTitle) {
       stampSessionTitleApplied(root, myOwner, keptTitle, surface.id);
       keptThreadTitle = keptTitle;
-      suggestedName = null;
-      firstOfSession = false;
-      titleNote = KEPT_THREAD_TITLE_NOTE;
+      const renamed = hb.name ? withAgentName(keptTitle, hb.name) : null;
+      if (renamed) {
+        // The session takes the thread's title with its own agent name, so
+        // its stored name and the thread agree. That title is owed now.
+        stampSuggestedSessionName(root, myOwner, renamed);
+        suggestedName = renamed;
+      } else {
+        suggestedName = null;
+        firstOfSession = false;
+        titleNote = KEPT_THREAD_TITLE_NOTE;
+      }
     }
   }
 

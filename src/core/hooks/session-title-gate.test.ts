@@ -129,6 +129,47 @@ describe("postToolTitleDecision", () => {
     );
     expect(decision).toEqual({ kind: "suppressed", applied: "A - x" });
   });
+  test("an agent-name change after an applied title is instructed and confirmed", () => {
+    const kept = "Agent Mavis - Portal build";
+    const owed = "Agent Orion - Portal build";
+    const row = t3Row({ suggested_session_name: owed, session_title_applied_for: kept });
+    const minted = postToolTitleDecision(
+      request(row),
+      row,
+      { toolName: "Bash", toolInput: {}, toolResponse: "" },
+      true,
+    );
+    expect(minted.kind).toBe("instruct");
+    expect(minted.kind === "instruct" ? minted.text : "").toContain("replaced by `Orion`");
+    // The thread's wording may have been edited by hand; the name is what counts.
+    const written = "Agent Orion - Portal build, phase two";
+    const applied = postToolTitleDecision(
+      request(row),
+      row,
+      { toolName: TOOL, toolInput: rename(written), toolResponse: renamed(written) },
+      false,
+    );
+    expect(applied).toEqual({ kind: "applied", title: written, drift: true });
+    // A new description is still refused.
+    const other = t3Row({
+      suggested_session_name: "Agent Orion - Something else",
+      session_title_applied_for: kept,
+    });
+    expect(
+      postToolTitleDecision(
+        request(other),
+        other,
+        { toolName: "Bash", toolInput: {}, toolResponse: "" },
+        true,
+      ),
+    ).toEqual({ kind: "suppressed", applied: kept });
+    expect(
+      preToolTitleDecision(request(row), row, {
+        toolName: "mcp__t3-code__t3_thread_read",
+        toolInput: { threadId: THREAD },
+      }),
+    ).toEqual({ kind: "allow" });
+  });
   test("the done title after an applied one is instructed and confirmed", () => {
     const done = "[DONE] A - x";
     const row = t3Row({ suggested_session_name: done, session_title_applied_for: "A - x" });

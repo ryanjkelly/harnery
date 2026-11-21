@@ -213,6 +213,23 @@ export function stampSessionNameReminded(
   );
 }
 
+/**
+ * Replace the session's stored name. Used when a session starts in a client
+ * thread that already has a title: the session takes that title with its own
+ * agent name, so the stored name and the thread agree. A name that differs
+ * from the one last shown becomes pending again.
+ */
+export function stampSuggestedSessionName(
+  coordRoot: string,
+  instanceId: string,
+  name: string,
+): Heartbeat | null {
+  if (!name) return null;
+  return mutate(coordRoot, instanceId, (hb) =>
+    hb.suggested_session_name === name ? hb : { ...hb, suggested_session_name: name },
+  );
+}
+
 /** Record the surface resolved at mint time, plus the client's thread id when it has one. Idempotent. */
 export function stampSessionTitleSurface(
   coordRoot: string,

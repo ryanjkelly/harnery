@@ -196,10 +196,14 @@ block. The display rules below describe the name block, which also serves as
 the fallback when that rename tool is missing or the call fails.
 
 A session that starts in a client thread an earlier session already titled
-keeps that title. Its first declaration returns `first_of_session: false`, a
-null `suggested_session_name`, the existing title in `kept_thread_title`, and
-a note to leave the thread title unchanged. This happens when a T3 Code thread
-switches account or provider, which starts a new session in the same thread.
+keeps that title's description. This happens when a T3 Code thread switches
+account or provider, which starts a new session in the same thread. The
+result carries the existing title in `kept_thread_title`. When that title
+names another agent, `suggested_session_name` is the same title with this
+session's agent name, `first_of_session` is `true`, and the agent changes only
+the name in the thread's title. Otherwise the result has
+`first_of_session: false`, a null `suggested_session_name`, and a note to
+leave the thread title unchanged.
 
 `first_of_session: true` means exactly "this call produced the session name" —
 it is never true with a null name. A bare clear (`''`) as the first call does
