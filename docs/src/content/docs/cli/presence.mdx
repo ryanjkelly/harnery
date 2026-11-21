@@ -215,7 +215,11 @@ from local files alone; it makes no network calls. It prints one JSON document
   confirm they derived the same room. The room key is never shown.
 - `daemon`: the pid file (`.harnery/presence/relay-daemon.json`), whether that
   process is alive, its start time and uptime, and whether its relay URL still
-  matches the config.
+  matches the config. `code` is the code identity the daemon recorded, and
+  `code_current` says whether a running daemon runs the installed code. It is
+  `false` when the code differs or the daemon recorded none, which only a
+  daemon from before code identity does. Such a daemon never replaces itself:
+  stop its pid, and the next session start or Stop hook launches a current one.
 - `log`: the latest connect, disconnect (with close code), idle exit, takeover
   and error from the presence-relay log, plus connect and disconnect counts
   since the running daemon started. It reads the log newest first, including

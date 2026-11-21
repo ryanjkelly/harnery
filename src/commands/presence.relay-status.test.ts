@@ -15,6 +15,8 @@ const status: RelayStatus = {
     url_matches_config: true,
     started_at: "2026-01-01T00:00:00.000Z",
     uptime_secs: 3600,
+    code: "0.1.0@abc",
+    code_current: true,
   },
   lock: { state: "held", endpoint: "loopback_tcp", port: 23456 },
   log: {
@@ -81,6 +83,20 @@ describe("formatRelayStatus", () => {
       "(incomplete: log history reaches back only to 2025-12-31T00:00:00.000Z)",
     );
     expect(text).toContain("log: read stopped at its size limit; older events not shown");
+  });
+
+  test("a daemon on old or unrecorded code says how to replace it", () => {
+    const older = formatRelayStatus({
+      ...status,
+      daemon: { ...status.daemon, code: "0.1.0@old", code_current: false },
+    });
+    expect(older).toContain("(runs older code 0.1.0@old; it will not replace itself: stop pid 42");
+    const unrecorded = formatRelayStatus({
+      ...status,
+      daemon: { ...status.daemon, code: null, code_current: false },
+    });
+    expect(unrecorded).toContain("(runs code from before code identity;");
+    expect(formatRelayStatus(status)).not.toContain("will not replace itself");
   });
 
   test("an unconfigured relay says so", () => {

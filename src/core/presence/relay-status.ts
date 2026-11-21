@@ -19,11 +19,12 @@ import {
   readSync,
   statSync,
 } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { coordEnv } from "../../lib/env.ts";
 import { resolveMachineLabel } from "../../lib/machine.ts";
 import { processAlive } from "../../lib/process-alive.ts";
+import { type CodeIdentityRecord, currentCodeIdentity } from "../code-identity.ts";
 import { presenceEnabled, presenceRelayUrl } from "../config.ts";
 import { createStorageCatalog } from "../storage/catalog.ts";
 import { type HarneryLogRecordV1, parseLogRecord } from "../storage/jsonl.ts";
@@ -83,6 +84,16 @@ export interface RelayStatus {
     url_matches_config: boolean | null;
     started_at: string | null;
     uptime_secs: number | null;
+    /** The code identity the daemon recorded; null when it recorded none. */
+    code: string | null;
+    /**
+     * Whether a running daemon runs the installed code. False when its code
+     * differs or it recorded none (only daemons from before code identity
+     * omit it); such a daemon never replaces itself, so stop it and let the
+     * next session start or Stop hook launch a current one. Null when no
+     * daemon runs or the comparison cannot be made.
+     */
+    code_current: boolean | null;
   };
   /**
    * The relay instance lock. `unavailable` means something other than this
@@ -122,9 +133,27 @@ export interface RelayStatus {
   } | null;
 }
 
+/**
+ * Compare a running daemon's recorded code with the installed code. A daemon
+ * with no recorded code predates the field, so it is older than any code that
+ * records one. A record for another package root cannot be compared.
+ */
+export function relayDaemonCodeCurrent(
+  recorded: Partial<CodeIdentityRecord> | undefined,
+  alive: boolean,
+  current: CodeIdentityRecord,
+): boolean | null {
+  if (!alive || current.id === null) return null;
+  if (!recorded || typeof recorded.id !== "string") return false;
+  if (typeof recorded.root !== "string" || resolve(recorded.root) !== resolve(current.root)) {
+    return null;
+  }
+  return recorded.id === current.id;
+}
+
 export async function relayStatus(
   coordRoot: string,
-  opts: { now?: Date } = {},
+  opts: { now?: Date; currentCode?: CodeIdentityRecord } = {},
 ): Promise<RelayStatus> {
   const now = opts.now ?? new Date();
   const machine = sanitizeRefComponent(resolveMachineLabel());
@@ -149,6 +178,12 @@ export async function relayStatus(
       url_matches_config: recOk && url !== null ? rec.url === url : null,
       started_at: startedAt,
       uptime_secs: alive && startedAt ? ageSecs(startedAt, now) : null,
+      code: recOk && typeof rec.code?.id === "string" ? rec.code.id : null,
+      code_current: relayDaemonCodeCurrent(
+        recOk ? rec.code : undefined,
+        alive,
+        opts.currentCode ?? currentCodeIdentity(),
+      ),
     },
     lock: lockSummary(coordRoot, alive),
     log,

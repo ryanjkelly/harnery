@@ -15,6 +15,7 @@ import { initialReconnectState, planReconnect } from "./relay-reconnect.ts";
 import {
   type HistorySource,
   type RelayLogEvent,
+  relayDaemonCodeCurrent,
   relayLogPhase,
   relayStatus,
   summarizeRelayLog,
@@ -186,6 +187,8 @@ describe("relayStatus", () => {
       running: false,
       url_matches_config: false,
       uptime_secs: null,
+      code: null,
+      code_current: null,
     });
     expect(s.log.since_daemon_start).toBeNull();
   });
@@ -423,5 +426,33 @@ describe("relay log classification", () => {
     expect(s.last_disconnected?.at).toBe("2026-01-01T01:05:01Z");
     expect(s.last_idle_exit?.at).toBe("2026-01-01T00:10:00Z");
     expect(s.since_daemon_start).toEqual({ connects: 2, disconnects: 2 });
+  });
+});
+
+describe("relayDaemonCodeCurrent", () => {
+  const current = { id: "0.2.0@new", root: "/kit/harnery" };
+
+  test("equal recorded code is current", () => {
+    expect(relayDaemonCodeCurrent({ id: "0.2.0@new", root: "/kit/harnery" }, true, current)).toBe(
+      true,
+    );
+  });
+
+  test("different recorded code is not current", () => {
+    expect(relayDaemonCodeCurrent({ id: "0.1.0@old", root: "/kit/harnery" }, true, current)).toBe(
+      false,
+    );
+  });
+
+  test("a daemon that recorded no code predates code identity", () => {
+    expect(relayDaemonCodeCurrent(undefined, true, current)).toBe(false);
+  });
+
+  test("no running daemon, unreadable current code, or another root cannot be judged", () => {
+    expect(relayDaemonCodeCurrent(undefined, false, current)).toBeNull();
+    expect(
+      relayDaemonCodeCurrent({ id: "x", root: "/kit/harnery" }, true, { ...current, id: null }),
+    ).toBeNull();
+    expect(relayDaemonCodeCurrent({ id: "0.1.0@old", root: "/other" }, true, current)).toBeNull();
   });
 });

@@ -416,7 +416,7 @@ export function formatRelayStatus(s: RelayStatus): string {
   const d = s.daemon;
   lines.push(
     d.running
-      ? `daemon: running, pid ${d.pid_record?.pid}, up ${formatAge(d.uptime_secs ?? 0)}${d.url_matches_config === false ? " (pid file names a different relay)" : ""}`
+      ? `daemon: running, pid ${d.pid_record?.pid}, up ${formatAge(d.uptime_secs ?? 0)}${d.url_matches_config === false ? " (pid file names a different relay)" : ""}${d.code_current === false ? ` (runs ${d.code ? `older code ${d.code}` : "code from before code identity"}; it will not replace itself: stop pid ${d.pid_record?.pid} and the next session start or Stop hook launches a current daemon)` : ""}`
       : d.pid_record
         ? `daemon: not running (stale pid ${d.pid_record.pid})`
         : "daemon: not running",
