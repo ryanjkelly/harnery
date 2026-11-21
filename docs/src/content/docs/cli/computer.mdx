@@ -469,6 +469,16 @@ and the command names it, so the agent tells the person. A window opened by
 an agent that has gone away stays open until that agent runs
 `browser close` or the person closes it; `status` lists it.
 
+When the last agent's browser work is gone, the same three commands also
+disconnect the driver from the browser and say so
+([ADR 0270](/decisions/0270-disconnect-the-driver-when-browser-work-ends/)).
+The driver keeps its connection after its last session ends, and a browser
+shows its automation notice for as long as a debugging client is connected.
+The driver has no call that drops the connection, so its daemon is stopped;
+the next `call` starts it again. The daemon is left running while another
+agent has browser work recorded or holds the desktop. With `--json`,
+`browser close` reports this as `disconnected`.
+
 ## computer displays
 
 ```bash

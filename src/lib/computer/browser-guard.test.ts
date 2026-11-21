@@ -269,6 +269,28 @@ describe("work, clear, list", () => {
   });
 });
 
+describe("idle attachment", () => {
+  test("an attachment is idle only once every owner's browser work is cleared", () => {
+    const g = guard();
+    expect(g.idleAttach()).toBe(false);
+    setupBound(g);
+    expect(g.idleAttach()).toBe(false);
+    g.recordWindow(B, { pid: 10, window_id: 2, session: "s2" });
+    g.clear(A);
+    expect(g.idleAttach()).toBe(false);
+    g.clear(B);
+    expect(g.idleAttach()).toBe(true);
+  });
+
+  test("forgetting the attachment ends the idle report and persists", () => {
+    const g = setupBound();
+    g.clear(A);
+    g.forgetAttach();
+    expect(g.idleAttach()).toBe(false);
+    expect(guard().idleAttach()).toBe(false);
+  });
+});
+
 describe("store", () => {
   test("state persists across guard instances on the same dir", () => {
     setupBound(createBrowserGuard({ dir, now }));

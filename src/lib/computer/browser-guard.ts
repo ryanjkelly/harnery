@@ -52,6 +52,15 @@ export interface BrowserGuard {
   clear(owner: GuardOwner): void;
   /** Every recorded window, for status. */
   list(): GuardWindow[];
+  /**
+   * True when the driver is recorded as attached to a browser and no owner has
+   * browser work left. The driver keeps its connection after its last session
+   * ends, and the browser shows its automation notice for as long as that
+   * connection lasts (ADR 0270).
+   */
+  idleAttach(): boolean;
+  /** Forget the recorded attachments, after the driver was disconnected. */
+  forgetAttach(): void;
 }
 
 const STORE_FILE = "browser.json";
@@ -425,6 +434,20 @@ export function createBrowserGuard(options: { dir: string; now?: () => number })
 
     list() {
       return load().windows;
+    },
+
+    idleAttach() {
+      const store = load();
+      return (
+        store.attached_pids.length > 0 && store.windows.length === 0 && store.targets.length === 0
+      );
+    },
+
+    forgetAttach() {
+      const store = load();
+      if (store.attached_pids.length === 0) return;
+      store.attached_pids = [];
+      save(store);
     },
   };
 }

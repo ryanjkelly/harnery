@@ -3,7 +3,7 @@ title: "0250: Keep agents in their own browser window"
 description: "ADR: an agent that attaches to the person's running browser works in a window it opened itself. `computer browser open` and `computer browser close` manage that window, and `computer call` refuses browser calls that reach the person's own windows, type into a password or code field, click after typing without a fresh read, or click while a password manager's offer is showing."
 ---
 
-**Status:** accepted (2026-11-14) · **Scope:** product tier (`commands/computer`, `lib/computer`, the opt-in skill)
+**Status:** accepted (2026-11-14); amended by [ADR 0270](/decisions/0270-disconnect-the-driver-when-browser-work-ends/), which also disconnects the driver once no browser work remains · **Scope:** product tier (`commands/computer`, `lib/computer`, the opt-in skill)
 
 ## Context
 

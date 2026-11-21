@@ -1551,11 +1551,16 @@ export function createComputerCommand(
           closed: [],
           left_open: [],
         };
+        const disconnected = disconnectIdleBrowser(deps, host);
         if (opts.json) {
-          deps.emit.data(cleanup);
+          deps.emit.data({
+            ...cleanup,
+            disconnected: disconnected?.startsWith("Disconnected") ?? false,
+          });
           return;
         }
         const lines = describeCleanup(cleanup);
+        if (disconnected) lines.push(disconnected);
         emitLine(
           deps.emit,
           lines.length > 0 ? lines.join("\n") : "No browser work of yours to close.",
@@ -1623,6 +1628,8 @@ export function createComputerCommand(
         const owner = deps.owner();
         endOwnTaskApproval(deps, host, owner, "released the desktop");
         const browser = describeCleanup(closeBrowserWork(deps, host, owner));
+        const disconnected = disconnectIdleBrowser(deps, host);
+        if (disconnected) browser.push(disconnected);
         const released = deps.lease.release(owner, leaseOptions(deps, host));
         if (released) {
           emitLine(
@@ -1752,6 +1759,8 @@ export function createComputerCommand(
         const owner = deps.owner();
         const ended = endOwnTaskApproval(deps, host, owner, "finished");
         const browser = describeCleanup(closeBrowserWork(deps, host, owner));
+        const disconnected = disconnectIdleBrowser(deps, host);
+        if (disconnected) browser.push(disconnected);
         const released = deps.lease.release(owner, leaseOptions(deps, host));
         emitLine(
           deps.emit,
@@ -2541,6 +2550,39 @@ function describeCleanup(cleanup: BrowserCleanup | null): string[] {
       `Could not close browser ${cleanup.left_open.map(describeWindow).join(", ")}; tell the person it is still open.`,
     );
   return lines;
+}
+
+/**
+ * Disconnect the driver from the person's browser once no agent has browser
+ * work left (ADR 0270). The driver keeps its connection after its last
+ * session ends and has no call that drops it, so the daemon is stopped; the
+ * next call starts it again. Left alone while another agent holds the desktop,
+ * since a call of theirs may be using the daemon. Best effort: never throws.
+ * Returns the line to report, or null when nothing was done.
+ */
+function disconnectIdleBrowser(deps: ComputerDeps, host: HostInfo): string | null {
+  try {
+    if (host.kind === "unsupported" || !host.desktopStateDir) return null;
+    const driver = browserDriver(deps);
+    if (!driver?.hasDaemon || !driver.installedExecutable(host)) return null;
+    const supported = host as SupportedHost;
+    const guard = browserGuardFor(deps, supported);
+    if (!guard.idleAttach()) return null;
+    const holder = deps.lease.read(leaseOptions(deps, supported));
+    if (holder && holder.owner_id !== deps.owner().id) return null;
+    if (!driver.daemonStatus(host).running) {
+      guard.forgetAttach();
+      return null;
+    }
+    const stopped = driver.stopDaemon(host);
+    if (stopped.running) {
+      return `Could not disconnect ${driver.id} from the browser${stopped.detail ? `: ${stopped.detail}` : "."} The browser may keep showing its automation notice; \`${deps.binName} computer down\` stops the driver.`;
+    }
+    guard.forgetAttach();
+    return `Disconnected ${driver.id} from the browser.`;
+  } catch {
+    return null;
+  }
 }
 
 /** The target and tab a bind (get_browser_state) returned, read leniently. */

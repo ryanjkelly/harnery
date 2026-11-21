@@ -1,0 +1,90 @@
+---
+title: "0270: Disconnect the driver when browser work ends"
+description: "ADR: when the last agent's browser work is cleared, `computer browser close`, `computer done` and `computer lease release` stop the driver's daemon so it drops its connection to the person's browser, because the browser shows its automation notice for as long as that connection lasts."
+---
+
+**Status:** accepted (2026-11-21); amends [ADR 0250](/decisions/0250-keep-agents-in-their-own-browser-window/), which ended the agent's sessions and closed its windows but left the driver connected · **Scope:** product tier (`commands/computer`, `lib/computer`)
+
+## Context
+
+[Decision 0249](/decisions/0249-attach-to-the-persons-running-browser/) lets
+agents attach to the person's running browser, and ADR 0250 keeps each agent
+in a window it opened. When the agent finishes, `computer browser close` ends
+its driver sessions and closes that window.
+
+That left the browser attached. Cua Driver connects to the browser's
+debugging port on the first attach and keeps that one connection for the life
+of its daemon. Ending a session does not close it, and the driver has no tool
+that does. Chrome shows "Chrome is being controlled by automated test
+software" in every window while a debugging client is connected.
+
+On one host the notice was still showing after the only agent using the
+browser had run `browser close` and `done`. The daemon held one connection to
+the debugging port. It had been made more than an hour earlier by another agent's
+session and had outlived that session and the next one. Ending the session by
+hand changed nothing. Stopping the daemon closed the connection, and the
+notice left all four browser windows.
+
+The notice matters beyond its looks. The person reads it as their browser
+being driven when nothing is driving it. A page can also detect the state,
+and the sign-in rule exists because sites treat a controlled browser as a
+bot.
+
+## Decision
+
+1. **The guard reports an idle attachment.** The browser guard already
+   records the browser processes the driver attached to. `idleAttach()` is
+   true when one is recorded and no owner has a window or a bound target
+   left. `forgetAttach()` clears the record.
+2. **Three commands disconnect.** After their own browser cleanup,
+   `computer browser close`, `computer done` and `computer lease release`
+   check for an idle attachment. If there is one, they stop the driver's
+   daemon, clear the record, and print `Disconnected <driver> from the
+   browser.` The check does not depend on the caller having had browser work,
+   so an agent that only used native apps still clears an attachment another
+   agent left.
+3. **The daemon is not restarted.** `call` starts a daemon that is not
+   running, so the next call brings it back with no attachment.
+4. **Another agent's work is left alone.** Nothing is stopped while any
+   owner has browser work recorded, or while another agent holds the desktop
+   lease, since one of its calls may be using the daemon.
+5. **A failure is reported, not hidden.** If the daemon does not stop, the
+   command says so and names `computer down`.
+
+## Alternatives rejected
+
+- **Ask the driver to detach.** The pinned driver has no such call. If a
+  later release adds one, it replaces the daemon stop in one function.
+- **Restart the daemon after stopping it.** The start is asynchronous, the
+  three commands are not, and `call` already starts the daemon when needed.
+- **Disconnect only in `browser close`.** An agent that ends with `done`, or
+  whose lease lapses, would leave the attachment for the next agent, who may
+  never touch the browser.
+- **Leave the connection and explain the notice in `status`.** The person
+  would still see a browser marked as controlled for days.
+
+## Consequences
+
+- The next attach makes a new connection. On the host above, a fresh
+  `browser open` from a stopped daemon took 11 seconds and Chrome asked the
+  person for nothing.
+- `status` shows the daemon as stopped between pieces of browser work.
+- An attachment record older than 24 hours is dropped by the guard's store,
+  so an attachment that old is no longer seen as idle. `computer down` clears
+  it.
+- If another agent holds the desktop when the last browser work ends, the
+  disconnect waits for the next `done`, `lease release` or `browser close`
+  by any agent.
+- `browser close --json` gains a `disconnected` field.
+
+## Verification
+
+- Guard tests: an attachment is idle only after every owner's work is
+  cleared, and forgetting it persists.
+- Command tests: all three commands stop the daemon and report it; an agent
+  with no browser work of its own clears an idle attachment; nothing stops
+  while another agent has browser work or holds the desktop; nothing stops
+  when the driver never attached.
+- On a Windows host with Chrome, connections to the debugging port went from
+  1 to 0 after `done`, and from 1 to 0 after `browser close` on a window
+  opened from a stopped daemon.

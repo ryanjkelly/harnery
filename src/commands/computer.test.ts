@@ -422,6 +422,10 @@ function fakeGuard(
     observeThrows?: boolean;
     work?: { sessions: string[]; windows: WindowRef[] };
     list?: GuardWindow[];
+    /** The driver is recorded as attached; reported idle once this owner's work is cleared. */
+    attached?: boolean;
+    /** Another owner still has browser work, so the attachment is never idle. */
+    othersWorking?: boolean;
   } = {},
 ) {
   const log = {
@@ -433,8 +437,10 @@ function fakeGuard(
     }[],
     recorded: [] as (WindowRef & { session: string })[],
     cleared: 0,
+    forgot: 0,
     ops: [] as string[],
   };
+  let attached = opts.attached === true;
   let work = opts.work ?? { sessions: [], windows: [] };
   const guard: BrowserGuard & { log: typeof log } = {
     log,
@@ -464,6 +470,16 @@ function fakeGuard(
       log.recorded.length = 0;
     },
     list: () => opts.list ?? [],
+    idleAttach: () =>
+      attached &&
+      !opts.othersWorking &&
+      work.sessions.length === 0 &&
+      work.windows.length === 0 &&
+      log.recorded.length === 0,
+    forgetAttach() {
+      log.forgot++;
+      attached = false;
+    },
   };
   return guard;
 }
@@ -1907,6 +1923,7 @@ describe("computer browser cleanup", () => {
       sessions: ["agent-Me"],
       closed: [{ pid: 700, window_id: 55 }],
       left_open: [{ pid: 700, window_id: 56 }],
+      disconnected: false,
     });
     const text = await run(["browser", "close"], {
       driver,
@@ -1915,6 +1932,66 @@ describe("computer browser cleanup", () => {
     const out = text.text.join("\n");
     expect(out).toContain("Ended browser session agent-Me and closed window 55 (pid 700).");
     expect(out).toContain("Could not close browser window 56 (pid 700); tell the person");
+  });
+
+  test("the last agent to finish disconnects the driver from the browser", async () => {
+    // The driver keeps its browser connection after its last session ends, and
+    // the browser shows its automation notice until that connection closes.
+    for (const argv of [["browser", "close"], ["done"], ["lease", "release"]]) {
+      const { driver, order } = browserDriver();
+      const guard = fakeGuard({ work, attached: true });
+      const cap = await run(argv, { driver, browserGuard: () => guard });
+      expect(order.slice(0, 1)).toEqual(["call:end_session"]);
+      expect(driver.daemonStatus(WSL_HOST).running).toBe(false);
+      expect(guard.log.forgot).toBe(1);
+      expect(cap.text.join("\n")).toContain("Disconnected fake from the browser.");
+    }
+    const { driver } = browserDriver();
+    const jsonGuard = fakeGuard({ work, attached: true });
+    const json = await run(["browser", "close", "--json"], {
+      driver,
+      browserGuard: () => jsonGuard,
+    });
+    expect((json.data[0] as { disconnected: boolean }).disconnected).toBe(true);
+  });
+
+  test("an agent with no browser work of its own still disconnects an idle attachment", async () => {
+    const { driver, order } = browserDriver();
+    const guard = fakeGuard({ attached: true });
+    const cap = await run(["done"], { driver, browserGuard: () => guard });
+    expect(order).toEqual([]);
+    expect(driver.daemonStatus(WSL_HOST).running).toBe(false);
+    expect(cap.text.join("\n")).toContain("Disconnected fake from the browser.");
+  });
+
+  test("the driver stays connected while another agent has browser work or holds the desktop", async () => {
+    const busy = browserDriver();
+    const busyGuard = fakeGuard({ work, attached: true, othersWorking: true });
+    const first = await run(["browser", "close"], {
+      driver: busy.driver,
+      browserGuard: () => busyGuard,
+    });
+    expect(busy.driver.daemonStatus(WSL_HOST).running).toBe(true);
+    expect(busyGuard.log.forgot).toBe(0);
+    expect(first.text.join("\n")).not.toContain("Disconnected");
+
+    const held = browserDriver();
+    const heldGuard = fakeGuard({ work, attached: true });
+    await run(["browser", "close"], {
+      driver: held.driver,
+      browserGuard: () => heldGuard,
+      lease: fakeLease(lease()),
+    });
+    expect(held.driver.daemonStatus(WSL_HOST).running).toBe(true);
+    expect(heldGuard.log.forgot).toBe(0);
+  });
+
+  test("nothing is stopped when the driver never attached", async () => {
+    const { driver } = browserDriver();
+    const guard = fakeGuard({ work });
+    await run(["browser", "close"], { driver, browserGuard: () => guard });
+    expect(driver.daemonStatus(WSL_HOST).running).toBe(true);
+    expect(guard.log.forgot).toBe(0);
   });
 
   test("browser close with nothing recorded says so and writes nothing", async () => {
