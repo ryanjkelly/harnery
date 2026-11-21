@@ -48,7 +48,12 @@ describe("registry", () => {
     const row = { session_title_surface: T3_CODE_SURFACE_ID, session_title_client_thread: "t-1" };
     const ctx = titleSurfaceContext("codex", {}, row);
     expect(ctx.clientThreadId).toBe("t-1");
+    expect(ctx.appliedTitle).toBeUndefined();
     expect(resolveTitleSurface(ctx, row)).toBe(t3CodeSurface);
+    expect(
+      titleSurfaceContext("codex", {}, { ...row, session_title_applied_for: "Agent A - x" })
+        .appliedTitle,
+    ).toBe("Agent A - x");
   });
   test("an unknown stored surface falls through to detection", () => {
     expect(

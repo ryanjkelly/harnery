@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -8,6 +8,7 @@ import {
   recordLiveTaskChangeV3,
 } from "../../src/core/agents/live-authority-v3.ts";
 import { SESSION_NAME_DISPLAY_NOTE } from "../../src/core/agents/session-name-display.ts";
+import { KEPT_THREAD_TITLE_NOTE } from "../../src/core/agents/session-title/policy.ts";
 import { t3CodeSurface } from "../../src/core/agents/session-title/surfaces/t3-code.ts";
 import {
   stampSessionNameSeen,
@@ -265,6 +266,80 @@ describe("harn agents lifecycle on the V3 ledger", () => {
       title_surface: "t3-code",
       note: t3CodeSurface.note,
     });
+  });
+
+  test("a new session in an already-titled T3 thread keeps that thread's title", () => {
+    const thread = "0f8c5c3e-6a3b-4c1e-9d43-2f0a7b9e1c55";
+    const earlier = "7d1b7a0e-52a4-4d0b-8f43-0d5f6f3f9a10";
+    const kept = "Agent Mavis - Earlier account's work";
+    const rememberEarlier = (root: string, clientThread: string) => {
+      const dir = path.join(root, ".harnery", "session-titles");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        path.join(dir, `${earlier}.json`),
+        JSON.stringify({
+          instance_id: earlier,
+          session_id: earlier,
+          name: "Mavis",
+          suggested_session_name: kept,
+          session_name_seen_for: kept,
+          session_title_surface: "t3-code",
+          session_title_client_thread: clientThread,
+          session_title_applied_for: kept,
+        }),
+      );
+    };
+
+    const root = makeMidFlightSandbox(true, "claude-code");
+    rememberEarlier(root, thread);
+    const result = harn(root, ["agents", "set-task", "Recovered focus", "--session-id", OWNER], {
+      T3CODE_THREAD_ID: thread,
+    });
+    expect(result.status).toBe(0);
+    const out = outputObject(result);
+    expect(out).toMatchObject({
+      name: "Anna",
+      first_of_session: false,
+      suggested_session_name: null,
+      title_surface: "t3-code",
+      kept_thread_title: kept,
+      note: KEPT_THREAD_TITLE_NOTE,
+    });
+    // Nothing is owed: the session's own name is recorded as shown, and the
+    // thread's title is this session's applied title.
+    expect(heartbeat(root)).toMatchObject({
+      suggested_session_name: "Agent Anna - Recovered focus",
+      session_name_seen_for: "Agent Anna - Recovered focus",
+      session_title_surface: "t3-code",
+      session_title_client_thread: thread,
+      session_title_applied_for: kept,
+    });
+    const retry = harn(root, ["agents", "suggest-name", "--json", "--session-id", OWNER]);
+    expect(outputObject(retry)).toMatchObject({ session_name_retry: false });
+
+    // The terminal done title is still asked for.
+    const done = harn(root, ["agents", "lifecycle", "done", "--session-id", OWNER]);
+    expect(done.status).toBe(0);
+    expect(outputObject(done)).toMatchObject({
+      name_reminted: true,
+      suggested_session_name: "[DONE] Agent Anna - Recovered focus",
+      title_surface: "t3-code",
+      note: t3CodeSurface.note,
+    });
+
+    // A title confirmed on a different thread does not carry over.
+    const fresh = makeMidFlightSandbox(true, "claude-code");
+    rememberEarlier(fresh, "another-thread");
+    const minted = harn(fresh, ["agents", "set-task", "Recovered focus", "--session-id", OWNER], {
+      T3CODE_THREAD_ID: thread,
+    });
+    const mintedOut = outputObject(minted);
+    expect(mintedOut).toMatchObject({
+      first_of_session: true,
+      suggested_session_name: "Agent Anna - Recovered focus",
+      note: t3CodeSurface.note,
+    });
+    expect(mintedOut.kept_thread_title).toBeUndefined();
   });
 
   test("a delegated T3 thread and a plain shell keep the name block", () => {

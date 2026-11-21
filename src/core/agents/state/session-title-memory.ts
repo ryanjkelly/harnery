@@ -138,6 +138,61 @@ export function recallSessionTitle(
   }
 }
 
+/** A title some session's writing surface confirmed on a client thread. */
+export interface ClientThreadTitle {
+  surfaceId: string;
+  clientThreadId: string;
+  title: string;
+  /** When the memory that carries it last changed, for picking the newest. */
+  changedAtMs: number;
+}
+
+/**
+ * Every remembered title that a writing surface confirmed on a client thread,
+ * across all sessions. One client thread can host several sessions in turn (a
+ * thread that switches account or provider starts a new native session each
+ * time), so the thread's title outlives the session that wrote it. Read this
+ * before a naming mutation: that mutation rewrites the caller's own memory.
+ */
+export function clientThreadTitles(coordRoot: string): ClientThreadTitle[] {
+  const dir = memoryDir(coordRoot);
+  if (!existsSync(dir)) return [];
+  const out: ClientThreadTitle[] = [];
+  for (const file of readdirSync(dir)) {
+    if (!file.endsWith(".json")) continue;
+    const path = join(dir, file);
+    try {
+      const memory = JSON.parse(readFileSync(path, "utf8")) as SessionTitleMemory;
+      const surfaceId = memory.session_title_surface;
+      const clientThreadId = memory.session_title_client_thread;
+      const title = memory.session_title_applied_for;
+      if (!surfaceId || !clientThreadId || !title) continue;
+      out.push({ surfaceId, clientThreadId, title, changedAtMs: statSync(path).mtimeMs });
+    } catch {
+      /* an unreadable memory names nothing */
+    }
+  }
+  return out;
+}
+
+/**
+ * The title a client thread already carries: the most recently confirmed one
+ * for that surface and thread, or undefined when no session has titled it.
+ */
+export function latestClientThreadTitle(
+  titles: readonly ClientThreadTitle[],
+  surfaceId: string,
+  clientThreadId: string | undefined,
+): string | undefined {
+  if (!clientThreadId) return undefined;
+  let latest: ClientThreadTitle | undefined;
+  for (const entry of titles) {
+    if (entry.surfaceId !== surfaceId || entry.clientThreadId !== clientThreadId) continue;
+    if (!latest || entry.changedAtMs > latest.changedAtMs) latest = entry;
+  }
+  return latest?.title;
+}
+
 /** Delete memories unchanged for longer than the retention window. */
 export function pruneSessionTitleMemory(
   coordRoot: string,

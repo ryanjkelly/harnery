@@ -240,6 +240,24 @@ describe("done request", () => {
     expect(text).toContain("regenerate_title");
     expect(text).not.toContain("leave the thread title alone");
   });
+  test("the done wording names the title the thread carries, not the session's own name", () => {
+    const kept: TitleSurfaceContext = { ...stored, appliedTitle: "Agent B - earlier work" };
+    const text = t3CodeSurface.instruction("[DONE] Agent A - x", kept);
+    expect(text).toContain(
+      "the current title is `Agent B - earlier work`, so the new title is exactly:",
+    );
+    expect(text).toContain("\n[DONE] Agent B - earlier work\n");
+    // The fallback block still carries the owed name, which closes the latch.
+    expect(text).toContain(sessionNameDisplayBlock("[DONE] Agent A - x"));
+    expect(t3CodeSurface.reminder("[DONE] Agent A - x", kept)).toContain(
+      "\n[DONE] Agent B - earlier work\n",
+    );
+    // An applied title that is already terminal changes nothing.
+    const terminal: TitleSurfaceContext = { ...stored, appliedTitle: "[DONE] Agent B - old" };
+    expect(t3CodeSurface.instruction("[DONE] Agent A - x", terminal)).toContain(
+      "\n[DONE] Agent A - x\n",
+    );
+  });
   test("the done instruction takes the env thread id and Codex tool names", () => {
     const text = t3CodeSurface.instruction(DONE, codex);
     expect(text).toContain(`\`threadId: "${THREAD}"\``);

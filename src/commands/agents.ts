@@ -87,7 +87,7 @@ import {
   type SessionFinalizationRequestV3,
 } from "../core/agents/session-finalizer-v3.ts";
 import { sessionNameDisplayPending } from "../core/agents/session-name-display.ts";
-import { titleChangeAllowed } from "../core/agents/session-title/policy.ts";
+import { KEPT_THREAD_TITLE_NOTE, titleChangeAllowed } from "../core/agents/session-title/policy.ts";
 import {
   resolveTitleSurface,
   titleSurfaceContext,
@@ -99,6 +99,7 @@ import {
   buildSuggestedName,
   type Heartbeat,
   readHeartbeat as readHeartbeatCache,
+  stampSessionTitleApplied,
   stampSessionTitleSurface,
 } from "../core/agents/state/heartbeat-writer.ts";
 import {
@@ -118,6 +119,10 @@ import {
   foldSessionState,
   type TaskState,
 } from "../core/agents/state/session-state.ts";
+import {
+  clientThreadTitles,
+  latestClientThreadTitle,
+} from "../core/agents/state/session-title-memory.ts";
 import { resolveStatusStyle } from "../core/agents/status-style.ts";
 import { turnChangesStatusRow } from "../core/agents/turn-changes.ts";
 import { turnElapsedStatusRow } from "../core/agents/turn-elapsed.ts";
@@ -2201,6 +2206,14 @@ function runSetTask(task: string, opts?: { sessionId?: string }): void {
       ? `Task text changed while lifecycle is ${priorHb.task_state}; run \`${resolveBinName(root)} agents lifecycle active\` to reopen it explicitly.`
       : null;
 
+  // A client thread can outlive the session that titled it: a thread that
+  // switches account or provider starts a new native session, which would
+  // otherwise mint its own name and retitle the open thread. Read the titles
+  // other sessions confirmed before the mutation, because the mutation
+  // rewrites this session's own title memory.
+  const titledThreads =
+    normalizedTask && !priorHb?.suggested_session_name ? clientThreadTitles(root) : [];
+
   // Heartbeat mutation goes through agent-coord (atomic temp+rename).
   const helper = agentCoordOrExit(root);
   const result = spawnCoordBinSync(helper, ["set-task", myOwner, task], {
@@ -2230,8 +2243,8 @@ function runSetTask(task: string, opts?: { sessionId?: string }): void {
   // Routine focus declarations stay title-silent. A pending display no longer
   // turns every repeated set-task into a fresh name instruction; explicit
   // recovery belongs to `agents suggest-name --json`.
-  const suggestedName = firstSuggestedName;
-  const firstOfSession = firstSuggestedName !== null;
+  let suggestedName = firstSuggestedName;
+  let firstOfSession = firstSuggestedName !== null;
   const sessionNameRetry = false;
 
   // The minting call resolves the title surface in the agent's own shell and
@@ -2240,12 +2253,28 @@ function runSetTask(task: string, opts?: { sessionId?: string }): void {
   // environment. Non-minting calls only report what is stored.
   let titleSurfaceId: string | null = hb?.session_title_surface ?? null;
   let titleNote: string | null = null;
+  let keptThreadTitle: string | null = null;
   if (suggestedName && hb) {
     const ctx = titleSurfaceContext(titleAdapter(hb.platform), process.env, hb);
     const surface = resolveTitleSurface(ctx, hb);
-    stampSessionTitleSurface(root, myOwner, surface.id, surface.clientThreadId?.(ctx));
+    const clientThreadId = surface.clientThreadId?.(ctx);
+    stampSessionTitleSurface(root, myOwner, surface.id, clientThreadId);
     titleSurfaceId = surface.id;
     titleNote = surface.note;
+    // The thread already carries a title an earlier session wrote. Record it
+    // as this session's applied title, so nothing is owed now and only the
+    // terminal done title may follow (ADR 0086, ADR 0269).
+    const keptTitle =
+      surface.delivery === "display"
+        ? undefined
+        : latestClientThreadTitle(titledThreads, surface.id, clientThreadId);
+    if (keptTitle) {
+      stampSessionTitleApplied(root, myOwner, keptTitle, surface.id);
+      keptThreadTitle = keptTitle;
+      suggestedName = null;
+      firstOfSession = false;
+      titleNote = KEPT_THREAD_TITLE_NOTE;
+    }
   }
 
   emit.data({
@@ -2257,6 +2286,7 @@ function runSetTask(task: string, opts?: { sessionId?: string }): void {
     session_name_retry: sessionNameRetry,
     suggested_session_name: suggestedName,
     title_surface: titleSurfaceId,
+    ...(keptThreadTitle ? { kept_thread_title: keptThreadTitle } : {}),
     ...(lifecycleWarning ? { warning: lifecycleWarning } : {}),
     // Right-time instruction: the UserPromptSubmit nudge fires before the name
     // exists; this result is the moment the model holds the string.

@@ -199,6 +199,19 @@ is marked done. A stored name corrected after the title was applied is not
 pushed to the open thread. The name block uses the corrected name when the
 session is marked done.
 
+A client thread can host more than one session. A T3 Code thread that switches
+account or provider keeps its thread id and starts a new native session, which
+Harnery registers as a new agent. The thread's title belongs to the thread, so
+that session does not retitle it. When `agents set-task` mints the new
+session's name, Harnery looks for a title an earlier session already confirmed
+on the same surface and thread id. If it finds one, it records that title as
+the new session's `session_title_applied_for`, marks the session's own name as
+shown, and asks for no rename. The command returns `first_of_session: false`
+with the kept title in `kept_thread_title`. Only the terminal `[DONE] ` title
+may follow, and a thread already marked done keeps its title as it is. The
+kept title can therefore name an agent that no longer runs in the thread
+([ADR 0269](/decisions/0269-keep-a-thread-title-across-sessions/)).
+
 The title fields live on the row's local cache file in `.harnery/active/`,
 never in the event ledger. The stale sweep deletes that file once a session has
 been idle past the freshness window, and the next hook rebuilds it from the

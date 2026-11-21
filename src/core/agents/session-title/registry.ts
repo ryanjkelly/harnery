@@ -37,6 +37,8 @@ export function titleSurfaceContext(
   const ctx: TitleSurfaceContext = { adapter, env };
   const thread = row?.session_title_client_thread;
   if (thread) ctx.clientThreadId = thread;
+  const applied = row?.session_title_applied_for;
+  if (applied) ctx.appliedTitle = applied;
   return ctx;
 }
 

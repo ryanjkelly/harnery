@@ -18,3 +18,10 @@ export function titleChangeAllowed(appliedFor: string | undefined, pending: stri
   if (pending === appliedFor) return true;
   return pending.startsWith(DONE_TITLE_PREFIX) && !appliedFor.startsWith(DONE_TITLE_PREFIX);
 }
+
+/**
+ * The command note for a session that starts in a client thread an earlier
+ * session already titled. The thread keeps that title (ADR 0269).
+ */
+export const KEPT_THREAD_TITLE_NOTE =
+  "This thread already has a title from an earlier session. Leave the thread title unchanged; do not rename or regenerate it.";

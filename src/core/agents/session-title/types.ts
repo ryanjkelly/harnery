@@ -31,6 +31,12 @@ export interface TitleSurfaceContext {
    * this over `env` when both are present.
    */
   clientThreadId?: string;
+  /**
+   * The title a writing surface last confirmed on the client, from the
+   * coordination row. It can differ from the session's stored name: a session
+   * that starts in an already-titled thread keeps that thread's title.
+   */
+  appliedTitle?: string;
 }
 
 /** A tool call as PreToolUse sees it. */

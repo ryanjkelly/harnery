@@ -195,6 +195,12 @@ the agent to rename its thread with `t3_thread_update` instead of printing the
 block. The display rules below describe the name block, which also serves as
 the fallback when that rename tool is missing or the call fails.
 
+A session that starts in a client thread an earlier session already titled
+keeps that title. Its first declaration returns `first_of_session: false`, a
+null `suggested_session_name`, the existing title in `kept_thread_title`, and
+a note to leave the thread title unchanged. This happens when a T3 Code thread
+switches account or provider, which starts a new session in the same thread.
+
 `first_of_session: true` means exactly "this call produced the session name" —
 it is never true with a null name. A bare clear (`''`) as the first call does
 not consume the naming window; the next non-empty declaration still names the

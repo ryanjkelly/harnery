@@ -194,9 +194,21 @@ function threadIdPhrase(ctx: TitleSurfaceContext): string {
     : `\`threadId: ${JSON.stringify(id)}\``;
 }
 
-function doneInstruction(title: string, ctx: TitleSurfaceContext): string {
+/**
+ * The done title the agent most likely writes: the prefix on the title this
+ * surface last confirmed on the thread, which is not always the session's own
+ * name (a session that starts in an already-titled thread keeps that title).
+ */
+function expectedDoneTitle(title: string, ctx: TitleSurfaceContext): string {
+  const applied = ctx.appliedTitle;
+  if (!applied || isDoneTitle(applied)) return title;
+  return `${DONE_TITLE_PREFIX}${applied}`;
+}
+
+function doneInstruction(owed: string, ctx: TitleSurfaceContext): string {
   const readTool = readToolNameFor(ctx);
   const updateTool = toolNameFor(ctx);
+  const title = expectedDoneTitle(owed, ctx);
   const startTitle = title.slice(DONE_TITLE_PREFIX.length);
   const lines = [
     "Session title required.",
@@ -219,7 +231,7 @@ function doneInstruction(title: string, ctx: TitleSurfaceContext): string {
     "When the rename succeeds, do not print a name block.",
     "If either tool is unavailable or the rename fails, send this exact fenced block as your next assistant text instead:",
     "",
-    sessionNameDisplayBlock(title),
+    sessionNameDisplayBlock(owed),
     "",
     'Never use `action: "regenerate_title"`. Harnery will reject other tool calls until the title is delivered.',
   );
@@ -230,7 +242,8 @@ function instruction(title: string, ctx: TitleSurfaceContext): string {
   return isDoneTitle(title) ? doneInstruction(title, ctx) : startInstruction(title, ctx);
 }
 
-function doneReminder(title: string, ctx: TitleSurfaceContext): string {
+function doneReminder(owed: string, ctx: TitleSurfaceContext): string {
+  const title = expectedDoneTitle(owed, ctx);
   return [
     "Session title still pending.",
     `This session is marked done. Before any prose or another tool call, read this thread's current title with \`${readToolNameFor(ctx)}\` (${threadIdPhrase(ctx)}, \`limit: 1\`, \`maxCharsPerItem: 1\`), then call \`${toolNameFor(ctx)}\` with \`action: "rename"\` and \`${DONE_TITLE_PREFIX}\` followed by that title. If nobody edited the title, the new title is exactly:`,
