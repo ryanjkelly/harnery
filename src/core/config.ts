@@ -55,6 +55,7 @@ import {
 } from "./hooks/prompt-context/contract.ts";
 import { findCoordRoot } from "./hooks/resolve/coord-root.ts";
 import { type Preferences, readPreferences } from "./preferences.ts";
+import { SCHEDULE_OPT_IN_READERS, type ScheduleOptInReader } from "./schedule/types.ts";
 
 export { DEFAULT_WEB_PORT } from "../lib/local-file-url.ts";
 export { DEFAULT_EVENT_LEDGER_ROTATE_ACTIVE_BYTES } from "./events/v3/rotation-config.ts";
@@ -323,6 +324,14 @@ interface HarneryConfig {
     watch?: unknown;
     timeoutMinutes?: number;
     cleanup?: boolean;
+  };
+  /**
+   * Schedule list settings. `readers` names the readers of other apps'
+   * private stores that may run (`t3-code`, `codex-app`). Project config
+   * only; read via `scheduleConfig()`.
+   */
+  schedule?: {
+    readers?: unknown;
   };
   [k: string]: unknown;
 }
@@ -1749,6 +1758,39 @@ export function readAutoUpdateConfig(coordRoot: string): AutoUpdateConfig | null
     timeoutMinutes: clampInteger(record.timeoutMinutes, 1, 240, AUTOUPDATE_DEFAULTS.timeoutMinutes),
     cleanup: record.cleanup !== false,
   };
+}
+
+/** Effective schedule settings (see `scheduleConfig`). */
+export interface ScheduleConfig {
+  /** Opt-in readers the project turned on, deduplicated, in the order written. */
+  readers: ScheduleOptInReader[];
+}
+
+/**
+ * Schedule settings from `.harnery/config.jsonc`:
+ *
+ * ```jsonc
+ * "schedule": { "readers": ["t3-code", "codex-app"] }
+ * ```
+ *
+ * Project config only: reading another app's private store is a per-project
+ * decision, so neither a user-global nor a machine-local value turns a reader
+ * on. Unknown ids and non-strings are dropped; the default is no readers.
+ */
+export function scheduleConfig(coordRoot: string): ScheduleConfig {
+  const raw = readProjectConfig(coordRoot).schedule;
+  const listed = isPlainObject(raw) && Array.isArray(raw.readers) ? raw.readers : [];
+  const readers: ScheduleOptInReader[] = [];
+  for (const id of listed) {
+    if (
+      typeof id === "string" &&
+      (SCHEDULE_OPT_IN_READERS as readonly string[]).includes(id) &&
+      !readers.includes(id as ScheduleOptInReader)
+    ) {
+      readers.push(id as ScheduleOptInReader);
+    }
+  }
+  return { readers };
 }
 
 /**
