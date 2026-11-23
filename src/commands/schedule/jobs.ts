@@ -22,6 +22,7 @@ import {
 import {
   hashScheduleJob,
   isScheduleJobEnabled,
+  isScheduleKebabId,
   SCHEDULE_JOB_FILE_VERSION,
   type ScheduleGatherCommand,
   type ScheduleJob,
@@ -941,10 +942,36 @@ function runHistory(ctx: Ctx, id: string, opts: { limit?: string; json?: boolean
       );
     }
   }
+  // An id that could never name a job has no run folder to look in.
+  if (!isScheduleKebabId(id)) {
+    throw new Refusal("schedule_unknown_job", `"${id}" is not a valid job id`);
+  }
   const all = listScheduleRuns(root, id).map((r) => historyRow(root, r));
+  // Whether the job file still defines the job: true, false, or null when the
+  // job file cannot be read. Runs of a removed job stay listable, because the
+  // reports outlive the definition; an id with neither a definition nor a run
+  // is a mistake, and saying "no runs" for it would hide a typo.
+  const load = loadScheduleJobFile(root);
+  let defined: boolean | null;
+  if (load.ok) defined = findScheduleJob(load.file, id) !== null;
+  else if (load.reason === "missing") defined = false;
+  else defined = null;
+  if (all.length === 0 && defined === null && !load.ok) {
+    throw new Refusal(
+      "schedule_job_file_invalid",
+      `the job file ${load.path} is invalid`,
+      load.errors,
+    );
+  }
+  if (all.length === 0 && defined === false) {
+    throw new Refusal(
+      "schedule_unknown_job",
+      `no job "${id}" in the job file and no recorded runs on this machine`,
+    );
+  }
   const rows = limit === undefined ? all : all.slice(0, limit);
   if (opts.json) {
-    ctx.emit.data({ job_id: id, rows, meta: { total: all.length, shown: rows.length } });
+    ctx.emit.data({ job_id: id, defined, rows, meta: { total: all.length, shown: rows.length } });
     return;
   }
   if (rows.length === 0) {
@@ -952,8 +979,15 @@ function runHistory(ctx: Ctx, id: string, opts: { limit?: string; json?: boolean
     return;
   }
   const zone = resolveTimeZone(root);
+  const note =
+    defined === false
+      ? [`Job "${id}" is no longer in the job file; these are its recorded runs.`]
+      : defined === null
+        ? [`The job file is invalid, so whether job "${id}" is still defined is unknown.`]
+        : [];
   ctx.emit.text(
     [
+      ...note,
       `Runs of job "${id}", newest first (${rows.length} of ${all.length}):`,
       ...rows.map(
         (r) =>

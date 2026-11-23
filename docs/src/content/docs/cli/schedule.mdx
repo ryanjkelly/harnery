@@ -320,9 +320,19 @@ and the report path. The newest 20 runs per job are kept.
 | Option | Meaning |
 | --- | --- |
 | `--limit <n>` | Show at most N runs. |
-| `--json` | Print `{ job_id, rows, meta: { total, shown } }`. |
+| `--json` | Print `{ job_id, defined, rows, meta: { total, shown } }`. |
 
-Exit codes: `0`, or `1` for a bad `--limit`.
+`defined` says whether the job file still defines the job. A job that was
+removed keeps its recorded runs, so `history` still lists them, with a first
+line saying the job is no longer in the job file (`defined` is `false`). When
+the job file cannot be read, `defined` is `null` and the output says so.
+
+An id that is not in the job file and has no recorded runs is refused with
+`schedule_unknown_job`, so a mistyped id is not answered with "no runs". A
+defined job that has never run still answers "No runs recorded".
+
+Exit codes: `0`; `1` for a bad `--limit`, an unknown job, or an invalid job
+file when the id has no recorded runs.
 
 ```bash
 harn schedule history repo-status --limit 5

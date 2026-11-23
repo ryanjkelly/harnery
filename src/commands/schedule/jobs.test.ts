@@ -563,7 +563,56 @@ describe("history", () => {
     expect((await cli(["history", "h", "--limit", "0"])).errors[0]?.code).toBe(
       "schedule_bad_number",
     );
-    expect((await cli(["history", "none"])).text.join("\n")).toContain("No runs recorded");
+  });
+
+  test("an id with no definition and no runs is refused, not answered with no runs", async () => {
+    expect((await cli(["history", "none"])).errors[0]?.code).toBe("schedule_unknown_job");
+    expect((await cli(["history", "none", "--json"])).errors[0]?.code).toBe("schedule_unknown_job");
+    expect((await cli(["history", "Not A Job!"])).errors[0]?.code).toBe("schedule_unknown_job");
+  });
+
+  test("a defined job that has never run answers with no runs", async () => {
+    expect((await cli(["add", "quiet", "--cron", "0 3 * * *", ...AGENT])).exitCode).toBe(0);
+    const text = await cli(["history", "quiet"]);
+    expect(text.exitCode).toBe(0);
+    expect(text.text.join("\n")).toContain("No runs recorded");
+    const out = (await cli(["history", "quiet", "--json"])).data[0] as {
+      defined: boolean | null;
+      rows: unknown[];
+    };
+    expect(out.defined).toBe(true);
+    expect(out.rows).toHaveLength(0);
+  });
+
+  test("a removed job's runs stay listed, marked as no longer defined", async () => {
+    writeRun(record({ run_id: "kept" }));
+    const out = (await cli(["history", "h", "--json"])).data[0] as {
+      defined: boolean | null;
+      rows: { run_id: string }[];
+    };
+    expect(out.defined).toBe(false);
+    expect(out.rows.map((r) => r.run_id)).toEqual(["kept"]);
+    expect((await cli(["history", "h"])).text.join("\n")).toContain("no longer in the job file");
+
+    expect((await cli(["add", "h", "--cron", "0 3 * * *", ...AGENT])).exitCode).toBe(0);
+    const defined = await cli(["history", "h"]);
+    expect(defined.text.join("\n")).not.toContain("no longer in the job file");
+    expect(((await cli(["history", "h", "--json"])).data[0] as { defined: boolean }).defined).toBe(
+      true,
+    );
+  });
+
+  test("an invalid job file refuses when there are no runs and is noted when there are", async () => {
+    writeFileSync(join(root, ".harnery", "schedules.jsonc"), "{ not json");
+    expect((await cli(["history", "h"])).errors[0]?.code).toBe("schedule_job_file_invalid");
+    writeRun(record({ run_id: "kept" }));
+    const out = (await cli(["history", "h", "--json"])).data[0] as {
+      defined: boolean | null;
+      rows: unknown[];
+    };
+    expect(out.defined).toBeNull();
+    expect(out.rows).toHaveLength(1);
+    expect((await cli(["history", "h"])).text.join("\n")).toContain("job file is invalid");
   });
 });
 
