@@ -1,0 +1,107 @@
+---
+title: "0271: One list of schedules from every source"
+description: "ADR: Harnery reads the schedules that agent apps and the operating system already hold into one record shape, records schedules an agent creates through its tool hook, and lists them with each source's coverage, without ever creating, editing or deleting a schedule inside another app."
+---
+
+**Status:** accepted (2026-11-22) · **Scope:** product tier (`core/schedule` records, readers and capture, `commands/schedule` list and show, the session-start cue and a doctor row)
+
+## Context
+
+Schedules for agent work already exist in several places on one machine. T3
+Code keeps scheduled tasks in its own database. The Codex app keeps
+automations in its own files and database. Claude Code can create cloud tasks
+and in-session timers through tools an agent calls. The operating system has
+its own timers and crontab.
+
+Nothing lists them together. Nothing records which agent session created a
+schedule or why. When a scheduled run fails, the failure lands in a log or an
+app inbox that no agent reads, so the next session starts with no idea that
+anything went wrong.
+
+The apps differ in what can be read from outside them. Some keep their
+schedules in private, undocumented storage that can change shape in any
+release. Some, such as Claude Code's cloud tasks, cannot be read from outside
+a session at all; an agent's tool call is the only moment Harnery sees them.
+
+## Decision
+
+1. **One record shape.** Every schedule becomes a `ScheduleRecord`: its
+   source, the account or host the source belongs to, the source's own id and
+   title, the trigger (once, interval, cron, rrule or event, with the source's
+   raw text), where it runs, whether it is enabled, the next run time, the
+   last run with one of `succeeded`, `failed`, `skipped` or `unknown`, and the
+   session and task that created it when Harnery saw that happen. Records join
+   on source, account and id.
+2. **Readers registered per source.** Each source has a reader in a small
+   registry, in the same way [ADR 0268](/decisions/0268-link-client-delegated-workers/)
+   registers delegation surfaces. A reader always returns its coverage, even
+   when it finds no schedules: `current`, `stale`, `unreadable` or
+   `unsupported`. A reader first checks that the storage layout is one it
+   knows. If it is not, the reader reports `unsupported` instead of guessing
+   at columns or fields.
+3. **Private stores are opt-in, read-only, schedule fields only.** A reader
+   of another app's private store runs only when the project's own
+   `.harnery/config.jsonc` turns it on. A user-global setting never turns one
+   on. Readers never write to another app's storage. They select named
+   schedule columns and nothing else: prompts, inbox text, webhook tokens,
+   secrets and crontab command text stay where they are. The operating-system
+   reader and hook capture need no setting.
+4. **SQLite is read from a copy.** One shared helper copies a database with
+   its `-wal` and `-shm` files into a temporary folder and reads the copy, so
+   committed rows in the write-ahead log are seen and the owning app is never
+   blocked or locked out. The helper works under both Bun and Node, because
+   the published command runs on Node.
+5. **Capture at creation.** When an agent's tool call creates or deletes a
+   schedule, the tool hook appends an observation to a private local file
+   under `.harnery/private/schedule/`: the session, its task, the operation,
+   the tool, and the id the tool returned. The prompt is never recorded. An
+   in-session timer is recorded with the lifetime of its session. For
+   schedules that no reader can see, this is the only record.
+6. **The list always shows coverage.** `harn schedule list` merges reader
+   records with captured observations, and `harn schedule show <id>` prints
+   one record. Every output format prints the coverage of every source, so a
+   source that could not be read is visible next to the ones that could.
+7. **A failed run reaches the next session.** When a source reports a failed
+   last run, the next session start shows one warning line, and `harn doctor`
+   shows a row for it. Neither contacts a person.
+
+### What Harnery will not do
+
+Harnery does not create, edit, pause or delete schedules inside another app.
+Most apps offer no supported way to do so from outside, and writing to a
+private store that the app also writes is unsafe. A person or an agent inside
+that app manages its schedules; Harnery lists them.
+
+## Alternatives rejected
+
+- **Capture through hooks only, with no readers.** Rejected. Hooks miss every
+  schedule made in an app's own screen or before Harnery was installed, and a
+  hook never learns how a later run went.
+- **Read private stores by default.** Rejected. Reading another app's storage
+  is a trust decision for the project, not something a library should do on
+  install. It follows the same project-only rule as self-update in
+  [ADR 0229](/decisions/0229-activity-fired-self-update/), so a user-global
+  file cannot turn it on for every project.
+- **A new event type in the event ledger now.** Deferred. The id a schedule
+  tool returns is not part of today's tool events, and a new event type means
+  changing the V3 event contract. The private observation file is the record
+  for now, and moving observations into the ledger stays open as later work.
+
+## Consequences and risks
+
+- **Private layouts change.** A reader of an undocumented store will meet a
+  new layout after some app update. The layout check turns that into an
+  `unsupported` row instead of a wrong record or a crash, and the reader's
+  tests include an unknown layout.
+- **A partial list must never read as complete.** Some sources cannot be read
+  on every machine, and some can only be seen through capture. Coverage is
+  printed for every source in every output, including sources that returned
+  nothing, so an empty section is never mistaken for "no schedules".
+- **Capture sees only sessions that run Harnery's hooks.** A schedule created
+  by a session without the hooks, or in an app's own screen, appears only if a
+  reader can see it.
+- **Copying a database costs a little time and disk.** The copy is made per
+  read and removed afterwards. It is the price of never holding a lock on
+  another app's live file.
+- **Reading is not managing.** The list can show a failed schedule in another
+  app, but fixing or removing it still happens in that app.

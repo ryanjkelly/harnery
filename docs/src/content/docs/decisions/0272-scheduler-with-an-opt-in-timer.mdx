@@ -1,0 +1,209 @@
+---
+title: "0272: A scheduler with one opt-in timer per machine"
+description: "ADR: Harnery runs jobs from a tracked schedules file at their due times, whether or not a session is open. One opt-in systemd user timer per checkout calls a single tick command, each machine enrolls a job before it runs, a permanent claim runs each due time at most once, and a job gathers evidence with fixed commands before an optional read-only agent judges it."
+---
+
+**Status:** accepted (2026-11-22); leaves [ADR 0229](/decisions/0229-activity-fired-self-update/) and [ADR 0165](/decisions/0165-catalog-derived-bounded-backups/) unchanged · **Scope:** product tier (`core/schedule` jobs, triggers, enrollment, tick, claims, heartbeat, launch and report; `commands/schedule`; the session-start and prompt hooks; a doctor row)
+
+## Context
+
+[ADR 0271](/decisions/0271-one-list-of-schedules/) gives Harnery a list of the
+schedules other apps hold. Harnery still cannot run agent work on a clock of
+its own. A project that wants a check every morning has to trust an app's
+scheduler that only runs while the app is open, or write an operating-system
+timer by hand that fails where nobody looks.
+
+Harnery has refused a wall-clock scheduler twice. ADR 0229 chose activity to
+fire self-update, because a scheduler "runs when nobody is working and sleeps
+when they are". ADR 0165 chose session start to trigger backups, because
+laptops sleep and machines differ in their service managers. Both decisions
+are right for their work. An update or a backup only matters while someone is
+working, so activity is the natural trigger.
+
+A scheduled job is different in kind. It exists to run at a time, often with
+nobody present. A check due at 6 AM that waits for the next prompt is a
+deferred startup hook, not a schedule. This ADR adds a clock for that work
+only. Self-update and backups keep their activity triggers, and both earlier
+ADRs stand as written.
+
+### What a read-only worker can do
+
+Unattended agent work has to be read-only for now (see the alternatives). A
+read-only worker was measured against the Codex CLI read-only sandbox:
+
+- It has no network. Name lookup fails.
+- No path is writable, including the checkout, temporary directories and
+  cache directories. A command that writes a history or cache file crashes.
+- It inherits the launching process's environment, including any credential
+  variables in it.
+- The checkout's own agent hooks still fire inside it, and can write to the
+  coordination ledger.
+
+So a read-only worker can judge evidence but cannot collect most of it. Many
+useful checks need the network or a cache directory. The job contract below
+splits collecting from judging for that reason.
+
+## Decision
+
+### Jobs and enrollment
+
+1. **Jobs live in a tracked file.** A project defines jobs in
+   `.harnery/schedules.jsonc`, which is committed and reviewed like any other
+   file. `harn schedule add` adds the exception that lets Git track it inside
+   `.harnery/`. Each job has an id, a trigger (`once`, `every`, or a
+   five-field `cron` in the project's time zone), the host it runs on, its
+   gather commands, an optional agent block, one timeout for the whole job, a
+   limit on launches per day, and an optional owner agent name.
+2. **Each machine enrolls a job before it runs there.** `harn schedule enroll
+   <id>` records a hash of the job's execution fields (gather commands and
+   their arguments and variable names, each executable's resolved path, the
+   prompt, trigger, zone, host, adapter, model and timeout), the machine
+   label, the checkout's real path, and the enrollment time. A comment edit
+   changes nothing. Any change to an execution field stops the job until it is
+   enrolled again, so a pulled commit cannot change what runs unattended
+   without someone on that machine agreeing to it. A second checkout of the
+   same repository on the same machine is refused. Nothing due before the
+   enrollment time ever runs.
+
+### The clock
+
+3. **One entry point.** `harn schedule tick` is the only code path that
+   decides what is due and starts it.
+4. **One opt-in timer per checkout.** `harn schedule install` writes and
+   enables one systemd user timer and service for the checkout, which calls
+   the tick every five minutes. `harn schedule uninstall` removes both.
+   Nothing is installed without that command, and only Linux is supported
+   first; other platforms get a clear refusal.
+5. **Activity is the catch-up.** Session start and prompts also call the tick,
+   behind a one-stat throttle, as a detached child that inherits no input or
+   output. A machine without the timer still runs due jobs when someone works,
+   and a machine with it loses nothing if the timer stops.
+6. **A heartbeat makes a stopped clock visible.** Every tick writes its time
+   and result to a private heartbeat file. Where the timer is installed, the
+   next session start and `harn doctor` report a timer that is missing,
+   disabled or failed, a last tick that errored, and a heartbeat older than
+   twice the interval. They read the heartbeat before the catch-up tick
+   refreshes it. A machine that was switched off shows as a gap afterwards;
+   nothing can report while it is down.
+
+### Running each due time once
+
+7. **A permanent claim per job and due time.** For each due time, the tick
+   creates a claim file keyed by checkout, job and scheduled instant. It is
+   created exclusively, so a second tick cannot create it, and it is never
+   deleted. A lease is not used as the record, because Harnery's leases
+   delete their file on release; a no-clobber lease guards only the moment
+   the claim is written. The claim moves through `claimed`, `started`,
+   `finished` and `abandoned`. A claim that never started is retried once. A
+   claim that started and never finished is reported as uncertain and is not
+   rerun silently. A manual `harn schedule run` gets its own id.
+8. **Missed runs.** After downtime, the tick runs one catch-up for the latest
+   missed time within seven days. Older and superseded times are recorded as
+   one skipped range, and a stored cursor keeps later ticks from walking the
+   same backlog again.
+
+### What a job does
+
+9. **Gather.** A job may list named commands. Harnery runs each one itself, as
+   a plain subprocess, before any agent starts. Each is a fixed executable
+   with literal arguments, never a shell string. It runs from the checkout
+   root with a small base environment plus only the variable names the job
+   lists. Output is capped. Each command ends as `ok`; `finding`, for an exit
+   code the job declares as "the check found something"; or `error`, for a
+   timeout, a failure to start, an unexpected exit code, or truncated output.
+10. **Judge.** A job may also give an agent prompt. The read-only agent
+    receives the gathered output as untrusted evidence and writes a report.
+    Its final message starts with `STATUS: ok` or `STATUS: attention`;
+    anything else counts as attention. A job needs at least one of gather and
+    judge, and a gather-only job uses no agent at all.
+11. **The run result.** A run ends `ok`, `attention` or `failed`. Any gather
+    `error` or agent failure makes it `failed`. Any `finding` or an agent
+    `attention` makes it `attention`. The agent can raise a run to attention
+    but can never clear a finding or an error. One deadline covers the whole
+    job, and a timeout kills the process group.
+
+### How the agent is launched
+
+12. **Through the adapter spawner, read-only.** The launch calls the
+    adapter's spawner directly with the read-only filesystem policy from
+    [ADR 0039](/decisions/0039-workspace-sandbox-policy-projection/). It does
+    not go through the run engine, which loads a script before any policy
+    applies. An adapter that cannot enforce read-only is refused before
+    launch.
+13. **Billing, environment and re-entry.** Before launch, the scheduler runs
+    the billing probe and refuses a run that would bill an API key instead of
+    the subscription sign-in. The child gets a reduced environment with no
+    credential variables, and a child marker that makes the hooks inside it
+    skip the tick, the capture and the cue, so a scheduled run never starts
+    another.
+14. **Harnery writes the report.** Harnery, not the agent, writes each gather
+    result, the agent's final message and the run result to a private report
+    per run, and keeps the newest twenty runs per job. The run appears in
+    `harn schedule list` as a Harnery record, and `harn schedule history <id>`
+    lists its runs. A run that ends `attention`, `failed` or uncertain adds a
+    line to the next session that points at the report, and when the job names
+    an owner, Harnery leaves a held `harn agents ping` for that name. Nothing
+    contacts a person.
+
+## Alternatives rejected
+
+- **Activity as the only clock.** Rejected. It is the right trigger for
+  self-update and backups, and it is kept here as the catch-up. As the only
+  clock, it would run a morning job whenever someone next opened a session,
+  which defeats the point of a schedule.
+- **Installers for every operating system at once.** Rejected, for the reason
+  [ADR 0026](/decisions/0026-background-supervisor-service/) refused shipping
+  systemd, launchd and Windows-service installation in its first slice. One
+  platform proves the heartbeat and the claim; the others follow.
+- **The diagnostic supervisor as the clock.** Rejected. ADR 0146 keeps the
+  supervisor an optional observer that cannot become a scheduler or watchdog,
+  and a clock that depends on an optional service would stop whenever that
+  service is not running.
+- **Agents that write, now.** Rejected for this decision. A writing run in
+  the shared checkout would edit beside live sessions, and the run engine no
+  longer has an isolated workspace provider
+  ([ADR 0244](/decisions/0244-trim-unused-run-engine-features/)). A safe shape
+  is recorded under Later.
+- **Giving the agent the network.** Rejected. An agent with network access
+  could run the checks itself and act on what it finds, which is the
+  unattended, connected agent this decision rules out. Gather keeps the
+  commands fixed, reviewed and pinned by enrollment.
+- **Jobs that run workflow scripts.** Rejected for now. A script is a wider
+  grant than a prompt, and its policy requests park for a person
+  ([ADR 0023](/decisions/0023-durable-workflow-approvals/)), which an
+  unattended clock cannot wait on.
+- **Event-ledger events for each run, now.** Deferred. A scheduled run happens
+  outside any session, so its events would need new root event types in the
+  V3 contract. The claim files and reports are the record for now.
+
+## Consequences and risks
+
+- **Enrollment pins the job, not the code behind it.** A gather command that
+  runs a script from the same checkout runs whatever that script says after
+  the next pull. Enrollment pins the command line and the executable's path,
+  not the contents of files it reads. Harnery's own code also updates with the
+  checkout. The documentation says so.
+- **A timer under WSL runs only while the guest is up.** If the Linux guest is
+  shut down, the timer does not fire, and the heartbeat reports the gap at the
+  next session.
+- **Read-only is a filesystem rule.** It limits what the agent can write. It
+  is not a network or secrecy guarantee beyond what was measured: the reduced
+  environment removes credential variables, but the agent can still read any
+  file the user can read.
+- **Cost has two bounds, not a budget.** Each job has a wall-clock deadline
+  and a daily launch limit. The adapter reports neither turns nor cost on this
+  path, so a spending limit is not possible yet.
+- **Gather commands run with the user's access.** They are fixed argument
+  lists in a reviewed file, with a named-variable environment, but they run
+  as the user and outside any sandbox.
+- **A switched-off machine cannot report.** The heartbeat shows the gap only
+  after the machine is back.
+
+## Later
+
+- Timers for macOS and Windows, including one that starts a WSL guest.
+- Jobs that write: Harnery creates a private worktree, the agent runs with
+  workspace writes but cannot commit, and Harnery hands back a patch and a
+  report for the next session to review.
+- A schema-checked verdict from the judge in place of the `STATUS:` line.
+- Run and observation events in the event ledger.
