@@ -62,6 +62,11 @@ import {
 } from "../core/run/adapters.ts";
 import { probeBilling } from "../core/run/billing.ts";
 import type { AdapterName } from "../core/run/types.ts";
+import {
+  assessScheduleHealth,
+  type ScheduleHealth,
+  scheduleProblemHint,
+} from "../core/schedule/cue.ts";
 import { checkGitHooks, gitHooksInstalled } from "../lib/instructions/git-hooks.ts";
 import { findRg, installRg, managedRgPath, rgInstallSupported } from "../lib/tools/ripgrep.ts";
 
@@ -218,6 +223,9 @@ export async function runChecks(): Promise<Check[]> {
   const workflow = optionalWhenAnotherAdapterIsInstalled(probed);
   const installed = workflow.filter((w) => w.installed).map((w) => w.id as AdapterId);
   const codexAuthorization = await checkCodexHookAuthorization(installed, codexWslStatus);
+  const schedule = root
+    ? scheduleDoctorChecks(await assessScheduleHealth({ coordRoot: root }), resolveBinName(root))
+    : [];
   return [
     checkNode(),
     checkGit(),
@@ -236,9 +244,70 @@ export async function runChecks(): Promise<Check[]> {
     ...workflow.map((w) => w.check),
     checkRestic(),
     ...(backupSetup ? [backupSetup] : []),
+    ...schedule,
     checkPlaywright(),
     checkPython(),
   ];
+}
+
+/**
+ * The scheduler's rows: `schedule clock` and `schedule runs`. Both are absent
+ * when nothing is set up (no timer, no job file, no runs), like the backup row.
+ * Without a timer, the clock row is a neutral note: jobs then run only when a
+ * session is active.
+ */
+export function scheduleDoctorChecks(health: ScheduleHealth, bin: string): Check[] {
+  const checks: Check[] = [];
+  const clock = health.problems.filter((p) => p.area === "clock");
+  const runs = health.problems.filter((p) => p.area === "runs");
+  const hint = (list: typeof health.problems) =>
+    list
+      .map((p) => scheduleProblemHint(p, bin))
+      .filter((h, i, all) => all.indexOf(h) === i)
+      .join("; ");
+  if (clock.length) {
+    checks.push({
+      name: "schedule clock",
+      scope: "runtime",
+      severity: "warn",
+      detail: clock.map((p) => p.message).join("; "),
+      hint: hint(clock),
+    });
+  } else if (health.timer) {
+    const last = health.heartbeat?.last_timer_tick_at;
+    const unit = health.unit_state?.status === "unknown" ? "; systemd not reachable" : "";
+    checks.push({
+      name: "schedule clock",
+      scope: "runtime",
+      severity: "ok",
+      detail: `timer ${health.timer.unit} every ${health.timer.interval_minutes}m${last ? `, last tick ${last}` : ""}${unit}`,
+    });
+  } else if (health.job_file || health.jobs.length) {
+    checks.push({
+      name: "schedule clock",
+      scope: "runtime",
+      severity: "info",
+      detail: "no timer installed; due jobs run only when a session is active",
+      hint: `${bin} schedule install`,
+    });
+  }
+  if (runs.length) {
+    checks.push({
+      name: "schedule runs",
+      scope: "runtime",
+      severity: "warn",
+      detail: runs.map((p) => p.message).join("; "),
+      hint: hint(runs),
+    });
+  } else if (health.jobs.length) {
+    checks.push({
+      name: "schedule runs",
+      scope: "runtime",
+      severity: "ok",
+      detail: `${health.jobs.length} job${health.jobs.length === 1 ? "" : "s"}, no failed or uncertain runs`,
+    });
+  }
+  return checks;
 }
 
 /** Presence-only setup inspection for the backup feature Harnery uses itself. */
