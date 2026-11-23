@@ -23,7 +23,20 @@ function fixture() {
 }
 const scan = (root: string) =>
   inventoryStorage(createStorageCatalog({ coord_root: root, project_root: root }));
-const tick = () => new Promise((resolve) => setTimeout(resolve, 20));
+/**
+ * Wait for a background walk to finish. Releasing the refresh lease is the
+ * walk's last step, after the snapshot is written, so the lease file going
+ * away means the walk has fully settled, whether it succeeded or failed. A
+ * fixed sleep is not enough: the snapshot write can take longer than one timer
+ * tick when the machine is busy.
+ */
+async function settled(root: string): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (existsSync(storageRefreshLeasePath(root))) {
+    if (Date.now() > deadline) throw new Error("the background storage walk did not settle");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
 
 /** An inventory reader whose walks finish only when the test says so. */
 function gatedReader() {
@@ -62,7 +75,7 @@ describe("non-blocking storage footprint state", () => {
     expect(existsSync(storageRefreshLeasePath(root))).toBe(true);
 
     gate.finishAll();
-    await tick();
+    await settled(root);
     const ready = await readStorageFootprintState(root, { inventoryReader: gate.reader });
     expect(ready.status).toBe("ready");
     if (ready.status !== "ready") return;
@@ -93,7 +106,7 @@ describe("non-blocking storage footprint state", () => {
     expect(gate.calls).toBe(1);
 
     gate.finishAll();
-    await tick();
+    await settled(root);
     const fresh = await readStorageFootprintState(root, options);
     expect(fresh.status === "ready" && !fresh.stale && !fresh.refreshing).toBe(true);
     expect(fresh.status === "ready" && fresh.measuredAt).toBe(5_000);
@@ -118,7 +131,7 @@ describe("non-blocking storage footprint state", () => {
     expect(state.refreshing).toBe(true);
     expect(gate.calls).toBe(1);
     gate.finishAll();
-    await tick();
+    await settled(root);
   });
 
   test("a snapshot belonging to another checkout is never shown", async () => {
@@ -131,7 +144,7 @@ describe("non-blocking storage footprint state", () => {
     const state = await readStorageFootprintState(other, { inventoryReader: gate.reader });
     expect(state.status).toBe("measuring");
     gate.finishAll();
-    await tick();
+    await settled(other);
   });
 
   test("a failed first walk backs off until the retry window or a forced walk", async () => {
@@ -144,7 +157,7 @@ describe("non-blocking storage footprint state", () => {
     };
     const options = { inventoryReader: failing, now: () => clock, retryMs: 1_000 };
     expect((await readStorageFootprintState(root, options)).status).toBe("measuring");
-    await tick();
+    await settled(root);
     const failed = await readStorageFootprintState(root, options);
     expect(failed.status).toBe("failed");
     if (failed.status !== "failed") return;
@@ -155,12 +168,12 @@ describe("non-blocking storage footprint state", () => {
     expect((await readStorageFootprintState(root, { ...options, force: true })).status).toBe(
       "measuring",
     );
-    await tick();
+    await settled(root);
     expect(calls).toBe(2);
 
     clock = 12_000;
     expect((await readStorageFootprintState(root, options)).status).toBe("measuring");
-    await tick();
+    await settled(root);
     expect(calls).toBe(3);
   });
 
@@ -194,7 +207,7 @@ describe("non-blocking storage footprint state", () => {
     );
     expect(gate.calls).toBe(1);
     gate.finishAll();
-    await tick();
+    await settled(root);
   });
 
   test("Measure now waits for the walk; a fresh measurement returns without walking", async () => {
