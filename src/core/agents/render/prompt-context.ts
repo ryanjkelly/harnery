@@ -296,9 +296,7 @@ function renderTurnRitualReminder(
   if (previous === key) return "";
   writeHashFile(statePath, key);
   const bounced =
-    previous === TURN_RITUAL_BOUNCED
-      ? "The Stop hook refused your previous turn. "
-      : "";
+    previous === TURN_RITUAL_BOUNCED ? "The Stop hook refused your previous turn. " : "";
 
   const bin = resolveBinName(coordRoot);
   const statusCommand = endOfTurnStatusCommand(coordRoot);

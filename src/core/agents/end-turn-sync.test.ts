@@ -3,10 +3,10 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import { join } from "node:path";
 import {
-  END_TURN_SYNC_TIMEOUT_MS,
-  endTurnSyncTimeoutMs,
   agentsGitSyncOnEndTurn,
   attemptEndTurnSync,
+  END_TURN_SYNC_TIMEOUT_MS,
+  endTurnSyncTimeoutMs,
   formatEndTurnSyncRefusal,
   formatEndTurnSyncSummary,
   isFreshnessOnlyFailure,

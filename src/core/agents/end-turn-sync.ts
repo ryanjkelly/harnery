@@ -33,7 +33,9 @@ export const END_TURN_SYNC_TIMEOUT_MS = 120_000;
  */
 export function endTurnSyncTimeoutMs(): number {
   const raw = Number.parseInt(coordEnv("END_TURN_SYNC_TIMEOUT_MS") ?? "", 10);
-  return Number.isFinite(raw) && raw > 0 ? Math.min(raw, END_TURN_SYNC_TIMEOUT_MS) : END_TURN_SYNC_TIMEOUT_MS;
+  return Number.isFinite(raw) && raw > 0
+    ? Math.min(raw, END_TURN_SYNC_TIMEOUT_MS)
+    : END_TURN_SYNC_TIMEOUT_MS;
 }
 
 export { agentsGitSyncOnEndTurn } from "../config.ts";

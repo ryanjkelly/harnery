@@ -47,7 +47,8 @@ describe("OpenClaw plugin configuration", () => {
     const runtime = { env: {}, home: "/portable/runtime-user" };
     expect(parsePluginConfig({}, runtime).excludeAgents).toEqual([]);
     expect(
-      parsePluginConfig({ agents: [], excludeAgents: ["account-help", "", 3] }, runtime).excludeAgents,
+      parsePluginConfig({ agents: [], excludeAgents: ["account-help", "", 3] }, runtime)
+        .excludeAgents,
     ).toEqual(["account-help"]);
   });
 });
