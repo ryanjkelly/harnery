@@ -759,6 +759,12 @@ function harneryCommandBundles({
       { aliases: ["artifact"] },
     ),
     lazy(
+      "schedule",
+      "List every schedule on this machine and run the project's scheduled jobs",
+      async (program) =>
+        (await import("./commands/schedule/index.ts")).registerScheduleCommand(program, emit),
+    ),
+    lazy(
       "decision",
       "Decision docket: file a decision an agent would otherwise escalate, deliberate it, resolve with cited evidence, review async.",
       async (program) =>
