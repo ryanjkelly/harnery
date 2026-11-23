@@ -5,13 +5,16 @@ import { HelperAgentsBlock } from "@/components/HelperAgentsBlock";
 import { Notice } from "@/components/layout/Notice";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { PageShell } from "@/components/layout/PageShell";
+import { Badge } from "@/components/ui/badge";
 import { Tooltip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/cn";
 import {
+  type AccountUsage,
   type CursorUsage,
   type DevtoolsReport,
   readDevtoolsReport,
   type ToolStatus,
+  type UsageSource,
 } from "@/lib/devtools-reader";
 import type { HelperLimitReport } from "@/lib/helper-limit";
 import { readHelperLimitReport } from "@/lib/helper-limit-reader";
@@ -31,30 +34,44 @@ const SOURCES: Record<
   { dir: string; sessions: string; tokens?: string; plan?: string }
 > = {
   "claude-code": {
-    dir: "~/.claude",
-    sessions: "Session transcripts under ~/.claude/projects.",
+    dir: "~/.claude and every other Claude config directory",
+    sessions: "Session transcripts under each Claude config directory's projects/.",
     tokens:
       "Every assistant message's input + output + cache tokens across transcripts in the window (cache reads dominate). Memoized per transcript, so only changed sessions are re-read.",
-    plan: "Seat tier from ~/.claude.json.",
+    plan: "Seat tier from the account's .claude.json.",
   },
   codex: {
-    dir: "~/.codex",
+    dir: "~/.codex and every other Codex home",
     sessions: "Threads recorded in ~/.codex/sqlite/state_5.sqlite.",
     tokens:
       "Each session's cumulative total_tokens (cache reads included), summed across its rollout within the window. Matches what Codex's own /status shows.",
-    plan: "Live plan from the most recent session's rate-limit snapshot.",
+    plan: "Plan reported by the usage source, else the sign-in token's claim.",
   },
   cursor: {
-    dir: "~/.cursor",
+    dir: "~/.cursor, the Cursor CLI login and Cursor's state.vscdb",
     sessions: "Chats recorded in Cursor's state.vscdb (composerHeaders).",
     plan: "Stripe membership from Cursor's state.vscdb.",
   },
 };
 
-/** Which rate-limit windows come from each tool's live enrichment. */
-const QUOTA_SOURCE: Partial<Record<ToolStatus["tool"], string>> = {
-  "claude-code": "Live from api.anthropic.com/api/oauth/usage (what `/usage` shows).",
-  codex: "From the newest session's rate-limit snapshot in the local rollout.",
+/** Where each usage source reads from, surfaced on the account's source badge. */
+const SOURCE_LABELS: Record<UsageSource, { label: string; hint: string }> = {
+  direct: {
+    label: "direct",
+    hint: "Read from the vendor's usage endpoint with the account's own stored token.",
+  },
+  "codex-app-server": {
+    label: "codex app-server",
+    hint: "Read by Codex itself (codex app-server), which refreshes its own token.",
+  },
+  cliproxy: {
+    label: "CLI Proxy",
+    hint: "Read through the local CLI Proxy API server with the token it holds for this account.",
+  },
+  snapshot: {
+    label: "snapshot",
+    hint: "The last rate-limit snapshot a local Codex session wrote. It ages until the next turn.",
+  },
 };
 
 export default async function DevtoolsPage() {
@@ -68,7 +85,7 @@ export default async function DevtoolsPage() {
     <PageShell>
       <PageHeader
         title="Tools"
-        description="Coding agents: where Claude Code, Codex, and Cursor stand on this machine, read straight from local files. Nothing leaves the box."
+        description="Coding agents: every Claude Code, Codex, and Cursor account signed in on this machine, with live usage from the first source that answers."
       />
 
       {report.error ? (
@@ -125,36 +142,8 @@ function ToolCard({
       <CardHeader tool={tool} />
 
       <dl className="mt-4 space-y-2 text-sm">
-        {tool.account ? <Row label="Account" value={tool.account} /> : null}
-        {tool.plan ? (
-          <Row
-            label="Plan"
-            value={titleize(tool.plan)}
-            hint={
-              <>
-                Raw value <code>{tool.plan}</code>
-                {src.plan ? <div className="mt-1 opacity-80">{src.plan}</div> : null}
-              </>
-            }
-          />
-        ) : null}
-        {tool.rateLimitTier ? (
-          <Row
-            label="Rate tier"
-            value={titleize(tool.rateLimitTier)}
-            hint={
-              <>
-                Raw value <code>{tool.rateLimitTier}</code>
-              </>
-            }
-          />
-        ) : null}
-        {tool.authExpiresAt ? (
-          <Row
-            label="Auth expires"
-            value={expiryLabel(tool.authExpiresAt, now)}
-            hint={<FormattedDateTime iso={tool.authExpiresAt} />}
-          />
+        {!tool.accounts.length && tool.account ? (
+          <Row label="Account" value={tool.account} />
         ) : null}
         {tool.sessions != null ? (
           <Row label="Sessions" value={tool.sessions.toLocaleString()} hint={src.sessions} />
@@ -182,7 +171,7 @@ function ToolCard({
         ) : null}
       </dl>
 
-      {tool.quota?.length ? (
+      {!tool.accounts.length && tool.quota?.length ? (
         <div className="mt-4 space-y-3">
           {tool.quota.map((q) => (
             <QuotaBar
@@ -191,25 +180,16 @@ function ToolCard({
               pct={q.usedPercent}
               resetsAt={q.resetsAt}
               now={now}
-              hint={QUOTA_SOURCE[tool.tool]}
             />
           ))}
         </div>
       ) : null}
 
+      {tool.accounts.map((a) => (
+        <AccountBlock key={a.id} account={a} tool={tool.tool} now={now} />
+      ))}
+
       {tool.tool === "claude-code" ? <HelperAgentsBlock report={helpers} /> : null}
-
-      {tool.usage ? <CursorUsageBlock usage={tool.usage} now={now} /> : null}
-
-      {tool.spend?.limitCents != null ? (
-        <dl className="mt-4 space-y-2 text-sm">
-          <Row
-            label={tool.spend.label}
-            value={`${fmtUsd(tool.spend.usedCents ?? 0)} / ${fmtUsd(tool.spend.limitCents)}`}
-            hint="Overage spend used this cycle, against your cap. Billed only after included usage runs out."
-          />
-        </dl>
-      ) : null}
 
       {tool.notes.length ? (
         <ul className="mt-4 space-y-1 border-t border-border pt-3 text-xs text-muted-foreground">
@@ -230,6 +210,153 @@ function ToolCard({
   );
 }
 
+/** One account: identity, the source that answered, and its usage. */
+function AccountBlock({
+  account: a,
+  tool,
+  now,
+}: {
+  account: AccountUsage;
+  tool: ToolStatus["tool"];
+  now: number;
+}) {
+  const src = SOURCES[tool];
+  const source = a.source ? SOURCE_LABELS[a.source] : null;
+  const stores = a.stores.map((s) => `${s.kind}: ${s.path}${s.loggedIn ? "" : " (signed out)"}`);
+  return (
+    <div className="mt-4 border-t border-border pt-4">
+      <div className="flex items-center justify-between gap-2">
+        <Tooltip
+          content={
+            <div className="space-y-0.5">
+              <div>Found in {a.stores.length === 1 ? "1 store" : `${a.stores.length} stores`}:</div>
+              {stores.map((s) => (
+                <div key={s} className="opacity-80">
+                  {s}
+                </div>
+              ))}
+            </div>
+          }
+          side="top"
+        >
+          <span className="cursor-help truncate text-sm font-medium">
+            {a.email ?? a.id.replace(/^[^:]+:/, "")}
+          </span>
+        </Tooltip>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {source ? (
+            <Badge
+              tone={a.stale ? "warn" : a.source === "direct" ? "done" : "accent"}
+              title={
+                <div className="space-y-0.5">
+                  <div>{source.hint}</div>
+                  {a.sourceDetail ? <div className="opacity-80">{a.sourceDetail}</div> : null}
+                  {a.asOf ? (
+                    <div className="opacity-80">
+                      as of <FormattedDateTime iso={a.asOf} />
+                    </div>
+                  ) : null}
+                </div>
+              }
+            >
+              {a.stale ? `${source.label} · stale` : source.label}
+            </Badge>
+          ) : null}
+          <SignInPill loggedIn={a.loggedIn} />
+        </div>
+      </div>
+
+      <dl className="mt-3 space-y-2 text-sm">
+        {a.plan ? (
+          <Row
+            label="Plan"
+            value={titleize(a.plan)}
+            hint={
+              <>
+                Raw value <code>{a.plan}</code>
+                {src.plan ? <div className="mt-1 opacity-80">{src.plan}</div> : null}
+              </>
+            }
+          />
+        ) : null}
+        {a.rateLimitTier ? (
+          <Row
+            label="Rate tier"
+            value={titleize(a.rateLimitTier)}
+            hint={
+              <>
+                Raw value <code>{a.rateLimitTier}</code>
+              </>
+            }
+          />
+        ) : null}
+        {a.authExpiresAt ? (
+          <Row
+            label="Auth expires"
+            value={expiryLabel(a.authExpiresAt, now)}
+            hint={<FormattedDateTime iso={a.authExpiresAt} />}
+          />
+        ) : null}
+        {a.credits?.balance != null && (a.credits.hasCredits || a.credits.unlimited) ? (
+          <Row
+            label="Credits"
+            value={a.credits.unlimited ? "unlimited" : a.credits.balance.toLocaleString()}
+            hint="Codex credits available beyond the plan's windows."
+          />
+        ) : null}
+      </dl>
+
+      {a.quota?.length ? (
+        <div className="mt-3 space-y-3">
+          {a.quota.map((q) => (
+            <QuotaBar
+              key={q.window}
+              window={q.window}
+              pct={q.usedPercent}
+              resetsAt={q.resetsAt}
+              now={now}
+              hint={source?.hint}
+            />
+          ))}
+        </div>
+      ) : null}
+
+      {a.usage ? <CursorUsageBlock usage={a.usage} now={now} /> : null}
+
+      {a.spend?.limitCents != null ? (
+        <dl className="mt-3 space-y-2 text-sm">
+          <Row
+            label={a.spend.label}
+            value={`${fmtUsd(a.spend.usedCents ?? 0)} / ${fmtUsd(a.spend.limitCents)}`}
+            hint="Overage spend used this cycle, against your cap. Billed only after included usage runs out."
+          />
+        </dl>
+      ) : null}
+
+      {a.notes.length ? (
+        <ul className="mt-3 space-y-1 text-xs text-muted-foreground">
+          {a.notes.map((n) => (
+            <li key={n}>{n}</li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
+function SignInPill({ loggedIn }: { loggedIn: boolean }) {
+  return (
+    <span
+      className={cn(
+        "rounded-full border px-2 py-0.5 text-xs font-medium",
+        TONE[loggedIn ? "done" : "danger"].pill,
+      )}
+    >
+      {loggedIn ? "signed in" : "signed out"}
+    </span>
+  );
+}
+
 function CardHeader({ tool }: { tool: ToolStatus }) {
   return (
     <div className="flex items-center justify-between">
@@ -242,14 +369,16 @@ function CardHeader({ tool }: { tool: ToolStatus }) {
 }
 
 function LoginBadge({ tool }: { tool: ToolStatus }) {
-  const { loggedIn, account } = tool;
+  const { loggedIn, account, accounts } = tool;
   const tone: Tone = loggedIn === true ? "done" : loggedIn === false ? "danger" : "neutral";
   const label = loggedIn === true ? "signed in" : loggedIn === false ? "signed out" : "unknown";
   const hint =
     loggedIn === true
-      ? account
-        ? `Signed in as ${account}, per the local credential.`
-        : "A local credential is present."
+      ? accounts.length > 1
+        ? `${accounts.filter((a) => a.loggedIn).length} of ${accounts.length} accounts signed in.`
+        : account
+          ? `Signed in as ${account}, per the local credential.`
+          : "A local credential is present."
       : loggedIn === false
         ? "No local credential found."
         : "Could not determine sign-in state from local files.";

@@ -1,0 +1,144 @@
+---
+title: "0273: Usage from every signed-in account, with fallbacks"
+description: "ADR: `devtools` finds every Claude Code, Codex and Cursor account signed in anywhere on the machine, groups the copies of each account, and reads its plan usage from the first source that answers: the tool's own stored token, the tool's own usage command, a local CLI Proxy API server, and finally the last snapshot written to disk. Harnery never refreshes a token it does not own."
+---
+
+**Status:** accepted (2026-11-23) · **Scope:** toolkit tier (`lib/devtools`, `lib/devtools-accounts`), the `devtools` command, the dashboard Tools page
+
+## Context
+
+`devtools` read one account per tool from one fixed place: `~/.claude`,
+`~/.codex` and Cursor's IDE database. That stopped matching how people run
+these tools.
+
+- **Claude Code moves its store.** `CLAUDE_CONFIG_DIR` points a session at
+  another directory, and people keep one directory per account
+  (`~/.claude_work`, `~/.claude_personal`). The default `~/.claude` can be
+  signed out while two other directories hold live logins. Harnery then
+  reported the user as signed out with no usage.
+- **Codex has the same split.** `CODEX_HOME` selects the store, and desktop
+  apps keep their own Codex homes.
+- **Cursor changed its IDE token.** The IDE now stores an opaque access token
+  rather than a JWT, so the old check, which decoded the token to find the
+  user and its expiry, rejected every token. The Cursor CLI keeps a separate
+  JWT in `~/.config/cursor/auth.json` that the usage endpoints accept.
+- **WSL splits the machine in two.** Desktop apps run on Windows and keep
+  their stores under `C:\Users\<name>`, while terminal tools run inside Linux.
+- **Other local apps already hold the data.** CLI Proxy API keeps OAuth files
+  for each account it proxies and refreshes them itself, and its management
+  API can make a request with an account's token on Harnery's behalf. Agent
+  desktop apps that show usage limits read the same vendor endpoints and often
+  record where a CLI Proxy server lives.
+
+All three vendors answer a plain authenticated request with live usage:
+
+| Tool | Request | Answer |
+|---|---|---|
+| Claude Code | `GET api.anthropic.com/api/oauth/usage`, OAuth bearer, `anthropic-beta: oauth-2025-04-20` | 5-hour and weekly windows (utilization 0-100, reset time), per-model weekly windows, extra-usage spend |
+| Codex | `GET chatgpt.com/backend-api/wham/usage`, bearer plus `ChatGPT-Account-Id` | plan, primary and secondary windows, credits |
+| Codex (official) | `codex app-server`, JSON-RPC `account/rateLimits/read` | the same windows, read and refreshed by Codex itself |
+| Cursor | `POST api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage`, bearer, or the cursor.com dashboard route with the session cookie | billing cycle, total, Auto and API percentages, included spend |
+
+## Decision
+
+### 1. Discover every account store
+
+A discovery pass lists candidate stores without network calls:
+
+- **Claude Code:** `$CLAUDE_CONFIG_DIR`, `~/.claude`, every `~/.claude*`
+  directory holding `.credentials.json`, and on macOS the Keychain items
+  Claude Code writes. The account email and id come from the store's
+  `.claude.json` (`oauthAccount`).
+- **Codex:** `$CODEX_HOME`, `~/.codex`, every `~/.codex*` directory holding
+  `auth.json`. Identity comes from the `id_token` claims (email, account id,
+  plan).
+- **Cursor:** the CLI's `~/.config/cursor/auth.json`, and the IDE's
+  `state.vscdb` (native, macOS and Windows locations). The user id comes from
+  `cursorAuth/cachedScopedProfile`, not from decoding the token.
+- **CLI Proxy API:** each auth directory named by a CLI Proxy `config.yaml`,
+  plus `~/.cli-proxy-api`. Each `claude-*.json` or `codex-*.json` file is one
+  account with its own access token.
+- **Under WSL**, the same locations under each `/mnt/c/Users/<name>/`. Only
+  the real home triggers this, so tests with a synthetic home never touch the
+  host.
+
+### 2. Group copies of the same account
+
+One account often appears in several stores (a Claude directory and a CLI
+Proxy file for the same login). Stores are grouped by a stable identity:
+account id where the store records one, else email plus organization. The
+report shows one row per account and lists every store it was found in.
+
+### 3. Read usage from the first source that answers
+
+For each account, Harnery tries sources in this order and stops at the first
+success:
+
+1. **Direct, with a stored token that has not expired.** The tool's own stores
+   come first, then CLI Proxy files, because CLI Proxy refreshes its tokens on
+   its own schedule and its copy is often the freshest.
+2. **The tool's own usage command.** Codex only: `codex app-server` with
+   `CODEX_HOME` set to that account's store. Codex refreshes its own token
+   here, exactly as starting Codex would.
+3. **CLI Proxy management API.** `POST /v0/management/api-call` with the
+   account's `auth_index` makes the vendor request with the proxy's token. The
+   server address and management key come from Harnery's own setting, then
+   from a desktop app's saved usage-limit source when one is found.
+4. **The last local snapshot.** Codex session files record rate limits on
+   every turn; the newest one is shown with its age and marked stale.
+
+Each account row names the source that answered, so a person can see when a
+fallback is in use.
+
+### 4. Never refresh a token Harnery does not own
+
+Claude and Codex refresh tokens rotate on use. If Harnery refreshed one,
+every running session still holding the old refresh token would be signed out
+at its next refresh. Harnery therefore reads access tokens only, skips a token
+past its expiry, and moves to the next source. The one exception is step 2,
+where the tool refreshes its own store with its own code.
+
+### 5. Network limits stay as they are
+
+Responses stay cached per token fingerprint for five minutes, and a 429 puts
+that token in cooldown. A machine with four accounts makes at most four usage
+calls per five minutes per tool. Tokens go only to their own vendor, and the
+management key only to the configured CLI Proxy server.
+
+## Alternatives considered
+
+- **Keep one account per tool and fix the paths.** Honoring
+  `CLAUDE_CONFIG_DIR` alone would have fixed the signed-out report for one
+  account, but hides every other account a person pays for. Rejected.
+- **Make CLI Proxy the primary source.** It sees only the accounts it proxies
+  and needs a management key. It is a fallback, not a foundation.
+- **Ask a desktop agent app for its usage numbers.** The apps examined keep
+  usage behind an authenticated socket for their own UI and offer no stable
+  read interface. Harnery reads the configuration such an app saved (a CLI
+  Proxy address and key) instead of its numbers.
+- **Refresh expired tokens ourselves.** Rejected for the rotation reason
+  above.
+- **Run the agent CLIs' interactive `/usage` screens.** Slow, screen-scraped
+  and, for Claude Code, it costs a session start. Rejected.
+
+## Consequences
+
+- The report shape changes: each tool carries an `accounts` list, and the
+  tool-level fields describe the first signed-in account. The command and the
+  dashboard move to the new shape in the same change, with no compatibility
+  reader.
+- `devtools doctor` probes each source once, so a broken fallback shows up
+  before the primary path fails.
+- The vendor endpoints are undocumented. When one changes, the next source in
+  the chain keeps the report working while `doctor` reports the drift.
+
+## Gotchas
+
+- A signed-out store can sit beside a signed-in one for the same account.
+  Group first, then pick a source, so the signed-out copy never hides the
+  live one.
+- Cursor's IDE token can be valid in the database yet rejected by the server
+  once the IDE has been closed for a while. The CLI token is usually the
+  better first choice.
+- CLI Proxy stores its management key hashed in `config.yaml`; the key itself
+  must come from Harnery's setting or from another app that saved it.

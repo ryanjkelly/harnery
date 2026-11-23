@@ -3,11 +3,13 @@ import { dirname } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
 import {
+  type AccountUsage,
   cursorApiKeyPath,
   type DevtoolName,
   enrichFromApi,
   type ProbeResult,
   probeEndpoints,
+  type QuotaWindow,
   readDevtools,
   resolveCursorApiKey,
   type ToolStatus,
@@ -15,15 +17,15 @@ import {
 import { type HelperCommandDeps, registerHelpersCommand } from "./devtools-helpers.ts";
 
 /**
- * `devtools`: report the local state of the AI coding agents harnery supports
- * — Claude Code, Codex, and Cursor — in one place: logged-in status, plan/seat
- * tier, auth expiry, session counts, and (where the tool keeps them locally)
- * rate-limit / quota windows.
+ * `devtools`: report the state of the AI coding agents harnery supports —
+ * Claude Code, Codex, and Cursor — in one place: every signed-in account with
+ * its plan, auth expiry and live usage windows, plus session counts and token
+ * totals.
  *
- * Reads files on disk by default (no network). When a Cursor API key is
- * configured (`devtools cursor-key set`), it additionally verifies the key and
- * pulls Cloud Agent activity. `--usage` adds an opt-in windowed scan of local
- * transcripts for approximate token totals.
+ * Each account's usage comes from the first source that answers (its stored
+ * token, Codex's `app-server`, a CLI Proxy API server, the last local
+ * snapshot); `--no-api` keeps the report to local files. When a Cursor API key
+ * is configured (`devtools cursor-key set`), it also pulls Cloud Agent activity.
  */
 
 const VALID: readonly DevtoolName[] = ["claude-code", "codex", "cursor"];
@@ -57,7 +59,7 @@ export function registerDevtoolsCommand(
       (v) => Number.parseInt(v, 10),
       7,
     )
-    .option("--no-api", "Skip the Cursor API enrichment even when a key is configured")
+    .option("--no-api", "Local files only: skip every network usage source")
     .option("--format <type>", "Output format: table, json", "table")
     .action(async (opts: DevtoolsOpts) => {
       const only = (opts.tool ?? []).filter((t): t is DevtoolName =>
@@ -79,8 +81,7 @@ export function registerDevtoolsCommand(
         only: only.length ? only : undefined,
       });
 
-      // Auto-enrich when a Cursor key is configured (the user opted in by
-      // storing one); --no-api forces pure-local.
+      // Live usage per account; --no-api forces pure-local.
       if (opts.noApi !== true) await enrichFromApi(report);
 
       if (opts.format === "json") {
@@ -106,8 +107,13 @@ export function registerDevtoolsCommand(
 function registerDoctorCommand(parent: Command, emit: EmitContext): void {
   parent
     .command("doctor")
-    .description("Probe the usage endpoints once each to detect header/schema drift")
-    .option("--tool <name>", "Restrict to a tool (repeatable): claude-code | cursor", collect, [])
+    .description("Probe each usage source once per tool to detect header/schema drift")
+    .option(
+      "--tool <name>",
+      "Restrict to a tool (repeatable): claude-code | codex | cursor",
+      collect,
+      [],
+    )
     .option("--format <type>", "Output format: table, json", "table")
     .action(async (opts: { tool: string[]; format: string }) => {
       const only = (opts.tool ?? []).filter((t): t is DevtoolName =>
@@ -117,7 +123,9 @@ function registerDoctorCommand(parent: Command, emit: EmitContext): void {
       if (opts.format === "json") {
         emit.config({ format: "json" });
         emit.data({
-          ok: results.every((r) => r.outcome === "ok" || r.outcome === "rate_limited"),
+          ok: results.every(
+            (r) => !["auth_rejected", "shape_changed", "unreachable"].includes(r.outcome),
+          ),
           results,
         });
         return;
@@ -136,11 +144,11 @@ const DOCTOR_MARK: Record<ProbeResult["outcome"], string> = {
 };
 
 function renderDoctor(results: ProbeResult[]): string {
-  if (!results.length) return "no probeable endpoints (Codex is local-only)";
+  if (!results.length) return "no probeable sources";
   const lines: string[] = [];
   for (const r of results) {
     lines.push(
-      `${DOCTOR_MARK[r.outcome]} ${r.tool.padEnd(12)} ${r.outcome.padEnd(14)} ${r.detail}`,
+      `${DOCTOR_MARK[r.outcome]} ${r.tool.padEnd(12)} ${r.source.padEnd(17)} ${r.outcome.padEnd(14)} ${r.detail}`,
     );
     lines.push(`   ${r.endpoint}${r.clientVersion ? `  (client ${r.clientVersion})` : ""}`);
   }
@@ -230,47 +238,73 @@ function renderTable(tools: ToolStatus[]): string {
       continue;
     }
     lines.push(`   logged in    ${fmtBool(t.loggedIn)}`);
-    if (t.account) lines.push(`   account      ${t.account}`);
-    if (t.plan) lines.push(`   plan         ${t.plan}`);
-    if (t.rateLimitTier) lines.push(`   rate tier    ${t.rateLimitTier}`);
-    if (t.authExpiresAt) lines.push(`   auth expires ${fmtDate(t.authExpiresAt)}`);
+    if (!t.accounts.length && t.account) lines.push(`   account      ${t.account}`);
     if (t.sessions != null) lines.push(`   sessions     ${t.sessions}`);
     if (t.lastActivity) lines.push(`   last active  ${fmtDate(t.lastActivity)}`);
-    if (t.quota?.length) {
-      for (const q of t.quota) {
-        const pct = q.usedPercent != null ? `${q.usedPercent}% used` : "usage unknown";
-        const reset = q.resetsAt ? `resets ${fmtDate(q.resetsAt)}` : "";
-        lines.push(`   quota (${q.window})   ${pct}${reset ? ` · ${reset}` : ""}`);
-      }
-    }
-    if (t.tokensUsed != null) {
-      lines.push(`   tokens       ${t.tokensUsed.toLocaleString()}`);
-    }
-    if (t.usage) {
-      const u = t.usage;
-      if (u.cycleEnd) {
-        const days = Math.round((Date.parse(u.cycleEnd) - Date.now()) / 86_400_000);
-        lines.push(`   plan resets  ${fmtDate(u.cycleEnd)} (${days}d)`);
-      }
-      const pct = (label: string, v: number | null) => (v != null ? `${label} ${v}%` : null);
-      const bars = [
-        pct("total", u.totalPercentUsed),
-        pct("api", u.apiPercentUsed),
-        pct("first-party", u.firstPartyPercentUsed),
-      ].filter((s): s is string => s != null);
-      if (bars.length) lines.push(`   usage        ${bars.join(" · ")}`);
-    }
-    if (t.spend?.limitCents != null) {
-      const label = t.spend.label.toLowerCase().padEnd(12).slice(0, 12);
-      lines.push(`   ${label} ${fmtUsd(t.spend.usedCents ?? 0)} / ${fmtUsd(t.spend.limitCents)}`);
-    }
+    if (t.tokensUsed != null) lines.push(`   tokens       ${t.tokensUsed.toLocaleString()}`);
     if (t.api?.ok && t.api.cloudAgents) {
       lines.push(`   cloud agents ${t.api.cloudAgents.total} (${t.api.cloudAgents.active} active)`);
     }
+    if (!t.accounts.length && t.quota?.length) {
+      for (const q of t.quota) lines.push(`   ${fmtQuota(q)}`);
+    }
+    for (const a of t.accounts) lines.push(...renderAccount(a));
     for (const n of t.notes) lines.push(`   · ${n}`);
     lines.push("");
   }
   return lines.join("\n").trimEnd();
+}
+
+/** One summary line per account, then its quota/usage detail indented beneath. */
+function renderAccount(a: AccountUsage): string[] {
+  const who = a.email ?? a.id.replace(/^[^:]+:/, "");
+  const state = a.loggedIn ? "signed in" : "signed out";
+  const src = a.source
+    ? `${a.source}${a.stale ? ` (stale${a.asOf ? `, as of ${fmtDate(a.asOf)}` : ""})` : ""}`
+    : "no source";
+  const head = [who, a.plan, a.rateLimitTier && a.rateLimitTier !== a.plan ? a.rateLimitTier : null]
+    .filter(Boolean)
+    .join(" · ");
+  const out = [`   ▸ ${head}  [${state}; ${src}]`];
+  if (a.sourceDetail) out.push(`       via ${a.sourceDetail}`);
+  if (a.stores.length > 1 || !a.sourceDetail) {
+    out.push(
+      `       stores ${a.stores.map((s) => `${s.kind}${s.loggedIn ? "" : " (signed out)"}`).join(", ")}`,
+    );
+  }
+  if (a.authExpiresAt) out.push(`       auth expires ${fmtDate(a.authExpiresAt)}`);
+  for (const q of a.quota ?? []) out.push(`       ${fmtQuota(q)}`);
+  if (a.usage) {
+    const u = a.usage;
+    if (u.cycleEnd) {
+      const days = Math.round((Date.parse(u.cycleEnd) - Date.now()) / 86_400_000);
+      out.push(`       plan resets  ${fmtDate(u.cycleEnd)} (${days}d)`);
+    }
+    const pct = (label: string, v: number | null) => (v != null ? `${label} ${v}%` : null);
+    const bars = [
+      pct("total", u.totalPercentUsed),
+      pct("api", u.apiPercentUsed),
+      pct("first-party", u.firstPartyPercentUsed),
+    ].filter((s): s is string => s != null);
+    if (bars.length) out.push(`       usage        ${bars.join(" · ")}`);
+  }
+  if (a.spend?.limitCents != null) {
+    const label = a.spend.label.toLowerCase().padEnd(12).slice(0, 12);
+    out.push(`       ${label} ${fmtUsd(a.spend.usedCents ?? 0)} / ${fmtUsd(a.spend.limitCents)}`);
+  }
+  if (a.credits?.balance != null && (a.credits.hasCredits || a.credits.unlimited)) {
+    out.push(
+      `       credits      ${a.credits.unlimited ? "unlimited" : a.credits.balance.toLocaleString()}`,
+    );
+  }
+  for (const n of a.notes) out.push(`       · ${n}`);
+  return out;
+}
+
+function fmtQuota(q: QuotaWindow): string {
+  const pct = q.usedPercent != null ? `${q.usedPercent}% used` : "usage unknown";
+  const reset = q.resetsAt ? `resets ${fmtDate(q.resetsAt)}` : "";
+  return `quota (${q.window})   ${pct}${reset ? ` · ${reset}` : ""}`;
 }
 
 function fmtBool(v: boolean | null): string {

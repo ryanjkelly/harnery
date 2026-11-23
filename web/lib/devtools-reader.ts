@@ -39,6 +39,48 @@ export interface SpendStatus {
   limitCents: number | null;
 }
 
+export interface CodexCredits {
+  hasCredits: boolean | null;
+  unlimited: boolean | null;
+  balance: number | null;
+}
+
+export type UsageSource = "direct" | "codex-app-server" | "cliproxy" | "snapshot";
+
+export interface AccountStore {
+  kind:
+    | "claude-dir"
+    | "claude-keychain"
+    | "codex-home"
+    | "cursor-cli"
+    | "cursor-ide"
+    | "cliproxy-file";
+  path: string;
+  loggedIn: boolean;
+  authExpiresAt: string | null;
+}
+
+/** One account found for a tool, with the source that answered for its usage. */
+export interface AccountUsage {
+  id: string;
+  email: string | null;
+  org: string | null;
+  plan: string | null;
+  rateLimitTier: string | null;
+  loggedIn: boolean;
+  authExpiresAt: string | null;
+  stores: AccountStore[];
+  source: UsageSource | null;
+  sourceDetail: string | null;
+  stale: boolean;
+  asOf: string | null;
+  quota: QuotaWindow[] | null;
+  usage: CursorUsage | null;
+  spend: SpendStatus | null;
+  credits: CodexCredits | null;
+  notes: string[];
+}
+
 export interface ToolStatus {
   tool: "claude-code" | "codex" | "cursor";
   installed: boolean;
@@ -54,6 +96,7 @@ export interface ToolStatus {
   api: ApiEnrichment | null;
   usage: CursorUsage | null;
   spend: SpendStatus | null;
+  accounts: AccountUsage[];
   notes: string[];
 }
 

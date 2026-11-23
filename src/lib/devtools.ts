@@ -1,39 +1,59 @@
 import { createHash } from "node:crypto";
 import {
   closeSync,
-  copyFileSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   openSync,
   readdirSync,
   readFileSync,
   readSync,
   renameSync,
-  rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
-import { homedir, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import {
+  type AccountGroup,
+  type AppServerOutcome,
+  type CliproxyConfig,
+  type CliproxyListing,
+  cliproxyApiCall,
+  cursorGlobalVscdb,
+  type DevtoolName,
+  discoverStores,
+  groupAccounts,
+  listCliproxyAuthFiles,
+  matchCliproxyEntry,
+  numOr,
+  readJson,
+  readVscdbItems,
+  resolveCliproxyConfigs,
+  runCodexAppServer,
+  type StoreCandidate,
+  type StoreKind,
+  safeJson,
+  strOr,
+  tokenUsable,
+  withSqlite,
+} from "./devtools-accounts.ts";
+
+export type { DevtoolName, StoreKind } from "./devtools-accounts.ts";
 
 /**
- * `devtools`: read locally-stored state of the AI coding agents harnery
- * supports — Claude Code (`~/.claude`), Codex (`~/.codex`), and Cursor
- * (`~/.cursor`) — into one uniform status shape: login state, plan/tier,
- * auth expiry, session counts, and (where the tool stores them locally)
- * rate-limit / quota windows.
+ * `devtools`: read the state of the AI coding agents harnery supports —
+ * Claude Code, Codex and Cursor — into one uniform status shape: login state,
+ * plan/tier, auth expiry, session counts, and quota / rate-limit windows.
  *
- * Everything here reads files on disk — no network, no vendor API, no
- * credentials leave the machine (auth tokens are inspected for their
- * non-secret claims only; the token strings themselves are never returned).
- * The signals a tool keeps server-side (Cursor usage + billing, Claude's live
- * rate-limit windows) surface as `null` with a note rather than a guess.
+ * Every account signed in anywhere on the machine is reported (ADR 0273):
+ * `readDevtools` discovers and groups account stores from local files only,
+ * and `enrichFromApi` reads each account's live usage from the first source
+ * that answers — the stored token, Codex's own `app-server`, a CLI Proxy API
+ * server, and finally the last local snapshot. Token strings are never placed
+ * on a report, and no token is ever refreshed here.
  *
  * Pure toolkit tier: depends only on `node:*`, never on `src/core/`.
  */
-
-export type DevtoolName = "claude-code" | "codex" | "cursor";
 
 export interface QuotaWindow {
   /** Human label for the reset window (e.g. "5h", "weekly", "45m"). */
@@ -56,10 +76,8 @@ export interface ApiEnrichment {
 }
 
 /**
- * Cursor billing-cycle + usage snapshot, fetched from cursor.com's own dashboard
- * API using the IDE's locally-stored session token — the same call Cursor's UI
- * makes for the Spending page. No API key to mint; it reads what's already on
- * disk. Percentages are 0-100; cent amounts are raw (divide by 100 for dollars).
+ * Cursor billing-cycle + usage snapshot. Percentages are 0-100; cent amounts
+ * are raw (divide by 100 for dollars).
  */
 export interface CursorUsage {
   /** ISO start of the current billing cycle. */
@@ -89,52 +107,92 @@ export interface SpendStatus {
   limitCents: number | null;
 }
 
+/** Codex credit balance (credits beyond the plan's windows). */
+export interface CodexCredits {
+  hasCredits: boolean | null;
+  unlimited: boolean | null;
+  balance: number | null;
+}
+
+/** Which source produced an account's usage figures (ADR 0273 §3). */
+export type UsageSource = "direct" | "codex-app-server" | "cliproxy" | "snapshot";
+
+/** One place an account's credential was found (no token). */
+export interface AccountStore {
+  kind: StoreKind;
+  path: string;
+  loggedIn: boolean;
+  /** ISO expiry of this store's access token, else null. */
+  authExpiresAt: string | null;
+}
+
+/** One signed-in (or recently signed-in) account and its usage. */
+export interface AccountUsage {
+  /** Stable grouping key (`<tool>:<account id>` or `<tool>:<email>|<org>`). */
+  id: string;
+  email: string | null;
+  org: string | null;
+  plan: string | null;
+  rateLimitTier: string | null;
+  /** Any of the account's stores holds a live credential. */
+  loggedIn: boolean;
+  /** ISO expiry of the first live store's access token, else null. */
+  authExpiresAt: string | null;
+  /** Every store the account was found in, own stores first. */
+  stores: AccountStore[];
+  /** The source that answered, or null when none has (yet). */
+  source: UsageSource | null;
+  /** Which store or server answered, e.g. "claude-dir /home/u/.claude_work". */
+  sourceDetail: string | null;
+  /** Figures are older than a live read: a local snapshot or last-known-good cache. */
+  stale: boolean;
+  /** ISO time the figures were read, else null. */
+  asOf: string | null;
+  quota: QuotaWindow[] | null;
+  usage: CursorUsage | null;
+  spend: SpendStatus | null;
+  credits: CodexCredits | null;
+  /** Caveats and per-source failures for this account. */
+  notes: string[];
+}
+
 export interface ToolStatus {
   tool: DevtoolName;
-  /** The tool's config directory exists on this machine. */
+  /** The tool's config directory or an account store exists on this machine. */
   installed: boolean;
-  /** A credential is present and not obviously expired. null when undeterminable. */
+  /** Any account holds a live credential. null when undeterminable. */
   loggedIn: boolean | null;
-  /** Account identifier (email where the tool exposes one), else null. */
+  /** First signed-in account's email, else null. */
   account: string | null;
-  /** Plan / seat tier as the tool records it locally (e.g. "team", "team_tier_1"). */
+  /** First signed-in account's plan / seat tier. */
   plan: string | null;
-  /** Rate-limit tier string where the tool records one, else null. */
+  /** First signed-in account's rate-limit tier, else null. */
   rateLimitTier: string | null;
-  /** ISO expiry of the active access credential, else null. */
+  /** First signed-in account's access-credential expiry, else null. */
   authExpiresAt: string | null;
   /** Count of local session transcripts, else null. */
   sessions: number | null;
   /** ISO timestamp of the most recent local session activity, else null. */
   lastActivity: string | null;
-  /** Locally-known quota/rate-limit windows, or null when the tool keeps them server-side. */
+  /** First signed-in account's quota windows, else null. */
   quota: QuotaWindow[] | null;
   /**
    * Total tokens observed in local transcripts within the scan window
    * (`windowDays`). Codex always reports it — its per-session cumulative total
    * is one tail-read per rollout, cheap enough for every render. Claude Code's
-   * is `--usage`-gated (a full transcript scan, potentially gigabytes) and null
-   * otherwise. Cursor keeps token counts server-side, so it stays null.
+   * is memoized per transcript; `--usage` forces an exact recount. Cursor keeps
+   * token counts server-side, so it stays null.
    */
   tokensUsed: number | null;
-  /**
-   * Result of the optional API enrichment (network), populated by
-   * `enrichFromApi` when a key is configured. `null` when no enrichment ran.
-   */
+  /** Cursor Cloud Agent API enrichment (needs an API key), else null. */
   api: ApiEnrichment | null;
-  /**
-   * Cursor billing-cycle + usage, populated by `enrichFromApi` from the IDE's
-   * own session token (no API key needed). `null` when no enrichment ran, the
-   * token is stale, or the tool isn't Cursor.
-   */
+  /** First signed-in account's Cursor billing-cycle usage, else null. */
   usage: CursorUsage | null;
-  /**
-   * Overage / on-demand dollar spend, populated by `enrichFromApi` (Cursor's
-   * on-demand, Claude's extra-usage credits). `null` when no enrichment ran or
-   * the plan has no overage concept.
-   */
+  /** First signed-in account's overage spend, else null. */
   spend: SpendStatus | null;
-  /** Caveats about what is and isn't derivable locally for this tool. */
+  /** Every account found for this tool, signed-in first. */
+  accounts: AccountUsage[];
+  /** Tool-level caveats (per-account caveats live on each account). */
   notes: string[];
 }
 
@@ -144,9 +202,10 @@ export interface DevtoolsReport {
   tools: ToolStatus[];
 }
 
-/** One endpoint's health, from `probeEndpoints` (the `devtools doctor` check). */
+/** One source's health, from `probeEndpoints` (the `devtools doctor` check). */
 export interface ProbeResult {
   tool: DevtoolName;
+  source: "direct" | "codex-app-server" | "cliproxy";
   endpoint: string;
   /** Client version we put in the request's User-Agent, else null. */
   clientVersion: string | null;
@@ -165,9 +224,9 @@ export interface ProbeResult {
 export interface ReadDevtoolsOpts {
   /** Home directory to resolve tool config against. Defaults to os.homedir(). */
   home?: string;
-  /** Scan transcripts for token totals (opt-in; can be slow). Default false. */
+  /** Force an exact, cache-bypassing Claude transcript recount. Default false. */
   usage?: boolean;
-  /** When scanning usage, only include transcripts modified within N days. Default 7. */
+  /** Token totals only include transcripts modified within N days. Default 7. */
   windowDays?: number;
   /** Clock injection for tests. Default Date.now(). */
   now?: number;
@@ -178,21 +237,7 @@ export interface ReadDevtoolsOpts {
 const ALL_TOOLS: readonly DevtoolName[] = ["claude-code", "codex", "cursor"];
 
 // ---------------------------------------------------------------------------
-// Network enrichment (opt-in)
-//
-// `readDevtools` stays pure-local. `enrichFromApi` adds live signals over the
-// network, each authenticating with the credential the tool already stores on
-// disk — the user's own token reading the user's own data:
-//
-//   • Claude Code — reads the OAuth token from ~/.claude/.credentials.json and
-//     calls api.anthropic.com/api/oauth/usage (the endpoint `/usage` uses) for
-//     the 5h + weekly rate-limit windows and extra-usage spend.
-//   • Cursor usage + billing (NO key needed) — reads the IDE's session token
-//     from state.vscdb and calls cursor.com's dashboard API (the Spending page
-//     request) for the billing cycle + total/API/first-party percent-used.
-//   • Cursor Cloud Agents (needs an API key) — the public /v0 API. Individual
-//     Cursor plans expose no usage/billing there (Team-only), so the key path
-//     only adds Cloud Agent runs.
+// Cursor API key (Cloud Agents)
 // ---------------------------------------------------------------------------
 
 /** Path of the machine-local Cursor API key file (honors XDG_CONFIG_HOME). */
@@ -220,9 +265,7 @@ const CURSOR_AGENT_INACTIVE = new Set(["EXPIRED", "FINISHED", "DELETED", "FAILED
 // So our requests blend in with the tool's own traffic rather than looking like
 // a scraper (a bare fetch would carry a "Bun/…" or "node" User-Agent, which is
 // the anomaly). We send the same first-party client identity the tool sends for
-// the same call — the user's own machine reaching the user's own account. Claude
-// uses a claude-cli UA (built below); Cursor uses its Electron UA (see
-// cursorUserAgent), both embedding the live local version.
+// the same call — the user's own machine reaching the user's own account.
 
 /** Last-resort Claude Code version when no live source is readable. */
 const CLAUDE_CLI_FALLBACK_VERSION = "2.1.0";
@@ -233,35 +276,27 @@ const CLAUDE_CLI_FALLBACK_VERSION = "2.1.0";
  *      transcript (reflects auto-updates immediately),
  *   2. the updater's last-result marker,
  *   3. a constant.
- * Claude Code auto-updates into a versioned install, so the transcript can be
- * ahead of both the bootstrap `package.json` and the updater marker — which is
- * why we read what the client itself reports, not what's on the install path.
  */
-function claudeCodeVersion(home: string): string {
-  const fromTranscript = newestTranscriptVersion(home);
-  if (fromTranscript) return fromTranscript;
-  const marker = readJson<{ version_to?: string }>(
-    join(home, ".claude", ".last-update-result.json"),
-  );
-  return strOr(marker?.version_to) ?? CLAUDE_CLI_FALLBACK_VERSION;
-}
-
-/** Pull the `version` field from the head of the newest session transcript. */
-function newestTranscriptVersion(home: string): string | null {
-  const newest = newestFile(listFilesRecursive(join(home, ".claude", "projects"), ".jsonl"));
-  if (!newest) return null;
-  // The version rides every event, so the head of the file is plenty — avoids
-  // reading a multi-MB transcript in full just to read one field.
-  for (const line of readHead(newest, 65_536).split("\n")) {
-    if (!line.trim()) continue;
-    try {
-      const v = strOr((JSON.parse(line) as { version?: unknown }).version);
-      if (v) return v;
-    } catch {
-      // partial line at the buffer edge — skip
+function claudeCodeVersion(dirs: string[]): string {
+  const newest = newestFile(dirs.flatMap((d) => listFilesRecursive(join(d, "projects"), ".jsonl")));
+  if (newest) {
+    // The version rides every event, so the head of the file is plenty.
+    for (const line of readHead(newest, 65_536).split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        const v = strOr((JSON.parse(line) as { version?: unknown }).version);
+        if (v) return v;
+      } catch {
+        // partial line at the buffer edge — skip
+      }
     }
   }
-  return null;
+  for (const d of dirs) {
+    const marker = readJson<{ version_to?: string }>(join(d, ".last-update-result.json"));
+    const v = strOr(marker?.version_to);
+    if (v) return v;
+  }
+  return CLAUDE_CLI_FALLBACK_VERSION;
 }
 
 /** Read up to `maxBytes` from the start of a file as UTF-8, "" on any error. */
@@ -299,6 +334,10 @@ function readTail(path: string, maxBytes: number): string {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Usage fetch plumbing
+// ---------------------------------------------------------------------------
+
 /**
  * Outcome of a usage fetch. `cooldown` (a 429) tells the cache to back off for
  * `retryAfterMs` so a rate limit can never cascade into repeated hits — the
@@ -307,171 +346,1130 @@ function readTail(path: string, maxBytes: number): string {
 type FetchOutcome<T> =
   | { kind: "ok"; data: T }
   | { kind: "cooldown"; retryAfterMs: number }
-  | { kind: "fail" };
+  | { kind: "fail"; reason: string };
+
+/** Usage figures one source returns (cached as-is). */
+interface UsageData {
+  quota?: QuotaWindow[] | null;
+  spend?: SpendStatus | null;
+  usage?: CursorUsage | null;
+  plan?: string | null;
+  credits?: CodexCredits | null;
+  notes?: string[];
+}
 
 /** Short, non-reversible fingerprint of a token, for per-account cache keys. */
 function tokenFingerprint(token: string): string {
   return createHash("sha256").update(token).digest("hex").slice(0, 12);
 }
 
+/** GET/POST returning parsed JSON as a FetchOutcome (429 → cooldown). */
+async function httpJson(
+  fetchImpl: typeof fetch,
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<FetchOutcome<unknown>> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetchImpl(url, { ...init, signal: controller.signal });
+    if (res.status === 429) return { kind: "cooldown", retryAfterMs: retryAfterMs(res) };
+    if (!res.ok) return { kind: "fail", reason: `HTTP ${res.status}` };
+    try {
+      return { kind: "ok", data: await res.json() };
+    } catch {
+      return { kind: "fail", reason: "response was not JSON" };
+    }
+  } catch (err) {
+    return { kind: "fail", reason: err instanceof Error ? err.message : String(err) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Map a raw outcome through a parser; a null parse is a shape change. */
+async function parsed<T>(
+  raw: Promise<FetchOutcome<unknown>>,
+  parse: (json: unknown) => T | null,
+): Promise<FetchOutcome<T>> {
+  const o = await raw;
+  if (o.kind !== "ok") return o;
+  const data = parse(o.data);
+  return data ? { kind: "ok", data } : { kind: "fail", reason: "unexpected response shape" };
+}
+
+/** Make a vendor request through CLI Proxy's management `api-call`. */
+async function viaCliproxy(
+  listing: Extract<CliproxyListing, { ok: true }>,
+  cfg: CliproxyConfig,
+  authIndex: string,
+  req: { method: string; url: string; header: Record<string, string> },
+  fetchImpl: typeof fetch,
+  timeoutMs: number,
+): Promise<FetchOutcome<unknown>> {
+  const r = await cliproxyApiCall(listing.baseUrl, cfg.key, authIndex, req, fetchImpl, timeoutMs);
+  if (!r.ok) return { kind: "fail", reason: r.reason };
+  const sc = r.result.statusCode;
+  if (sc === 429) return { kind: "cooldown", retryAfterMs: r.result.retryAfterMs ?? 60_000 };
+  if (sc < 200 || sc >= 300) return { kind: "fail", reason: `vendor HTTP ${sc} via CLI Proxy` };
+  return { kind: "ok", data: r.result.body };
+}
+
+interface CacheRead<T> {
+  data: T | null;
+  /** Fresh within the TTL or just fetched. */
+  live: boolean;
+  /** When `data` was fetched (ms epoch), else null. */
+  at: number | null;
+  /** Why no live data, when not live. */
+  reason: string | null;
+}
+
+interface UsageCacheEntry<T> {
+  /** When `data` was last fetched (ms epoch). */
+  at: number;
+  /** Last-known-good result, or null if a fetch never succeeded. */
+  data: T | null;
+  /** If set and still in the future, do not call the endpoint (rate-limit backoff). */
+  cooldownUntil?: number;
+}
+
 /**
- * Enrich a report's entries over the network with live usage each tool keeps
- * server-side, authenticating with the credential already on disk. Best-effort
- * and network-guarded: every failure degrades to a note, never throws. No-op
- * for a tool that isn't installed / present in the report.
+ * Wrap a usage fetch in an on-disk cache under `<home>/.cache/harnery/devtools/
+ * <name>.json`, protecting rate-limited endpoints on three fronts:
+ *
+ *   • Fresh success (`< ttlMs` old) short-circuits the network entirely.
+ *   • A 429 records a `cooldownUntil` from the server's retry-after, and no call
+ *     is made until it passes — so a rate limit can't cascade into a hammer loop.
+ *   • Any other failure keeps the last-known-good value for the caller to fall
+ *     back on (marked not live), and retries next time.
+ *
+ * Best-effort: read/write errors fall back to a live fetch. `ttlMs <= 0` fetches
+ * every call (still honoring a cooldown) and skips writes.
+ */
+async function cachedUsage<T>(
+  home: string,
+  name: string,
+  ttlMs: number,
+  fetcher: () => Promise<FetchOutcome<T>>,
+): Promise<CacheRead<T>> {
+  const now = Date.now();
+  const dir = join(home, ".cache", "harnery", "devtools");
+  const file = join(dir, `${name}.json`);
+
+  let entry: UsageCacheEntry<T> | null = null;
+  try {
+    entry = JSON.parse(readFileSync(file, "utf8")) as UsageCacheEntry<T>;
+  } catch {
+    // no cache / unreadable
+  }
+  const stale = (reason: string): CacheRead<T> => ({
+    data: entry?.data ?? null,
+    live: false,
+    at: entry?.data != null ? entry.at : null,
+    reason,
+  });
+  if (entry?.data != null && ttlMs > 0 && now - entry.at < ttlMs) {
+    return { data: entry.data, live: true, at: entry.at, reason: null };
+  }
+  if (entry?.cooldownUntil != null && now < entry.cooldownUntil) {
+    return stale(`rate-limited; retry in ${Math.ceil((entry.cooldownUntil - now) / 1000)}s`);
+  }
+
+  const outcome = await fetcher();
+  const write = (e: UsageCacheEntry<T>) => {
+    try {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(file, JSON.stringify(e));
+    } catch {
+      // cache write is best-effort
+    }
+  };
+
+  if (outcome.kind === "ok") {
+    if (ttlMs > 0) write({ at: now, data: outcome.data });
+    return { data: outcome.data, live: true, at: now, reason: null };
+  }
+  if (outcome.kind === "cooldown") {
+    write({
+      at: entry?.at ?? now,
+      data: entry?.data ?? null,
+      cooldownUntil: now + outcome.retryAfterMs,
+    });
+    return stale(`rate-limited (429); retry in ${Math.round(outcome.retryAfterMs / 1000)}s`);
+  }
+  return stale(outcome.reason);
+}
+
+/** Parse a `Retry-After` header (seconds) to ms; default 60s when absent/unparseable. */
+function retryAfterMs(res: Response): number {
+  const raw = res.headers.get("retry-after");
+  const secs = raw != null ? Number.parseInt(raw, 10) : Number.NaN;
+  return (Number.isFinite(secs) && secs > 0 ? secs : 60) * 1000;
+}
+
+// ---------------------------------------------------------------------------
+// Claude Code usage endpoint
+// ---------------------------------------------------------------------------
+
+/** Statuses in the oauth/usage `limits[]` array, mapped to quota-window labels. */
+const CLAUDE_LIMIT_LABELS: Record<string, string> = {
+  session: "5h",
+  weekly_all: "weekly",
+  weekly_scoped: "weekly",
+};
+
+const CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
+
+/** Headers the `/usage` command sends (token substituted by the caller or the proxy). */
+function claudeUsageHeaders(bearer: string, version: string): Record<string, string> {
+  return {
+    Authorization: `Bearer ${bearer}`,
+    "anthropic-beta": "oauth-2025-04-20",
+    "anthropic-version": "2023-06-01",
+    "User-Agent": `claude-cli/${version} (external, cli)`,
+    "x-app": "cli",
+  };
+}
+
+type FlatWindow = { utilization?: number; resets_at?: string } | null | undefined;
+
+/** Parse an oauth/usage body into quota windows + extra-usage spend; null on a foreign shape. */
+function parseClaudeUsage(json: unknown): UsageData | null {
+  const raw = json as {
+    limits?: Array<{
+      kind?: string;
+      percent?: number;
+      resets_at?: string;
+      scope?: { model?: { display_name?: string } } | null;
+    }>;
+    five_hour?: FlatWindow;
+    seven_day?: FlatWindow;
+    seven_day_opus?: FlatWindow;
+    seven_day_sonnet?: FlatWindow;
+    spend?: {
+      used?: { amount_minor?: number; exponent?: number };
+      limit?: { amount_minor?: number; exponent?: number };
+      enabled?: boolean;
+    };
+  } | null;
+  if (!raw || typeof raw !== "object") return null;
+  if (!Array.isArray(raw.limits) && raw.five_hour == null && raw.seven_day == null) return null;
+
+  // Prefer the structured limits[] array (carries model-scoped windows); fall
+  // back to the flat five_hour / seven_day pair plus any named weekly windows.
+  let quota: QuotaWindow[] = [];
+  if (Array.isArray(raw.limits) && raw.limits.length) {
+    quota = raw.limits.map((l) => {
+      const model = strOr(l.scope?.model?.display_name);
+      const base = l.kind ? (CLAUDE_LIMIT_LABELS[l.kind] ?? l.kind) : "quota";
+      return {
+        window: model ? `${base} · ${model}` : base,
+        usedPercent: roundPct(l.percent),
+        resetsAt: isoOrNull(l.resets_at),
+      };
+    });
+  } else {
+    const flat: Array<[string, FlatWindow]> = [
+      ["5h", raw.five_hour],
+      ["weekly", raw.seven_day],
+    ];
+    quota = flat
+      .filter(([, w]) => w?.utilization != null)
+      .map(([label, w]) => ({
+        window: label,
+        usedPercent: roundPct(w?.utilization),
+        resetsAt: isoOrNull(w?.resets_at),
+      }));
+  }
+  const named: Array<[string, FlatWindow]> = [
+    ["Opus", raw.seven_day_opus],
+    ["Sonnet", raw.seven_day_sonnet],
+  ];
+  for (const [model, w] of named) {
+    if (w?.utilization == null) continue;
+    if (quota.some((q) => q.window.includes(model))) continue;
+    quota.push({
+      window: `weekly · ${model}`,
+      usedPercent: roundPct(w.utilization),
+      resetsAt: isoOrNull(w.resets_at),
+    });
+  }
+
+  let spend: SpendStatus | null = null;
+  const sp = raw.spend;
+  if (sp?.enabled && (minorToCents(sp.used) != null || minorToCents(sp.limit) != null)) {
+    spend = {
+      label: "Extra usage",
+      usedCents: minorToCents(sp.used),
+      limitCents: minorToCents(sp.limit),
+    };
+  }
+  return { quota, spend };
+}
+
+/** Convert an {amount_minor, exponent} money value to cents (exponent 2 = already cents). */
+function minorToCents(m: { amount_minor?: number; exponent?: number } | undefined): number | null {
+  const minor = numOr(m?.amount_minor);
+  if (minor == null) return null;
+  const exp = numOr(m?.exponent) ?? 2;
+  return Math.round(minor * 10 ** (2 - exp));
+}
+
+/** Normalize an ISO-ish timestamp (may carry a +00:00 offset) to a Z-suffixed ISO, or null. */
+function isoOrNull(s: string | undefined): string | null {
+  if (!s) return null;
+  const t = Date.parse(s);
+  return Number.isNaN(t) ? null : new Date(t).toISOString();
+}
+
+// ---------------------------------------------------------------------------
+// Codex usage
+// ---------------------------------------------------------------------------
+
+const CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
+
+function codexUsageHeaders(bearer: string, accountId: string | null): Record<string, string> {
+  const h: Record<string, string> = {
+    Authorization: `Bearer ${bearer}`,
+    "User-Agent": "codex_cli_rs",
+    originator: "codex_cli_rs",
+  };
+  if (accountId) h["ChatGPT-Account-Id"] = accountId;
+  return h;
+}
+
+/** Parse `wham/usage` into quota windows, plan and credits; null on a foreign shape. */
+function parseCodexUsage(json: unknown): UsageData | null {
+  type Win = { used_percent?: number; limit_window_seconds?: number; reset_at?: number } | null;
+  const raw = json as {
+    plan_type?: string;
+    rate_limit?: { primary_window?: Win; secondary_window?: Win } | null;
+    credits?: { has_credits?: boolean; unlimited?: boolean; balance?: string | number } | null;
+    rate_limit_reached_type?: string | null;
+  } | null;
+  if (!raw || typeof raw !== "object" || !("rate_limit" in raw)) return null;
+  const win = (w: Win | undefined): QuotaWindow | null => {
+    if (!w) return null;
+    const secs = numOr(w.limit_window_seconds);
+    const reset = numOr(w.reset_at);
+    return {
+      window: windowLabel(secs != null ? Math.round(secs / 60) : null),
+      usedPercent: roundPct(w.used_percent),
+      resetsAt: reset ? new Date(reset * 1000).toISOString() : null,
+    };
+  };
+  const quota = [win(raw.rate_limit?.primary_window), win(raw.rate_limit?.secondary_window)].filter(
+    (q): q is QuotaWindow => q !== null,
+  );
+  const reached = strOr(raw.rate_limit_reached_type);
+  return {
+    quota,
+    plan: strOr(raw.plan_type),
+    credits: raw.credits
+      ? {
+          hasCredits: typeof raw.credits.has_credits === "boolean" ? raw.credits.has_credits : null,
+          unlimited: typeof raw.credits.unlimited === "boolean" ? raw.credits.unlimited : null,
+          balance: toNum(raw.credits.balance),
+        }
+      : null,
+    notes: reached ? [`rate limit reached (${reached} window)`] : [],
+  };
+}
+
+/** Parse the `account/rateLimits/read` result of `codex app-server`. */
+function parseAppServerLimits(json: unknown): UsageData | null {
+  type Win = { usedPercent?: number; windowDurationMins?: number; resetsAt?: number } | null;
+  const rl = (json as { rateLimits?: Record<string, unknown> } | null)?.rateLimits as
+    | {
+        primary?: Win;
+        secondary?: Win;
+        planType?: string;
+        credits?: { hasCredits?: boolean; unlimited?: boolean; balance?: string | number } | null;
+        rateLimitReachedType?: string | null;
+      }
+    | undefined;
+  if (!rl) return null;
+  const win = (w: Win | undefined): QuotaWindow | null => {
+    if (!w) return null;
+    const reset = numOr(w.resetsAt);
+    return {
+      window: windowLabel(numOr(w.windowDurationMins)),
+      usedPercent: roundPct(w.usedPercent),
+      resetsAt: reset ? new Date(reset * 1000).toISOString() : null,
+    };
+  };
+  const reached = strOr(rl.rateLimitReachedType);
+  return {
+    quota: [win(rl.primary), win(rl.secondary)].filter((q): q is QuotaWindow => q !== null),
+    plan: strOr(rl.planType),
+    credits: rl.credits
+      ? {
+          hasCredits: typeof rl.credits.hasCredits === "boolean" ? rl.credits.hasCredits : null,
+          unlimited: typeof rl.credits.unlimited === "boolean" ? rl.credits.unlimited : null,
+          balance: toNum(rl.credits.balance),
+        }
+      : null,
+    notes: reached ? [`rate limit reached (${reached} window)`] : [],
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Cursor usage
+// ---------------------------------------------------------------------------
+
+// Cursor is an Electron app; its embedded browser presents a VS Code-style UA.
+// The Chromium/Electron pair is cosmetic (tracks Cursor's VS Code base); the
+// identifying `Cursor/<version>` part is the live local version.
+const CURSOR_CHROMIUM = "132.0.6834.210";
+const CURSOR_ELECTRON = "34.5.8";
+
+/** Cursor Electron client User-Agent, embedding the live app version. */
+function cursorUserAgent(version: string | null): string {
+  const ver = version ?? "0.0.0";
+  return `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Cursor/${ver} Chrome/${CURSOR_CHROMIUM} Electron/${CURSOR_ELECTRON} Safari/537.36`;
+}
+
+/** Cursor's API usage route (bearer token; the IDE's opaque token and the CLI JWT both work). */
+const CURSOR_API_USAGE_URL =
+  "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage";
+/** cursor.com's dashboard route (session cookie). Kept as the secondary path. */
+const CURSOR_USAGE_URL = "https://cursor.com/api/dashboard/get-current-period-usage";
+
+function cursorApiRequest(token: string, version: string | null): RequestInit {
+  return {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+      "Connect-Protocol-Version": "1",
+      "User-Agent": cursorUserAgent(version),
+    },
+    body: "{}",
+  };
+}
+
+/**
+ * The cursor.com request: the WorkOS session cookie (`<userId>::<token>`) plus
+ * the browser-consistent Origin/Referer cursor.com requires.
+ */
+function cursorCookieRequest(userId: string, token: string, version: string | null): RequestInit {
+  const cookie = `WorkosCursorSessionToken=${encodeURIComponent(`${userId}::${token}`)}`;
+  return {
+    method: "POST",
+    headers: {
+      Cookie: cookie,
+      "Content-Type": "application/json",
+      Origin: "https://cursor.com",
+      Referer: "https://cursor.com/dashboard/spending",
+      "User-Agent": cursorUserAgent(version),
+    },
+    body: "{}",
+  };
+}
+
+/** Parse the current-period usage body (same shape on both routes). */
+function parseCursorUsage(json: unknown): UsageData | null {
+  const raw = json as {
+    billingCycleStart?: string | number;
+    billingCycleEnd?: string | number;
+    planUsage?: {
+      totalPercentUsed?: number;
+      apiPercentUsed?: number;
+      autoPercentUsed?: number;
+      limit?: number;
+    };
+    spendLimitUsage?: { individualLimit?: number; individualRemaining?: number };
+  } | null;
+  if (!raw || typeof raw !== "object") return null;
+  if (raw.planUsage == null && raw.billingCycleEnd == null) return null;
+  const pu = raw.planUsage ?? {};
+  const sl = raw.spendLimitUsage ?? {};
+  const spendLimit = numOr(sl.individualLimit);
+  const spendRemaining = numOr(sl.individualRemaining);
+  return {
+    usage: {
+      cycleStart: msToIso(raw.billingCycleStart),
+      cycleEnd: msToIso(raw.billingCycleEnd),
+      totalPercentUsed: roundPct(pu.totalPercentUsed),
+      apiPercentUsed: roundPct(pu.apiPercentUsed),
+      firstPartyPercentUsed: roundPct(pu.autoPercentUsed),
+      includedLimitCents: numOr(pu.limit),
+    },
+    spend:
+      spendLimit != null
+        ? {
+            label: "On-demand",
+            usedCents: spendRemaining != null ? spendLimit - spendRemaining : null,
+            limitCents: spendLimit,
+          }
+        : null,
+  };
+}
+
+/** Parse a ms-epoch value (string or number) to ISO, or null. */
+function msToIso(v: string | number | undefined): string | null {
+  const n = typeof v === "string" ? Number.parseInt(v, 10) : v;
+  if (n == null || !Number.isFinite(n) || n <= 0) return null;
+  return new Date(n).toISOString();
+}
+
+/** Clamp a percentage to one decimal place, or null. */
+function roundPct(v: number | undefined): number | null {
+  if (v == null || !Number.isFinite(v)) return null;
+  return Math.round(v * 10) / 10;
+}
+
+function toNum(v: unknown): number | null {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string") {
+    const n = Number.parseFloat(v);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+async function fetchCursorApi(
+  key: string,
+  userAgent: string,
+  timeoutMs: number,
+  fetchImpl: typeof fetch,
+): Promise<ApiEnrichment> {
+  const out: ApiEnrichment = { ok: false, keyName: null, cloudAgents: null, error: null };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const get = async (path: string): Promise<unknown> => {
+    const res = await fetchImpl(`https://api.cursor.com${path}`, {
+      headers: { Authorization: `Bearer ${key}`, "User-Agent": userAgent },
+      signal: controller.signal,
+    });
+    if (!res.ok) throw new Error(`${path} → HTTP ${res.status}`);
+    return res.json();
+  };
+  try {
+    const me = (await get("/v0/me")) as { apiKeyName?: string; userEmail?: string };
+    out.ok = true;
+    out.keyName = strOr(me.apiKeyName);
+    try {
+      const data = (await get("/v0/agents")) as { agents?: Array<{ status?: string }> };
+      const list = Array.isArray(data.agents) ? data.agents : [];
+      out.cloudAgents = {
+        total: list.length,
+        active: list.filter((a) => a.status && !CURSOR_AGENT_INACTIVE.has(a.status)).length,
+      };
+    } catch {
+      // /v0/me worked but agents listing failed; key is still valid
+    }
+  } catch (err) {
+    out.ok = false;
+    out.error = err instanceof Error ? err.message : String(err);
+  } finally {
+    clearTimeout(timer);
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Network enrichment: the per-account source chain (ADR 0273 §3)
+// ---------------------------------------------------------------------------
+
+export interface EnrichOpts {
+  /** Cursor API key for the Cloud Agent enrichment; undefined resolves it, null skips. */
+  cursorKey?: string | null;
+  timeoutMs?: number;
+  home?: string;
+  /** Cache TTL for the usage endpoints (ms). 0 disables caching. Default 5 min. */
+  cacheTtlMs?: number;
+  /** fetch implementation (tests). Defaults to the global fetch at call time. */
+  fetch?: typeof fetch;
+  /**
+   * Codex app-server runner. Defaults to launching `codex app-server` for the
+   * real home only, so a synthetic test home never starts a process. null skips.
+   */
+  codexAppServer?: ((codexHome: string) => Promise<AppServerOutcome>) | null;
+  /** CLI Proxy settings; undefined resolves them (env, file, app settings), null skips. */
+  cliproxy?: CliproxyConfig[] | null;
+}
+
+interface ChainContext {
+  home: string;
+  timeoutMs: number;
+  ttl: number;
+  fetchImpl: typeof fetch;
+  appServer: ((codexHome: string) => Promise<AppServerOutcome>) | null;
+  proxies: CliproxyConfig[];
+  listings: () => Promise<Array<{ cfg: CliproxyConfig; listing: CliproxyListing }>>;
+  claudeVersion: () => string;
+}
+
+/**
+ * Enrich a report with each account's live usage, trying the sources in order
+ * and stopping at the first that answers: the account's stored tokens (own
+ * stores first, then CLI Proxy files; expired tokens skipped), Codex's own
+ * `app-server`, CLI Proxy's management `api-call`, and finally the local
+ * snapshot or last-known-good cache. Every failure degrades to a note, never
+ * throws. Tokens are never refreshed and never placed on the report.
  */
 export async function enrichFromApi(
   report: DevtoolsReport,
-  opts: {
-    cursorKey?: string | null;
-    timeoutMs?: number;
-    home?: string;
-    /** Cache TTL for the usage endpoints (ms). 0 disables caching. Default 120s. */
-    cacheTtlMs?: number;
-  } = {},
+  opts: EnrichOpts = {},
 ): Promise<DevtoolsReport> {
   const home = opts.home ?? homedir();
+  const includeHost = home === homedir();
   const timeoutMs = opts.timeoutMs ?? 12_000;
-  // 5-minute cache. The usage windows move slowly, and this is the hard cap on
-  // how often we touch a rate-limited endpoint no matter how often the dashboard
-  // re-renders — the page can refresh every couple seconds and still hit the
-  // network at most once per tool per 5 minutes.
-  const cacheTtlMs = opts.cacheTtlMs ?? 300_000;
+  const fetchImpl = opts.fetch ?? ((...a: Parameters<typeof fetch>) => globalThis.fetch(...a));
+  const tools = report.tools.filter((t) => t.installed).map((t) => t.tool);
+  if (!tools.length) return report;
 
-  // Claude Code — 5h + weekly windows and extra-usage spend from oauth/usage.
-  // Cached per-account, because that endpoint is aggressively rate-limited and
-  // Claude Code's OWN "Account & Usage" panel hits it too — a chatty dashboard
-  // would starve it. Keying by token fingerprint means switching accounts shows
-  // the new account's numbers at once instead of the previous account's cache.
-  const claude = report.tools.find((t) => t.tool === "claude-code");
-  if (claude?.installed) {
-    const token = readClaudeOauthToken(home);
-    if (token) {
-      const live = await cachedUsage(
-        home,
-        `claude-usage-${tokenFingerprint(token)}`,
-        cacheTtlMs,
-        () => fetchClaudeUsage(token, claudeCodeVersion(home), timeoutMs),
+  const stores = discoverStores({ home, includeHost, only: tools });
+  const groups = new Map(groupAccounts(stores).map((g) => [g.identity.key, g]));
+  const proxies =
+    opts.cliproxy === undefined
+      ? resolveCliproxyConfigs({ home, includeHost })
+      : (opts.cliproxy ?? []);
+  let listingsP: Promise<Array<{ cfg: CliproxyConfig; listing: CliproxyListing }>> | null = null;
+  let claudeVer: string | null = null;
+  const ctx: ChainContext = {
+    home,
+    timeoutMs,
+    ttl: opts.cacheTtlMs ?? 300_000,
+    fetchImpl: fetchImpl as typeof fetch,
+    appServer:
+      opts.codexAppServer !== undefined
+        ? opts.codexAppServer
+        : includeHost
+          ? (codexHome) => runCodexAppServer(codexHome)
+          : null,
+    proxies,
+    listings: () => {
+      listingsP ??= Promise.all(
+        proxies.map(async (cfg) => ({
+          cfg,
+          listing: await listCliproxyAuthFiles(
+            cfg,
+            fetchImpl as typeof fetch,
+            Math.min(timeoutMs, 4_000),
+          ),
+        })),
       );
-      if (live) {
-        claude.quota = live.quota;
-        claude.spend = live.spend;
-        // Drop the pure-local "quota is server-side" caveat now that it's filled.
-        claude.notes = claude.notes.filter((n) => !n.includes("server-side via /usage"));
-      } else {
-        claude.notes.push("live usage unavailable (rate-limited or token stale; retries shortly)");
-      }
+      return listingsP;
+    },
+    claudeVersion: () => {
+      claudeVer ??= claudeCodeVersion(
+        stores
+          .filter((s) => s.storeKind === "claude-dir" && !onWindowsMount(s.path))
+          .map((s) => s.path),
+      );
+      return claudeVer;
+    },
+  };
+
+  const jobs: Promise<void>[] = [];
+  for (const t of report.tools) {
+    if (!t.installed) continue;
+    for (const acct of t.accounts) {
+      const g = groups.get(acct.id);
+      if (g) jobs.push(resolveAccountUsage(t.tool, acct, g, ctx));
     }
   }
+  await Promise.all(jobs);
 
-  const cursor = report.tools.find((t) => t.tool === "cursor");
-  if (!cursor?.installed) return report;
-
-  // Cursor usage + billing from the IDE's own session token (no API key needed).
-  const auth = readCursorSessionAuth(home);
-  if (auth) {
-    const usage = await cachedUsage(
-      home,
-      `cursor-usage-${tokenFingerprint(auth.token)}`,
-      cacheTtlMs,
-      () => fetchCursorUsage(auth, timeoutMs),
-    );
-    if (usage) {
-      cursor.usage = usage.usage;
-      cursor.spend = usage.spend;
-    } else {
-      cursor.notes.push("Cursor usage unavailable (session token may be stale — reopen Cursor)");
+  for (const t of report.tools) {
+    if (!t.installed) continue;
+    rollUp(t);
+    const primary = primaryAccount(t);
+    if (t.tool === "claude-code" && primary) {
+      if (primary.quota != null) {
+        // Drop the pure-local "quota is server-side" caveat now that it's filled.
+        t.notes = t.notes.filter((n) => !n.includes("server-side via /usage"));
+      } else if (primary.stores.some((s) => s.loggedIn)) {
+        t.notes.push("live usage unavailable (rate-limited or token stale; retries shortly)");
+      }
+    }
+    if (t.tool === "codex" && primary?.quota?.length) {
+      t.notes = t.notes.filter((n) => !n.startsWith("no local rate-limit snapshot"));
+    }
+    if (t.tool === "cursor" && primary && primary.usage == null) {
+      t.notes.push("Cursor usage unavailable (no usable token answered; sign in to Cursor again)");
     }
   }
 
   // Cursor Cloud Agent activity from a configured API key (optional, separate auth).
-  const key = opts.cursorKey !== undefined ? opts.cursorKey : resolveCursorApiKey();
-  if (key) {
-    cursor.api = await fetchCursorApi(key, cursorUserAgent(auth?.version ?? null), timeoutMs);
-    // On success the structured `api` fields carry the signal; only note a break.
-    if (!cursor.api.ok) {
-      cursor.notes.unshift(`API key configured but not usable: ${cursor.api.error ?? "unknown"}`);
+  const cursor = report.tools.find((t) => t.tool === "cursor");
+  if (cursor?.installed) {
+    const key = opts.cursorKey !== undefined ? opts.cursorKey : resolveCursorApiKey();
+    if (key) {
+      const version = stores.find((s) => s.tool === "cursor" && s.clientVersion)?.clientVersion;
+      cursor.api = await fetchCursorApi(
+        key,
+        cursorUserAgent(version ?? null),
+        timeoutMs,
+        fetchImpl as typeof fetch,
+      );
+      if (!cursor.api.ok) {
+        cursor.notes.unshift(`API key configured but not usable: ${cursor.api.error ?? "unknown"}`);
+      }
     }
   }
   return report;
 }
 
+/** True when a path sits on the Windows side of a WSL machine. */
+function onWindowsMount(p: string): boolean {
+  return /^\/mnt\/[a-z]\//.test(p);
+}
+
+async function resolveAccountUsage(
+  tool: DevtoolName,
+  acct: AccountUsage,
+  group: AccountGroup,
+  ctx: ChainContext,
+): Promise<void> {
+  const now = Date.now();
+  const attempts: string[] = [];
+  let fallback: { data: UsageData; source: UsageSource; detail: string; at: number } | null = null;
+
+  const tryOne = async (
+    source: UsageSource,
+    detail: string,
+    cacheName: string,
+    fetcher: () => Promise<FetchOutcome<UsageData>>,
+  ): Promise<boolean> => {
+    const r = await cachedUsage(ctx.home, cacheName, ctx.ttl, fetcher);
+    if (r.live && r.data) {
+      applyUsage(acct, r.data, source, detail, r.at ?? now, false);
+      return true;
+    }
+    if (r.data && r.at != null && (!fallback || r.at > fallback.at)) {
+      fallback = { data: r.data, source, detail, at: r.at };
+    }
+    attempts.push(`${source} (${detail}): ${r.reason ?? "no data"}`);
+    return false;
+  };
+  const done = () => {
+    if (attempts.length) acct.notes.push(...attempts);
+  };
+
+  // 1. Direct, with each stored token that has not expired.
+  for (const s of group.stores) {
+    if (!s.accessToken) continue;
+    const label = storeLabel(s);
+    if (!tokenUsable(s, now)) {
+      attempts.push(`direct (${label}): token expired, skipped`);
+      continue;
+    }
+    const token = s.accessToken;
+    const fp = tokenFingerprint(token);
+    let ok = false;
+    if (tool === "claude-code") {
+      ok = await tryOne("direct", label, `claude-usage-${fp}`, () =>
+        parsed(
+          httpJson(
+            ctx.fetchImpl,
+            CLAUDE_USAGE_URL,
+            { headers: claudeUsageHeaders(token, ctx.claudeVersion()) },
+            ctx.timeoutMs,
+          ),
+          parseClaudeUsage,
+        ),
+      );
+    } else if (tool === "codex") {
+      ok = await tryOne("direct", label, `codex-usage-${fp}`, () =>
+        parsed(
+          httpJson(
+            ctx.fetchImpl,
+            CODEX_USAGE_URL,
+            { headers: codexUsageHeaders(token, group.identity.accountId) },
+            ctx.timeoutMs,
+          ),
+          parseCodexUsage,
+        ),
+      );
+    } else {
+      ok = await tryOne("direct", label, `cursor-api-usage-${fp}`, () =>
+        parsed(
+          httpJson(
+            ctx.fetchImpl,
+            CURSOR_API_USAGE_URL,
+            cursorApiRequest(token, s.clientVersion),
+            ctx.timeoutMs,
+          ),
+          parseCursorUsage,
+        ),
+      );
+    }
+    if (ok) return done();
+  }
+
+  // Cursor's secondary direct route: the cursor.com session cookie.
+  if (tool === "cursor" && group.identity.accountId) {
+    const userId = group.identity.accountId;
+    for (const s of group.stores) {
+      if (!s.accessToken || !tokenUsable(s, now)) continue;
+      const token = s.accessToken;
+      const ok = await tryOne(
+        "direct",
+        `${storeLabel(s)}, cursor.com cookie`,
+        `cursor-usage-${tokenFingerprint(token)}`,
+        () =>
+          parsed(
+            httpJson(
+              ctx.fetchImpl,
+              CURSOR_USAGE_URL,
+              cursorCookieRequest(userId, token, s.clientVersion),
+              ctx.timeoutMs,
+            ),
+            parseCursorUsage,
+          ),
+      );
+      if (ok) return done();
+    }
+  }
+
+  // 2. Codex's own usage command, with CODEX_HOME set to the account's store.
+  // Only stores on this side of a WSL machine: a Linux Codex must not rewrite a
+  // Windows-side store.
+  if (tool === "codex" && ctx.appServer) {
+    const run = ctx.appServer;
+    for (const s of group.stores) {
+      if (s.storeKind !== "codex-home" || onWindowsMount(s.path)) continue;
+      const ok = await tryOne(
+        "codex-app-server",
+        s.path,
+        `codex-app-server-${tokenFingerprint(resolve(s.path))}`,
+        async () => {
+          const o = await run(s.path);
+          if (!o.ok) return { kind: "fail", reason: o.reason };
+          const data = parseAppServerLimits(o.result);
+          return data ? { kind: "ok", data } : { kind: "fail", reason: "unexpected result shape" };
+        },
+      );
+      if (ok) return done();
+    }
+  }
+
+  // 3. CLI Proxy management api-call.
+  if (tool !== "cursor") {
+    if (!ctx.proxies.length) attempts.push("cliproxy: not configured");
+    for (const { cfg, listing } of await ctx.listings()) {
+      if (!listing.ok) {
+        attempts.push(`cliproxy: ${listing.reason}`);
+        continue;
+      }
+      const entry = matchCliproxyEntry(group, listing.files);
+      if (!entry) {
+        attempts.push(`cliproxy (${listing.baseUrl}): account not proxied`);
+        continue;
+      }
+      const req =
+        tool === "claude-code"
+          ? {
+              method: "GET",
+              url: CLAUDE_USAGE_URL,
+              header: claudeUsageHeaders("$TOKEN$", ctx.claudeVersion()),
+            }
+          : {
+              method: "GET",
+              url: CODEX_USAGE_URL,
+              header: codexUsageHeaders("$TOKEN$", entry.accountId ?? group.identity.accountId),
+            };
+      const ok = await tryOne(
+        "cliproxy",
+        listing.baseUrl,
+        `cliproxy-${tool}-${entry.authIndex}`,
+        () =>
+          parsed(
+            viaCliproxy(listing, cfg, entry.authIndex, req, ctx.fetchImpl, ctx.timeoutMs),
+            tool === "claude-code" ? parseClaudeUsage : parseCodexUsage,
+          ),
+      );
+      if (ok) return done();
+    }
+  }
+
+  // 4. Last known figures: the newer of a cached answer and the local snapshot.
+  const fb = fallback as {
+    data: UsageData;
+    source: UsageSource;
+    detail: string;
+    at: number;
+  } | null;
+  const snapAt = acct.source === "snapshot" && acct.asOf ? Date.parse(acct.asOf) : null;
+  if (fb && (snapAt == null || fb.at > snapAt)) {
+    applyUsage(acct, fb.data, fb.source, fb.detail, fb.at, true);
+  }
+  done();
+}
+
+function storeLabel(s: StoreCandidate): string {
+  return `${s.storeKind} ${s.path}`;
+}
+
+function applyUsage(
+  acct: AccountUsage,
+  data: UsageData,
+  source: UsageSource,
+  detail: string,
+  at: number,
+  stale: boolean,
+): void {
+  if (data.quota !== undefined) acct.quota = data.quota;
+  if (data.usage !== undefined) acct.usage = data.usage;
+  if (data.spend !== undefined) acct.spend = data.spend;
+  if (data.credits !== undefined) acct.credits = data.credits;
+  if (data.plan) acct.plan = data.plan; // live plan wins over the stored one
+  // Replace snapshot-derived throttle notes with the live source's.
+  acct.notes = acct.notes.filter((n) => !n.startsWith("rate limit reached"));
+  if (data.notes?.length) acct.notes.push(...data.notes);
+  acct.source = source;
+  acct.sourceDetail = detail;
+  acct.stale = stale;
+  acct.asOf = new Date(at).toISOString();
+}
+
+/** The account the tool-level fields describe: first signed-in, else first. */
+function primaryAccount(t: ToolStatus): AccountUsage | null {
+  return t.accounts.find((a) => a.loggedIn) ?? t.accounts[0] ?? null;
+}
+
+/** Copy the primary account's fields onto the tool-level status. */
+function rollUp(t: ToolStatus): void {
+  const p = primaryAccount(t);
+  if (!p) return;
+  t.loggedIn = t.accounts.some((a) => a.loggedIn);
+  t.account = p.email;
+  t.plan = p.plan;
+  t.rateLimitTier = p.rateLimitTier;
+  t.authExpiresAt = p.authExpiresAt;
+  t.quota = p.quota;
+  t.usage = p.usage;
+  t.spend = p.spend;
+}
+
+// ---------------------------------------------------------------------------
+// doctor
+// ---------------------------------------------------------------------------
+
+export interface ProbeOpts {
+  home?: string;
+  timeoutMs?: number;
+  only?: readonly DevtoolName[];
+  fetch?: typeof fetch;
+  codexAppServer?: ((codexHome: string) => Promise<AppServerOutcome>) | null;
+  cliproxy?: CliproxyConfig[] | null;
+}
+
 /**
- * One live call per usage endpoint (cache-bypassing) to check the integration
- * still works — the occasional "did a client change its headers?" test. It
- * exercises the EXACT request builders production uses, so an `auth_rejected`
- * result means our headers/token stopped being accepted, and `shape_changed`
- * means the response schema drifted. Rate-limited results are reported as such,
- * not as failures. Makes at most one request per tool; run it by hand (it is not
- * scheduled) so it can't itself cause a rate limit.
+ * Probe each usage source once per tool (cache-bypassing) to check the
+ * integrations still work: the direct vendor endpoint with the first usable
+ * stored token, Codex's `app-server`, and the CLI Proxy management API. It
+ * exercises the same request builders production uses, so `auth_rejected`
+ * means our headers/token stopped being accepted and `shape_changed` means the
+ * response schema drifted. Run it by hand; it is not scheduled.
  */
-export async function probeEndpoints(
-  opts: { home?: string; timeoutMs?: number; only?: readonly DevtoolName[] } = {},
-): Promise<ProbeResult[]> {
+export async function probeEndpoints(opts: ProbeOpts = {}): Promise<ProbeResult[]> {
   const home = opts.home ?? homedir();
+  const includeHost = home === homedir();
   const timeoutMs = opts.timeoutMs ?? 12_000;
-  const only = new Set(opts.only ?? ALL_TOOLS);
+  const fetchImpl = (opts.fetch ??
+    ((...a: Parameters<typeof fetch>) => globalThis.fetch(...a))) as typeof fetch;
+  const only = ALL_TOOLS.filter((t) => (opts.only ?? ALL_TOOLS).includes(t));
+  const stores = discoverStores({ home, includeHost, only });
+  const now = Date.now();
   const out: ProbeResult[] = [];
+  const claudeVersion = claudeCodeVersion(
+    stores
+      .filter((s) => s.storeKind === "claude-dir" && !onWindowsMount(s.path))
+      .map((s) => s.path),
+  );
+  const proxies =
+    opts.cliproxy === undefined
+      ? resolveCliproxyConfigs({ home, includeHost })
+      : (opts.cliproxy ?? []);
+  const appServer =
+    opts.codexAppServer !== undefined
+      ? opts.codexAppServer
+      : includeHost
+        ? (h: string) => runCodexAppServer(h)
+        : null;
 
-  if (only.has("claude-code")) {
-    const version = claudeCodeVersion(home);
-    const token = readClaudeOauthToken(home);
-    if (!token) {
+  for (const tool of only) {
+    // Own stores first, then CLI Proxy files.
+    const usable = [
+      ...stores.filter((s) => s.tool === tool && s.storeKind !== "cliproxy-file"),
+      ...stores.filter((s) => s.tool === tool && s.storeKind === "cliproxy-file"),
+    ].find((s) => tokenUsable(s, now));
+
+    // direct
+    if (tool === "claude-code") {
       out.push(
-        noCred("claude-code", CLAUDE_USAGE_URL, version, "no usable OAuth token in ~/.claude"),
+        usable?.accessToken
+          ? await probeOne(
+              tool,
+              "direct",
+              CLAUDE_USAGE_URL,
+              { headers: claudeUsageHeaders(usable.accessToken, claudeVersion) },
+              claudeVersion,
+              timeoutMs,
+              fetchImpl,
+              (j) => parseClaudeUsage(j) != null,
+            )
+          : noCred(
+              tool,
+              "direct",
+              CLAUDE_USAGE_URL,
+              claudeVersion,
+              "no unexpired OAuth token found",
+            ),
+      );
+    } else if (tool === "codex") {
+      out.push(
+        usable?.accessToken
+          ? await probeOne(
+              tool,
+              "direct",
+              CODEX_USAGE_URL,
+              { headers: codexUsageHeaders(usable.accessToken, usable.identity.accountId) },
+              null,
+              timeoutMs,
+              fetchImpl,
+              (j) => parseCodexUsage(j) != null,
+            )
+          : noCred(tool, "direct", CODEX_USAGE_URL, null, "no unexpired Codex token found"),
       );
     } else {
-      const { url, headers } = claudeUsageRequest(token, version);
       out.push(
-        await probeOne("claude-code", url, { headers }, version, timeoutMs, (j) => {
-          const o = j as { limits?: unknown; five_hour?: unknown };
-          return Array.isArray(o.limits) || o.five_hour != null;
-        }),
+        usable?.accessToken
+          ? await probeOne(
+              tool,
+              "direct",
+              CURSOR_API_USAGE_URL,
+              cursorApiRequest(usable.accessToken, usable.clientVersion),
+              usable.clientVersion,
+              timeoutMs,
+              fetchImpl,
+              (j) => parseCursorUsage(j) != null,
+            )
+          : noCred(tool, "direct", CURSOR_API_USAGE_URL, null, "no unexpired Cursor token found"),
       );
     }
-  }
 
-  if (only.has("cursor")) {
-    const auth = readCursorSessionAuth(home);
-    if (!auth) {
-      out.push(noCred("cursor", CURSOR_USAGE_URL, null, "no usable session token in state.vscdb"));
-    } else {
-      const { url, init } = cursorUsageRequest(auth);
-      out.push(
-        await probeOne("cursor", url, init, auth.version, timeoutMs, (j) => {
-          const o = j as { planUsage?: unknown; billingCycleEnd?: unknown };
-          return o.planUsage != null || o.billingCycleEnd != null;
-        }),
+    // codex app-server
+    if (tool === "codex") {
+      const store = stores.find(
+        (s) => s.tool === "codex" && s.storeKind === "codex-home" && !onWindowsMount(s.path),
       );
+      const endpoint = "codex app-server · account/rateLimits/read";
+      if (!store) out.push(noCred(tool, "codex-app-server", endpoint, null, "no Codex home found"));
+      else if (!appServer)
+        out.push(noCred(tool, "codex-app-server", endpoint, null, "app-server disabled"));
+      else {
+        const o = await appServer(store.path);
+        out.push({
+          tool,
+          source: "codex-app-server",
+          endpoint,
+          clientVersion: null,
+          status: null,
+          outcome: !o.ok ? "unreachable" : parseAppServerLimits(o.result) ? "ok" : "shape_changed",
+          detail: !o.ok ? o.reason : `answered for ${store.path}`,
+        });
+      }
+    }
+
+    // CLI Proxy
+    if (tool !== "cursor") {
+      const endpoint = "CLI Proxy /v0/management/api-call";
+      if (!proxies.length) {
+        out.push(noCred(tool, "cliproxy", endpoint, null, "no CLI Proxy server configured"));
+        continue;
+      }
+      const cfg = proxies[0] as CliproxyConfig;
+      const listing = await listCliproxyAuthFiles(cfg, fetchImpl, Math.min(timeoutMs, 4_000));
+      if (!listing.ok) {
+        out.push({
+          tool,
+          source: "cliproxy",
+          endpoint,
+          clientVersion: null,
+          status: listing.status,
+          outcome:
+            listing.status === 401 || listing.status === 403 ? "auth_rejected" : "unreachable",
+          detail: listing.reason,
+        });
+        continue;
+      }
+      const type = tool === "claude-code" ? "claude" : "codex";
+      const entry = listing.files.find((f) => f.type === type && !f.disabled);
+      if (!entry) {
+        out.push(
+          noCred(tool, "cliproxy", listing.baseUrl, null, `no ${type} account in CLI Proxy`),
+        );
+        continue;
+      }
+      const req =
+        tool === "claude-code"
+          ? {
+              method: "GET",
+              url: CLAUDE_USAGE_URL,
+              header: claudeUsageHeaders("$TOKEN$", claudeVersion),
+            }
+          : {
+              method: "GET",
+              url: CODEX_USAGE_URL,
+              header: codexUsageHeaders("$TOKEN$", entry.accountId),
+            };
+      const r = await viaCliproxy(listing, cfg, entry.authIndex, req, fetchImpl, timeoutMs);
+      const shapeOk = tool === "claude-code" ? parseClaudeUsage : parseCodexUsage;
+      out.push({
+        tool,
+        source: "cliproxy",
+        endpoint: `${listing.baseUrl}/v0/management/api-call → ${req.url}`,
+        clientVersion: null,
+        status: r.kind === "ok" ? 200 : r.kind === "cooldown" ? 429 : null,
+        outcome:
+          r.kind === "cooldown"
+            ? "rate_limited"
+            : r.kind === "fail"
+              ? /HTTP 40[13]/.test(r.reason)
+                ? "auth_rejected"
+                : "unreachable"
+              : shapeOk(r.data)
+                ? "ok"
+                : "shape_changed",
+        detail: r.kind === "fail" ? r.reason : r.kind === "cooldown" ? "429" : "200 via CLI Proxy",
+      });
     }
   }
-
-  // Codex is read from local files only (no endpoint to probe), so it's omitted.
   return out;
 }
 
 function noCred(
   tool: DevtoolName,
+  source: ProbeResult["source"],
   endpoint: string,
   clientVersion: string | null,
   detail: string,
 ): ProbeResult {
-  return { tool, endpoint, clientVersion, status: null, outcome: "no_credential", detail };
+  return { tool, source, endpoint, clientVersion, status: null, outcome: "no_credential", detail };
 }
 
 async function probeOne(
   tool: DevtoolName,
+  source: ProbeResult["source"],
   url: string,
   init: RequestInit,
   clientVersion: string | null,
   timeoutMs: number,
+  fetchImpl: typeof fetch,
   shapeOk: (json: unknown) => boolean,
 ): Promise<ProbeResult> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-  const base = { tool, endpoint: url, clientVersion };
+  const base = { tool, source, endpoint: url, clientVersion };
   try {
-    const res = await fetch(url, { ...init, signal: controller.signal });
+    const res = await fetchImpl(url, { ...init, signal: controller.signal });
     const status = res.status;
     if (status === 429) {
       return {
@@ -517,483 +1515,124 @@ async function probeOne(
   }
 }
 
-interface UsageCacheEntry<T> {
-  /** When `data` was last fetched (ms epoch). */
-  at: number;
-  /** Last-known-good result, or null if a fetch never succeeded. */
-  data: T | null;
-  /** If set and still in the future, do not call the endpoint (rate-limit backoff). */
-  cooldownUntil?: number;
-}
-
-/**
- * Wrap a usage fetch in an on-disk cache under `<home>/.cache/harnery/devtools/
- * <name>.json`, protecting rate-limited endpoints on three fronts:
- *
- *   • Fresh success (`< ttlMs` old) short-circuits the network entirely.
- *   • A 429 records a `cooldownUntil` from the server's retry-after, and no call
- *     is made until it passes — so a rate limit can't cascade into a hammer loop
- *     (the failure mode that starved Claude Code's own usage panel). During the
- *     cooldown the last-known-good value is served, so the card stays populated.
- *   • Any other failure serves last-known-good and retries next time.
- *
- * Best-effort: read/write errors fall back to a live fetch. `ttlMs <= 0` fetches
- * every call (still honoring a cooldown) and skips writes.
- */
-async function cachedUsage<T>(
-  home: string,
-  name: string,
-  ttlMs: number,
-  fetcher: () => Promise<FetchOutcome<T>>,
-): Promise<T | null> {
-  const now = Date.now();
-  const dir = join(home, ".cache", "harnery", "devtools");
-  const file = join(dir, `${name}.json`);
-
-  let entry: UsageCacheEntry<T> | null = null;
-  try {
-    entry = JSON.parse(readFileSync(file, "utf8")) as UsageCacheEntry<T>;
-  } catch {
-    // no cache / unreadable
-  }
-  // Fresh cached success.
-  if (entry?.data != null && ttlMs > 0 && now - entry.at < ttlMs) return entry.data;
-  // In a rate-limit cooldown — do not call; serve last-known-good (may be null).
-  if (entry?.cooldownUntil != null && now < entry.cooldownUntil) return entry.data ?? null;
-
-  const outcome = await fetcher();
-  const write = (e: UsageCacheEntry<T>) => {
-    try {
-      mkdirSync(dir, { recursive: true });
-      writeFileSync(file, JSON.stringify(e));
-    } catch {
-      // cache write is best-effort
-    }
-  };
-
-  if (outcome.kind === "ok") {
-    if (ttlMs > 0) write({ at: now, data: outcome.data });
-    return outcome.data;
-  }
-  if (outcome.kind === "cooldown") {
-    // Record the backoff, preserving any last-known-good data to keep serving it.
-    write({
-      at: entry?.at ?? now,
-      data: entry?.data ?? null,
-      cooldownUntil: now + outcome.retryAfterMs,
-    });
-    return entry?.data ?? null;
-  }
-  // Plain failure: leave the cache as-is (retry next call), serve any stale data.
-  return entry?.data ?? null;
-}
-
-/**
- * Read Claude Code's OAuth access token from ~/.claude/.credentials.json.
- * Returns null when absent or expired (both the access and refresh windows are
- * past, so a call would 401). The token is used only to build the request and
- * is never stored on the report.
- */
-function readClaudeOauthToken(home: string): string | null {
-  const oauth = readJson<Record<string, unknown>>(join(home, ".claude", ".credentials.json"))
-    ?.claudeAiOauth as Record<string, unknown> | undefined;
-  const token = strOr(oauth?.accessToken);
-  if (!token) return null;
-  const accessExp = numOr(oauth?.expiresAt);
-  const refreshExp = numOr(oauth?.refreshTokenExpiresAt);
-  // If both windows are past, the token is dead — skip the doomed call.
-  if ((refreshExp ?? accessExp ?? Number.POSITIVE_INFINITY) < Date.now()) return null;
-  return token;
-}
-
-/** Statuses in the oauth/usage `limits[]` array, mapped to quota-window labels. */
-const CLAUDE_LIMIT_LABELS: Record<string, string> = {
-  session: "5h",
-  weekly_all: "weekly",
-  weekly_scoped: "weekly",
-};
-
-const CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
-
-/**
- * The request we send to Claude's usage endpoint — the same URL + headers the
- * `/usage` command sends, so the call is indistinguishable from Claude Code's
- * own (Bearer token, the oauth beta, and the `claude-cli/<version> (external,
- * cli)` UA + `x-app: cli`). Extracted so the doctor probe exercises the exact
- * headers we use in production.
- */
-function claudeUsageRequest(token: string, version: string): { url: string; headers: HeadersInit } {
-  return {
-    url: CLAUDE_USAGE_URL,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "anthropic-beta": "oauth-2025-04-20",
-      "anthropic-version": "2023-06-01",
-      "User-Agent": `claude-cli/${version} (external, cli)`,
-      "x-app": "cli",
-    },
-  };
-}
-
-/**
- * Fetch Claude Code's live usage from api.anthropic.com/api/oauth/usage with the
- * local OAuth token. Returns a `FetchOutcome`: `ok` with quota + spend,
- * `cooldown` on a 429 (with the server's retry-after), or `fail`.
- */
-async function fetchClaudeUsage(
-  token: string,
-  version: string,
-  timeoutMs: number,
-): Promise<FetchOutcome<{ quota: QuotaWindow[]; spend: SpendStatus | null }>> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const { url, headers } = claudeUsageRequest(token, version);
-    const res = await fetch(url, { headers, signal: controller.signal });
-    if (res.status === 429) return { kind: "cooldown", retryAfterMs: retryAfterMs(res) };
-    if (!res.ok) return { kind: "fail" };
-    const raw = (await res.json()) as {
-      limits?: Array<{
-        kind?: string;
-        percent?: number;
-        resets_at?: string;
-        scope?: { model?: { display_name?: string } } | null;
-      }>;
-      five_hour?: { utilization?: number; resets_at?: string };
-      seven_day?: { utilization?: number; resets_at?: string };
-      spend?: {
-        used?: { amount_minor?: number; exponent?: number };
-        limit?: { amount_minor?: number; exponent?: number };
-        enabled?: boolean;
-      };
-    };
-
-    // Prefer the structured limits[] array (carries model-scoped windows); fall
-    // back to the flat five_hour / seven_day pair.
-    let quota: QuotaWindow[] = [];
-    if (Array.isArray(raw.limits) && raw.limits.length) {
-      quota = raw.limits.map((l) => {
-        const model = strOr(l.scope?.model?.display_name);
-        const base = l.kind ? (CLAUDE_LIMIT_LABELS[l.kind] ?? l.kind) : "quota";
-        return {
-          window: model ? `${base} · ${model}` : base,
-          usedPercent: roundPct(l.percent),
-          resetsAt: isoOrNull(l.resets_at),
-        };
-      });
-    } else {
-      const flat: Array<[string, { utilization?: number; resets_at?: string } | undefined]> = [
-        ["5h", raw.five_hour],
-        ["weekly", raw.seven_day],
-      ];
-      quota = flat
-        .filter(([, w]) => w?.utilization != null)
-        .map(([label, w]) => ({
-          window: label,
-          usedPercent: roundPct(w?.utilization),
-          resetsAt: isoOrNull(w?.resets_at),
-        }));
-    }
-
-    let spend: SpendStatus | null = null;
-    const sp = raw.spend;
-    if (sp?.enabled && (minorToCents(sp.used) != null || minorToCents(sp.limit) != null)) {
-      spend = {
-        label: "Extra usage",
-        usedCents: minorToCents(sp.used),
-        limitCents: minorToCents(sp.limit),
-      };
-    }
-    return { kind: "ok", data: { quota, spend } };
-  } catch {
-    return { kind: "fail" };
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/** Parse a `Retry-After` header (seconds) to ms; default 60s when absent/unparseable. */
-function retryAfterMs(res: Response): number {
-  const raw = res.headers.get("retry-after");
-  const secs = raw != null ? Number.parseInt(raw, 10) : Number.NaN;
-  return (Number.isFinite(secs) && secs > 0 ? secs : 60) * 1000;
-}
-
-/** Convert an {amount_minor, exponent} money value to cents (exponent 2 = already cents). */
-function minorToCents(m: { amount_minor?: number; exponent?: number } | undefined): number | null {
-  const minor = numOr(m?.amount_minor);
-  if (minor == null) return null;
-  const exp = numOr(m?.exponent) ?? 2;
-  return Math.round(minor * 10 ** (2 - exp));
-}
-
-/** Normalize an ISO-ish timestamp (may carry a +00:00 offset) to a Z-suffixed ISO, or null. */
-function isoOrNull(s: string | undefined): string | null {
-  if (!s) return null;
-  const t = Date.parse(s);
-  return Number.isNaN(t) ? null : new Date(t).toISOString();
-}
-
-interface CursorSessionAuth {
-  token: string;
-  userId: string;
-  /** Local Cursor app version (for the client User-Agent), else null. */
-  version: string | null;
-}
-
-/**
- * Read Cursor's locally-stored session token from state.vscdb and derive the
- * WorkOS user id from its JWT `sub` claim, plus the local Cursor version for the
- * client User-Agent. Returns null when the DB is unreadable, no token is
- * present, or the token has expired (so we skip a doomed call). The token
- * string is used only to build the request and is never stored on the report.
- */
-function readCursorSessionAuth(home: string): CursorSessionAuth | null {
-  const vscdb = cursorGlobalVscdb(home);
-  if (!vscdb) return null;
-  const items = readVscdbItems(vscdb, [
-    "cursorAuth/accessToken",
-    "cursor.startupMetrics.lastVersion",
-  ]);
-  const token = strOr(items?.["cursorAuth/accessToken"]);
-  if (!token) return null;
-  const claims = decodeJwtClaims(token);
-  const sub = strOr(claims?.sub);
-  if (!sub) return null;
-  // Skip an obviously-expired token (exp is seconds since epoch).
-  const exp = numOr(claims?.exp);
-  if (exp != null && exp * 1000 < Date.now()) return null;
-  // sub looks like "auth0|user_01J…"; the WorkOS cookie wants the id after the "|".
-  const userId = sub.includes("|") ? (sub.split("|").pop() ?? sub) : sub;
-  return { token, userId, version: strOr(items?.["cursor.startupMetrics.lastVersion"]) };
-}
-
-// Cursor is an Electron app; its embedded browser presents a VS Code-style UA
-// (`… <App>/<ver> Chrome/<chromium> Electron/<electron> Safari/537.36`). We
-// mirror that, injecting the LIVE Cursor version read from state.vscdb. The
-// Chromium/Electron pair is cosmetic (tracks Cursor's VS Code base) — bump when
-// Cursor's base does; the identifying `Cursor/<version>` part is always live.
-const CURSOR_CHROMIUM = "132.0.6834.210";
-const CURSOR_ELECTRON = "34.5.8";
-
-/** Cursor Electron client User-Agent, embedding the live app version. */
-function cursorUserAgent(version: string | null): string {
-  const ver = version ?? "0.0.0";
-  return `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Cursor/${ver} Chrome/${CURSOR_CHROMIUM} Electron/${CURSOR_ELECTRON} Safari/537.36`;
-}
-
-const CURSOR_USAGE_URL = "https://cursor.com/api/dashboard/get-current-period-usage";
-
-/**
- * The request we send to Cursor's usage endpoint — the WorkOS session cookie
- * (`<userId>::<token>`) plus the browser-consistent Origin/Referer cursor.com
- * requires, and Cursor's own Electron client UA. Extracted so the doctor probe
- * exercises the exact request we use in production.
- */
-function cursorUsageRequest(auth: CursorSessionAuth): { url: string; init: RequestInit } {
-  const cookie = `WorkosCursorSessionToken=${encodeURIComponent(`${auth.userId}::${auth.token}`)}`;
-  return {
-    url: CURSOR_USAGE_URL,
-    init: {
-      method: "POST",
-      headers: {
-        Cookie: cookie,
-        "Content-Type": "application/json",
-        Origin: "https://cursor.com",
-        Referer: "https://cursor.com/dashboard/spending",
-        "User-Agent": cursorUserAgent(auth.version),
-      },
-      body: "{}",
-    },
-  };
-}
-
-/**
- * Fetch the current-period usage the Cursor UI shows on its Spending page.
- * Returns a `FetchOutcome`: `ok`, `cooldown` on a 429, or `fail`.
- */
-async function fetchCursorUsage(
-  auth: CursorSessionAuth,
-  timeoutMs: number,
-): Promise<FetchOutcome<{ usage: CursorUsage; spend: SpendStatus | null }>> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const { url, init } = cursorUsageRequest(auth);
-    const res = await fetch(url, { ...init, signal: controller.signal });
-    if (res.status === 429) return { kind: "cooldown", retryAfterMs: retryAfterMs(res) };
-    if (!res.ok) return { kind: "fail" };
-    const raw = (await res.json()) as {
-      billingCycleStart?: string | number;
-      billingCycleEnd?: string | number;
-      planUsage?: {
-        totalPercentUsed?: number;
-        apiPercentUsed?: number;
-        autoPercentUsed?: number;
-        limit?: number;
-      };
-      spendLimitUsage?: { individualLimit?: number; individualRemaining?: number };
-    };
-    const pu = raw.planUsage ?? {};
-    const sl = raw.spendLimitUsage ?? {};
-    const spendLimit = numOr(sl.individualLimit);
-    const spendRemaining = numOr(sl.individualRemaining);
-    const usage: CursorUsage = {
-      cycleStart: msToIso(raw.billingCycleStart),
-      cycleEnd: msToIso(raw.billingCycleEnd),
-      totalPercentUsed: roundPct(pu.totalPercentUsed),
-      apiPercentUsed: roundPct(pu.apiPercentUsed),
-      firstPartyPercentUsed: roundPct(pu.autoPercentUsed),
-      includedLimitCents: numOr(pu.limit),
-    };
-    const spend: SpendStatus | null =
-      spendLimit != null
-        ? {
-            label: "On-demand",
-            usedCents: spendRemaining != null ? spendLimit - spendRemaining : null,
-            limitCents: spendLimit,
-          }
-        : null;
-    return { kind: "ok", data: { usage, spend } };
-  } catch {
-    return { kind: "fail" };
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/** Parse a ms-epoch value (string or number) to ISO, or null. */
-function msToIso(v: string | number | undefined): string | null {
-  const n = typeof v === "string" ? Number.parseInt(v, 10) : v;
-  if (n == null || !Number.isFinite(n) || n <= 0) return null;
-  return new Date(n).toISOString();
-}
-
-/** Clamp a percentage to one decimal place, or null. */
-function roundPct(v: number | undefined): number | null {
-  if (v == null || !Number.isFinite(v)) return null;
-  return Math.round(v * 10) / 10;
-}
-
-async function fetchCursorApi(
-  key: string,
-  userAgent: string,
-  timeoutMs: number,
-): Promise<ApiEnrichment> {
-  const out: ApiEnrichment = { ok: false, keyName: null, cloudAgents: null, error: null };
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  const get = async (path: string): Promise<unknown> => {
-    const res = await fetch(`https://api.cursor.com${path}`, {
-      headers: { Authorization: `Bearer ${key}`, "User-Agent": userAgent },
-      signal: controller.signal,
-    });
-    if (!res.ok) throw new Error(`${path} → HTTP ${res.status}`);
-    return res.json();
-  };
-  try {
-    const me = (await get("/v0/me")) as { apiKeyName?: string; userEmail?: string };
-    out.ok = true;
-    out.keyName = strOr(me.apiKeyName);
-    try {
-      const data = (await get("/v0/agents")) as { agents?: Array<{ status?: string }> };
-      const list = Array.isArray(data.agents) ? data.agents : [];
-      out.cloudAgents = {
-        total: list.length,
-        active: list.filter((a) => a.status && !CURSOR_AGENT_INACTIVE.has(a.status)).length,
-      };
-    } catch {
-      // /v0/me worked but agents listing failed; key is still valid
-    }
-  } catch (err) {
-    out.ok = false;
-    out.error = err instanceof Error ? err.message : String(err);
-  } finally {
-    clearTimeout(timer);
-  }
-  return out;
-}
+// ---------------------------------------------------------------------------
+// Local read
+// ---------------------------------------------------------------------------
 
 export function readDevtools(opts: ReadDevtoolsOpts = {}): DevtoolsReport {
   const home = opts.home ?? homedir();
   const now = opts.now ?? Date.now();
   const usage = opts.usage ?? false;
   const windowDays = opts.windowDays ?? 7;
-  const only = new Set(opts.only ?? ALL_TOOLS);
+  const only = ALL_TOOLS.filter((t) => (opts.only ?? ALL_TOOLS).includes(t));
+
+  const stores = discoverStores({ home, now, only });
+  const groups = groupAccounts(stores);
+  const forTool = (t: DevtoolName) => groups.filter((g) => g.tool === t);
 
   const tools: ToolStatus[] = [];
-  if (only.has("claude-code")) tools.push(readClaudeCode(home, now, usage, windowDays));
-  if (only.has("codex")) tools.push(readCodex(home, now, windowDays));
-  if (only.has("cursor")) tools.push(readCursor(home));
+  if (only.includes("claude-code"))
+    tools.push(readClaudeCode(home, now, usage, windowDays, forTool("claude-code")));
+  if (only.includes("codex")) tools.push(readCodex(home, now, windowDays, forTool("codex")));
+  if (only.includes("cursor")) tools.push(readCursor(home, now, forTool("cursor")));
 
   return {
     generatedAt: new Date(now).toISOString(),
-    // The window that any shown token total is measured over. Codex always
-    // reports a windowed total; Claude's transcript scan is `--usage`-gated.
     windowDays,
     tools,
   };
 }
 
+/**
+ * Build the report's accounts from grouped stores. A store with no identity
+ * and no credential (a signed-out directory) is not an account; it becomes a
+ * tool-level note instead.
+ */
+function buildAccounts(status: ToolStatus, groups: AccountGroup[]): void {
+  for (const g of groups) {
+    const loggedIn = g.stores.some((s) => s.loggedIn);
+    const anonymous = !g.identity.accountId && !g.identity.email;
+    if (anonymous && !loggedIn && !g.stores.some((s) => s.accessToken)) {
+      for (const s of g.stores)
+        status.notes.push(...(s.notes.length ? s.notes : [`${s.path}: signed out`]));
+      continue;
+    }
+    const live = g.stores.find((s) => s.loggedIn) ?? g.stores[0];
+    const notes: string[] = [];
+    for (const s of g.stores) for (const n of s.notes) if (!notes.includes(n)) notes.push(n);
+    status.accounts.push({
+      id: g.identity.key,
+      email: g.identity.email,
+      org: g.identity.org,
+      plan: g.identity.plan,
+      rateLimitTier: g.stores.map((s) => s.rateLimitTier).find((v) => v != null) ?? null,
+      loggedIn,
+      authExpiresAt: live?.expiresAt ? new Date(live.expiresAt).toISOString() : null,
+      stores: g.stores.map((s) => ({
+        kind: s.storeKind,
+        path: s.path,
+        loggedIn: s.loggedIn,
+        authExpiresAt: s.expiresAt ? new Date(s.expiresAt).toISOString() : null,
+      })),
+      source: null,
+      sourceDetail: null,
+      stale: false,
+      asOf: null,
+      quota: null,
+      usage: null,
+      spend: null,
+      credits: null,
+      notes,
+    });
+  }
+  // Signed-in accounts first; discovery order otherwise.
+  status.accounts.sort((a, b) => Number(b.loggedIn) - Number(a.loggedIn));
+}
+
 // ---------------------------------------------------------------------------
-// Claude Code (~/.claude)
+// Claude Code
 // ---------------------------------------------------------------------------
 
-function readClaudeCode(home: string, now: number, usage: boolean, windowDays: number): ToolStatus {
+function readClaudeCode(
+  home: string,
+  now: number,
+  usage: boolean,
+  windowDays: number,
+  groups: AccountGroup[],
+): ToolStatus {
   const dir = join(home, ".claude");
   const status: ToolStatus = base("claude-code");
-  status.installed = existsSync(dir);
+  const dirs = new Set<string>();
+  if (existsSync(dir)) dirs.add(resolve(dir));
+  // Transcripts are read from this side of a WSL machine only: a Windows-side
+  // install is another client, and scanning it over the 9p mount costs seconds.
+  for (const g of groups)
+    for (const s of g.stores)
+      if (s.storeKind === "claude-dir" && !onWindowsMount(s.path)) dirs.add(resolve(s.path));
+  status.installed = dirs.size > 0 || groups.length > 0;
   if (!status.installed) {
     status.notes.push("~/.claude not found");
     return status;
   }
 
-  // Auth: ~/.claude/.credentials.json -> claudeAiOauth (non-secret fields only).
-  const oauth = readJson<Record<string, unknown>>(join(dir, ".credentials.json"))?.claudeAiOauth as
-    | Record<string, unknown>
-    | undefined;
-  if (oauth) {
-    const accessExp = numOr(oauth.expiresAt);
-    const refreshExp = numOr(oauth.refreshTokenExpiresAt);
-    status.loggedIn = (refreshExp ?? accessExp ?? 0) > now;
-    status.authExpiresAt = accessExp ? new Date(accessExp).toISOString() : null;
-    status.plan = strOr(oauth.subscriptionType);
-    status.rateLimitTier = strOr(oauth.rateLimitTier);
-    if (accessExp && accessExp <= now && refreshExp && refreshExp > now) {
-      status.notes.push("access token expired; refreshes on next use");
-    }
-  } else {
+  buildAccounts(status, groups);
+  rollUp(status);
+  if (!status.accounts.length) {
     status.loggedIn = false;
     status.notes.push("no credential found (not logged in)");
   }
 
-  // Richer account/plan metadata lives in ~/.claude.json (sibling of the dir).
-  const cfg = readJson<Record<string, unknown>>(join(home, ".claude.json"));
-  const acct = cfg?.oauthAccount as Record<string, unknown> | undefined;
-  if (acct) {
-    status.account = strOr(acct.emailAddress);
-    // Prefer the seat tier as the human "plan" when present.
-    status.plan = strOr(acct.seatTier) ?? status.plan;
-    status.rateLimitTier = strOr(acct.userRateLimitTier) ?? status.rateLimitTier;
-  }
-
-  // Sessions: one .jsonl transcript per session under projects/<slug>/.
-  const projects = join(dir, "projects");
-  const files = listFilesRecursive(projects, ".jsonl");
+  // Sessions: one .jsonl transcript per session under <dir>/projects/<slug>/.
+  const files = [...dirs].flatMap((d) => listFilesRecursive(join(d, "projects"), ".jsonl"));
   status.sessions = files.length || null;
   status.lastActivity = latestMtimeIso(files);
 
   // Claude Code does not persist its rate-limit windows locally; the live
-  // 5-hour / weekly figures come from the `/usage` server call, which the
-  // enrichment step fetches with the local OAuth token. Without it (--no-api),
-  // quota stays blank.
+  // figures come from the enrichment step.
   status.quota = null;
   status.notes.push("live quota (5h/weekly resets) is server-side via /usage");
 
-  // Windowed token total, memoized per transcript so it's card-cheap after the
-  // first scan. `--usage` (fresh=true) forces an exact, cache-bypassing recount.
   status.tokensUsed = sumClaudeTokensCached(home, files, now, windowDays, usage);
-
   return status;
 }
 
@@ -1021,13 +1660,10 @@ interface TokenCacheEntry {
 /**
  * Windowed Claude token total, memoized per transcript. Unlike Codex, a Claude
  * transcript has no per-session cumulative field, so the total is the sum of
- * every message — a full read of each in-window file (hundreds of MB in a busy
- * week). To keep that off the hot render path, each file's sum is cached by
- * (path, mtime, size) at `~/.cache/harnery/devtools/claude-tokens.json`: an
- * unchanged transcript is never re-read, so after warm-up only the live session
- * (whose size/mtime moved) is rescanned. `fresh` (from `--usage`) bypasses the
- * cache for an exact recompute. The cache holds only in-window files, so mixing
- * a larger `--window-days` re-reads the older span once.
+ * every message — a full read of each in-window file. Each file's sum is cached
+ * by (path, mtime, size) at `~/.cache/harnery/devtools/claude-tokens.json`: an
+ * unchanged transcript is never re-read. `fresh` (from `--usage`) bypasses the
+ * cache for an exact recompute.
  */
 function sumClaudeTokensCached(
   home: string,
@@ -1069,7 +1705,6 @@ function sumClaudeTokensCached(
     total += tokens;
   }
 
-  // Persist when anything moved (new/changed file) or entries aged out of window.
   if (!fresh && (changed || Object.keys(next).length !== Object.keys(cache).length)) {
     try {
       mkdirSync(dirname(cacheFile), { recursive: true });
@@ -1084,93 +1719,98 @@ function sumClaudeTokensCached(
 }
 
 // ---------------------------------------------------------------------------
-// Codex (~/.codex)
+// Codex
 // ---------------------------------------------------------------------------
 
-function readCodex(home: string, now: number, windowDays: number): ToolStatus {
+function readCodex(
+  home: string,
+  now: number,
+  windowDays: number,
+  groups: AccountGroup[],
+): ToolStatus {
   const dir = join(home, ".codex");
   const status: ToolStatus = base("codex");
   const globbed = codexRollouts(home);
-  status.installed = existsSync(dir) || globbed.length > 0;
+  status.installed = existsSync(dir) || globbed.length > 0 || groups.length > 0;
   if (!status.installed) {
     status.notes.push("~/.codex not found");
     return status;
   }
 
   // Codex can have more than one install on a machine (e.g. a WSL CLI and the
-  // Windows desktop app, each its own account). They must not be mixed: read
-  // auth AND rate limits from the SAME install — the one actually in use, which
-  // is whichever owns the most-recently-written rollout.
+  // Windows desktop app, each its own account). Session counts and token totals
+  // describe the install actually in use: the one that owns the newest rollout.
   const newestRollout = newestFile(globbed);
   const activeRoot = newestRollout ? codexRootOf(newestRollout) : dir;
 
-  // Auth: <activeRoot>/auth.json. The id_token carries the non-secret account +
-  // plan claims; the access_token carries the meaningful expiry (it outlives the
-  // id_token and is what refreshes), so we report that, not the id_token's.
-  const auth = readJson<Record<string, unknown>>(join(activeRoot, "auth.json"));
-  if (auth) {
-    const tokens = auth.tokens as Record<string, unknown> | undefined;
-    const idToken = strOr(tokens?.id_token);
-    const accessToken = strOr(tokens?.access_token);
-    const idClaims = idToken ? decodeJwtClaims(idToken) : null;
-    const accessExp = numOr(accessToken ? decodeJwtClaims(accessToken)?.exp : undefined);
-    if (idClaims) {
-      status.account = strOr(idClaims.email);
-      const authClaim = idClaims["https://api.openai.com/auth"] as
-        | Record<string, unknown>
-        | undefined;
-      status.plan = strOr(authClaim?.chatgpt_plan_type);
+  buildAccounts(status, groups);
+
+  // Each Codex home's newest rollout carries that account's last rate-limit
+  // snapshot; it is shown (marked stale) until a live source answers.
+  const rolloutsFor = (root: string): string[] => {
+    const own = globbed.filter((f) => resolve(codexRootOf(f)) === resolve(root));
+    if (own.length) return own;
+    return listFilesRecursive(join(root, "sessions"), ".jsonl").filter((f) =>
+      f.includes("rollout-"),
+    );
+  };
+  for (const acct of status.accounts) {
+    for (const s of acct.stores) {
+      if (s.kind !== "codex-home") continue;
+      const newest = newestFile(rolloutsFor(s.path));
+      if (!newest) continue;
+      const rl = lastRateLimits(newest);
+      if (!rl) continue;
+      acct.quota = [rl.primary, rl.secondary].filter((q): q is QuotaWindow => q !== null);
+      if (rl.planType) acct.plan = rl.planType; // live plan wins over the id_token
+      if (rl.reachedType) acct.notes.push(`rate limit reached (${rl.reachedType} window)`);
+      acct.source = "snapshot";
+      acct.sourceDetail = newest;
+      acct.stale = true;
+      acct.asOf = new Date(safeMtime(newest)).toISOString();
+      break;
     }
-    // Prefer the access token's expiry; fall back to the id_token's.
-    const exp = accessExp ?? numOr(idClaims?.exp);
-    status.authExpiresAt = exp ? new Date(exp * 1000).toISOString() : null;
-    status.loggedIn = Boolean(accessToken || idToken) && (exp == null || exp * 1000 > now);
-    if (exp && exp * 1000 <= now) {
-      status.notes.push("token expired; refreshes via stored refresh token");
-    }
-  } else {
+  }
+  // The active install's account leads, so the tool-level fields describe it.
+  const activeIdx = status.accounts.findIndex(
+    (a) => a.loggedIn && a.stores.some((s) => resolve(s.path) === resolve(activeRoot)),
+  );
+  if (activeIdx > 0) status.accounts.unshift(...status.accounts.splice(activeIdx, 1));
+  rollUp(status);
+  if (!status.accounts.length) {
     status.loggedIn = false;
     status.notes.push("no auth.json found (not logged in)");
+    // Sessions without a sign-in still carry the last snapshot the install saw.
+    const rl = newestRollout ? lastRateLimits(newestRollout) : null;
+    if (rl) {
+      status.quota = [rl.primary, rl.secondary].filter((q): q is QuotaWindow => q !== null);
+      status.plan = rl.planType;
+      if (rl.reachedType) status.notes.push(`rate limit reached (${rl.reachedType} window)`);
+    }
   }
 
   // Activity: prefer the active install's state_5.sqlite (`threads`) for exact
-  // counts, but only when it's actually the active install's DB — otherwise the
-  // rollouts are the cross-install-consistent source.
+  // counts, else that install's rollout files.
   const state = readCodexState(join(activeRoot, "sqlite", "state_5.sqlite"));
   const activeRollouts = globbed.filter((f) => codexRootOf(f) === activeRoot);
   if (state) {
     status.sessions = state.sessions;
     if (state.lastMs) status.lastActivity = new Date(state.lastMs).toISOString();
   } else {
-    // No DB for the active install (e.g. the Windows desktop app uses a
-    // different store): fall back to that install's rollout files.
     status.sessions = activeRollouts.length || null;
     status.lastActivity = latestMtimeIso(activeRollouts);
   }
 
-  // Windowed token total: always shown (the tail scan is card-cheap), summed
-  // from the rollouts since they're the fresh cross-install source — the state
-  // DB can lag the live sessions.
   status.tokensUsed = sumCodexTokens(activeRollouts, now, windowDays);
 
-  // Freshest rollout → current rate-limit windows + live plan_type.
-  if (newestRollout) {
-    const rl = lastRateLimits(newestRollout);
-    if (rl) {
-      status.quota = [rl.primary, rl.secondary].filter((q): q is QuotaWindow => q !== null);
-      if (rl.planType) status.plan = rl.planType; // live plan wins over the id_token
-      if (rl.reachedType) status.notes.push(`rate limit reached (${rl.reachedType} window)`);
-    }
-  }
   if (!status.quota?.length) status.notes.push("no local rate-limit snapshot in latest session");
-
   return status;
 }
 
 /** The Codex install root that owns a rollout path (the part before `/sessions/`). */
 function codexRootOf(rolloutPath: string): string {
   const parts = rolloutPath.split(/[/\\]sessions[/\\]/);
-  return parts.length > 1 ? parts[0] : rolloutPath;
+  return parts.length > 1 ? (parts[0] as string) : rolloutPath;
 }
 
 interface CodexState {
@@ -1179,8 +1819,7 @@ interface CodexState {
   newestRollout: string | null;
 }
 
-/** Read Codex's `state_5.sqlite` threads table for session count, recency, newest rollout.
- * (Token totals come from the rollouts, not here — the DB can lag live sessions.) */
+/** Read Codex's `state_5.sqlite` threads table for session count, recency, newest rollout. */
 function readCodexState(dbPath: string): CodexState | null {
   if (!existsSync(dbPath)) return null;
   return withSqlite(dbPath, (db) => {
@@ -1198,7 +1837,7 @@ function readCodexState(dbPath: string): CodexState | null {
   });
 }
 
-/** All Codex rollout files across the WSL home and (real-home only) the Windows-side home. */
+/** All Codex rollout files across the home and (real-home only) the Windows-side home. */
 function codexRollouts(home: string): string[] {
   const roots = [join(home, ".codex", "sessions")];
   if (home === homedir()) {
@@ -1261,18 +1900,13 @@ function windowLabel(minutes: number | null): string {
   return `${minutes}m`;
 }
 
-/** Bytes tail-read per rollout when summing tokens — enough to hold the last
- * `token_count` event of any real session while staying cheap on a networked
- * (WSL → /mnt/c) filesystem. */
+/** Bytes tail-read per rollout when summing tokens. */
 const CODEX_TAIL_BYTES = 131_072;
 
 /**
- * Windowed token total across the in-window rollouts, light enough to run on
- * every card render. Each `token_count` event carries a *cumulative*
- * `info.total_token_usage`, so the session total is the last such event — found
- * by scanning only the file's tail rather than every line. A session whose final
- * `token_count` sits beyond the tail (rare: a huge trailing non-token event) is
- * undercounted; acceptable for a card estimate.
+ * Windowed token total across the in-window rollouts. Each `token_count` event
+ * carries a *cumulative* `info.total_token_usage`, so the session total is the
+ * last such event — found by scanning only the file's tail.
  */
 function sumCodexTokens(files: string[], now: number, windowDays: number): number {
   const cutoff = now - windowDays * 86_400_000;
@@ -1289,13 +1923,13 @@ function lastCumulativeTokens(tail: string): number {
   let last = 0;
   for (const line of tail.split("\n")) {
     if (!line.includes('"token_count"')) continue;
-    let parsed: unknown;
+    let parsedLine: unknown;
     try {
-      parsed = JSON.parse(line);
+      parsedLine = JSON.parse(line);
     } catch {
       continue; // a partial first line from the tail cut — skip it
     }
-    const payload = (parsed as { payload?: Record<string, unknown> }).payload;
+    const payload = (parsedLine as { payload?: Record<string, unknown> }).payload;
     if (!payload) continue;
     if (payload.type !== "token_count") continue;
     const info = payload.info as Record<string, unknown> | undefined;
@@ -1307,45 +1941,31 @@ function lastCumulativeTokens(tail: string): number {
 }
 
 // ---------------------------------------------------------------------------
-// Cursor (~/.cursor) — most usage/billing is server-side.
+// Cursor
 // ---------------------------------------------------------------------------
 
-function readCursor(home: string): ToolStatus {
+function readCursor(home: string, _now: number, groups: AccountGroup[]): ToolStatus {
   const dir = join(home, ".cursor");
-  // Cursor's IDE state DB (state.vscdb) holds the account email, Stripe
-  // membership + subscription status, and per-chat activity — all token-free
-  // and the richest local signal. It lives under the OS app-support dir
+  // Cursor's IDE state DB (state.vscdb) lives under the OS app-support dir
   // (Linux ~/.config, macOS ~/Library, WSL the Windows-side path), separate
-  // from ~/.cursor (the agent-CLI config). Treat Cursor as installed if either
-  // exists, so a macOS GUI user who never ran the CLI still resolves.
+  // from ~/.cursor (the agent-CLI config).
   const vscdb = cursorGlobalVscdb(home);
   const status: ToolStatus = base("cursor");
-  status.installed = existsSync(dir) || vscdb != null;
+  status.installed = existsSync(dir) || vscdb != null || groups.length > 0;
   if (!status.installed) {
     status.notes.push("Cursor not found (no ~/.cursor and no state.vscdb)");
     return status;
   }
 
-  // Read the state DB when a SQLite engine is available (bun:sqlite); otherwise
-  // fall back to login-presence signals from the remote-server tokens / statsig id.
+  buildAccounts(status, groups);
+  rollUp(status);
+
   const items = vscdb
-    ? readVscdbItems(vscdb, [
-        "cursorAuth/cachedEmail",
-        "cursorAuth/stripeMembershipType",
-        "cursorAuth/stripeSubscriptionStatus",
-        "composer.composerHeaders",
-      ])
+    ? readVscdbItems(vscdb, ["cursorAuth/stripeSubscriptionStatus", "composer.composerHeaders"])
     : null;
-
   if (items) {
-    const email = strOr(items["cursorAuth/cachedEmail"]);
-    const membership = strOr(items["cursorAuth/stripeMembershipType"]);
     const subStatus = strOr(items["cursorAuth/stripeSubscriptionStatus"]);
-    status.account = email;
-    status.plan = membership;
-    status.loggedIn = Boolean(email) || subStatus === "active";
     if (subStatus) status.notes.push(`subscription ${subStatus}`);
-
     // Per-chat activity from composer headers (session count + last active).
     const headers = safeJson(items["composer.composerHeaders"]) as {
       allComposers?: Array<{ lastUpdatedAt?: number; createdAt?: number }>;
@@ -1357,7 +1977,8 @@ function readCursor(home: string): ToolStatus {
       for (const c of composers) last = Math.max(last, c.lastUpdatedAt ?? c.createdAt ?? 0);
       if (last > 0) status.lastActivity = new Date(last).toISOString();
     }
-  } else {
+  }
+  if (!status.accounts.length) {
     // Fallback: remote-server tokens + statsig id only prove a login exists.
     const serverDir = join(home, ".cursor-server");
     const tokenFiles = existsSync(serverDir)
@@ -1366,7 +1987,8 @@ function readCursor(home: string): ToolStatus {
     const statsig = readJson<Record<string, unknown>>(join(dir, "statsig-cache.json"));
     status.account = strOr(statsig?.userID); // opaque statsig id, not an email
     status.loggedIn = tokenFiles.length > 0 || status.account ? true : null;
-    status.notes.push("state.vscdb unreadable (needs a SQLite engine); login-presence only");
+    if (!items)
+      status.notes.push("state.vscdb unreadable (needs a SQLite engine); login-presence only");
   }
 
   // Session count fallback: per-project workspace dirs.
@@ -1380,147 +2002,13 @@ function readCursor(home: string): ToolStatus {
       status.lastActivity = latestMtimeIso(entries.map((d) => join(projects, d.name)));
   }
 
-  // Usage + billing live on cursor.com, not on disk. The enrichment step fetches
-  // them with the IDE's session token; without it (--no-api / non-Bun), the card
-  // shows local signals only.
+  // Usage + billing live server-side; the enrichment step fetches them.
   status.quota = null;
   status.tokensUsed = null;
-  status.notes.push("usage + billing come from cursor.com (fetched during the enrichment step)");
-
+  status.notes.push(
+    "usage + billing come from Cursor's servers (api2.cursor.sh / cursor.com), fetched during the enrichment step",
+  );
   return status;
-}
-
-/** First existing Cursor global `state.vscdb` across native / macOS / WSL-Windows roots. */
-function cursorGlobalVscdb(home: string): string | null {
-  const candidates = [
-    join(home, ".config", "Cursor", "User", "globalStorage", "state.vscdb"),
-    join(home, "Library", "Application Support", "Cursor", "User", "globalStorage", "state.vscdb"),
-  ];
-  // WSL: Cursor's GUI runs on Windows, so the live DB is under /mnt/c/Users/<u>/.
-  // Gated on the real home so a test with a synthetic `home` never reaches out
-  // to the host's actual Windows-side Cursor install.
-  if (home === homedir()) {
-    try {
-      if (existsSync("/mnt/c/Users")) {
-        for (const u of readdirSync("/mnt/c/Users")) {
-          candidates.push(
-            `/mnt/c/Users/${u}/AppData/Roaming/Cursor/User/globalStorage/state.vscdb`,
-          );
-        }
-      }
-    } catch {
-      // no /mnt/c — not WSL
-    }
-  }
-  return candidates.find((p) => existsSync(p)) ?? null;
-}
-
-/** vscdb copy fallback is skipped above this size (bytes). Cursor's global DB can be 3GB+. */
-const VSCDB_COPY_MAX_BYTES = 256 * 1024 * 1024;
-
-/**
- * Open a SQLite DB read-only and run `fn` against it, returning fn's result or
- * null. Uses `bun:sqlite`, lazily required so non-Bun runtimes degrade to null
- * rather than crashing at import.
- *
- * These DBs (Cursor's `state.vscdb`, Codex's `state_5.sqlite`) are usually
- * WAL-locked because their app is running, and over the WSL 9p mount a plain
- * open throws "disk I/O error". The fast path is SQLite immutable mode
- * (`file:...?immutable=1` with the URI open flag): it ignores the lock and the
- * WAL and reads only the btree pages the query touches, so lookups cost ~10ms
- * even on a multi-GB file. The tradeoff is it reads the committed main DB and
- * skips the newest uncommitted WAL frames, which is fine for a status snapshot.
- * Only if immutable fails AND the file is small do we snapshot-copy it (copying
- * a 3GB DB is never worth it).
- */
-function withSqlite<T>(dbPath: string, fn: (db: VscdbHandle) => T): T | null {
-  let Database: unknown;
-  let constants: { SQLITE_OPEN_READONLY: number; SQLITE_OPEN_URI: number } | undefined;
-  try {
-    const mod = require("bun:sqlite");
-    Database = mod.Database;
-    constants = mod.constants;
-  } catch {
-    return null; // no SQLite engine (plain Node runtime)
-  }
-
-  // Fast path: open immutable + read-only, no copy. Encode the path into a file:
-  // URI (leaves "/" intact, escapes spaces in Windows paths).
-  if (constants) {
-    try {
-      const flags = constants.SQLITE_OPEN_READONLY | constants.SQLITE_OPEN_URI;
-      const uri = `file:${encodeURI(dbPath)}?immutable=1`;
-      const db = new (Database as new (path: string, flags: number) => VscdbHandle)(uri, flags);
-      const out = fn(db);
-      db.close();
-      return out;
-    } catch {
-      // fall through to the size-guarded snapshot fallback
-    }
-  }
-
-  // Fallback: snapshot the DB (+ sidecars) and read the copy, only when small.
-  let size = Number.POSITIVE_INFINITY;
-  try {
-    size = statSync(dbPath).size;
-  } catch {
-    // stat failed; treat as too-large and skip the copy
-  }
-  if (size > VSCDB_COPY_MAX_BYTES) return null;
-
-  let tmp: string | null = null;
-  try {
-    tmp = mkdtempSync(join(tmpdir(), "harn-sqlite-"));
-    const dst = join(tmp, "copy.sqlite");
-    copyFileSync(dbPath, dst);
-    for (const ext of ["-wal", "-shm"]) {
-      if (existsSync(dbPath + ext)) {
-        try {
-          copyFileSync(dbPath + ext, dst + ext);
-        } catch {
-          // sidecar missing/locked — main file alone is still queryable
-        }
-      }
-    }
-    const db = new (Database as new (path: string, opts: { readonly: boolean }) => VscdbHandle)(
-      dst,
-      { readonly: true },
-    );
-    const out = fn(db);
-    db.close();
-    return out;
-  } catch {
-    return null;
-  } finally {
-    if (tmp) {
-      try {
-        rmSync(tmp, { recursive: true, force: true });
-      } catch {
-        // best-effort cleanup
-      }
-    }
-  }
-}
-
-/** Read specific keys from a Cursor `state.vscdb` (VS Code ItemTable). */
-function readVscdbItems(dbPath: string, keys: string[]): Record<string, string> | null {
-  return withSqlite(dbPath, (db) => {
-    const out: Record<string, string> = {};
-    for (const k of keys) {
-      const row = db.query("SELECT value FROM ItemTable WHERE key = ?").get(k) as
-        | { value: string | Uint8Array }
-        | undefined;
-      if (row?.value != null)
-        out[k] =
-          typeof row.value === "string" ? row.value : Buffer.from(row.value).toString("utf8");
-    }
-    return out;
-  });
-}
-
-interface VscdbHandle {
-  query(sql: string): { get(...params: unknown[]): unknown; all(...params: unknown[]): unknown[] };
-  close(): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -1543,26 +2031,9 @@ function base(tool: DevtoolName): ToolStatus {
     api: null,
     usage: null,
     spend: null,
+    accounts: [],
     notes: [],
   };
-}
-
-function readJson<T>(path: string): T | null {
-  try {
-    return JSON.parse(readFileSync(path, "utf8")) as T;
-  } catch {
-    return null;
-  }
-}
-
-/** Parse a JSON string that may be undefined; null on absence or parse error. */
-function safeJson(s: string | undefined): unknown {
-  if (!s) return null;
-  try {
-    return JSON.parse(s);
-  } catch {
-    return null;
-  }
 }
 
 /** Yield parsed JSON objects from a .jsonl file, skipping unparseable lines. */
@@ -1580,19 +2051,6 @@ function* readJsonlSync(path: string): Generator<unknown> {
     } catch {
       // partial/corrupt line — skip
     }
-  }
-}
-
-/** Decode the (non-secret) claims payload of a JWT. Never returns the token. */
-function decodeJwtClaims(jwt: string): Record<string, unknown> | null {
-  try {
-    const part = jwt.split(".")[1];
-    if (!part) return null;
-    const padded = part + "=".repeat((4 - (part.length % 4)) % 4);
-    const json = Buffer.from(padded, "base64url").toString("utf8");
-    return JSON.parse(json) as Record<string, unknown>;
-  } catch {
-    return null;
   }
 }
 
@@ -1642,12 +2100,4 @@ function latestMtimeIso(paths: string[]): string | null {
   let m = 0;
   for (const p of paths) m = Math.max(m, safeMtime(p));
   return m > 0 ? new Date(m).toISOString() : null;
-}
-
-function strOr(v: unknown): string | null {
-  return typeof v === "string" && v.length > 0 ? v : null;
-}
-
-function numOr(v: unknown): number | null {
-  return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
