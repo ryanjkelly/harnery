@@ -138,6 +138,7 @@ export const codexSpawner: Spawner = async (req: SpawnRequest): Promise<SpawnRes
       env: buildChildEnv(req.runId, {
         subscriptionOnly: req.subscriptionOnly,
         agentId: req.agentId,
+        ...(req.childEnv ? { allowList: req.childEnv } : {}),
       }),
       timeout: req.timeoutMs,
       processGroup: true,

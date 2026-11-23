@@ -31,6 +31,11 @@
  *    the result envelope, which is to say only once the work being watched is
  *    over. Passing in the id the orchestrator already owns is the only way to
  *    attribute in-flight activity to a particular agent.
+ *
+ * An `allowList` replaces all of the above with a closed environment: only the
+ * named variables, the preserved adapter locators, and the values it sets.
+ * API-key variables are never copied in that mode, and no workflow marker is
+ * added. A caller with no `allowList` gets exactly the rules above.
  */
 
 import { API_KEY_VARS } from "./billing.ts";
@@ -38,14 +43,47 @@ import { API_KEY_VARS } from "./billing.ts";
 const SCRUB_PREFIXES = ["CLAUDE", "CODEX", "CURSOR"];
 const PRESERVED_ADAPTER_VARS = new Set(["CODEX_HOME"]);
 
+/** A closed child environment: nothing is inherited unless it is named here. */
+export interface ChildEnvAllowList {
+  /** Names of the variables taken out of `source` when present (never their values). */
+  names: readonly string[];
+  /** Values set after copying, such as a child marker. */
+  set?: Readonly<Record<string, string>>;
+  /** Where the named values come from. Defaults to `process.env`. */
+  source?: Readonly<Record<string, string | undefined>>;
+}
+
 export interface ChildEnvOpts {
   /** Delete all API-key vars so children can only use stored logins. */
   subscriptionOnly?: boolean;
   /** Transcript agent id (`a1`, `a2`, …) this child is running. */
   agentId?: string;
+  /** Build a closed environment instead of copying the parent's (see module note). */
+  allowList?: ChildEnvAllowList;
+}
+
+/**
+ * The closed environment: the allow-listed names plus the adapter locators that
+ * name where a stored sign-in and config live (`CODEX_HOME`), never an API-key
+ * variable, then the values in `set`.
+ */
+export function buildAllowListedChildEnv(allowList: ChildEnvAllowList): Record<string, string> {
+  const source = allowList.source ?? process.env;
+  const keyVars = new Set<string>(Object.values(API_KEY_VARS));
+  const env: Record<string, string> = {};
+  for (const name of [...allowList.names, ...PRESERVED_ADAPTER_VARS]) {
+    if (keyVars.has(name)) continue;
+    const value = source[name];
+    if (value !== undefined) env[name] = value;
+  }
+  for (const [k, v] of Object.entries(allowList.set ?? {})) {
+    if (!keyVars.has(k)) env[k] = v;
+  }
+  return env;
 }
 
 export function buildChildEnv(runId?: string, opts: ChildEnvOpts = {}): Record<string, string> {
+  if (opts.allowList) return buildAllowListedChildEnv(opts.allowList);
   const env: Record<string, string> = {};
   const keyVars = new Set<string>(Object.values(API_KEY_VARS));
   for (const [k, v] of Object.entries(process.env)) {

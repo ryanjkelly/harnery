@@ -21,6 +21,7 @@ import type {
   PolicySpec,
 } from "../policy/index.ts";
 import type { BillingMode, BillingProber } from "./billing.ts";
+import type { ChildEnvAllowList } from "./child-env.ts";
 
 export const WORKFLOW_PROOF_SCHEMA_VERSION = 2 as const;
 
@@ -404,6 +405,10 @@ export interface SpawnRequest {
    * servers and no claude.ai connectors. `"inherit"` or an explicit server map
    * is the per-spawn opt-in (see `ClaudeMcpMode`). Other adapters ignore it. */
   mcp?: ClaudeMcpMode;
+  /** A closed child environment (see `buildChildEnv`). Absent keeps every
+   * spawner's ordinary environment. Only the codex spawner honours it today;
+   * the others ignore it. */
+  childEnv?: ChildEnvAllowList;
 }
 
 /**
