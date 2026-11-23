@@ -656,9 +656,10 @@ export function scheduleObservationKey(source: ScheduleSource, nativeId: string)
 }
 
 /**
- * The newest create or update observation for each `(source, native_id)`,
+ * The oldest create or update observation for each `(source, native_id)`,
  * keyed by `scheduleObservationKey`. The list uses it to stamp `created_by`
- * on a reader's record.
+ * on a reader's record, so the session that first made a schedule stays its
+ * creator when a later session changes it.
  */
 export function scheduleObservationsById(
   observations: readonly ScheduleObservation[],
@@ -666,10 +667,11 @@ export function scheduleObservationsById(
   const out = new Map<string, ScheduleObservation>();
   for (const observation of byObservedAt(observations)) {
     if (observation.operation === "delete" || observation.native_id === null) continue;
-    out.set(
-      scheduleObservationKey(scheduleObservationSource(observation.tool), observation.native_id),
-      observation,
+    const key = scheduleObservationKey(
+      scheduleObservationSource(observation.tool),
+      observation.native_id,
     );
+    if (!out.has(key)) out.set(key, observation);
   }
   return out;
 }

@@ -577,7 +577,7 @@ describe("capturedScheduleRecords", () => {
   });
 });
 
-test("scheduleObservationsById keeps the newest create or update per source and id", () => {
+test("scheduleObservationsById keeps the oldest create or update per source and id", () => {
   const map = scheduleObservationsById([
     obs({
       tool: "t3-code.schedule_task",
@@ -601,7 +601,7 @@ test("scheduleObservationsById keeps the newest create or update per source and 
     obs({ native_id: "c1" }),
     obs({ tool: "claude-code.remote_trigger", native_id: null }),
   ]);
-  expect(map.get(scheduleObservationKey("t3-code", "s1"))?.instance_id).toBe("new");
+  expect(map.get(scheduleObservationKey("t3-code", "s1"))?.instance_id).toBe("old");
   expect(map.get(scheduleObservationKey("captured", "c1"))?.native_id).toBe("c1");
   expect(map.size).toBe(2);
 });
