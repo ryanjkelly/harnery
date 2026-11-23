@@ -19,6 +19,7 @@ import {
   validateScheduleCursor,
   validateScheduleEnrollment,
   validateScheduleHeartbeat,
+  validateScheduleTimerInstall,
   validateScheduleJob,
   validateScheduleJobFile,
   validateScheduleRunRecord,
@@ -364,6 +365,28 @@ describe("private record validators", () => {
     };
     expect(validateScheduleHeartbeat(good).ok).toBe(true);
     expect(validateScheduleHeartbeat({ ...good, source: "cron" }).ok).toBe(false);
+    expect(
+      validateScheduleHeartbeat({
+        ...good,
+        source: "activity",
+        last_timer_tick_at: "2026-11-23T05:55:00Z",
+      }).ok,
+    ).toBe(true);
+    expect(validateScheduleHeartbeat({ ...good, last_timer_tick_at: "yesterday" }).ok).toBe(false);
+  });
+
+  test("timer install", () => {
+    const good = {
+      schema_version: 1,
+      installed_at: "2026-11-23T05:00:00Z",
+      interval_minutes: 5,
+      unit: "harnery-schedule-abc123.timer",
+      command: ["harn", "schedule", "tick", "--source", "timer"],
+    };
+    expect(validateScheduleTimerInstall(good).ok).toBe(true);
+    expect(validateScheduleTimerInstall({ ...good, command: [] }).ok).toBe(false);
+    expect(validateScheduleTimerInstall({ ...good, command: "harn schedule tick" }).ok).toBe(false);
+    expect(validateScheduleTimerInstall({ ...good, extra: 1 }).ok).toBe(false);
   });
 
   test("run record", () => {

@@ -54,6 +54,11 @@ export function scheduleHeartbeatPath(coordRoot: string): string {
   return join(scheduleStateDir(coordRoot), "heartbeat.json");
 }
 
+/** Present while `schedule install` has a timer installed for this checkout. */
+export function scheduleTimerInstallPath(coordRoot: string): string {
+  return join(scheduleStateDir(coordRoot), "timer.json");
+}
+
 /** Every run folder of one job sits here; names sort in time order. */
 export function scheduleRunsDir(coordRoot: string, jobId: string): string {
   return join(scheduleStateDir(coordRoot), "runs", assertId("job id", jobId));

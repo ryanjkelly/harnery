@@ -559,8 +559,29 @@ export interface ScheduleHeartbeat {
   last_ok_at?: string;
   /** What called the tick. */
   source: "timer" | "activity" | "manual";
-  /** Set when the timer is installed; overdue is twice this. */
+  /**
+   * The newest tick the installed timer made. Every tick carries it forward,
+   * so an activity or manual tick never hides a timer that stopped. The timer
+   * is overdue when this is older than twice the installed interval.
+   */
+  last_timer_tick_at?: string;
+  /** The interval of the timer tick that set `last_timer_tick_at`. */
   timer_interval_minutes?: number;
+}
+
+/**
+ * `timer.json`: written by `schedule install`, removed by `uninstall`. Its
+ * presence means this checkout expects a timer; the cue and doctor compare it
+ * with the heartbeat's `last_timer_tick_at`.
+ */
+export interface ScheduleTimerInstall {
+  schema_version: 1;
+  installed_at: string;
+  interval_minutes: number;
+  /** The timer unit's name, for example `harnery-schedule-<id>.timer`. */
+  unit: string;
+  /** The exact command line the unit runs, as an argument list. */
+  command: string[];
 }
 
 /**
@@ -813,6 +834,7 @@ export function validateScheduleHeartbeat(value: unknown): ScheduleValidation<Sc
       "last_tick_error",
       "last_ok_at",
       "source",
+      "last_timer_tick_at",
       "timer_interval_minutes",
     ],
     "heartbeat",
@@ -825,9 +847,31 @@ export function validateScheduleHeartbeat(value: unknown): ScheduleValidation<Sc
   }
   c.instant(h.last_ok_at, "heartbeat.last_ok_at", { optional: true });
   c.oneOf(h.source, ["timer", "activity", "manual"] as const, "heartbeat.source");
+  c.instant(h.last_timer_tick_at, "heartbeat.last_timer_tick_at", { optional: true });
   c.integer(h.timer_interval_minutes, "heartbeat.timer_interval_minutes", 1, 1440, {
     optional: true,
   });
+  return c.result(value);
+}
+
+export function validateScheduleTimerInstall(
+  value: unknown,
+): ScheduleValidation<ScheduleTimerInstall> {
+  const c = new ScheduleFieldChecker();
+  const t = c.object(value, "timer");
+  if (!t) return c.result(value);
+  c.onlyKeys(t, ["schema_version", "installed_at", "interval_minutes", "unit", "command"], "timer");
+  c.literal(t.schema_version, 1, "timer.schema_version");
+  c.instant(t.installed_at, "timer.installed_at");
+  c.integer(t.interval_minutes, "timer.interval_minutes", 1, 1440);
+  c.string(t.unit, "timer.unit");
+  if (
+    !Array.isArray(t.command) ||
+    t.command.length === 0 ||
+    t.command.some((part) => typeof part !== "string" || part.length === 0)
+  ) {
+    c.fail("timer.command", "must be a non-empty list of strings");
+  }
   return c.result(value);
 }
 
