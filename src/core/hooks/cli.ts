@@ -1057,6 +1057,36 @@ async function main(): Promise<number> {
     logError(run.coordRoot, err, { phase: "client-delegation-link" });
   }
 
+  // Schedule capture (ADR 0271): an agent's tool call that creates or deletes
+  // a schedule appends one private observation. The inline name check keeps
+  // the schedule modules unloaded for every other tool. Fails open.
+  if (
+    norm.event_type === "tool.completed" &&
+    eventName === "post-tool-use" &&
+    mayBeScheduleTool(run.payload?.tool_name) &&
+    !inScheduleChild()
+  ) {
+    try {
+      const { captureScheduleToolCall, isScheduleToolName } = await import(
+        "../schedule/capture.ts"
+      );
+      if (isScheduleToolName(run.payload?.tool_name)) {
+        captureScheduleToolCall({
+          coordRoot: run.coordRoot,
+          toolName: run.payload?.tool_name,
+          toolInput: run.payload?.tool_input,
+          toolResponse: run.payload?.tool_response,
+          instanceId: owner.instance_id,
+          agentName: priorCoordination?.name?.trim() || undefined,
+          task: priorCoordination?.task?.trim() || undefined,
+          observedAt: new Date().toISOString(),
+        });
+      }
+    } catch (err) {
+      logError(run.coordRoot, err, { phase: "schedule-capture" });
+    }
+  }
+
   // Phase 8: SessionStart post-emit: project the event so the heartbeat
   // lands synchronously, run stale-sweep, and emit the adapter-shaped
   // systemMessage JSON (peer table + peer inbox + wiring check).
@@ -1344,8 +1374,92 @@ async function receiveRemoteMail(coordRoot: string): Promise<void> {
   importMail(coordRoot, peerInbox(coordRoot), { throttle: true });
 }
 
+// ---------------------------------------------------------------------------
+// Schedules (ADR 0271, 0272). Every helper here is best effort and never
+// throws. The schedule modules load only for a project with schedule state or
+// for a tool name that may be a schedule tool.
+// ---------------------------------------------------------------------------
+
+/** Bound on how long session start waits for the schedule health cue. */
+const SCHEDULE_CUE_WAIT_MS = 1_500;
+
+/** A scheduled run's child skips capture, the cue and the tick. */
+function inScheduleChild(): boolean {
+  // Same variable as SCHEDULE_CHILD_ENV in core/schedule/job-types.ts.
+  return coordEnv("SCHEDULE_CHILD") === "1";
+}
+
+/** Cheap superset of `isScheduleToolName`: never misses a match. */
+function mayBeScheduleTool(toolName: string | undefined): boolean {
+  if (!toolName) return false;
+  return (
+    toolName === "CronCreate" ||
+    toolName === "CronDelete" ||
+    toolName === "RemoteTrigger" ||
+    toolName.startsWith("mcp__t3")
+  );
+}
+
+/**
+ * Whether the project has any schedule state. Literal copies of
+ * `scheduleJobFilePath` and `scheduleStateDir` in core/schedule/paths.ts, so
+ * the check costs two stats and no module load.
+ */
+function hasScheduleState(coordRoot: string): boolean {
+  return (
+    existsSync(join(coordRoot, ".harnery", "schedules.jsonc")) ||
+    existsSync(join(coordRoot, ".harnery", "private", "schedule"))
+  );
+}
+
+/** Start a detached catch-up tick when the throttle allows one. */
+async function startScheduleActivityTick(coordRoot: string): Promise<void> {
+  if (inScheduleChild() || !hasScheduleState(coordRoot)) return;
+  try {
+    const { shouldRunActivityTick, spawnDetachedScheduleTick } = await import(
+      "../schedule/tick.ts"
+    );
+    if (shouldRunActivityTick(coordRoot)) spawnDetachedScheduleTick(coordRoot);
+  } catch (err) {
+    logError(coordRoot, err, { phase: "schedule-activity-tick" });
+  }
+}
+
+/**
+ * Session start: read the scheduler's health (the heartbeat is read
+ * synchronously, before the tick below can refresh it), start the throttled
+ * tick, and resolve to the cue text. Resolves to "" when there is nothing to
+ * say or the assessment takes longer than `SCHEDULE_CUE_WAIT_MS`.
+ */
+async function startScheduleSessionWork(coordRoot: string): Promise<string> {
+  if (inScheduleChild() || !hasScheduleState(coordRoot)) return "";
+  try {
+    const { assessScheduleHealth, scheduleCueLines } = await import("../schedule/cue.ts");
+    const health = assessScheduleHealth({ coordRoot });
+    health.catch(() => {});
+    await startScheduleActivityTick(coordRoot);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<null>((resolveTimeout) => {
+      timer = setTimeout(() => resolveTimeout(null), SCHEDULE_CUE_WAIT_MS);
+      timer.unref?.();
+    });
+    try {
+      const result = await Promise.race([health, timeout]);
+      return result ? scheduleCueLines(result).join("\n") : "";
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  } catch (err) {
+    logError(coordRoot, err, { phase: "schedule-session-cue" });
+    return "";
+  }
+}
+
 async function handleSessionStarted(run: HookRun): Promise<void> {
   const { coordRoot, adapter, payload, owner, sessionId, data } = run;
+  // Schedules (ADR 0272): assess health before the catch-up tick can refresh
+  // the heartbeat, then start the tick; the cue is awaited just before emit.
+  const scheduleCue = startScheduleSessionWork(coordRoot);
   // Import mail from refs fetched earlier, so a message sent from another
   // machine while this task was away is in the inbox this context renders.
   try {
@@ -1391,6 +1505,7 @@ async function handleSessionStarted(run: HookRun): Promise<void> {
       logError(coordRoot, err, { phase: "context-recovery-session-start" });
     }
   }
+  const scheduleCueText = await scheduleCue;
   try {
     const injected = await emitSessionStartSystemMessage(
       coordRoot,
@@ -1399,7 +1514,7 @@ async function handleSessionStarted(run: HookRun): Promise<void> {
       data,
       adapter,
       recovery?.briefing ?? "",
-      [backupCue, autoUpdateCue].filter(Boolean).join("\n\n"),
+      [backupCue, autoUpdateCue, scheduleCueText].filter(Boolean).join("\n\n"),
     );
     if (injected && recovery) {
       completeRecoveryInjection(coordRoot, owner.instance_id, sessionId, recovery);
@@ -1529,6 +1644,8 @@ async function handleTurnStarted(run: HookRun): Promise<void> {
       logError(coordRoot, err, { phase: "prompt-context-user-prompt" });
     }
   }
+  // Schedules (ADR 0272): throttled catch-up tick only; no cue on a prompt.
+  await startScheduleActivityTick(coordRoot);
   // Project self-update (ADR 0229): see handleSessionStarted.
   const autoUpdateCue = await autoUpdateHookContext(coordRoot, owner.instance_id, {
     deliver: coordEnv("WORKFLOW_CHILD") !== "1",
