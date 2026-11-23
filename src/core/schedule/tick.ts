@@ -19,7 +19,10 @@
  *    claim. Both show in the tick result as `refused`.
  * 5. Creates the permanent claim, marks it `started`, calls the launcher,
  *    and marks it `finished`. Jobs run one after another.
- * 6. Always ends by writing the heartbeat.
+ * 6. Always ends by writing the heartbeat. A tick the timer started also
+ *    records that the timer is alive when it starts and once a minute while
+ *    its jobs run: the timer's service cannot fire again until the tick ends,
+ *    so without this a long run would look like a stopped clock.
  *
  * A claim with no start (a tick crashed between the claim and the launch)
  * is retried once by a later tick, when nothing newer for the job runs in
@@ -165,6 +168,8 @@ export interface ScheduleTickOptions {
   env?: Env;
   /** Defaults to `notifyScheduleOwner`. */
   notify?: ScheduleOwnerNotifier;
+  /** How often a running timer tick records that the timer is alive. Default one minute. */
+  timerKeepAliveMs?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -501,6 +506,10 @@ export async function runScheduleTick(opts: ScheduleTickOptions): Promise<Schedu
     return result;
   }
 
+  const keepAlive =
+    opts.source === "timer"
+      ? startTimerKeepAlive(opts.coordRoot, tickAt, opts.timerKeepAliveMs)
+      : null;
   const errors: string[] = [];
   try {
     const loaded = loadScheduleJobFile(opts.coordRoot);
@@ -558,11 +567,15 @@ export async function runScheduleTick(opts: ScheduleTickOptions): Promise<Schedu
   } catch (error) {
     errors.push(errorText(error));
   } finally {
+    keepAlive?.stop();
     if (errors.length > 0) {
       result.status = "error";
       result.error = oneLineScheduleError(errors.join("; "));
     }
     writeHeartbeatQuietly(opts.coordRoot, tickAt, opts.source, result.error);
+    // The heartbeat above dates the timer at the tick's start. After a long
+    // run that would already look overdue, so date it at the tick's end.
+    keepAlive?.touch(clock());
     try {
       lease.release();
     } catch {
@@ -570,6 +583,31 @@ export async function runScheduleTick(opts: ScheduleTickOptions): Promise<Schedu
     }
   }
   return result;
+}
+
+/** How often a running timer tick records that the timer is alive. */
+export const SCHEDULE_TIMER_KEEP_ALIVE_MS = 60_000;
+
+/**
+ * Record that the timer fired, now and at each interval until `stop()`. The
+ * interval timer is unreferenced, so it never keeps the process running.
+ */
+function startTimerKeepAlive(
+  coordRoot: string,
+  tickAt: Date,
+  everyMs: number = SCHEDULE_TIMER_KEEP_ALIVE_MS,
+): { stop(): void; touch(at: Date): void } {
+  const touch = (at: Date) => {
+    try {
+      touchScheduleTimerHeartbeat(coordRoot, at, { createIfMissing: true });
+    } catch {
+      // The tick's own heartbeat write reports a state folder that cannot be written.
+    }
+  };
+  touch(tickAt);
+  const timer = setInterval(() => touch(new Date()), Math.max(1, everyMs));
+  timer.unref?.();
+  return { stop: () => clearInterval(timer), touch };
 }
 
 function writeHeartbeatQuietly(

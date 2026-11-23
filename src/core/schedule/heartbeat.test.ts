@@ -108,3 +108,23 @@ describe("heartbeat", () => {
     expect(oneLineScheduleError("  ")).toBe("unknown error");
   });
 });
+
+describe("touchScheduleTimerHeartbeat with createIfMissing", () => {
+  test("writes a first valid heartbeat for a timer tick that has started", () => {
+    const root = mkdtempSync(join(tmpdir(), "harnery-schedule-touch-"));
+    try {
+      const at = new Date("2026-11-22T12:00:00.000Z");
+      expect(touchScheduleTimerHeartbeat(root, at)).toBeNull();
+      expect(readScheduleHeartbeat(root)).toBeNull();
+      const written = touchScheduleTimerHeartbeat(root, at, { createIfMissing: true });
+      expect(written).toMatchObject({
+        source: "timer",
+        last_tick_at: at.toISOString(),
+        last_timer_tick_at: at.toISOString(),
+      });
+      expect(readScheduleHeartbeat(root)).toEqual(written);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

@@ -371,6 +371,39 @@ describe("runScheduleTick", () => {
     });
   });
 
+  test("a running timer tick keeps recording that the timer is alive", async () => {
+    setup();
+    const slow = fakeLauncher("ok", 80);
+    const seen: (string | undefined)[] = [];
+    const launcher: ScheduleLauncher = async (request) => {
+      // No heartbeat existed before this tick; it wrote one when it started.
+      seen.push(readScheduleHeartbeat(root)?.last_timer_tick_at);
+      const out = await slow.launcher(request);
+      seen.push(readScheduleHeartbeat(root)?.last_timer_tick_at);
+      return out;
+    };
+    const result = await tick(at(61), launcher, { source: "timer", timerKeepAliveMs: 10 });
+    expect(result.status).toBe("ok");
+    expect(seen[0]).toBe(at(61).toISOString());
+    expect(typeof seen[1]).toBe("string");
+    expect(seen[1]).not.toBe(seen[0]);
+    expect(readScheduleHeartbeat(root)).toMatchObject({
+      source: "timer",
+      last_tick_status: "ok",
+      last_tick_at: at(61).toISOString(),
+      last_ok_at: at(61).toISOString(),
+    });
+  });
+
+  test("an activity tick never records a timer time by itself", async () => {
+    setup();
+    await tick(at(61), fakeLauncher("ok", 30).launcher, {
+      source: "activity",
+      timerKeepAliveMs: 5,
+    });
+    expect(readScheduleHeartbeat(root)?.last_timer_tick_at).toBeUndefined();
+  });
+
   test("a busy timer tick records only that the timer fired", async () => {
     setup();
     writeScheduleHeartbeat(root, { at: at(1), source: "activity", status: "ok" });

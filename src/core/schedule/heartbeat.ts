@@ -113,17 +113,31 @@ export function writeScheduleHeartbeat(
 }
 
 /**
- * A timer tick that found another tick running records only that the timer
- * fired: it updates `last_timer_tick_at` and `timer_interval_minutes` and
- * keeps everything else, because the running tick writes its own result.
- * Without a previous heartbeat it writes nothing. Returns the written
- * heartbeat or null.
+ * Record only that the timer is alive at `at`: update `last_timer_tick_at`
+ * and `timer_interval_minutes` and keep everything else. Used by a timer tick
+ * that found another tick running, and by a running timer tick while its job
+ * runs, because the timer's service cannot fire again until that tick ends
+ * and a long run must not look like a stopped clock.
+ *
+ * Without a previous heartbeat it writes nothing, unless `createIfMissing` is
+ * set: then it writes a first heartbeat for a timer tick that has started,
+ * which the tick replaces with its real result when it ends. Returns the
+ * written heartbeat or null.
  */
-export function touchScheduleTimerHeartbeat(coordRoot: string, at: Date): ScheduleHeartbeat | null {
+export function touchScheduleTimerHeartbeat(
+  coordRoot: string,
+  at: Date,
+  opts: { createIfMissing?: boolean } = {},
+): ScheduleHeartbeat | null {
   const previous = readScheduleHeartbeat(coordRoot);
-  if (!previous) return null;
+  if (!previous && !opts.createIfMissing) return null;
   const next: ScheduleHeartbeat = {
-    ...previous,
+    ...(previous ?? {
+      schema_version: 1,
+      last_tick_at: at.toISOString(),
+      last_tick_status: "ok",
+      source: "timer",
+    }),
     last_timer_tick_at: at.toISOString(),
     timer_interval_minutes: scheduleTimerIntervalMinutes(coordRoot),
   };
