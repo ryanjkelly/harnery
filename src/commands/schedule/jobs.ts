@@ -141,7 +141,7 @@ function envOf(ctx: Ctx): Readonly<Record<string, string | undefined>> {
 
 function out(ctx: Ctx, json: boolean | undefined, payload: unknown, lines: string[]): void {
   if (json) ctx.emit.data(payload);
-  else ctx.emit.text(lines.join("\n"));
+  else ctx.emit.text(`${lines.join("\n")}\n`);
 }
 
 // ---------------------------------------------------------------------------
@@ -948,7 +948,7 @@ function runHistory(ctx: Ctx, id: string, opts: { limit?: string; json?: boolean
     return;
   }
   if (rows.length === 0) {
-    ctx.emit.text(`No runs recorded for job "${id}".`);
+    ctx.emit.text(`No runs recorded for job "${id}".\n`);
     return;
   }
   const zone = resolveTimeZone(root);
@@ -959,6 +959,7 @@ function runHistory(ctx: Ctx, id: string, opts: { limit?: string; json?: boolean
         (r) =>
           `  ${formatLocal(r.scheduled_for, zone)}  ${r.kind}  started ${formatLocal(r.started_at, zone)}  ${formatDuration(r.duration_ms)}  ${r.result}  ${r.report_path ?? "(no report path)"}`,
       ),
+      "",
     ].join("\n"),
   );
 }
