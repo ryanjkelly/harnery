@@ -3,8 +3,9 @@
  * or uncertain runs and about a stopped clock.
  *
  * `assessScheduleHealth` reads only files (the heartbeat, the timer install
- * record, each job's run records and claims) and, only when a timer install
- * record exists, asks systemd for the timer unit's state. It never writes.
+ * record, the job file and enrollments, each job's run records and claims)
+ * and, only when a timer install record exists, asks systemd for the timer
+ * unit's state. It never writes.
  *
  * Order matters. The heartbeat is the evidence that the clock stopped, and any
  * tick refreshes it. Every file is read synchronously, before the first
@@ -20,9 +21,12 @@
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
+import { resolveMachineLabel } from "../../lib/machine.ts";
 import { resolveBinName } from "../config.ts";
 import { defaultScheduleCommandRunner } from "./command-runner.ts";
+import { checkScheduleEnrollment, readScheduleEnrollment } from "./enrollment.ts";
 import {
+  isScheduleJobEnabled,
   isScheduleKebabId,
   parseScheduleClaimFileName,
   parseScheduleJobFileText,
@@ -35,6 +39,7 @@ import {
   validateScheduleHeartbeat,
   validateScheduleTimerInstall,
 } from "./job-types.ts";
+import { loadScheduleJobFile, resolveScheduleJob } from "./jobs.ts";
 import {
   scheduleClaimsDir,
   scheduleHeartbeatPath,
@@ -64,6 +69,7 @@ export type ScheduleProblemKind =
   | "run-failed"
   | "run-attention"
   | "run-uncertain"
+  | "job-stopped"
   | "tick-error"
   | "timer-overdue"
   | "timer-unit"
@@ -123,6 +129,10 @@ export interface AssessScheduleHealthOptions {
   unitState?: ScheduleUnitStateProbe;
   /** Default: signal 0; `EPERM` counts as alive. */
   isProcessAlive?: (pid: number) => boolean;
+  /** Default: `resolveMachineLabel()`. */
+  machine?: string;
+  /** Default: `process.env`; used to find each gather command's executable. */
+  env?: Readonly<Record<string, string | undefined>>;
 }
 
 /**
@@ -175,6 +185,7 @@ export async function assessScheduleHealth(
   for (const jobId of health.jobs) {
     health.problems.push(...runProblems(root, jobId, now, alive, jobTimeoutMs));
   }
+  if (health.job_file) health.problems.push(...stoppedJobProblems(root, opts));
 
   if (health.timer) {
     const probe = opts.unitState ?? systemctlUnitStateProbe();
@@ -215,6 +226,9 @@ export function scheduleProblemHint(
   problem: ScheduleProblem,
   bin: string = resolveBinName(),
 ): string {
+  if (problem.kind === "job-stopped" && problem.job_id) {
+    return `review it and run \`${bin} schedule enroll ${problem.job_id}\``;
+  }
   if (problem.job_id) {
     const where = problem.report ? `report ${problem.report}, ` : "";
     return `${where}see \`${bin} schedule history ${problem.job_id}\``;
@@ -293,6 +307,47 @@ export function parseSystemctlShow(
 // ---------------------------------------------------------------------------
 // Internals
 // ---------------------------------------------------------------------------
+
+/**
+ * Jobs that were enrolled in this checkout and no longer pass the enrollment
+ * check because an execution field changed (an edit, or a pulled commit).
+ * Such a job does not run until it is enrolled again, and without this line
+ * nothing would say so. A job that was never enrolled here, is disabled, or
+ * names another host is not a problem.
+ */
+function stoppedJobProblems(root: string, opts: AssessScheduleHealthOptions): ScheduleProblem[] {
+  const problems: ScheduleProblem[] = [];
+  try {
+    const loaded = loadScheduleJobFile(root);
+    if (!loaded.ok) return problems;
+    let machine: string | null = null;
+    for (const job of loaded.file.jobs) {
+      if (!isScheduleJobEnabled(job)) continue;
+      if (!readScheduleEnrollment(root, job.id)) continue;
+      machine ??= opts.machine ?? resolveMachineLabel();
+      if (job.host !== machine) continue;
+      const resolution = resolveScheduleJob(job, { coordRoot: root, env: opts.env ?? process.env });
+      const check = checkScheduleEnrollment({
+        coordRoot: root,
+        job,
+        resolved: { executables: resolution.executables, zone: resolution.zone },
+        machine,
+      });
+      if (check.state !== "changed") continue;
+      const missing =
+        resolution.missing.length > 0 ? ` (not found: ${resolution.missing.join(", ")})` : "";
+      problems.push({
+        kind: "job-stopped",
+        area: "runs",
+        job_id: job.id,
+        message: `scheduled job ${job.id} changed since it was enrolled and will not run${missing}`,
+      });
+    }
+  } catch {
+    // An unreadable job file or enrollment is reported by the list and the tick.
+  }
+  return problems;
+}
 
 type ReadOutcome<T> =
   | { state: "absent" }

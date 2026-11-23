@@ -12,6 +12,7 @@ import {
   scheduleCueLines,
   systemctlUnitStateProbe,
 } from "./cue.ts";
+import { enrollScheduleJob } from "./enrollment.ts";
 import {
   parseScheduleJobFileText,
   type ScheduleClaim,
@@ -23,9 +24,11 @@ import {
   validateScheduleRunRecord,
   validateScheduleTimerInstall,
 } from "./job-types.ts";
+import { resolveScheduleJob } from "./jobs.ts";
 import {
   scheduleClaimPath,
   scheduleHeartbeatPath,
+  scheduleJobFilePath,
   scheduleRunDir,
   scheduleRunRecordPath,
   scheduleRunStamp,
@@ -459,5 +462,56 @@ describe("scheduleCueLines", () => {
     expect(lines.at(-1)).toBe("and 4 more schedule problems; run `harn doctor`");
     health.problems = health.problems.slice(0, SCHEDULE_CUE_MAX_LINES);
     expect(scheduleCueLines(health, "harn")).toHaveLength(SCHEDULE_CUE_MAX_LINES);
+  });
+});
+
+describe("a job stopped by an edit", () => {
+  const job = (prompt: string) => ({
+    id: "nightly-check",
+    title: "Nightly check",
+    host: "box",
+    trigger: { type: "every" as const, minutes: 60 },
+    timeout_minutes: 10,
+    max_launches_per_day: 4,
+    agent: { adapter: "codex", prompt },
+  });
+  function setup(enrolledPrompt: string, filePrompt: string, extra: object = {}) {
+    const r = root();
+    const registryDir = join(r, "registry");
+    const enrolled = job(enrolledPrompt);
+    const done = enrollScheduleJob({
+      coordRoot: r,
+      job: enrolled,
+      resolved: resolveScheduleJob(enrolled, { coordRoot: r, env: {} }),
+      machine: "box",
+      now: NOW,
+      registryDir,
+    });
+    expect(done.ok).toBe(true);
+    writeJson(scheduleJobFilePath(r), { version: 1, jobs: [{ ...job(filePrompt), ...extra }] });
+    return r;
+  }
+  const assess = (r: string, machine = "box") =>
+    assessScheduleHealth({ coordRoot: r, now: NOW, machine, env: {} });
+
+  test("is reported with the command that enrolls it again", async () => {
+    const health = await assess(setup("Judge the evidence.", "Judge the evidence, strictly."));
+    expect(health.problems).toMatchObject([
+      { kind: "job-stopped", area: "runs", job_id: "nightly-check" },
+    ]);
+    const lines = scheduleCueLines(health, "harn");
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("will not run");
+    expect(lines[0]).toContain("harn schedule enroll nightly-check");
+    expect(lines[0]).not.toContain("strictly");
+  });
+
+  test("an unchanged, a disabled, another machine's and a never-enrolled job add nothing", async () => {
+    expect((await assess(setup("Same.", "Same."))).problems).toEqual([]);
+    expect((await assess(setup("A.", "B.", { enabled: false }))).problems).toEqual([]);
+    expect((await assess(setup("A.", "B."), "other-box")).problems).toEqual([]);
+    const fresh = root();
+    writeJson(scheduleJobFilePath(fresh), { version: 1, jobs: [job("Never enrolled.")] });
+    expect((await assess(fresh)).problems).toEqual([]);
   });
 });
