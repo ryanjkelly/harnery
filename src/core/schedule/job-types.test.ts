@@ -19,10 +19,10 @@ import {
   validateScheduleCursor,
   validateScheduleEnrollment,
   validateScheduleHeartbeat,
-  validateScheduleTimerInstall,
   validateScheduleJob,
   validateScheduleJobFile,
   validateScheduleRunRecord,
+  validateScheduleTimerInstall,
 } from "./job-types.ts";
 import {
   scheduleClaimPath,
