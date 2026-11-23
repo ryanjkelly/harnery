@@ -5,6 +5,7 @@ import { HelperAgentsBlock } from "@/components/HelperAgentsBlock";
 import { Notice } from "@/components/layout/Notice";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { PageShell } from "@/components/layout/PageShell";
+import { Section } from "@/components/layout/Section";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/cn";
@@ -93,17 +94,22 @@ export default async function DevtoolsPage() {
           {report.error}
         </Notice>
       ) : (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {report.tools.map((t) => (
-            <ToolCard
-              key={t.tool}
-              tool={t}
-              now={now}
-              windowDays={report.windowDays}
-              helpers={helpers}
-            />
-          ))}
-        </div>
+        <>
+          <UsageBoard tools={report.tools} now={now} />
+          <Section title="Details" className="mt-6">
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {report.tools.map((t) => (
+                <ToolCard
+                  key={t.tool}
+                  tool={t}
+                  now={now}
+                  windowDays={report.windowDays}
+                  helpers={helpers}
+                />
+              ))}
+            </div>
+          </Section>
+        </>
       )}
 
       {report.generatedAt && !report.error ? (
@@ -112,6 +118,178 @@ export default async function DevtoolsPage() {
         </p>
       ) : null}
     </PageShell>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// usage board: one row per account, showing what is LEFT so it reads at a glance
+// ---------------------------------------------------------------------------
+
+interface Meter {
+  label: string;
+  /** Percent of the allowance still available, 0-100, or null when unknown. */
+  left: number | null;
+  resetsAt: string | null;
+}
+
+/** Remaining-capacity colour: red at 10% or less, amber at 30% or less, else green. */
+function leftTone(left: number | null): Tone {
+  if (left == null) return "neutral";
+  if (left <= 10) return "danger";
+  if (left <= 30) return "warn";
+  return "done";
+}
+
+function windowName(window: string): string {
+  if (window === "5h") return "5-hour";
+  const w = window.replace(/\s*·\s*/g, " ");
+  return w.charAt(0).toUpperCase() + w.slice(1);
+}
+
+function toLeft(usedPercent: number | null): number | null {
+  if (usedPercent == null) return null;
+  return 100 - Math.max(0, Math.min(100, Math.round(usedPercent)));
+}
+
+/** Every limit an account reports, as remaining percentages. */
+function accountMeters(a: AccountUsage): Meter[] {
+  const out: Meter[] = (a.quota ?? []).map((q) => ({
+    label: windowName(q.window),
+    left: toLeft(q.usedPercent),
+    resetsAt: q.resetsAt,
+  }));
+  if (a.usage) {
+    const reset = a.usage.cycleEnd;
+    if (a.usage.totalPercentUsed != null)
+      out.push({ label: "Monthly", left: toLeft(a.usage.totalPercentUsed), resetsAt: reset });
+    if (a.usage.apiPercentUsed != null)
+      out.push({ label: "API models", left: toLeft(a.usage.apiPercentUsed), resetsAt: reset });
+    if (a.usage.firstPartyPercentUsed != null)
+      out.push({ label: "Auto", left: toLeft(a.usage.firstPartyPercentUsed), resetsAt: reset });
+  }
+  return out;
+}
+
+function UsageBoard({ tools, now }: { tools: ToolStatus[]; now: number }) {
+  const rows = tools.flatMap((t) => t.accounts.map((a) => ({ tool: t.tool, account: a })));
+  if (!rows.length) return null;
+  return (
+    <Section
+      title="Usage left"
+      hint="What each account has left. The big number is its tightest limit right now."
+    >
+      <div className="overflow-hidden rounded-lg border border-border bg-card">
+        {rows.map(({ tool, account }) => (
+          <UsageRow key={`${tool}:${account.id}`} tool={tool} account={account} now={now} />
+        ))}
+      </div>
+    </Section>
+  );
+}
+
+function UsageRow({
+  tool,
+  account: a,
+  now,
+}: {
+  tool: ToolStatus["tool"];
+  account: AccountUsage;
+  now: number;
+}) {
+  const meters = accountMeters(a);
+  const known = meters.filter((m) => m.left != null);
+  const tightest = known.length
+    ? known.reduce((min, m) => ((m.left ?? 101) < (min.left ?? 101) ? m : min))
+    : null;
+  const tone: Tone = !a.loggedIn && !known.length ? "danger" : leftTone(tightest?.left ?? null);
+  const source = a.source ? SOURCE_LABELS[a.source] : null;
+  return (
+    <div
+      className={cn(
+        "grid gap-x-5 gap-y-3 border-b border-l-4 border-border px-4 py-3 last:border-b-0 md:grid-cols-[minmax(12rem,17rem)_8.5rem_1fr] md:items-center",
+        TONE[tone].accentBorder,
+      )}
+    >
+      <div className="min-w-0">
+        <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+          {TOOL_LABELS[tool]}
+          {a.plan ? ` · ${titleize(a.plan)}` : ""}
+        </div>
+        <div className="truncate font-medium">{a.email ?? a.id.replace(/^[^:]+:/, "")}</div>
+        {a.stale || (source && a.source !== "direct") ? (
+          <div className="mt-1">
+            <Badge tone={a.stale ? "warn" : "accent"} title={source?.hint}>
+              {a.stale ? `${source?.label ?? "snapshot"} · stale` : `via ${source?.label}`}
+            </Badge>
+          </div>
+        ) : null}
+      </div>
+
+      <div>
+        {tightest ? (
+          <>
+            <div className={cn("text-3xl font-semibold leading-none tabular-nums", TONE[tone].text)}>
+              {tightest.left}%
+            </div>
+            <div className="mt-1 text-xs text-muted-foreground">
+              left · {tightest.label.toLowerCase()}
+            </div>
+          </>
+        ) : (
+          <div className={cn("text-sm font-medium", TONE[tone].text)}>
+            {a.loggedIn ? "no usage data" : "signed out"}
+          </div>
+        )}
+      </div>
+
+      <div className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3">
+        {meters.map((m) => (
+          <LeftMeter key={m.label} meter={m} now={now} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function LeftMeter({ meter: m, now }: { meter: Meter; now: number }) {
+  const tone = leftTone(m.left);
+  return (
+    <Tooltip
+      side="top"
+      content={
+        <div className="space-y-0.5">
+          <div>
+            {m.left != null ? `${m.left}% of the ${m.label.toLowerCase()} limit left` : "unknown"}
+          </div>
+          {m.resetsAt ? (
+            <div className="opacity-80">
+              resets <FormattedDateTime iso={m.resetsAt} />
+            </div>
+          ) : null}
+        </div>
+      }
+      triggerClassName="block w-full"
+    >
+      <div className="w-full cursor-help">
+        <div className="flex items-baseline justify-between gap-2 text-xs">
+          <span className="text-muted-foreground">{m.label}</span>
+          <span className={cn("font-semibold tabular-nums", TONE[tone].text)}>
+            {m.left != null ? `${m.left}%` : "?"}
+          </span>
+        </div>
+        <div className="mt-1 h-2 w-full overflow-hidden rounded-full bg-muted">
+          <div
+            className={cn("h-full rounded-full", TONE[tone].dot)}
+            style={{ width: `${m.left ?? 0}%` }}
+          />
+        </div>
+        {m.resetsAt ? (
+          <div className="mt-1 text-[11px] text-muted-foreground">
+            {resetLabel(m.resetsAt, now)}
+          </div>
+        ) : null}
+      </div>
+    </Tooltip>
   );
 }
 
@@ -428,24 +606,18 @@ function QuotaBar({
   now: number;
   hint?: string;
 }) {
-  const clamped = pct != null ? Math.max(0, Math.min(100, Math.round(pct))) : null;
-  // Color grammar: emerald under load, amber past two-thirds, red past 90%.
-  const barColor =
-    clamped == null
-      ? TONE.neutral.dot
-      : clamped >= 90
-        ? TONE.danger.dot
-        : clamped >= 66
-          ? TONE.warn.dot
-          : TONE.done.dot;
-  const remaining = clamped != null ? 100 - clamped : null;
+  // Shows what is LEFT (bar = remaining), matching the usage board above.
+  const remaining = toLeft(pct);
+  const clamped = remaining != null ? 100 - remaining : null;
+  const tone = leftTone(remaining);
+  const barColor = TONE[tone].dot;
   return (
     <Tooltip
       side="top"
       content={
         <div className="space-y-0.5">
           <div>
-            {clamped != null ? `${remaining}% of the ${window} window remaining` : "usage unknown"}
+            {remaining != null ? `${remaining}% of the ${windowName(window)} limit left (${clamped}% used)` : "usage unknown"}
           </div>
           {resetsAt ? (
             <div className="opacity-80">
@@ -459,15 +631,15 @@ function QuotaBar({
     >
       <div className="w-full cursor-help">
         <div className="flex items-baseline justify-between gap-2 text-xs">
-          <span className="text-muted-foreground">{window} quota</span>
-          <span className="font-medium tabular-nums">
-            {clamped != null ? `${clamped}%` : "unknown"}
+          <span className="text-muted-foreground">{windowName(window)}</span>
+          <span className={cn("font-medium tabular-nums", TONE[tone].text)}>
+            {remaining != null ? `${remaining}% left` : "unknown"}
           </span>
         </div>
         <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-muted">
           <div
             className={`h-full rounded-full ${barColor}`}
-            style={{ width: `${clamped ?? 0}%` }}
+            style={{ width: `${remaining ?? 0}%` }}
           />
         </div>
         {resetsAt ? (
