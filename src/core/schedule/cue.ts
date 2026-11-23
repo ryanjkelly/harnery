@@ -233,8 +233,10 @@ export function scheduleProblemHint(
     const where = problem.report ? `report ${problem.report}, ` : "";
     return `${where}see \`${bin} schedule history ${problem.job_id}\``;
   }
-  if (problem.kind === "timer-unit")
-    return `run \`${bin} schedule install\` again or \`${bin} doctor\``;
+  if (problem.kind === "timer-unit" || problem.kind === "timer-overdue") {
+    return `check \`${bin} schedule timer-status\`, or run \`${bin} schedule install\` again`;
+  }
+  if (problem.kind === "tick-error") return `run \`${bin} schedule tick\` to see it again`;
   return `see \`${bin} doctor\``;
 }
 
