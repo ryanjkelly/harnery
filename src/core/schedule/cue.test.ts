@@ -308,7 +308,7 @@ describe("assessScheduleHealth", () => {
     const h = await assessScheduleHealth({ coordRoot: r, now: NOW, unitState: active });
     expect(h.problems.map((p) => p.kind)).toEqual(["tick-error"]);
     expect(h.problems[0]?.message).toContain("job file invalid");
-    expect(scheduleCueLines(h, "harn")[0]).toContain("`harn doctor`");
+    expect(scheduleCueLines(h, "harn")[0]).toContain("`harn schedule tick`");
   });
 
   test("a timer tick older than twice the interval is overdue", async () => {
