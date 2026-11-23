@@ -1,0 +1,641 @@
+---
+title: harn schedule
+description: List the schedules every agent app and the operating system hold, and run jobs from a tracked file at their due times, with or without an open session.
+sidebar:
+  order: 50
+---
+
+```
+harn schedule <subcommand> [options]
+```
+
+`harn schedule` has two halves.
+
+- **The list.** `list` and `show` read the schedules that agent apps and the
+  operating system already hold, plus the ones an agent created through a tool
+  call, into one list. Harnery never creates, edits, pauses or deletes a
+  schedule inside another app. See [ADR 0271](/decisions/0271-one-list-of-schedules/).
+- **The scheduler.** The other subcommands manage Harnery's own jobs, which
+  live in a tracked file, `.harnery/schedules.jsonc`. A job runs only on a
+  machine where it was enrolled, at most once per due time, and its agent, if
+  it has one, runs read-only. See
+  [ADR 0272](/decisions/0272-scheduler-with-an-opt-in-timer/).
+
+The [Scheduled jobs guide](/guides/scheduled-jobs/) walks through setting up a
+first job. This page is the reference.
+
+## Subcommands
+
+```bash
+harn schedule list [--source <name>]... [--json]
+harn schedule show <id | source:id> [--json]
+harn schedule add <id> (--once <iso> | --every <minutes> | --cron "<expr>") [job options] [--json]
+harn schedule add <id> --from-file <job.json> [--json]
+harn schedule enroll <id> [--yes] [--json]
+harn schedule pause <id> [--json]
+harn schedule resume <id> [--json]
+harn schedule remove <id> [--yes] [--json]
+harn schedule run <id> [--json]
+harn schedule history <id> [--limit <n>] [--json]
+harn schedule tick [--source timer|activity|manual] [--root <dir>]
+harn schedule install [--interval-minutes <n>] [--json]
+harn schedule uninstall [--json]
+harn schedule timer-status [--json]
+```
+
+Every subcommand needs a Harnery project; outside one it prints an error and
+exits 1.
+
+## Sources and coverage
+
+Every record comes from one source.
+
+| Source | What it reads | Needs the project's opt-in |
+| --- | --- | --- |
+| `t3-code` | T3 Code's scheduled tasks, from its private SQLite store | yes |
+| `codex-app` | The Codex app's automations, from its private SQLite store, with its per-automation TOML files as a fallback. Under WSL it also looks in the Windows user's Codex folder. | yes |
+| `os-timer` | This user's systemd timers and crontab | no |
+| `captured` | Schedules an agent created or deleted through a tool call that Harnery's hook saw | no |
+| `harnery` | Jobs in `.harnery/schedules.jsonc` | no |
+
+The two private-store readers run only when the project's own
+`.harnery/config.jsonc` lists them:
+
+```jsonc
+// .harnery/config.jsonc
+{ "schedule": { "readers": ["t3-code", "codex-app"] } }
+```
+
+Only the project file counts. A user-global or machine-local config file never
+turns a reader on. Unknown names are ignored.
+
+Every output, text or JSON, prints one coverage row per source, even when the
+source returned no records, so an empty section is never mistaken for "no
+schedules".
+
+| Coverage | Meaning |
+| --- | --- |
+| `current` | The reader read the live store. |
+| `stale` | The reader fell back to a copy that may lag behind the live store, such as the Codex app's TOML files when its database cannot be copied. |
+| `unreadable` | The store exists but could not be read: no access, a failed copy, or a reader error. The detail column says which. |
+| `unsupported` | The platform or the store's layout is one the reader does not know, so it did not guess. |
+| `disabled` | A private-store reader this project has not turned on. |
+
+Readers select named schedule fields only. Prompts, inbox text, webhook
+tokens, secrets and crontab command text are never read out of another app's
+store. SQLite stores are read from a temporary copy of the database and its
+`-wal` and `-shm` files, so the owning app is never locked out.
+
+Each record carries its source and account, the source's id and title, the
+trigger (`once`, `interval`, `cron`, `rrule` or `event`, with the source's raw
+text), where it runs, whether it is enabled, the next run time, the last run
+(`succeeded`, `failed`, `skipped`, `attention` or `unknown`), and, when a hook
+saw it happen, the agent session that created it. A crontab entry has no
+recorded outcome, so its last run is `unknown`.
+
+## `list`
+
+```bash
+harn schedule list [--source <name>]... [--json]
+```
+
+Prints one table row per schedule (source, title, trigger, next run, last run,
+enabled, created by), then the coverage table. Times are shown in the
+project's [time zone](/reference/config-schema/#timezone).
+
+| Option | Meaning |
+| --- | --- |
+| `--source <name>` | Show only records from this source. Repeat it for several. The coverage table still lists every source. |
+| `--json` | Print `{ records, coverage }` as JSON. |
+
+Exit codes: `0` on success, `1` for an unknown `--source` name or no project.
+
+```bash
+harn schedule list --source harnery --source os-timer
+```
+
+## `show`
+
+```bash
+harn schedule show <id | source:id> [--json]
+```
+
+Prints one record in full, with the coverage of its source. For a `harnery`
+job it also prints the enrollment state on this machine and the path of the
+newest report. When the same id exists in two sources, name one with the
+`source:` prefix.
+
+| Option | Meaning |
+| --- | --- |
+| `--json` | Print `{ record, coverage }`, plus `harnery` with the enrollment state and latest report for a Harnery job. |
+
+Exit codes: `0` when one record matches; `1` when none matches (the hint names
+any source that could not be read) or when more than one does.
+
+```bash
+harn schedule show harnery:nightly-deps
+```
+
+## `add`
+
+```bash
+harn schedule add <id> (--once <iso> | --every <minutes> | --cron "<expr>") [options]
+harn schedule add <id> --from-file <job.json>
+```
+
+Adds a job to `.harnery/schedules.jsonc`, creating the file if needed. When
+the project's `.harnery/.gitignore` exists and lacks it, `add` also appends
+`!schedules.jsonc` so Git tracks the job file. A new job is not enrolled, so
+it does not run until [`enroll`](#enroll).
+
+| Option | Meaning |
+| --- | --- |
+| `--title <text>` | A title for people. Default: the id. |
+| `--once <iso>` | Run once at this instant. It needs `Z` or an offset. |
+| `--every <minutes>` | Run every N minutes, at least 5, counted from enrollment. |
+| `--cron "<expr>"` | A five-field cron expression in the project's time zone. |
+| `--host <label>` | The machine label allowed to run the job. Default: this machine's label. |
+| `--gather <name=argv>` | A gather command, as a name and a JSON array: `status='["git","status","--short"]'`. Repeatable. |
+| `--gather-json <file>` | A JSON file holding the whole `gather` array, for commands that need `finding_exit_codes` or `env`. |
+| `--adapter <id>` | The adapter of the judge agent. |
+| `--model <model>` | The judge's model. |
+| `--effort <level>` | The judge's reasoning effort. |
+| `--prompt <text>` | The judge's prompt. |
+| `--prompt-file <file>` | Read the judge's prompt from a file. Not with `--prompt`. |
+| `--timeout-minutes <n>` | One deadline for the whole job, 1 to 240. Default 30. |
+| `--launches-per-day <n>` | Launches allowed per day, 1 to 48. Default 24. |
+| `--owner <agent>` | The agent name to ping when a run needs attention or fails. |
+| `--from-file <job.json>` | Read one whole job object from a JSON file. It cannot be combined with the job options above. A missing `id` is taken from the argument, and a missing `host` defaults to this machine. |
+| `--json` | Print the result as JSON. |
+
+Exactly one trigger option is required unless `--from-file` is used. Giving
+any agent option requires both `--adapter` and a prompt. A job needs gather
+commands, an agent, or both.
+
+`add` and the other subcommands that change the job file (`pause`, `resume`,
+`remove`) rewrite it as plain formatted JSON. Comments in the file are lost
+when one of them writes it.
+
+Exit codes: `0` when the job was added; `1` when the input is invalid, the id
+is already taken, or the job file is invalid.
+
+```bash
+harn schedule add repo-status --every 60 \
+  --gather status='["git","status","--short"]'
+```
+
+## `enroll`
+
+```bash
+harn schedule enroll <id> [--yes] [--json]
+```
+
+Pins a job to this machine and this checkout so it may run here. Enrollment
+records a hash of the job's execution fields, the machine label, the
+checkout's real path and the enrollment time. The execution fields are:
+
+- each gather command's name, arguments, finding exit codes and variable names;
+- the resolved real path of each gather command's executable;
+- the agent's adapter, model, effort and prompt;
+- the trigger, the time zone, the host, the timeout and the launches per day.
+
+The title, the owner, the `enabled` flag and comments are not part of the
+hash, so changing them does not stop a job. Changing any execution field
+does: the job stops until it is enrolled again on each machine that runs it.
+
+The output lists what was pinned. A prompt is shown only as its length and
+first line.
+
+The first enrollment happens at once. When the job is already enrolled and
+unchanged, nothing happens. When it changed since it was enrolled, `enroll`
+prints a preview naming the changed fields and makes no change; run it again
+with `--yes` to enroll the new version.
+
+Nothing due before the enrollment time ever runs.
+
+| Option | Meaning |
+| --- | --- |
+| `--yes` | Enroll a changed job again. Without it a re-enrollment is only previewed. |
+| `--json` | Print the result as JSON, with an `action` of `enrolled`, `re-enrolled`, `unchanged` or `preview`. |
+
+`enroll` refuses, with exit code `1`, when:
+
+- the job's `host` is not this machine's label;
+- a gather executable cannot be found;
+- another checkout of the same repository on this machine already holds the
+  job (a per-user registry under `$XDG_STATE_HOME/harnery/schedule-enrollments/`
+  records which checkout holds each job);
+- the job id is unknown or the job file is missing or invalid.
+
+```bash
+harn schedule enroll repo-status
+```
+
+## `pause`
+
+```bash
+harn schedule pause <id> [--json]
+```
+
+Sets `"enabled": false` on the job in the job file. A paused job is skipped by
+the tick. The enrollment still holds, because `enabled` is not an execution
+field. Exit codes: `0`, or `1` for an unknown job or an invalid job file.
+
+```bash
+harn schedule pause repo-status
+```
+
+## `resume`
+
+```bash
+harn schedule resume <id> [--json]
+```
+
+Removes the `enabled` field, so the job runs again on its next due time. No
+re-enrollment is needed. Exit codes: `0`, or `1` for an unknown job or an
+invalid job file.
+
+```bash
+harn schedule resume repo-status
+```
+
+## `remove`
+
+```bash
+harn schedule remove <id> [--yes] [--json]
+```
+
+Without `--yes`, prints what it would remove and changes nothing. With
+`--yes`, removes the job from the job file and removes its enrollment on this
+machine. Other machines keep their enrollments until the job file change
+reaches them, and a job that is no longer in the file does not run. Run
+reports and claim files are kept.
+
+| Option | Meaning |
+| --- | --- |
+| `--yes` | Make the change. |
+| `--json` | Print the preview or the result as JSON. |
+
+Exit codes: `0`, or `1` when the job is neither in the file nor enrolled here,
+or the job file is invalid.
+
+```bash
+harn schedule remove repo-status --yes
+```
+
+## `run`
+
+```bash
+harn schedule run <id> [--json]
+```
+
+Runs one job now, in the foreground, and prints each gather result, the
+agent's outcome, the run's result and the report path. The job must pass the
+same enrollment check as a scheduled run. A manual run is recorded with kind
+`manual`, counts toward the job's launches per day, and does not move the
+job's schedule. It runs even when the job is paused.
+
+| Exit code | Meaning |
+| --- | --- |
+| `0` | The run finished `ok`. |
+| `1` | Not inside a Harnery project. |
+| `3` | The run finished and needs attention. |
+| `4` | The run finished and failed. |
+| `5` | The run was refused before it started: no job file, an unknown or invalid job, not enrolled, changed since enrollment, wrong machine or checkout, or the daily launch limit was reached. |
+
+```bash
+harn schedule run repo-status
+```
+
+## `history`
+
+```bash
+harn schedule history <id> [--limit <n>] [--json]
+```
+
+Lists the job's runs on this machine, newest first: the due time, the kind
+(`scheduled`, `catch-up` or `manual`), the start time, the duration, the result
+and the report path. The newest 20 runs per job are kept.
+
+| Option | Meaning |
+| --- | --- |
+| `--limit <n>` | Show at most N runs. |
+| `--json` | Print `{ job_id, rows, meta: { total, shown } }`. |
+
+Exit codes: `0`, or `1` for a bad `--limit`.
+
+```bash
+harn schedule history repo-status --limit 5
+```
+
+## `tick`
+
+```bash
+harn schedule tick [--source timer|activity|manual] [--root <dir>]
+```
+
+The scheduler's single entry point. One tick:
+
+1. takes the checkout's tick lease, so two ticks never overlap;
+2. for each enabled job whose host is this machine and whose enrollment
+   check passes, works out which due times have passed since the last tick;
+3. runs at most the newest of them, as described under
+   [Missed runs](#missed-runs-and-running-once), creating a permanent claim
+   first;
+4. writes the heartbeat.
+
+Jobs run one after another. The installed timer calls the tick with
+`--source timer`, session activity with `--source activity`, and a person
+with no option.
+
+| Option | Meaning |
+| --- | --- |
+| `--source <source>` | What called the tick: `timer`, `activity` or `manual` (the default). |
+| `--root <dir>` | The checkout to tick. Default: the current project. |
+
+It always prints JSON: a `status` (`ok`, `busy` when another tick holds the
+lease, `error`, or `child` inside a scheduled run's own process, where it does
+nothing), the tick time, and one entry per job with its launches, refusals,
+abandoned claims, skipped range and uncertain runs.
+
+Exit codes: `0` for `ok`, `busy` and `child`; `1` for `error`; `2` for an
+unknown `--source`.
+
+```bash
+harn schedule tick
+```
+
+## `install`
+
+```bash
+harn schedule install [--interval-minutes <n>] [--json]
+```
+
+Writes and enables one systemd user timer and service for this checkout, which
+call the tick every five minutes. Nothing is installed without this command.
+Linux only for now; other platforms get a refusal.
+
+The units are named `harnery-schedule-<key>.timer` and `.service`, with a key
+derived from the checkout path, and live in `$XDG_CONFIG_HOME/systemd/user`
+(default `~/.config/systemd/user`). The service runs:
+
+```
+<runtime> <cli entry> schedule tick --source timer --root <checkout>
+```
+
+The runtime and the CLI entry are the absolute paths of the program that ran
+`install`. The service sets `PATH` to the value it had when `install` ran and
+passes no other variable from your shell. Install again after changing where
+programs live, or after moving the runtime or the checkout. Installing again
+rewrites both units.
+
+The output shows the unit names, the command, the pinned `PATH`, and notes:
+whether lingering is off (without it a user timer stops when the user logs
+out, and the note gives the `loginctl enable-linger` command to fix that), and
+on WSL, that the timer runs only while the WSL guest is running.
+
+| Option | Meaning |
+| --- | --- |
+| `--interval-minutes <n>` | Minutes between ticks. It must divide an hour (1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30 or 60). Default 5. |
+| `--json` | Print the install result as JSON. |
+
+Exit codes: `0` when installed; `1` on another platform, when no systemd user
+manager answers (on WSL, systemd must be turned on for the guest), for a bad
+interval, or when enabling the timer fails (the unit files are then removed).
+
+```bash
+harn schedule install
+```
+
+## `uninstall`
+
+```bash
+harn schedule uninstall [--json]
+```
+
+Disables and removes this checkout's timer and service, and the private
+`timer.json` record. Jobs, enrollments and reports stay. Session activity still
+runs due jobs afterwards. Exit codes: `0`, including when no timer was
+installed; `1` when the removal fails.
+
+```bash
+harn schedule uninstall
+```
+
+## `timer-status`
+
+```bash
+harn schedule timer-status [--json]
+```
+
+Read-only. Shows whether the timer and service files exist, whether systemd
+reports the timer enabled and active, and the install record (when it was
+installed and its interval). It never installs anything. Exit codes: `0`, or
+`1` when the status cannot be read.
+
+```bash
+harn schedule timer-status
+```
+
+## The job file
+
+Jobs live in `.harnery/schedules.jsonc`, a tracked file with comments
+allowed. It holds a version and a list of jobs:
+
+```jsonc
+{
+  "version": 1,
+  "jobs": [
+    // Gather only: no agent and no tokens.
+    {
+      "id": "nightly-deps",
+      "title": "Outdated dependencies",
+      "host": "build-box",
+      "trigger": { "type": "cron", "expr": "0 6 * * 1-5" },
+      "timeout_minutes": 10,
+      "max_launches_per_day": 2,
+      "gather": [
+        {
+          "name": "outdated",
+          "argv": ["npm", "outdated", "--json"],
+          "finding_exit_codes": [1]
+        }
+      ]
+    },
+    // Gather, then a read-only agent judges the output.
+    {
+      "id": "morning-check",
+      "title": "Morning systems check",
+      "host": "build-box",
+      "trigger": { "type": "cron", "expr": "30 7 * * *" },
+      "timeout_minutes": 30,
+      "max_launches_per_day": 3,
+      "owner": "ops-agent",
+      "gather": [
+        {
+          "name": "disk",
+          "argv": ["df", "-h"]
+        },
+        {
+          "name": "health",
+          "argv": ["scripts/check-health.sh", "--quiet"],
+          "finding_exit_codes": [1],
+          "env": ["SERVICE_URL"]
+        }
+      ],
+      "agent": {
+        "adapter": "codex",
+        "model": "gpt-5",
+        "effort": "medium",
+        "prompt": "Read the disk usage and the health check output. Report any volume over 85% full and any failed health check."
+      }
+    }
+  ]
+}
+```
+
+The file accepts no other keys at any level.
+
+### Job fields
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `id` | yes | Lowercase kebab-case, 1 to 64 characters, unique in the file. |
+| `title` | yes | A name for people. Not pinned. |
+| `host` | yes | The machine label that may run the job, as `harn machine` reports it (the `HARNERY_MACHINE` variable, then `~/.config/harnery/machine`, then the host name). |
+| `trigger` | yes | When the job is due; see below. |
+| `timeout_minutes` | yes | One deadline for the whole run, gather and agent together: 1 to 240. A command or agent still running at the deadline is killed with its process group. |
+| `max_launches_per_day` | yes | Launches allowed per day in the project's time zone, counting scheduled, catch-up and manual runs: 1 to 48. |
+| `owner` | no | An agent name. When a scheduled run ends `attention` or `failed`, Harnery leaves a held `harn agents ping` for that name. An unknown name is ignored. Not pinned. |
+| `enabled` | no | `false` pauses the job. Absent means enabled. Not pinned. |
+| `gather` | no | A non-empty list of gather commands. |
+| `agent` | no | The read-only judge. |
+
+A job needs `gather`, `agent`, or both.
+
+### Triggers
+
+| Trigger | Meaning |
+| --- | --- |
+| `{ "type": "once", "at": "2026-12-01T06:00:00Z" }` | Once at this instant. It needs `Z` or an offset. |
+| `{ "type": "every", "minutes": 60 }` | Every N whole minutes, at least 5, counted from the enrollment time. |
+| `{ "type": "cron", "expr": "0 6 * * 1-5" }` | Five fields (minute, hour, day of month, month, day of week) in the project's time zone. Numbers, `*`, ranges, lists and steps are accepted; names such as `MON` or `JAN` are not. A time that a clock change skips runs at the next valid minute; a time that repeats runs once. |
+
+### Gather commands
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `name` | yes | Lowercase kebab-case, unique within the job. It names the output file. |
+| `argv` | yes | The executable, then each argument, as separate strings. A bare name is looked up on `PATH`, a relative path resolves from the checkout root, and an absolute path is used as written. |
+| `finding_exit_codes` | no | Exit codes from 1 to 255 that mean "the check ran and found something". |
+| `env` | no | Names, not values, of environment variables to pass through to the command. |
+
+There is no shell. A string that looks like a shell line, an `argv[0]` with
+spaces in it, or a shell given a command string (such as `bash -c`) is
+rejected when the file is read.
+
+Each command runs from the checkout root with a small base environment
+(`PATH`, `HOME`, `USER`, `LOGNAME`, the locale and `TZ` variables, the
+temporary-folder variables, `SHELL`, the `XDG_*` folders, and the Windows
+equivalents) plus only the variables it names in `env`. A named variable must
+exist in the environment the tick runs in. Under the timer that is the
+systemd user manager's environment, not your shell's.
+
+Commands run in order. Each one's combined output is kept up to 256 KiB in the
+run folder. Each ends as:
+
+- `ok`: exit code 0;
+- `finding`: an exit code listed in `finding_exit_codes`;
+- `error`: any other exit code, a failure to start, a signal, the deadline, or
+  output that passed the 256 KiB cap.
+
+### The agent
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `adapter` | yes | The adapter id. The adapter must be able to run read-only; today that is `codex`. |
+| `model` | no | The model to ask for. |
+| `effort` | no | The reasoning effort to ask for. |
+| `prompt` | yes | What the agent should judge. No subcommand prints it; `enroll` shows its length and first line. |
+
+The agent runs in the checkout, with a read-only filesystem and no network.
+Its prompt is the job's prompt, then fixed text from Harnery, then the gather
+results with their output inline between evidence markers, up to 32 KiB per
+command and 96 KiB in all. The agent is told the output is untrusted and may
+read the rest of a cut output from its file.
+
+The first non-empty line of the agent's reply must be `STATUS: ok` or
+`STATUS: attention`. Anything else counts as attention.
+
+Before launch, Harnery refuses the agent when the billing check finds an API
+key in the environment the agent would get, or cannot confirm a stored
+subscription sign-in. The agent gets the base environment only, with no
+credential variables, and `HARNERY_SCHEDULE_CHILD=1`, which makes the hooks
+inside it skip the tick, capture and warnings. A refused agent makes the run
+`failed`.
+
+### The run's result
+
+| Result | When |
+| --- | --- |
+| `failed` | Any gather `error`, or an agent that was refused, failed or timed out. |
+| `attention` | Otherwise, any gather `finding`, or an agent whose status line was `attention` or missing. |
+| `ok` | Everything else. |
+
+The agent can raise a run to attention but can never clear a finding or an
+error.
+
+### Where runs are kept
+
+Everything the scheduler writes is private and untracked, under
+`.harnery/private/schedule/`:
+
+| Path | Holds |
+| --- | --- |
+| `runs/<job>/<start time>/report.md` | The report Harnery writes: each gather result, the agent's reply and the result. |
+| `runs/<job>/<start time>/run.json` | The run record. |
+| `runs/<job>/<start time>/gather/<name>.txt` | Each gather command's output. |
+| `enrollments/<job>.json` | This checkout's enrollment. |
+| `claims/<job>/` | One permanent claim per due time. |
+| `cursors/<job>.json` | The last time considered, and recent skipped ranges. |
+| `heartbeat.json` | The last tick's time, result and source. |
+| `timer.json` | Present while a timer is installed. |
+| `observed.jsonl` | Schedules captured from agents' tool calls. |
+
+The start-time folder name has no colons, for example `20261201T060000123Z`.
+The newest 20 run folders per job are kept.
+
+## Missed runs and running once
+
+- **One claim per due time.** Before a run starts, the tick creates a claim
+  file for that job and due time. It is created exclusively and never deleted,
+  so no second tick can run the same due time. The claim moves through
+  `claimed`, `started`, `finished` and `abandoned`.
+- **A claim that never started** (a tick crashed between claiming and
+  launching) is retried once by a later tick, when nothing newer for the job
+  runs in that tick.
+- **A run that started and never finished** is reported as uncertain at the
+  next session and by `harn doctor`. It is never rerun on its own.
+- **Missed times.** After downtime, only the newest missed due time runs, and
+  only if it is within the last seven days. That run has kind `catch-up`. Older
+  and superseded times are recorded as one skipped range, and later ticks do
+  not walk the same backlog again.
+- **The daily limit.** A due time that would pass `max_launches_per_day` is not
+  run. The tick result lists it as refused, and it joins the skipped range.
+
+## Warnings and doctor
+
+The next session start shows up to five warning lines, and `harn doctor`
+shows a `schedule clock` row and a `schedule runs` row. They report:
+
+- a run that ended `failed` or `attention`, with its report path, until a
+  newer `ok` run of the same job exists;
+- a run that started and never finished;
+- a job that changed since it was enrolled and will not run;
+- a last tick that failed;
+- where a timer is installed: a timer unit that is missing, disabled, inactive
+  or failed, or no timer tick for more than twice the interval;
+- a scheduler file that cannot be read.
+
+They read the files before the session's own catch-up tick runs, so the
+warning describes the state the last session left. Nothing contacts a person.

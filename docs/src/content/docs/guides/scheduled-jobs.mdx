@@ -1,0 +1,224 @@
+---
+title: Run scheduled jobs
+description: See every schedule on a machine in one list, then set up a Harnery job that gathers evidence and has a read-only agent judge it, on a timer that runs with every session closed.
+sidebar:
+  order: 5
+---
+
+This guide goes from nothing to a job that runs at a set time with no session
+open, and back out again. The [`harn schedule` reference](/cli/schedule/) has
+every option and exit code.
+
+A scheduled job has two parts, and needs at least one:
+
+- **Gather**: commands Harnery runs itself, such as `git status` or a health
+  check script. A job with only gather commands starts no agent and uses no
+  tokens.
+- **Judge**: a prompt for a read-only agent, which reads what the gather
+  commands printed and writes a short verdict.
+
+## 1. See the schedules you already have
+
+```bash
+harn schedule list
+```
+
+The list shows the machine's systemd timers and crontab, schedules an agent
+created through a tool call that Harnery's hook saw, and Harnery's own jobs.
+Below the records is a coverage table with one row per source. A row that is
+not `current` means that source was not fully read, so its section of the
+list may be incomplete.
+
+T3 Code and the Codex app keep their schedules in private storage, and their
+two rows start as `disabled`. To read them, turn them on in the project's own
+config file:
+
+```jsonc
+// .harnery/config.jsonc
+{ "schedule": { "readers": ["t3-code", "codex-app"] } }
+```
+
+:::note[What the list reads]
+The list holds schedule fields only: id, title, trigger, where it runs,
+whether it is enabled, and the next and last run. Prompts, inbox text and
+secrets are never read from another app's store, and crontab command text is
+never shown. The two private-store readers stay off until the project turns
+them on. Only the project's `.harnery/config.jsonc` can do that; a user-global
+or machine-local setting cannot. Harnery never changes a schedule that
+belongs to another app.
+:::
+
+## 2. Add a job
+
+Jobs live in `.harnery/schedules.jsonc`, a file you commit and review like
+code. `add` writes it for you:
+
+```bash
+harn schedule add repo-status --every 60 \
+  --gather status='["git","status","--short"]'
+```
+
+Each gather command is an executable and a list of arguments. There is no
+shell: no pipes, no `&&`, no `bash -c`. For anything more involved, put it in
+a script and name the script.
+
+To add a judge, give an adapter and a prompt:
+
+```bash
+harn schedule add morning-check --cron "30 7 * * *" \
+  --gather disk='["df","-h"]' \
+  --adapter codex \
+  --prompt "Report any volume over 85% full."
+```
+
+Times in `--cron` use the project's time zone. The [job file
+reference](/cli/schedule/#the-job-file) shows every field, including
+`finding_exit_codes` (the exit codes that mean "the check found something")
+and `env` (the variables a command may receive).
+
+A new job does not run yet.
+
+## 3. Enroll it on this machine
+
+```bash
+harn schedule enroll repo-status
+```
+
+A job runs only on a machine where someone enrolled it. The output lists
+everything that was pinned.
+
+:::caution[What enrollment pins, and what it does not]
+Enrollment pins the job's execution fields: each gather command with its
+arguments and variable names, the resolved path of each executable, the
+agent's adapter, model, effort and prompt, the trigger, the time zone, the
+host, the timeout and the daily launch limit. It also pins the machine and the
+checkout.
+
+It does not pin Harnery's own code, and it does not pin the code behind a
+gather command that lives in the same checkout, such as
+`scripts/check-health.sh`. Both change whenever the checkout updates, and the
+job keeps running with the new code.
+:::
+
+A job that changes, by your own edit or by a pulled commit, stops on every
+machine until it is enrolled again there. `enroll` then shows which fields
+changed and asks for `--yes`. Changing only the title, the owner or comments
+does not stop a job.
+
+Run the job once by hand to check it:
+
+```bash
+harn schedule run repo-status
+```
+
+## 4. What a scheduled run can and cannot do
+
+:::note[Gather commands run as you]
+Gather commands run with your own access, outside any sandbox. Each is a fixed
+argument list from the reviewed job file, started with no shell, from the
+checkout root. It receives a small base environment (`PATH`, `HOME`, locale
+and temporary-folder variables) plus only the variables the job names.
+:::
+
+:::note[The agent is read-only and offline]
+The judge agent runs with a read-only filesystem and no network. It cannot run
+the checks again, fetch anything, or change a file. It receives the gather
+output as untrusted evidence and writes a verdict. Harnery, not the agent,
+writes the report. The agent can mark a run as needing attention, but it can
+never clear a finding or an error from a gather command. Read-only limits what
+the agent can write; it can still read any file you can read.
+:::
+
+:::caution[Billing]
+Harnery refuses to start the agent when the run would bill an API key, or when
+it cannot confirm a stored subscription sign-in. The agent gets no credential
+variables. Today only the Codex adapter can run read-only, so `codex` is the
+only adapter a judge can use.
+:::
+
+Each job has two limits: one timeout for the whole run (at most 240 minutes),
+and a number of launches per day (at most 48), which counts scheduled,
+catch-up and manual runs. There is no spending limit yet, because the agent
+does not report turns or cost on this path.
+
+## 5. Install the timer
+
+Without a timer, due jobs still run, but only when someone works: session
+activity starts a catch-up tick in the background. To run jobs with every
+session closed, install the timer:
+
+```bash
+harn schedule install
+harn schedule timer-status
+```
+
+This writes one systemd user timer and service for this checkout. It calls
+`harn schedule tick` every five minutes, and the tick runs whatever is due.
+Session activity keeps working as a catch-up, so nothing is lost if the timer
+stops.
+
+:::caution[Before you rely on the timer]
+- It is Linux only for now. Other platforms get a refusal.
+- The service pins `PATH` as it was when you ran `install`, and passes no
+  other variable from your shell. After changing where programs live, run
+  `install` again. A gather command's `env` variable must exist in the systemd
+  user manager's environment, or the command will not receive it.
+- Without lingering, a user timer stops when you log out. `install` tells you
+  when lingering is off and gives the `loginctl enable-linger` command.
+- On WSL, the timer runs only while the WSL guest is running. When Windows
+  shuts the guest down, the timer stops, and the gap shows at the next
+  session.
+:::
+
+## 6. Read a report
+
+```bash
+harn schedule history repo-status
+```
+
+Each row gives the due time, the kind of run, the result (`ok`, `attention`
+or `failed`) and the path of its report. Reports live under
+`.harnery/private/schedule/runs/<job>/`, which Git does not track. A report
+holds each gather command's result and output file, the agent's reply, and the
+run's result. The newest 20 runs per job are kept.
+
+## 7. Once-only runs and missed runs
+
+- Each due time gets a permanent claim before it runs, so it runs at most once,
+  however many ticks see it.
+- After the machine was off or asleep, only the latest missed time within the
+  last seven days runs, once, as a catch-up. Older missed times are recorded as
+  skipped.
+- A run that started and never finished, for example because the machine lost
+  power, is reported and is never run again on its own. Check it and run the
+  job by hand if needed.
+
+## 8. Warnings at session start
+
+The next session start shows a short warning, and `harn doctor` shows a row,
+when:
+
+- a run failed or needs attention. The warning names the report and stays
+  until a later run of that job ends `ok`;
+- a run started and never finished;
+- a job changed since it was enrolled and will not run;
+- the last tick failed;
+- the timer is installed but missing, disabled or failed, or has not ticked
+  for more than twice its interval.
+
+When the job names an `owner`, a scheduled run that fails or needs attention also leaves
+a held `harn agents ping` for that agent. Nothing contacts a person.
+
+## 9. Stop a job, or stop everything
+
+```bash
+harn schedule pause repo-status          # skip it until resumed
+harn schedule resume repo-status         # run it again; no re-enrollment needed
+harn schedule remove repo-status         # preview
+harn schedule remove repo-status --yes   # delete the job and this machine's enrollment
+harn schedule uninstall                  # remove this checkout's timer
+```
+
+`remove` keeps past reports. `uninstall` removes only the timer; enrolled jobs
+still run when session activity starts a tick. Pause or remove a job to stop
+it completely.
