@@ -28,15 +28,15 @@ The config reader (`src/core/config.ts`) owns config layering and validation. It
 files by their stat signatures, including dashboard startup and docket settings. The web
 layer separately reads the `files` path policy.
 
-Eighteen settings or sections read only the project file: the `binName` pin,
+Nineteen settings or sections read only the project file: the `binName` pin,
 `agents.finalizationRoots`, `agents.gitSyncCommand`, `agents.gitSyncOnEndTurn`,
-`files.start_command`, `decision.share`, `instructions.hostAddendumFile`,
+`files.start_command`, `decision.share`, `feed.share`, `instructions.hostAddendumFile`,
 `instructions.promptReminder`, `hooks.promptContext`, `hooks.codexWindowsBridge`,
 `hooks.portableCommands`, `doctor.environmentFindings`, `storage.sharing`,
 `workflow.workerFullAccess`, `computer`, `autoUpdate`, `helpers`, and
 `skills.exclude`. Neither user-global nor machine-local config may change
 these project decisions. A file nobody reviews cannot grant filesystem or
-execution authority, publish decision text, or change committed instructions.
+execution authority, publish decision, message or journal text, or change committed instructions.
 A user-global or local `binName` remains a display fallback, never a project
 pin. Personal choices in `computer.json` and `preferences.json` are separate
 from these three config layers; see the relevant section below.
@@ -81,6 +81,7 @@ Use `.harnery/config.local.jsonc` when one machine needs a different value from 
 | `instructions` | object  | see below        | Host-owned agent instructions and prompt reminder |
 | `presence`     | object  | see below        | Cross-machine presence transports |
 | `decision`     | object  | see below        | Consent to share docket entries across machines |
+| `feed`         | object  | see below        | Consent to share agent messages and journal entries across machines |
 | `schedule`     | object  | see below        | Opt-in readers of other apps' schedule stores (`schedule.readers`) |
 | `files`        | object  | see below        | Dashboard startup and web file-viewer path policy |
 | `web`          | object  | see below        | Standalone Next.js dashboard |
@@ -656,6 +657,23 @@ machine that filed them. Only the filing machine can resolve a decision. See
 file may consent to publishing decision text. `HARNERY_DOCKET_SHARE=1|0`
 overrides per process, but sharing still requires presence to be enabled.
 
+## `feed`
+
+| Field   | Type | Default | Description |
+| ------- | ---- | ------- | ----------- |
+| `share` | bool | `false` | Publish this machine's agent messages and journal entries from the last three days so other machines' dashboards can show them on the Feed page |
+
+Without sharing, the dashboard's Feed page still shows everything that reached
+this machine: pings between its own agents, pings it sent to or received from
+other machines, and its own journals. Sharing adds the messages and journal
+entries that stayed on other machines. Shared items are read-only and carry
+their machine's label. See
+[decision record 0274](/decisions/0274-one-feed-of-agent-messages-and-journals/).
+`share` reads only the project file. Neither a user-global nor a machine-local
+file may consent to publishing message or journal text.
+`HARNERY_FEED_SHARE=1|0` overrides per process, but sharing still requires
+presence to be enabled.
+
 ## `schedule`
 
 | Field     | Type     | Default | Description |
@@ -693,6 +711,7 @@ CLI flags override config per invocation:
 | `files` | `start_command` | (none) | project file only |
 | `files` | `start_timeout_seconds` | (none) | user < project < local |
 | `decision` | `share` | `HARNERY_DOCKET_SHARE=1\|0` | project file only; presence must be enabled |
+| `feed` | `share` | `HARNERY_FEED_SHARE=1\|0` | project file only; presence must be enabled |
 | `helpers` | `<adapter>.max_model`, `<adapter>.max_effort` | `HARNERY_HELPER_LIMIT_SKIP=1` skips enforcement | project defaults only; the person's `preferences.json` choice wins |
 | `computer` | `mode`, `enabled`, `driver`, `grant_minutes`, `idle_seconds`, `wait_seconds`, `foreground_quiet_seconds`, `foreground_wait_seconds`, `sign_in`, `browser_attach`, `agent_window` | (none) | project file only; a personal mode, sign-in and browser-attach choice in `computer.json` apply where the project allows them, and personal `agent_window` fields from `computer window` win everywhere; `computer call --wait` overrides `wait_seconds` |
 | `autoUpdate` | `enabled`, `steps`, `dailySteps`, `watch`, `checkMinutes`, `timeoutMinutes`, `cleanup` | `HARNERY_AUTOUPDATE_CHILD=1` skips the tick | project file only |

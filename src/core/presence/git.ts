@@ -24,10 +24,14 @@ export const MAIL_REF_PREFIX = "refs/harnery/mail/";
 /** Shared docket refs: a machine's waiting decisions and pending approvals,
  * published only when the project opts in (ADR 0255). */
 export const DOCKET_REF_PREFIX = "refs/harnery/docket/";
+/** Shared agent feed refs: a machine's recent agent messages and journal
+ * entries, published only when the project opts in (ADR 0274). */
+export const FEED_REF_PREFIX = "refs/harnery/feed/";
 export type HarneryRefPrefix =
   | typeof PRESENCE_REF_PREFIX
   | typeof MAIL_REF_PREFIX
-  | typeof DOCKET_REF_PREFIX;
+  | typeof DOCKET_REF_PREFIX
+  | typeof FEED_REF_PREFIX;
 
 /** Well-known SHA of git's empty tree; `git mktree` below guarantees the
  * object exists in the local odb before we build a commit on it. */
@@ -138,13 +142,13 @@ export function pushMachineRef(
   return runNetworkGit(root, ["push", "--quiet", "--no-verify", "origin", refspec], opts);
 }
 
-/** Fetch every peer presence, mail, and docket ref from origin into the local
+/** Fetch every peer presence, mail, docket, and feed ref from origin into the local
  * ref namespace, in one round trip. A namespace with no refs is not an error. */
 export function fetchMachineRefs(
   root: string,
   opts: { sync?: boolean } = {},
 ): { ok: boolean; error?: string } {
-  const refspecs = [PRESENCE_REF_PREFIX, MAIL_REF_PREFIX, DOCKET_REF_PREFIX].map(
+  const refspecs = [PRESENCE_REF_PREFIX, MAIL_REF_PREFIX, DOCKET_REF_PREFIX, FEED_REF_PREFIX].map(
     (p) => `+${p}*:${p}*`,
   );
   const args = ["fetch", "--quiet", "--no-tags", "--prune", "origin", ...refspecs];

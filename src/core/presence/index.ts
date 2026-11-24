@@ -31,6 +31,7 @@ import { resolveMachineLabel } from "../../lib/machine.ts";
 import { presenceEnabled } from "../config.ts";
 import { buildPresenceBlob, type PresenceAgent, type PresenceBlob } from "./blob.ts";
 import { publishDocket } from "./docket.ts";
+import { publishFeed } from "./feed.ts";
 import {
   fetchMachineRefs,
   hasOrigin,
@@ -59,7 +60,16 @@ export {
   searchRemoteDecisions,
 } from "./docket.ts";
 export {
+  type FeedBlob,
+  type FeedPublishResult,
+  feedShareEnabled,
+  publishFeed,
+  type RemoteFeed,
+  readRemoteFeeds,
+} from "./feed.ts";
+export {
   DOCKET_REF_PREFIX,
+  FEED_REF_PREFIX,
   MAIL_REF_PREFIX,
   PRESENCE_REF_PREFIX,
   parseForEachRefOutput,
@@ -132,7 +142,8 @@ function writeState(coordRoot: string, state: PublishState): void {
  *
  * The shared docket (ADR 0255) rides the same cadence: it publishes on its own
  * change detector and keepalive, only when the project opts in, and its
- * outcome never changes the presence result.
+ * outcome never changes the presence result. The shared agent feed (ADR 0274)
+ * follows the same rules.
  */
 export function publishPresence(
   coordRoot: string,
@@ -142,6 +153,11 @@ export function publishPresence(
     publishDocket(coordRoot, { sync: opts.sync });
   } catch {
     /* fail-silent: the docket never breaks presence */
+  }
+  try {
+    publishFeed(coordRoot, { sync: opts.sync });
+  } catch {
+    /* fail-silent: the feed never breaks presence */
   }
   return publishPresenceBlob(coordRoot, opts);
 }

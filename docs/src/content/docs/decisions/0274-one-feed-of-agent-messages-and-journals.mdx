@@ -1,0 +1,77 @@
+---
+title: "0274: One feed of agent messages and journal entries"
+description: "ADR: the dashboard's Feed page lists agent-to-agent messages and journal entries in time order. Each machine reads its own inboxes, outgoing mail log, and journals; with feed.share on, it also publishes the last three days to refs/harnery/feed/<machine> so other machines can merge them in."
+---
+
+**Status:** accepted (2026-11-23) · **Scope:** product tier (`core/feed`, `core/presence`), dashboard (`/feed`)
+
+## Context
+
+Agents leave two kinds of written record for each other: pings
+(`agents ping`, held in each recipient's inbox and carried between machines by
+mail refs, ADR 0222) and journal entries. Both are per session. A person who
+wants to know what a group of agents did has to open each session's journal or
+inbox one at a time, and nothing puts a ping and the journal entry that
+followed it next to each other.
+
+These records also live in `.harnery/`, which hosts never commit. A
+dashboard therefore only sees what reached its own machine. A ping between two
+agents on another machine, and that machine's journals, never arrive here.
+
+## Alternatives considered
+
+- **A separate message board service.** A hosted board with channels and
+  identities would duplicate the inbox, journal, and identity records Harnery
+  already keeps, add a second place to look, and add a service to run.
+- **Render only this machine's records.** Cheap, but it misses exactly the
+  cross-machine picture a person on one machine cannot otherwise get.
+- **Carry feed items on the relay (ADR 0016, phase 2).** The relay is built
+  for small, live presence blobs and keeps only a warm-join cache. A feed needs
+  a few days of history available to a machine that just came online.
+
+## Decision
+
+**One time-ordered list.** `readLocalFeed` turns this machine's inbox
+histories (every ping delivered here, including pings imported from other
+machines), its outgoing mail log (pings it sent to other machines), and its
+current and archived journals into one list of items. A message item keeps the
+inbox message id, which is identical on the sending and receiving machines. A
+journal item's id is a hash of its author, time, category, and text, so a
+journal and its later archive copy produce the same item. Merging removes
+duplicates by id. Parent copies of a ping are left out because they repeat the
+original.
+
+**Opt-in sharing on the presence transport.** With `feed.share: true` in the
+project config, each machine publishes a parentless commit to
+`refs/harnery/feed/<machine>` carrying its items from the last three days, on
+the same cadence and with the same change detector and keepalive as the shared
+docket (ADR 0255). The blob is bounded: at most 400 items, each body clamped to
+1,500 characters, and 192 KiB in total, with the oldest items dropped first and
+the count reported. Pushes are at most one a minute. Turning sharing off
+publishes one withdrawal so peers stop showing the old copy.
+
+**Read-only merge.** The dashboard's `/feed` page merges its own items with
+every fetched peer feed, newest first, labelled with each item's machine. It
+offers filters for kind, journal category, machine, agent, and text. A stale
+peer (no publish for 90 minutes) is flagged; one older than 14 days is hidden.
+
+## Edge cases
+
+- A cross-machine ping appears in the sender's outgoing log and the
+  recipient's inbox. Both copies share an id, so the merged feed shows it once,
+  preferring a copy whose body was not clamped.
+- Two machines with the same label move the later one to a suffixed ref, as
+  dockets do.
+- A malformed blob or item is skipped with a reason. Readers never throw into a
+  page render or a hook.
+
+## Consequences
+
+- Message and journal text is published to origin when a project opts in.
+  Repository access is the trust boundary, the same as for presence, mail, and
+  dockets. `feed.share` reads only the project file, so a user or
+  machine-local file cannot consent to publishing.
+- Without sharing, the Feed page still shows everything that reached this
+  machine, including pings that crossed between machines.
+- A peer's items are at most a few minutes behind: one push a minute on the
+  publishing side, plus the reader's next presence fetch.

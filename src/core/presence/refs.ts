@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { resolveMachineLabel } from "../../lib/machine.ts";
 import {
   DOCKET_REF_PREFIX,
+  FEED_REF_PREFIX,
   MAIL_REF_PREFIX,
   PRESENCE_REF_PREFIX,
   runPresenceGit,
@@ -14,12 +15,17 @@ import { MAIL_TTL_MS } from "./mail.ts";
 export const DEFAULT_REF_PRUNE_AGE = "30d";
 /** Presence readers consider a machine stale after 900 seconds. */
 const MIN_REF_PRUNE_AGE_MS = 900_000;
-const PREFIXES = [PRESENCE_REF_PREFIX, MAIL_REF_PREFIX, DOCKET_REF_PREFIX] as const;
+const PREFIXES = [
+  PRESENCE_REF_PREFIX,
+  MAIL_REF_PREFIX,
+  DOCKET_REF_PREFIX,
+  FEED_REF_PREFIX,
+] as const;
 
 export interface MachineRefInfo {
   ref: string;
   sha: string;
-  namespace: "presence" | "mail" | "docket";
+  namespace: "presence" | "mail" | "docket" | "feed";
   machine: string;
   own: boolean;
   committed_at: string | null;
@@ -74,7 +80,13 @@ function refIdentity(ref: string): Pick<MachineRefInfo, "machine" | "namespace">
   return {
     machine: ref.slice(prefix.length),
     namespace:
-      prefix === MAIL_REF_PREFIX ? "mail" : prefix === DOCKET_REF_PREFIX ? "docket" : "presence",
+      prefix === MAIL_REF_PREFIX
+        ? "mail"
+        : prefix === DOCKET_REF_PREFIX
+          ? "docket"
+          : prefix === FEED_REF_PREFIX
+            ? "feed"
+            : "presence",
   };
 }
 
@@ -83,8 +95,8 @@ interface MailContents {
   acks: string[];
 }
 
-/** Docket collisions can give this clone a suffixed publication ref. Read its
- * existing identity without creating one merely to inspect the remote. */
+/** Docket and feed collisions can give this clone a suffixed publication ref.
+ * Read its existing identity without creating one merely to inspect the remote. */
 function localDocketIdentity(root: string): { refs: Set<string>; id?: string } {
   const refs = new Set<string>();
   let id: string | undefined;
@@ -95,9 +107,9 @@ function localDocketIdentity(root: string): { refs: Set<string>; id?: string } {
     ).trim();
     if (/^[a-f0-9]{12}$/.test(candidate)) {
       id = candidate;
-      refs.add(
-        `${DOCKET_REF_PREFIX}${sanitizeRefComponent(`${resolveMachineLabel()}-${id.slice(0, 6)}`)}`,
-      );
+      const suffixed = sanitizeRefComponent(`${resolveMachineLabel()}-${id.slice(0, 6)}`);
+      refs.add(`${DOCKET_REF_PREFIX}${suffixed}`);
+      refs.add(`${FEED_REF_PREFIX}${suffixed}`);
     }
   } catch {
     // No docket has been published from this clone yet.
@@ -111,6 +123,16 @@ function localDocketIdentity(root: string): { refs: Set<string>; id?: string } {
     }
   } catch {
     // The machine label and existing id still protect the ordinary refs.
+  }
+  try {
+    const state = JSON.parse(
+      readFileSync(join(root, ".harnery", "presence", "feed-state.json"), "utf8"),
+    );
+    if (typeof state?.ref === "string" && state.ref === sanitizeRefComponent(state.ref)) {
+      refs.add(`${FEED_REF_PREFIX}${state.ref}`);
+    }
+  } catch {
+    // No feed has been published from this clone yet.
   }
   return { refs, id };
 }
@@ -214,7 +236,7 @@ export function listMachineRefs(root: string, now = new Date()): MachineRefInven
     }
     row.committed_at = new Date(timestamp).toISOString();
     row.age_secs = Math.max(0, (now.getTime() - timestamp) / 1000);
-    if (row.namespace === "docket" && docketIdentity.id) {
+    if ((row.namespace === "docket" || row.namespace === "feed") && docketIdentity.id) {
       try {
         const blob = JSON.parse(commit.stdout.slice(separator + 1));
         if (blob?.machine_id === docketIdentity.id) row.own = true;

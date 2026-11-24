@@ -140,6 +140,8 @@ interface HarneryConfig {
   };
   /** Project-only consent to publish decision text; read via `docketShareEnabled()`. */
   decision?: { share?: unknown };
+  /** Project-only consent to publish agent messages and journal entries; read via `feedShareEnabled()`. */
+  feed?: { share?: unknown };
   /** Admission resource defaults and the heavy-command guard. Project config only. */
   admission?: unknown;
   /** Host-owned agent instruction settings. */
@@ -1872,6 +1874,24 @@ export function docketShareEnabled(coordRoot: string): boolean {
     if (env === "1") return true;
     if (env === "0") return false;
     return readProjectConfig(coordRoot).decision?.share === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Project-only consent to publish the agent feed (ADR 0274): recent agent
+ * messages and journal entries. Unreviewed user or machine-local files cannot
+ * enable sharing. `HARNERY_FEED_SHARE=1|0` overrides per process, but presence
+ * must still be enabled.
+ */
+export function feedShareEnabled(coordRoot: string): boolean {
+  try {
+    if (!presenceEnabled(coordRoot)) return false;
+    const env = coordEnv("FEED_SHARE");
+    if (env === "1") return true;
+    if (env === "0") return false;
+    return readProjectConfig(coordRoot).feed?.share === true;
   } catch {
     return false;
   }

@@ -711,6 +711,18 @@
         }
       }
     },
+    "feed": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Agent feed settings (decision record 0274).",
+      "properties": {
+        "share": {
+          "type": "boolean",
+          "default": false,
+          "description": "Publish this machine's recent agent messages and journal entries to refs/harnery/feed/<machine> on origin so other machines' dashboards can show them in one feed. Off by default because message and journal text can be sensitive. Project config only: neither user-global nor machine-local files may consent to publishing. Requires presence. Env override: HARNERY_FEED_SHARE=1|0."
+        }
+      }
+    },
     "presence": {
       "type": "object",
       "additionalProperties": false,
