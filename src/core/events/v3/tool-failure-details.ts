@@ -166,20 +166,35 @@ function pruneExpired(root: string, now: Date): void {
 }
 
 function errorText(input: ToolFailureDetailInputV3): string | null {
-  const nativeError = input.raw?.error;
-  if (typeof nativeError === "string" && nativeError.trim()) return nativeError;
+  const raw = input.raw ?? {};
+  // Harnesses name the failure field differently (`error`, `error_message`, …).
+  // Take the most specific string field first, then the tool response.
+  const fromRaw = pickErrorField(raw);
+  if (fromRaw) return fromRaw;
   const response = input.tool_response;
   if (typeof response === "string" && response.trim()) return response;
   if (response && typeof response === "object") {
-    const record = response as Record<string, unknown>;
-    for (const key of ["error", "stderr", "output", "message"]) {
-      const value = record[key];
-      if (typeof value === "string" && value.trim()) return value;
-    }
+    const fromResponse = pickErrorField(response as Record<string, unknown>);
+    if (fromResponse) return fromResponse;
     const serialized = JSON.stringify(response);
-    return serialized && serialized !== "{}" ? serialized : null;
+    if (serialized && serialized !== "{}") return serialized;
   }
-  if (nativeError && typeof nativeError === "object") return JSON.stringify(nativeError);
+  if (raw.error && typeof raw.error === "object") return JSON.stringify(raw.error);
+  const kind = raw.failure_type ?? raw.failureType;
+  return typeof kind === "string" && kind.trim() ? `failure type: ${kind}` : null;
+}
+
+const ERROR_FIELD_ORDER = ["error", "error_message", "errorMessage", "stderr", "output", "message"];
+const ERROR_FIELD_NAME = /(?:^|[_-]|[a-z])(?:error|Error|stderr)(?:$|[_-]|[A-Z])/;
+
+function pickErrorField(record: Record<string, unknown>): string | null {
+  for (const key of ERROR_FIELD_ORDER) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  for (const [key, value] of Object.entries(record)) {
+    if (typeof value === "string" && value.trim() && ERROR_FIELD_NAME.test(key)) return value;
+  }
   return null;
 }
 

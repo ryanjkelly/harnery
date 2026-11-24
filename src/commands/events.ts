@@ -284,7 +284,7 @@ function renderHistoryRows(rows: EventHistoryRowV3[], timeZone?: string): string
       row.event_type,
       row.instance_id?.replace(/^inst_/, "").slice(0, 13) ?? "",
       row.subject ?? "",
-      shortenStart(row.target ?? (row.failure ? (row.failure.input ?? "") : ""), 48),
+      shortenStart(row.target ?? withoutLeadingComments(row.failure?.input ?? ""), 48),
       row.outcome ?? "",
       row.duration_ms === null ? "" : String(row.duration_ms),
       row.exit_code === null ? "" : String(row.exit_code),
@@ -294,7 +294,8 @@ function renderHistoryRows(rows: EventHistoryRowV3[], timeZone?: string): string
   if (failures.length === 0) return table;
   const lines = failures.map((row) => {
     const failure = row.failure as NonNullable<EventHistoryRowV3["failure"]>;
-    const what = row.target ?? failure.input ?? "(no input recorded)";
+    const what =
+      row.target ?? (failure.input ? withoutLeadingComments(failure.input) : "(no input recorded)");
     const why = firstErrorLine(failure.error) ?? "(no error text reported)";
     return `${localStamp(row.recorded_at, timeZone)}  ${row.subject ?? "tool"} ${oneLine(what, 120)}\n    ${why}`;
   });
@@ -311,13 +312,25 @@ function oneLine(value: string, max: number): string {
   return flat.length <= max ? flat : `${flat.slice(0, max - 1)}…`;
 }
 
+/** The first informative error line: a bare "Exit code N" says only that it failed. */
 function firstErrorLine(error: string | null): string | null {
   if (!error) return null;
-  const line = error
+  const lines = error
     .split("\n")
     .map((part) => part.trim())
-    .find((part) => part.length > 0);
-  return line ? oneLine(line, 200) : null;
+    .filter((part) => part.length > 0);
+  const informative = lines.find((part) => !/^exit code -?\d+$/i.test(part));
+  const exit = lines.find((part) => /^exit code -?\d+$/i.test(part));
+  if (!informative) return exit ? oneLine(exit, 200) : null;
+  return oneLine(exit ? `${informative} (${exit.toLowerCase()})` : informative, 200);
+}
+
+/** Shell input without leading comment lines such as a declared intent. */
+function withoutLeadingComments(value: string): string {
+  const lines = value.split("\n");
+  let index = 0;
+  while (index < lines.length - 1 && /^\s*(#.*)?$/.test(lines[index] ?? "")) index++;
+  return lines.slice(index).join("\n");
 }
 
 function renderEpochs(

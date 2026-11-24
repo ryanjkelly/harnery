@@ -212,4 +212,35 @@ describe("event history across epochs", () => {
     expect(out).toContain("Failure details");
     expect(out).toContain("Read src/missing.ts\n    File does not exist.");
   });
+
+  test("the query command names the failing command and its real error line", async () => {
+    const root = historyRoot();
+    recordToolFailureDetailV3(root, {
+      event_id: "e2",
+      tool_name: "Bash",
+      tool_input: { command: "# intent: list the folder\nls missing-dir" },
+      raw: { error: "Exit code 2\nls: cannot access 'missing-dir': No such file or directory" },
+    });
+    let out = "";
+    const append = (value: unknown) => {
+      out += typeof value === "string" ? value : `${JSON.stringify(value)}\n`;
+    };
+    const emit: EmitContext = {
+      config: () => {},
+      data: append,
+      rows: append,
+      text: append,
+      file: () => {},
+      error: append,
+      log: () => {},
+      setExitCode: () => {},
+    };
+    await createHarneryProgram({ emit }).parseAsync(
+      ["events", "query", "--root", root, "--outcome", "failed", "--tz", "UTC"],
+      { from: "user" },
+    );
+    expect(out).toContain(
+      "Bash ls missing-dir\n    ls: cannot access 'missing-dir': No such file or directory (exit code 2)",
+    );
+  });
 });

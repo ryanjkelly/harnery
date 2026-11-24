@@ -57,6 +57,24 @@ describe("tool failure details", () => {
     ).toBe("File does not exist.");
   });
 
+  test("reads an error field under another harness's name", () => {
+    const root = tempRoot();
+    expect(
+      buildToolFailureDetailV3(root, {
+        event_id: "evt_6",
+        tool_name: "Read",
+        raw: { error_message: "ENOENT: no such file", failure_type: "error" },
+      }).error,
+    ).toBe("ENOENT: no such file");
+    expect(
+      buildToolFailureDetailV3(root, {
+        event_id: "evt_7",
+        tool_name: "Read",
+        raw: { failure_type: "timeout" },
+      }).error,
+    ).toBe("failure type: timeout");
+  });
+
   test("redacts secrets, makes project paths relative, and strips terminal colors", () => {
     const root = tempRoot();
     const detail = buildToolFailureDetailV3(root, {
