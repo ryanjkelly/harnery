@@ -22,6 +22,7 @@ import {
   statSync,
   unlinkSync,
 } from "node:fs";
+import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { sanitizeDiagnosticValue } from "../../diagnostics/sanitize.ts";
 import { stateDirMode, stateFileMode } from "../../storage/modes.ts";
@@ -224,7 +225,12 @@ function summarizeInput(coordRoot: string, toolInput: unknown): string | null {
 
 function clean(coordRoot: string, text: string): string {
   const root = resolve(coordRoot);
-  const relative = text.replace(ANSI, "").split(`${root}/`).join("").trim();
+  // The store is owner-only, so the home folder is shown as `~` rather than a
+  // digest, and the project root as `.`; both keep the text readable.
+  let relative = text.replace(ANSI, "").split(`${root}/`).join("").split(root).join(".");
+  const home = homedir();
+  if (home && home.length > 1) relative = relative.split(home).join("~");
+  relative = relative.trim();
   const { value } = sanitizeDiagnosticValue(relative);
   return typeof value === "string" ? value : relative;
 }

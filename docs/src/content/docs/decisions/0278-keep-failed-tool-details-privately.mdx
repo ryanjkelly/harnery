@@ -32,7 +32,8 @@ workspace-relative path), so part of the answer was recorded but never joined.
    the arguments, at most 1,000 characters) and the error the harness reported
    (at most 2,000 characters, keeping the start and the end).
 3. **Text is cleaned before it is stored.** Terminal color codes are removed,
-   paths under the coordination root become relative, and the diagnostic
+   paths under the coordination root become relative, the home folder is
+   written as `~`, and the diagnostic
    sanitizer redacts bearer tokens, known key formats, private keys, URL
    credentials and secret-named variables, query parameters and flags.
 4. **The store is bounded and owner-only.** The directory and files use the

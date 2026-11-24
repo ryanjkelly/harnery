@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
 import {
@@ -87,6 +87,16 @@ describe("tool failure details", () => {
     expect(detail.input).toContain("Bearer [REDACTED:token]");
     expect(detail.input).not.toContain(root);
     expect(detail.error).toBe("failed reading src/a.ts with API_TOKEN=[REDACTED]");
+  });
+
+  test("shows the project root as a dot and the home folder as a tilde", () => {
+    const root = tempRoot();
+    const detail = buildToolFailureDetailV3(root, {
+      event_id: "evt_8",
+      tool_name: "Bash",
+      tool_input: { command: `cd ${root} && cat ${homedir()}/notes.txt` },
+    });
+    expect(detail.input).toBe("cd . && cat ~/notes.txt");
   });
 
   test("keeps the start and the end of a long error", () => {
