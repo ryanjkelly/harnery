@@ -1,0 +1,84 @@
+---
+title: "0275: A file icon pack and folder-shaped cards in Browse"
+description: "ADR: the dashboard draws file and folder icons from the Material Icon Theme pack (MIT), served by two small routes, and the Browse page draws each folder card as a folder (a tab above a tinted body) so folders and files can be told apart at a glance."
+---
+
+**Status:** accepted (2026-11-23) · **Scope:** dashboard (`web/`): the Browse page, the command palette's file search, the archive viewer
+
+## Context
+
+The Browse page's grid shows a preview for every entry. A folder's preview is
+a collage of the files inside it, drawn in the same neutral box as a file
+thumbnail. On a page of artifact workspaces, a folder full of images looked
+exactly like an image, and the only differences were a smaller name and the
+absence of a size. People could not tell which cards would open a folder and
+which would open a file.
+
+Icons did not help. Every file list used a dozen generic lucide glyphs
+(document, code, image, and so on) in one grey, so a Markdown file, a log, and
+a CSV looked nearly the same, and a folder icon only appeared when a folder
+had no preview.
+
+## Decision
+
+### 1. Draw folder cards as folders
+
+In the grid, a folder card's preview sits inside a folder shape: a tab above
+the top-left corner and a tinted body that frames the contents collage. The
+tint is the blue-grey of the icon pack's folder glyph (`--folder`,
+`--folder-tab` in `globals.css`), so the card and the folder icon read as the
+same thing. It is an identity colour for "folder", not a state colour, and it
+does not appear in `lib/tone.ts`. File cards keep the neutral preview box.
+
+Every grid card also shows its type icon beside the name. In the list view a
+folder shows its folder icon on the same tint instead of a collage, which is
+unreadable at 36 pixels; files keep their thumbnails. Folders already sort
+before files.
+
+### 2. Use the Material Icon Theme pack
+
+The dashboard depends on `material-icon-theme` (MIT), pinned to an exact
+version. It has about 1,250 SVG icons and a manifest that maps about 1,400
+extensions, 2,100 exact file names and 900 folder names to them, with darker
+variants for icons that would fade on a light background.
+
+Two routes under `/api/file/icons/` serve it, so path-scoped tunnels that
+already allow `/api/file` keep working:
+
+- `map` returns a compact, lower-cased copy of the manifest (about 5 KB
+  compressed), built once per server process.
+- `svg/<id>` returns one icon. Its URL carries the pack version, so browsers
+  cache icons permanently and a listing costs one request per distinct icon.
+  Ids must be plain slugs, so the route never reads outside the icon folder.
+
+`FileTypeIcon` resolves names in the browser: exact file name first, then the
+longest dotted extension (`foo.test.ts` before `ts`), then the default icon.
+Folder names ignore the leading and trailing `.`, `_` and `-` the pack lists
+as separate spellings. Until the map arrives, or if the pack is missing, the
+previous lucide glyph draws at the same size.
+
+### Alternatives considered
+
+- **vscode-icons.** A larger set, but its artwork is CC BY-SA, which would
+  attach share-alike terms to an MIT project.
+- **Catppuccin or Seti icons.** Smaller sets in a single palette; fewer named
+  folders and file names, so more entries would fall back to a generic icon.
+- **Copying the SVGs into `web/public/`.** Adds 5 MB and 1,250 files to the
+  repository and turns every pack update into a large diff. A dependency keeps
+  the update to one version bump.
+- **Resolving icons on the server inside each listing.** Saves the one map
+  request, but every surface that lists files (palette search, archives,
+  deliverables) would need its own server change.
+- **A folder badge on the collage, with no folder shape.** Smaller change, but
+  a badge in a corner is easy to miss at grid scale; the shape is visible
+  without reading anything.
+
+## Consequences
+
+- File lists are easier to scan, and a folder card cannot be mistaken for a
+  file.
+- The dashboard has one more runtime dependency (and its one dependency,
+  `chroma-js`). `next.config.ts` traces the pack's manifest and SVGs into
+  builds.
+- New file-listing surfaces should use `FileTypeIcon` rather than choosing
+  lucide glyphs by hand.

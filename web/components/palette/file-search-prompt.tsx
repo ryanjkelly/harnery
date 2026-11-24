@@ -8,7 +8,8 @@
  * through the palette's file-open indirection (page override or overlay).
  */
 
-import { FileText, Folder, Info } from "lucide-react";
+import { Info } from "lucide-react";
+import { FileTypeIcon } from "@/components/file-viewer/FileTypeIcon";
 import type { PaletteItem, PalettePrompt } from "./PaletteProvider";
 
 export function buildFileSearchPrompt(openPath: (relPath: string) => void): PalettePrompt {
@@ -27,8 +28,13 @@ export function buildFileSearchPrompt(openPath: (relPath: string) => void): Pale
         key: `file-${m.relPath}`,
         label: m.relPath.split("/").pop() ?? m.relPath,
         description: m.relPath,
-        icon:
-          m.kind === "dir" ? <Folder size={14} aria-hidden /> : <FileText size={14} aria-hidden />,
+        icon: (
+          <FileTypeIcon
+            name={m.relPath.split("/").pop() ?? m.relPath}
+            kind={m.kind === "dir" ? "dir" : "file"}
+            className="size-3.5"
+          />
+        ),
         onSelect: () => {
           if (m.kind === "dir")
             window.location.assign(`/browse?dir=${encodeURIComponent(m.relPath)}`);

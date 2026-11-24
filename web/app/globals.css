@@ -22,6 +22,8 @@
  * for numeric up/down indicators. */
 
 @theme inline {
+  --color-folder: var(--folder);
+  --color-folder-tab: var(--folder-tab);
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -61,6 +63,11 @@
    * black-and-white. 250 is the hue of the brand charcoal. Chroma stays low
    * (0.003 to 0.02): the tint should be felt, not seen. */
   --theme-hue: 250;
+  /* Folder cards on the Browse page: the blue-grey of the file icon pack's
+   * folder glyph, so a folder card and a folder icon read as the same thing.
+   * An identity colour for "this is a folder", not a state colour. */
+  --folder: oklch(0.925 0.022 230);
+  --folder-tab: oklch(0.83 0.034 230);
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0.012 var(--theme-hue));
   --card: oklch(1 0 0);
@@ -101,6 +108,8 @@
 
 .dark {
   color-scheme: dark;
+  --folder: oklch(0.3 0.026 230);
+  --folder-tab: oklch(0.42 0.034 230);
   --background: oklch(0.145 0.008 var(--theme-hue));
   --foreground: oklch(0.985 0.004 var(--theme-hue));
   --card: oklch(0.205 0.011 var(--theme-hue));

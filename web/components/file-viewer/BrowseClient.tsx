@@ -61,8 +61,8 @@ import {
 } from "./browse-model";
 import { FileActionsMenu } from "./FileActionsMenu";
 import { FileThumbnail } from "./FileThumbnail";
+import { FileTypeIcon } from "./FileTypeIcon";
 import { FileViewerPane } from "./FileViewerPane";
-import { iconForFile } from "./file-icons";
 import { clearThumbnailCache } from "./thumbnail-cache";
 import {
   type VideoPlayback,
@@ -1200,7 +1200,8 @@ const EntryRow = memo(function EntryRow({
   onMenu: (entry: BrowserEntry, x: number, y: number, trigger: HTMLElement) => void;
   menuOpen: boolean;
 }) {
-  const Icon = entry.kind === "dir" ? Folder : iconForFile(entry.name);
+  const isDir = entry.kind === "dir";
+  const thumbnailVersion = `${entry.mtime ?? ""}:${entry.size ?? ""}:${thumbnailGeneration}`;
   const formatDateTime = useFormatDateTime();
   const date = entry.mtime ? new Date(entry.mtime) : null;
   const formattedDate = date && !Number.isNaN(date.getTime()) ? formatDateTime(date) : null;
@@ -1237,25 +1238,41 @@ const EntryRow = memo(function EntryRow({
         aria-label={`${entry.kind === "dir" ? "Open folder" : "Preview"} ${displayName(entry)}`}
         className={`w-full min-w-0 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring ${grid ? "block p-3" : "flex items-center gap-3 py-3 pl-4 pr-12 sm:pl-5"}`}
       >
-        <div
-          className={
-            grid
-              ? "mb-3 flex h-28 items-center justify-center overflow-hidden rounded-md bg-muted/30"
-              : "flex size-9 shrink-0 items-center justify-center overflow-hidden rounded-md bg-muted/40"
-          }
-        >
-          <FileThumbnail
-            relPath={entry.relPath}
-            version={`${entry.mtime ?? ""}:${entry.size ?? ""}:${thumbnailGeneration}`}
-          >
-            <Icon
-              className={grid ? "size-10 text-subtle-foreground" : "size-4 text-muted-foreground"}
-            />
-          </FileThumbnail>
-        </div>
+        {grid && isDir ? (
+          // A folder card is drawn as a folder: a tab above a tinted body that
+          // frames the contents preview, so it never reads as a file thumbnail.
+          <div data-folder-card className="mb-3 flex h-28 flex-col">
+            <span aria-hidden className="h-2.5 w-2/5 shrink-0 rounded-t-md bg-folder-tab" />
+            <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden rounded-md rounded-tl-none border-t-[3px] border-folder-tab bg-folder p-1.5">
+              <FileThumbnail relPath={entry.relPath} version={thumbnailVersion}>
+                <FileTypeIcon name={entry.name} kind="dir" className="size-14" />
+              </FileThumbnail>
+            </div>
+          </div>
+        ) : grid ? (
+          <div className="mb-3 flex h-28 items-center justify-center overflow-hidden rounded-md bg-muted/30">
+            <FileThumbnail relPath={entry.relPath} version={thumbnailVersion}>
+              <FileTypeIcon name={entry.name} kind="file" className="size-12" />
+            </FileThumbnail>
+          </div>
+        ) : isDir ? (
+          // In a list, a contents collage is too small to read; the folder icon is the cue.
+          <div className="flex size-9 shrink-0 items-center justify-center rounded-md bg-folder">
+            <FileTypeIcon name={entry.name} kind="dir" className="size-6" />
+          </div>
+        ) : (
+          <div className="flex size-9 shrink-0 items-center justify-center overflow-hidden rounded-md bg-muted/40">
+            <FileThumbnail relPath={entry.relPath} version={thumbnailVersion}>
+              <FileTypeIcon name={entry.name} kind="file" className="size-5" />
+            </FileThumbnail>
+          </div>
+        )}
         <div className="min-w-0 flex-1">
-          <span className="block break-words text-sm font-medium leading-5">
-            {displayName(entry)}
+          <span
+            className={`block break-words text-sm font-medium leading-5 ${grid ? "flex items-start gap-1.5" : ""}`}
+          >
+            {grid && <FileTypeIcon name={entry.name} kind={entry.kind} className="mt-0.5 size-4" />}
+            <span className="min-w-0">{displayName(entry)}</span>
           </span>
           {subtitle && (
             <span className="mt-1 block truncate text-xs text-muted-foreground">{subtitle}</span>

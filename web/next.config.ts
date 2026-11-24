@@ -22,6 +22,12 @@ const nextConfig: NextConfig = {
   // the tracing root so Next includes those files when building.
   outputFileTracingRoot: path.resolve(dirname, ".."),
   outputFileTracingIncludes: {
+    // The icon routes read the pack's manifest and SVGs from disk at request time.
+    "/api/file/icons/map": [
+      "./node_modules/material-icon-theme/package.json",
+      "./node_modules/material-icon-theme/dist/material-icons.json",
+    ],
+    "/api/file/icons/svg/[id]": ["./node_modules/material-icon-theme/icons/*.svg"],
     "/api/file/thumbnail": [
       "./lib/thumbnail-renderers/*.mjs",
       "./lib/thumbnail-renderers/*.py",

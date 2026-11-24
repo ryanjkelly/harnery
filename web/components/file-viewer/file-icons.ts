@@ -1,8 +1,7 @@
 /**
- * Extension → lucide glyph mapping for file rows in the tree + search palette.
- * Glyph-only differentiation (no per-type colour) to stay within the dashboard's
- * state-colour grammar (sky=act / emerald=done / …); type is conveyed by shape.
- * Falls back to a generic File for unknown extensions.
+ * Extension → lucide glyph mapping, now the fallback for `FileTypeIcon`: it
+ * draws while the bundled icon pack's name map loads, or when the pack is
+ * unavailable. Falls back to a generic File for unknown extensions.
  */
 
 import {

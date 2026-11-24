@@ -7,9 +7,10 @@
  * never sees archive code).
  */
 
-import type { FileMeta } from "@/lib/file-viewer/types";
-import { FileArchive, Folder } from "lucide-react";
+import { FileArchive } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import type { FileMeta } from "@/lib/file-viewer/types";
+import { FileTypeIcon } from "../FileTypeIcon";
 import { LoadingState, TransportErrorState } from "../ViewerStates";
 
 interface ArchiveEntry {
@@ -73,11 +74,11 @@ export default function ArchiveRenderer({ meta, path }: { meta: FileMeta; path: 
             key={i}
             className="flex items-center gap-2 rounded px-2 py-1 hover:bg-muted/40"
           >
-            {e.isDir ? (
-              <Folder className="size-3.5 shrink-0 text-sky-500/70" />
-            ) : (
-              <span className="w-3.5 shrink-0" />
-            )}
+            <FileTypeIcon
+              name={e.name.replace(/\/+$/, "").split("/").pop() ?? e.name}
+              kind={e.isDir ? "dir" : "file"}
+              className="size-3.5"
+            />
             <span
               className={`min-w-0 flex-1 truncate ${e.isDir ? "text-sky-600 dark:text-sky-400" : "text-foreground/90"}`}
             >
