@@ -1,4 +1,5 @@
 import {
+  CalendarClock,
   Clapperboard,
   FolderTree,
   Gauge,
@@ -58,6 +59,13 @@ export const APP_ROUTES: readonly AppRoute[] = [
     group: "activity",
     icon: Server,
     keywords: ["ports", "localhost", "preview", "dev server", "tunnel", "listeners", "stop"],
+  },
+  {
+    href: "/schedules",
+    label: "Schedules",
+    group: "activity",
+    icon: CalendarClock,
+    keywords: ["schedule", "cron", "timer", "jobs", "systemd", "recurring", "automation"],
   },
   {
     href: "/resources",
