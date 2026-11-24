@@ -152,6 +152,7 @@ it does not run until [`enroll`](#enroll).
 | Option | Meaning |
 | --- | --- |
 | `--title <text>` | A title for people. Default: the id. |
+| `--description <text>` | A sentence or two on what the job does, shown in the schedule list and on the dashboard. |
 | `--once <iso>` | Run once at this instant. It needs `Z` or an offset. |
 | `--every <minutes>` | Run every N minutes, at least 5, counted from enrollment. |
 | `--cron "<expr>"` | A five-field cron expression in the project's time zone. |
@@ -513,6 +514,7 @@ The file accepts no other keys at any level.
 | --- | --- | --- |
 | `id` | yes | Lowercase kebab-case, 1 to 64 characters, unique in the file. |
 | `title` | yes | A name for people. Not pinned. |
+| `description` | no | What the job does, for people reading the list. Not pinned, so editing it does not stop the job. |
 | `host` | yes | The machine label that may run the job, as `harn machine` reports it (the `HARNERY_MACHINE` variable, then `~/.config/harnery/machine`, then the host name). |
 | `trigger` | yes | When the job is due; see below. |
 | `timeout_minutes` | yes | One deadline for the whole run, gather and agent together: 1 to 240. A command or agent still running at the deadline is killed with its process group. |
