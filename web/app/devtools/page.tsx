@@ -307,8 +307,17 @@ function AccountBlock({
                 key={`${g.kind}:${g.label}:${g.expiresAt ?? ""}`}
                 className="flex items-baseline justify-between gap-3"
               >
-                <Tooltip content={RESET_KIND_HINT[g.kind]} side="top">
-                  <span className="cursor-help truncate">{g.label}</span>
+                <Tooltip
+                  content={
+                    <div className="space-y-0.5">
+                      <div>{g.label}</div>
+                      <div className="opacity-80">{RESET_KIND_HINT[g.kind]}</div>
+                    </div>
+                  }
+                  side="top"
+                  triggerClassName="block min-w-0 flex-1"
+                >
+                  <span className="block cursor-help truncate">{g.label}</span>
                 </Tooltip>
                 <span className="shrink-0 tabular-nums text-muted-foreground">
                   {`${g.left} left`}
