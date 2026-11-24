@@ -21,7 +21,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir, userInfo } from "node:os";
-import { basename, delimiter, join, resolve } from "node:path";
+import { basename, join, posix, resolve } from "node:path";
 import { harnCliEntry } from "../cli-entry.ts";
 import { writePrivateJsonAtomic } from "../storage/atomic-json.ts";
 import { defaultScheduleCommandRunner } from "./command-runner.ts";
@@ -152,9 +152,10 @@ export function scheduleTimerUnitDir(
   env: Readonly<Record<string, string | undefined>> = process.env,
   home: string = homedir(),
 ): string {
+  // systemd runs only on Linux, so an XDG path is POSIX on every host that reads it.
   const xdg = env.XDG_CONFIG_HOME?.trim();
-  const base = xdg?.startsWith("/") ? xdg : join(home, ".config");
-  return join(base, "systemd", "user");
+  if (xdg?.startsWith("/")) return posix.join(xdg, "systemd", "user");
+  return join(home, ".config", "systemd", "user");
 }
 
 export function scheduleTimerUnits(opts: ScheduleTimerOptions): ScheduleTimerUnits {
@@ -275,7 +276,7 @@ export function renderScheduleServiceUnit(input: ScheduleTimerUnitTextInput): st
   const name = systemdEscapeSpecifiers(basename(checkout));
   return [
     "[Unit]",
-    `Description=Harnery schedule tick for ${name}`,
+    `Description=Starts any Harnery jobs that are due in ${name} (harnery schedule tick)`,
     "",
     "[Service]",
     "Type=oneshot",
@@ -293,7 +294,7 @@ export function renderScheduleTimerUnit(input: ScheduleTimerUnitTextInput): stri
   );
   return [
     "[Unit]",
-    `Description=Harnery schedule timer for ${name}`,
+    `Description=Checks every few minutes for Harnery jobs due in ${name}`,
     "",
     "[Timer]",
     `OnCalendar=${scheduleTimerOnCalendar(input.intervalMinutes)}`,
@@ -472,7 +473,8 @@ export async function installScheduleTimer(
     interval_minutes: intervalMinutes,
     on_calendar: onCalendar,
     command,
-    path_dirs: path.split(delimiter).filter((dir) => dir.length > 0),
+    // A systemd unit's PATH is always colon-separated, whatever host wrote it.
+    path_dirs: path.split(":").filter((dir) => dir.length > 0),
     record,
     linger,
     reinstalled,

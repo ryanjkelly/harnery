@@ -69,10 +69,10 @@ export function ScheduleCard({
         <span className="mt-0.5">
           {record.source === "captured" ? (
             <Tooltip content={SOURCE_META.captured.hint}>
-              <SourceIcon source={record.source} />
+              <SourceIcon source={record.source} recordId={record.id} />
             </Tooltip>
           ) : (
-            <SourceIcon source={record.source} />
+            <SourceIcon source={record.source} recordId={record.id} />
           )}
         </span>
         <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2">

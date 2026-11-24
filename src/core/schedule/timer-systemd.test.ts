@@ -97,7 +97,7 @@ describe("unit text", () => {
     expect(renderScheduleServiceUnit(input)).toBe(
       [
         "[Unit]",
-        "Description=Harnery schedule tick for project",
+        "Description=Starts any Harnery jobs that are due in project (harnery schedule tick)",
         "",
         "[Service]",
         "Type=oneshot",
@@ -110,7 +110,7 @@ describe("unit text", () => {
     expect(renderScheduleTimerUnit(input)).toBe(
       [
         "[Unit]",
-        "Description=Harnery schedule timer for project",
+        "Description=Checks every few minutes for Harnery jobs due in project",
         "",
         "[Timer]",
         "OnCalendar=*:0/5",
@@ -136,7 +136,7 @@ describe("unit text", () => {
     expect(service).toContain('WorkingDirectory=/srv/my work/100%% "done" $HOME');
     expect(service).toContain('"--root" "/srv/my work/100%% \\"done\\" $$HOME"');
     expect(service).toContain('Environment="PATH=/opt/50%%/bin:/usr/bin"');
-    expect(service).toContain('Description=Harnery schedule tick for 100%% "done" $HOME');
+    expect(service).toContain('Description=Starts any Harnery jobs that are due in 100%% "done" $HOME (harnery schedule tick)');
     expect(systemdQuoteExecArg("a\\b")).toBe('"a\\\\b"');
   });
 
