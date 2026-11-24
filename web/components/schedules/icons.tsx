@@ -24,7 +24,7 @@ import { TONE } from "@/lib/tone";
  */
 function T3CodeMark({ className }: { className?: string }) {
   return (
-    <svg viewBox="0 0 128 128" aria-hidden className={className} fill="none">
+    <svg viewBox="0 0 128 128" aria-hidden="true" className={className} fill="none">
       <rect width="128" height="128" rx="10" fill="currentColor" />
       <path
         fill="var(--background)"
@@ -37,7 +37,7 @@ function T3CodeMark({ className }: { className?: string }) {
 /** systemd's bracketed-dot mark: two brackets in the text colour around its green dot. */
 function SystemdMark({ className }: { className?: string }) {
   return (
-    <svg viewBox="0 0 24 24" aria-hidden className={className} fill="none">
+    <svg viewBox="0 0 24 24" aria-hidden="true" className={className} fill="none">
       <path
         d="M7 4H3.5v16H7M17 4h3.5v16H17"
         stroke="currentColor"

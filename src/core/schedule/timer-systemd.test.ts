@@ -136,7 +136,9 @@ describe("unit text", () => {
     expect(service).toContain('WorkingDirectory=/srv/my work/100%% "done" $HOME');
     expect(service).toContain('"--root" "/srv/my work/100%% \\"done\\" $$HOME"');
     expect(service).toContain('Environment="PATH=/opt/50%%/bin:/usr/bin"');
-    expect(service).toContain('Description=Starts any Harnery jobs that are due in 100%% "done" $HOME (harnery schedule tick)');
+    expect(service).toContain(
+      'Description=Starts any Harnery jobs that are due in 100%% "done" $HOME (harnery schedule tick)',
+    );
     expect(systemdQuoteExecArg("a\\b")).toBe('"a\\\\b"');
   });
 
