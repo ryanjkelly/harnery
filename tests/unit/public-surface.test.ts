@@ -50,7 +50,9 @@ describe("public-surface provenance guard", () => {
     () => {
       expect(scanPublicSurface(join(import.meta.dir, "..", ".."))).toEqual([]);
     },
-    { timeout: 15_000 },
+    // A full read of the public tree: about 5.5 s on Linux and 13-17 s on the
+    // Windows CI runner as of 2026-11-24, growing with the tree.
+    { timeout: 60_000 },
   );
 
   test("opaque fingerprints block a restricted identifier without publishing its inventory", () => {
