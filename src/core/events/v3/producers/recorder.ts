@@ -64,6 +64,7 @@ import {
   recoverSpanUpperBoundV3,
   type SpanClockV3,
 } from "../span-state.ts";
+import { recordToolFailureDetailV3 } from "../tool-failure-details.ts";
 import { type LineChanges, prepareToolLineChanges } from "../tool-line-changes.ts";
 import {
   type ContextMeasurementV3,
@@ -1397,6 +1398,19 @@ function processHookSignalLocked(
       turn_ritual: terminalTurnRitual,
     });
     if (!event) return { state: "ignored" };
+    if (input.signal === "post-tool-use-failure" && event.event_type === "tool.completed") {
+      // The canonical event stays content-free; the diagnosable text goes to
+      // the private, expiring side store keyed by this event's id.
+      recordToolFailureDetailV3(input.coordRoot, {
+        event_id: event.event_id,
+        instance_id: state.instance_id,
+        tool_name: input.payload.tool_name ?? "unknown",
+        tool_input: input.payload.tool_input,
+        tool_response: input.payload.tool_response,
+        raw: input.payload.raw,
+        recorded_at: eventClock.observed_at,
+      });
+    }
     if (
       input.signal === "session-start" &&
       input.delegated_child &&

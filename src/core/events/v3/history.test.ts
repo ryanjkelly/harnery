@@ -6,11 +6,13 @@ import { removeDir } from "../../../../tests/helpers/remove-dir.ts";
 import type { EmitContext } from "../../../commander.ts";
 import { createHarneryProgram } from "../../../commander.ts";
 import {
+  attachToolFailureDetailsV3,
   countEventHistoryV3,
   listEventHistoryEpochsV3,
   parseHistoryInstantV3,
   scanEventHistoryV3,
 } from "./history.ts";
+import { recordToolFailureDetailV3 } from "./tool-failure-details.ts";
 
 const roots: string[] = [];
 
@@ -66,6 +68,7 @@ function historyRoot(): string {
       event("e3", "session.started", "2026-11-03T09:00:00.000Z", "inst_bbb"),
       event("e4", "tool.requested", "2026-11-03T09:00:01.000Z", "inst_bbb", {
         tool: { name: "Read" },
+        targets: [{ kind: "workspace_path", access: "read", display: "src/missing.ts" }],
       }),
       event("e5", "tool.completed", "2026-11-03T09:00:02.000Z", "inst_bbb", failed("e4")),
     ].join("\n"),
@@ -100,6 +103,35 @@ describe("event history across epochs", () => {
       { key: "Bash", count: 1 },
       { key: "Read", count: 1 },
     ]);
+  });
+
+  test("joins completions to the target their request named", () => {
+    const rows = scanEventHistoryV3(historyRoot(), { outcome: "failed" }).rows;
+    expect(rows.map(({ subject, target }) => [subject, target])).toEqual([
+      ["Bash", null],
+      ["Read", "src/missing.ts"],
+    ]);
+  });
+
+  test("attaches retained private failure details to failed completions only", () => {
+    const root = historyRoot();
+    recordToolFailureDetailV3(
+      root,
+      {
+        event_id: "e2",
+        tool_name: "Bash",
+        tool_input: { command: "bun test src/broken.test.ts" },
+        raw: { error: "Exit code 1\nerror: expected 2, received 3" },
+      },
+      new Date("2026-11-03T10:00:00.000Z"),
+    );
+    const rows = attachToolFailureDetailsV3(root, scanEventHistoryV3(root).rows);
+    expect(rows.find((row) => row.event_id === "e2")?.failure).toEqual({
+      input: "bun test src/broken.test.ts",
+      error: "Exit code 1\nerror: expected 2, received 3",
+      error_chars: 41,
+    });
+    expect(rows.filter((row) => row.failure)).toHaveLength(1);
   });
 
   test("skips epochs that closed before --since", () => {
@@ -148,5 +180,36 @@ describe("event history across epochs", () => {
       { from: "user" },
     );
     expect(out).toContain("2 matching events. Searched 2 epochs back to 2026-11-01 10:00:00.");
+  });
+
+  test("the query command lists which call failed and why", async () => {
+    const root = historyRoot();
+    recordToolFailureDetailV3(root, {
+      event_id: "e5",
+      tool_name: "Read",
+      tool_input: { file_path: "src/missing.ts" },
+      raw: { error: "File does not exist." },
+    });
+    let out = "";
+    const append = (value: unknown) => {
+      out += typeof value === "string" ? value : `${JSON.stringify(value)}\n`;
+    };
+    const emit: EmitContext = {
+      config: () => {},
+      data: append,
+      rows: append,
+      text: append,
+      file: () => {},
+      error: append,
+      log: () => {},
+      setExitCode: () => {},
+    };
+    await createHarneryProgram({ emit }).parseAsync(
+      ["events", "query", "--root", root, "--outcome", "failed", "--tz", "UTC"],
+      { from: "user" },
+    );
+    expect(out).toContain("TARGET");
+    expect(out).toContain("Failure details");
+    expect(out).toContain("Read src/missing.ts\n    File does not exist.");
   });
 });

@@ -50,6 +50,15 @@ so `query` filters on recorded structure rather than on error messages. It reads
 the stored lines for inspection and does not validate authority; `latency` and
 other projections keep the validating reader.
 
+Each listed row shows the first target its tool request named, such as the
+file a `Read` or `Edit` call opened, in the `TARGET` column (`target` in
+`--json`). A failed tool call also gets a private detail, when one was kept: the
+command or arguments and the error the harness reported. The table prints the
+first line of each error under the rows; `--json` adds a `failure` object with
+the full stored excerpt. Details come from a separate store described in
+[ADR 0278](/decisions/0278-keep-failed-tool-details-privately/), never from the
+ledger, and are kept for 14 days.
+
 ```bash
 # How far back does the history go?
 harn events epochs
@@ -62,6 +71,9 @@ harn events query --session 7aef7ec6 --limit 100
 
 # Failures per day
 harn events query --since 30d --outcome failed --count-by day
+
+# What failed today, which file or command, and why
+harn events query --since 1d --type tool.completed --outcome failed
 ```
 
 ## Recover archived ready events

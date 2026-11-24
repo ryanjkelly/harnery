@@ -213,6 +213,24 @@ function eventFamilies(): HarneryStorageFamily[] {
       consumers: ["Event Ledger V3 fingerprinting", "recovery"],
       provider: filesystemProvider("fingerprint-key-provider", "Event Ledger V3 privacy boundary"),
     }),
+    family({
+      id: "tool-failure-details",
+      owner: "Event Ledger V3 hook recorder",
+      storage_class: "debug-log",
+      default_level: "error",
+      roots: (context) => [
+        subtree(context, ".harnery/private/tool-failures", OWNER_PROTOCOL_LINKS),
+      ],
+      format: "jsonl",
+      durability: "best-effort",
+      writer_model: "multi-process",
+      policy: toolFailureDetailPolicy("tool-failure-details-v1"),
+      consumers: ["events query", "storage inventory"],
+      provider: filesystemInventoryDelegatedMaintenanceProvider(
+        "tool-failure-detail-provider",
+        "hook recorder daily-file pruning",
+      ),
+    }),
   ];
 }
 
@@ -839,6 +857,22 @@ function closedEpochPolicy(version: string): HarneryStoragePolicy {
     reason:
       "The Event Ledger owner keeps the newest two complete epochs and revalidates each closed epoch before removal.",
   });
+}
+
+function toolFailureDetailPolicy(version: string): HarneryStoragePolicy {
+  const result = policy(version, "active", "private", "owner-content", {
+    status: "active",
+    mode: "delegated",
+    maxAge: bounded(14 * DAY_MS, "milliseconds"),
+    maxBytes: bounded(14 * 16 * MIB, "bytes"),
+    maxFiles: bounded(15, "files"),
+    maxRecords: unbounded("records", "each daily file is capped by bytes, not records"),
+    reason:
+      "The hook recorder removes daily files older than 14 days and stops appending to a day at 16 MiB.",
+  });
+  result.records.max_record_bytes = bounded(16 * 1_024, "bytes");
+  result.failure_behavior = "best-effort";
+  return result;
 }
 
 function delegatedHistoryPolicy(version: string): HarneryStoragePolicy {

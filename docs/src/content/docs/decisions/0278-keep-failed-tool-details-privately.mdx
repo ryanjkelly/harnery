@@ -1,0 +1,69 @@
+---
+title: "0278: Keep failed tool details privately"
+description: "ADR: A failed tool call keeps a redacted, bounded excerpt of its input and error in an owner-only store for 14 days, keyed by the canonical event id. The ledger itself stays free of tool text."
+---
+
+**Status:** accepted (2026-11-24) · **Scope:** product tier (`core/events/v3`, `core/storage`, `events query`)
+
+## Context
+
+A failed `tool.completed` event records the tool, the duration and the class
+`adapter_tool_failure`. It does not say which file a `Read` could not open,
+which command a shell call ran, or what the harness reported. The ledger keeps
+tool input and output only as fingerprints, by design: its events are shared
+coordination authority and are retained indefinitely.
+
+Without the text, `harn events query` can count failures but cannot group them
+by cause. Finding out why agents fail meant exporting each harness's own
+session files, which are not on every machine and not in one format.
+
+The request event already carries a target display for file tools (a
+workspace-relative path), so part of the answer was recorded but never joined.
+
+## Decision
+
+1. **The ledger is unchanged.** No input, output or error text enters a
+   canonical event. The fingerprint-only contract and its schemas stay as
+   they are.
+2. **A separate private store keeps the details.** When the recorder writes a
+   failed `tool.completed`, it appends one record to
+   `.harnery/private/tool-failures/<UTC day>.jsonl`, keyed by that event's id.
+   The record holds a summary of the call's input (the command, the path, or
+   the arguments, at most 1,000 characters) and the error the harness reported
+   (at most 2,000 characters, keeping the start and the end).
+3. **Text is cleaned before it is stored.** Terminal color codes are removed,
+   paths under the coordination root become relative, and the diagnostic
+   sanitizer redacts bearer tokens, known key formats, private keys, URL
+   credentials and secret-named variables, query parameters and flags.
+4. **The store is bounded and owner-only.** The directory and files use the
+   project state modes. The writer deletes daily files older than 14 days and
+   stops appending to a day at 16 MiB. The family is registered in the storage
+   catalog as private owner content with that retention.
+5. **Writing is best-effort.** Any error is swallowed; a hook never fails
+   because a detail could not be kept.
+6. **`events query` joins both.** Rows gain the request's first target. Failed
+   tool rows gain the retained detail, printed as one line per failure and in
+   full under `--json`.
+
+## Alternatives considered
+
+- **Put the error text in the canonical event.** Simplest to read, but it
+  would place free text in indefinitely retained coordination authority and
+  change a schema that other consumers validate.
+- **Store only an error class or exit code.** Safe, but does not answer "why";
+  most harness failures share one class.
+- **Read the harness's own transcripts at query time.** Not every harness
+  keeps them, their formats differ, and some live outside the project.
+- **Store details only when the operator opts in.** The failures worth
+  diagnosing are the ones nobody expected; an opt-in store would be empty when
+  it is needed.
+
+## Consequences
+
+- A person on the machine can answer "which call failed and why" for the last
+  14 days with one command.
+- The store holds private text on the owner's machine. Redaction is
+  pattern-based and cannot recognize every secret, which is why the store is
+  owner-only, short-lived and outside the ledger, backups and exports.
+- Failures recorded before this change, or older than 14 days, show the
+  target where the request named one and no detail.

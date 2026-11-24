@@ -53,6 +53,7 @@ import { eventIdV3, generationIdV3 } from "../ids.ts";
 import { projectLatencyV3 } from "../latency.ts";
 import { reduceSafetyProjectionV3 } from "../projection.ts";
 import { readLedgerV3 } from "../reader.ts";
+import { readToolFailureDetailsV3 } from "../tool-failure-details.ts";
 import { eventV3Paths, writeEventV3 } from "../writer.ts";
 import {
   drainHookIntakeSpoolV3,
@@ -370,6 +371,39 @@ describe("event ledger V3 persistent hook recorder", () => {
     expect(terminals).toHaveLength(2);
     for (const event of terminals)
       expect(event.payload.line_changes?.state).toBe("expected_but_missing");
+  });
+
+  test("keeps failure text out of the ledger and in the private detail store", () => {
+    const root = candidateRoot();
+    const session_id = "failure-detail-session";
+    recordHookSignalV3(baseInput(root, "session-start", parsed({ session_id })));
+    recordHookSignalV3(
+      baseInput(root, "user-prompt-submit", parsed({ session_id, turn_id: "one" })),
+    );
+    const tool = { session_id, tool_use_id: "read-missing", tool_name: "Read" };
+    recordHookSignalV3(
+      baseInput(root, "pre-tool-use", parsed({ ...tool, tool_input: { file_path: "gone.ts" } })),
+    );
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "post-tool-use-failure",
+        parsed({
+          ...tool,
+          tool_input: { file_path: "gone.ts" },
+          raw: { error: "PRIVATE_FAILURE_TEXT" },
+        }),
+      ),
+    );
+    const ledger = readLedgerV3(root);
+    const failed = ledger.events
+      .map((item) => item.event)
+      .find((event) => event.event_type === "tool.completed");
+    if (!failed) throw new Error("missing failed completion");
+    expect(JSON.stringify(ledger.events)).not.toContain("PRIVATE_FAILURE_TEXT");
+    const details = readToolFailureDetailsV3(root, new Set([failed.event_id]));
+    expect(details.get(failed.event_id)?.error).toBe("PRIVATE_FAILURE_TEXT");
+    expect(details.get(failed.event_id)?.input).toBe("gone.ts");
   });
 
   test("retains only edit counts across hooks and records successful edits once", () => {

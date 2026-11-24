@@ -3,6 +3,7 @@ import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
 import { resolveBinName } from "../core/config.ts";
 import {
+  attachToolFailureDetailsV3,
   countEventHistoryV3,
   type EventHistoryGroupV3,
   type EventHistoryRowV3,
@@ -19,6 +20,7 @@ import {
   type TurnLatencyV3,
 } from "../core/events/v3/index.ts";
 import { importArchivedReadyEventsV3 } from "../core/events/v3/ready-history.ts";
+import { TOOL_FAILURE_DETAILS_MAX_AGE_DAYS } from "../core/events/v3/tool-failure-details.ts";
 
 interface LatencyOptions {
   root?: string;
@@ -236,7 +238,10 @@ export function registerEventsCommand(
           );
           return;
         }
-        const shown = limit === 0 ? scan.rows : scan.rows.slice(-limit);
+        const shown = attachToolFailureDetailsV3(
+          root,
+          limit === 0 ? scan.rows : scan.rows.slice(-limit),
+        );
         if (options.json) {
           emit.config({ format: "json" });
           emit.data({ root, matches: scan.rows.length, rows: shown, epochs: scan.epochs });
@@ -272,18 +277,47 @@ function coverageLine(
 }
 
 function renderHistoryRows(rows: EventHistoryRowV3[], timeZone?: string): string {
-  return renderTable(
-    ["TIME", "TYPE", "SESSION", "SUBJECT", "OUTCOME", "MS", "EXIT"],
+  const table = renderTable(
+    ["TIME", "TYPE", "SESSION", "SUBJECT", "TARGET", "OUTCOME", "MS", "EXIT"],
     rows.map((row) => [
       localStamp(row.recorded_at, timeZone),
       row.event_type,
       row.instance_id?.replace(/^inst_/, "").slice(0, 13) ?? "",
       row.subject ?? "",
+      shortenStart(row.target ?? (row.failure ? (row.failure.input ?? "") : ""), 48),
       row.outcome ?? "",
       row.duration_ms === null ? "" : String(row.duration_ms),
       row.exit_code === null ? "" : String(row.exit_code),
     ]),
   );
+  const failures = rows.filter((row) => row.failure);
+  if (failures.length === 0) return table;
+  const lines = failures.map((row) => {
+    const failure = row.failure as NonNullable<EventHistoryRowV3["failure"]>;
+    const what = row.target ?? failure.input ?? "(no input recorded)";
+    const why = firstErrorLine(failure.error) ?? "(no error text reported)";
+    return `${localStamp(row.recorded_at, timeZone)}  ${row.subject ?? "tool"} ${oneLine(what, 120)}\n    ${why}`;
+  });
+  return `${table}\nFailure details (private, kept ${TOOL_FAILURE_DETAILS_MAX_AGE_DAYS} days; --json shows full text):\n${lines.join("\n")}\n`;
+}
+
+function shortenStart(value: string, max: number): string {
+  const flat = oneLine(value, Number.MAX_SAFE_INTEGER);
+  return flat.length <= max ? flat : `…${flat.slice(flat.length - max + 1)}`;
+}
+
+function oneLine(value: string, max: number): string {
+  const flat = value.replace(/\s+/g, " ").trim();
+  return flat.length <= max ? flat : `${flat.slice(0, max - 1)}…`;
+}
+
+function firstErrorLine(error: string | null): string | null {
+  if (!error) return null;
+  const line = error
+    .split("\n")
+    .map((part) => part.trim())
+    .find((part) => part.length > 0);
+  return line ? oneLine(line, 200) : null;
 }
 
 function renderEpochs(

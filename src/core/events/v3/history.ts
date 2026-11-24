@@ -3,6 +3,7 @@ import { join, relative, resolve } from "node:path";
 import { parseDurationMs } from "../../../lib/duration.ts";
 import { eventV3ArchivesRoot } from "./archive-retention.ts";
 import { EVENT_V3_LEDGER_RELATIVE_ROOT } from "./reader.ts";
+import { readToolFailureDetailsV3 } from "./tool-failure-details.ts";
 
 /**
  * Read-only search across the whole retained V3 history: the active epoch plus
@@ -40,6 +41,14 @@ export interface EventHistoryRowV3 {
   outcome: string | null;
   duration_ms: number | null;
   exit_code: number | null;
+  /** First target the opening request named (a workspace path, URL, or pattern), when recorded. */
+  target: string | null;
+  /**
+   * Private failure detail for a failed tool call, from the owner-only side
+   * store. Present only when `scanEventHistoryV3` is asked for details and a
+   * retained record exists.
+   */
+  failure?: { input: string | null; error: string | null; error_chars: number };
 }
 
 export interface EventHistoryFilterV3 {
@@ -134,6 +143,7 @@ export function scanEventHistoryV3(
     };
     // Completions carry no tool name or executable; join them to their opening event.
     const openers = new Map<string, string>();
+    const openerTargets = new Map<string, string>();
     for (const file of files) {
       const text = readFileSync(file, "utf8");
       summary.bytes += Buffer.byteLength(text);
@@ -161,6 +171,8 @@ export function scanEventHistoryV3(
         const eventId = str(event.event_id) ?? "";
         const opener = openerSubject(eventType, payload);
         if (opener) openers.set(eventId, opener);
+        const openerTargetValue = openerTarget(eventType, payload);
+        if (openerTargetValue) openerTargets.set(eventId, openerTargetValue);
 
         const at = Date.parse(recordedAt);
         if (sinceMs !== undefined && at < sinceMs) continue;
@@ -185,6 +197,8 @@ export function scanEventHistoryV3(
           outcome: rowOutcome,
           duration_ms: observedNumber(payload.duration_ms),
           exit_code: typeof payload.exit_code === "number" ? payload.exit_code : null,
+          target:
+            openerTargetValue ?? (openEventId ? (openerTargets.get(openEventId) ?? null) : null),
         });
       }
     }
@@ -196,6 +210,33 @@ export function scanEventHistoryV3(
       left.event_id.localeCompare(right.event_id),
   );
   return { epochs, rows, scanned_epochs: epochs.length, skipped_epochs: skipped };
+}
+
+/**
+ * Attach retained private failure details to failed tool completions. Rows
+ * without a retained record (older than the retention window, or written
+ * before details existed) are left unchanged.
+ */
+export function attachToolFailureDetailsV3(
+  coordRoot: string,
+  rows: EventHistoryRowV3[],
+): EventHistoryRowV3[] {
+  const wanted = new Set(
+    rows
+      .filter((row) => row.event_type === "tool.completed" && row.outcome === "failed")
+      .map((row) => row.event_id),
+  );
+  const details = readToolFailureDetailsV3(coordRoot, wanted);
+  if (details.size === 0) return rows;
+  return rows.map((row) => {
+    const detail = details.get(row.event_id);
+    return detail
+      ? {
+          ...row,
+          failure: { input: detail.input, error: detail.error, error_chars: detail.error_chars },
+        }
+      : row;
+  });
 }
 
 export type EventHistoryGroupV3 =
@@ -297,6 +338,15 @@ function openerSubject(eventType: string, payload: Record<string, unknown>): str
     return name ?? null;
   }
   if (eventType === "command.started") return str(payload.executable) ?? null;
+  return null;
+}
+
+function openerTarget(eventType: string, payload: Record<string, unknown>): string | null {
+  if (eventType !== "tool.requested" || !Array.isArray(payload.targets)) return null;
+  for (const target of payload.targets) {
+    const display = str(obj(target)?.display);
+    if (display) return display;
+  }
   return null;
 }
 
