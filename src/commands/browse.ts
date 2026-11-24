@@ -146,6 +146,7 @@ import {
   saveBaseline,
 } from "../lib/browser/visual-diff.ts";
 import {
+  clearWindowsChromeSessionTabs,
   cookiesForDomain,
   harvestDomain,
   harvestWindowsChromeCookies,
@@ -3961,6 +3962,16 @@ async function runWindowsPlainLogin(
   if (!keep.kept) {
     emit.log(
       "[--login] Could not set the sign-in profile to keep browser-session cookies. A sign-in that relies on them survives only if you end it from the terminal instead of closing the window.",
+      "warn",
+    );
+  }
+  // The profile continues where it left off, so without this every sign-in
+  // window reopens every tab saved before it, blank pages from headless runs
+  // included, and the list grows each time.
+  const clear = clearWindowsChromeSessionTabs({ profileWindows });
+  if (!clear.cleared) {
+    emit.log(
+      "[--login] Could not clear the sign-in profile's saved tabs; the window may reopen tabs from earlier sign-ins.",
       "warn",
     );
   }

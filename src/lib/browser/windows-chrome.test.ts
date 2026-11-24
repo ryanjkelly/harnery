@@ -1,5 +1,19 @@
 import { describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  clearSessionTabsScript,
+  clearWindowsChromeSessionTabs,
   cookieInDomain,
   cookiesForDomain,
   harvestDomain,
@@ -108,6 +122,65 @@ describe("windows chrome sign-in helpers", () => {
       script.indexOf("Secure Preferences"),
     );
   });
+
+  test("the clear-tabs script deletes saved tabs only, after refusing an open profile", () => {
+    const script = clearSessionTabsScript();
+    expect(script.indexOf("Chrome is still running on the sign-in profile")).toBeLessThan(
+      script.indexOf("Remove-Item"),
+    );
+    expect(script).toContain("'Sessions'");
+    expect(script).toContain("'Current Session', 'Current Tabs', 'Last Session', 'Last Tabs'");
+    // Cookies and preferences must survive: they hold the sign-in and the startup preference.
+    expect(script).not.toMatch(/Cookies|Preferences|Network/);
+    expect(script).not.toContain("--headless");
+  });
+
+  test("a WSL sign-in clears the saved tabs before it opens the window", () => {
+    const source = readFileSync(join(import.meta.dir, "../../commands/browse.ts"), "utf8");
+    const body = source.slice(source.indexOf("async function runWindowsPlainLogin"));
+    const clear = body.indexOf("clearWindowsChromeSessionTabs({ profileWindows })");
+    expect(clear).toBeGreaterThan(body.indexOf("keepWindowsChromeSession("));
+    expect(clear).toBeLessThan(body.indexOf("spawn("));
+  });
+
+  const onWsl =
+    existsSync("/proc/sys/fs/binfmt_misc/WSLInterop") &&
+    spawnSync("which", ["powershell.exe"]).status === 0;
+  test.skipIf(!onWsl)(
+    "on WSL the clear-tabs run removes session files and keeps everything else",
+    () => {
+      const profile = mkdtempSync(join(tmpdir(), "harnery-clear-tabs-"));
+      try {
+        const sessions = join(profile, "Default", "Sessions");
+        mkdirSync(sessions, { recursive: true });
+        writeFileSync(join(sessions, "Session_1"), "tabs");
+        writeFileSync(join(sessions, "Tabs_1"), "tabs");
+        writeFileSync(join(profile, "Default", "Current Tabs"), "tabs");
+        writeFileSync(join(profile, "Default", "Cookies"), "keep");
+        writeFileSync(join(profile, "Default", "Preferences"), "{}");
+        const profileWindows = spawnSync("wslpath", ["-w", profile], {
+          encoding: "utf8",
+        }).stdout.trim();
+        expect(clearWindowsChromeSessionTabs({ profileWindows })).toEqual({
+          cleared: true,
+          removed: 3,
+        });
+        expect(readdirSync(sessions)).toEqual([]);
+        expect(readdirSync(join(profile, "Default")).sort()).toEqual([
+          "Cookies",
+          "Preferences",
+          "Sessions",
+        ]);
+        expect(clearWindowsChromeSessionTabs({ profileWindows })).toEqual({
+          cleared: true,
+          removed: 0,
+        });
+      } finally {
+        rmSync(profile, { recursive: true, force: true });
+      }
+    },
+    60_000,
+  );
 
   test("the stop script closes windows first and reports survivors", () => {
     const script = stopScript();

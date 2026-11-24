@@ -205,6 +205,33 @@ export function keepSessionScript(): string {
 }
 
 /**
+ * PowerShell that deletes the profile's saved tabs and windows, so the next
+ * sign-in window opens on its URL alone. The profile continues where it left
+ * off (`keepSessionScript`), and every headless run on it (the harvest, the
+ * preference change) restores the saved tabs, adds its own blank page and
+ * saves them all again on close, so without this the list grows by a tab
+ * each sign-in until the window opens with hundreds of empty tabs.
+ * Browser-session cookies live in the cookie database, not with the tabs, and
+ * are kept because of the startup preference, not the saved session. The
+ * script refuses to run while Chrome is open on the profile and prints
+ * `{"removed":n}`.
+ */
+export function clearSessionTabsScript(): string {
+  return [
+    "param([string]$Profile, [string]$Pattern)",
+    "$ErrorActionPreference = 'Stop'",
+    ...REFUSE_OPEN_PROFILE_LINES,
+    "$default = Join-Path $Profile 'Default'",
+    "$targets = @()",
+    "$sessions = Join-Path $default 'Sessions'",
+    "if (Test-Path $sessions) { $targets += @(Get-ChildItem -LiteralPath $sessions -File) }",
+    "foreach ($name in @('Current Session', 'Current Tabs', 'Last Session', 'Last Tabs')) { $f = Join-Path $default $name; if (Test-Path -LiteralPath $f) { $targets += @(Get-Item -LiteralPath $f) } }",
+    "foreach ($t in $targets) { Remove-Item -LiteralPath $t.FullName -Force }",
+    "[Console]::Out.Write('{\"removed\":' + $targets.Count + '}')",
+  ].join("\r\n");
+}
+
+/**
  * PowerShell that does the whole read on the Windows side: start Chrome
  * headless on the profile with its last session restored, read every cookie
  * with `Storage.getCookies`, list the open pages with `Target.getTargets`,
@@ -400,6 +427,46 @@ export function keepWindowsChromeSession(input: {
     return { kept: parsed.value === 1, changed: parsed.changed === true };
   } catch {
     return { kept: false, changed: false };
+  }
+}
+
+export interface WindowsChromeClearTabs {
+  /** True when the saved tabs are gone (or there were none). */
+  cleared: boolean;
+  /** Session files deleted. */
+  removed: number;
+}
+
+/**
+ * Delete the sign-in profile's saved tabs before a sign-in window opens; see
+ * `clearSessionTabsScript`. Throws when Chrome is already open on the
+ * profile. Any other failure returns `cleared: false` so the caller can warn
+ * and continue.
+ */
+export function clearWindowsChromeSessionTabs(input: {
+  profileWindows: string;
+}): WindowsChromeClearTabs {
+  const result = runPowerShellScript(
+    "clear-session-tabs",
+    clearSessionTabsScript(),
+    ["-Profile", input.profileWindows, "-Pattern", profileCommandLinePattern(input.profileWindows)],
+    30_000,
+  );
+  const detail = (result.stderr || result.stdout || result.error?.message || "").trim();
+  if (result.status !== 0) {
+    if (detail.includes("Chrome is still running on the sign-in profile"))
+      throw new Error(
+        `Chrome is already open on the sign-in profile ${input.profileWindows}. Close that window and run the sign-in again.`,
+      );
+    return { cleared: false, removed: 0 };
+  }
+  try {
+    const parsed = JSON.parse(result.stdout) as { removed?: unknown };
+    return typeof parsed.removed === "number"
+      ? { cleared: true, removed: parsed.removed }
+      : { cleared: false, removed: 0 };
+  } catch {
+    return { cleared: false, removed: 0 };
   }
 }
 
