@@ -11,8 +11,8 @@ import { harneryScheduleReader } from "../../core/schedule/readers/harnery.ts";
 import {
   SCHEDULE_SOURCES,
   type ScheduleReader,
+  type ScheduleReaderId,
   type ScheduleRecord,
-  type ScheduleSource,
 } from "../../core/schedule/types.ts";
 import { parseScheduleRef, registerScheduleListCommands, type ScheduleListDeps } from "./list.ts";
 
@@ -65,10 +65,9 @@ function osRecord(id: string): ScheduleRecord {
   };
 }
 
-function fake(id: ScheduleSource, records: ScheduleRecord[]): ScheduleReader {
+function fake(id: ScheduleReaderId, records: ScheduleRecord[]): ScheduleReader {
   return {
     id,
-    requiresOptIn: false,
     async read(ctx) {
       return {
         coverage: {

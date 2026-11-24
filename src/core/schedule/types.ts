@@ -30,12 +30,12 @@ export const SCHEDULE_SOURCES: readonly ScheduleSource[] = [
 ];
 
 /**
- * The readers that read another app's private store. They run only when the
- * project's own `.harnery/config.jsonc` lists them in `schedule.readers`; a
- * user-global or machine-local value never turns one on.
+ * The sources that have a reader (`captured` has none: observations stand in
+ * for one). Every reader runs by default; an operator switches one off with
+ * `schedule.disabledReaders` in any config layer (see `scheduleConfig`).
  */
-export const SCHEDULE_OPT_IN_READERS = ["t3-code", "codex-app"] as const;
-export type ScheduleOptInReader = (typeof SCHEDULE_OPT_IN_READERS)[number];
+export const SCHEDULE_READER_IDS = ["t3-code", "codex-app", "os-timer", "harnery"] as const;
+export type ScheduleReaderId = (typeof SCHEDULE_READER_IDS)[number];
 
 /**
  * When a schedule fires. `raw` always carries the source's own text for the
@@ -200,9 +200,7 @@ export interface ScheduleReadContext {
  * returns `unreadable` when the store cannot be read.
  */
 export interface ScheduleReader {
-  id: ScheduleSource;
-  /** True for readers of another app's private store (see `SCHEDULE_OPT_IN_READERS`). */
-  requiresOptIn: boolean;
+  id: ScheduleReaderId;
   read(ctx: ScheduleReadContext): Promise<ScheduleReadResult>;
 }
 

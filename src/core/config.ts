@@ -55,7 +55,7 @@ import {
 } from "./hooks/prompt-context/contract.ts";
 import { findCoordRoot } from "./hooks/resolve/coord-root.ts";
 import { type Preferences, readPreferences } from "./preferences.ts";
-import { SCHEDULE_OPT_IN_READERS, type ScheduleOptInReader } from "./schedule/types.ts";
+import { SCHEDULE_READER_IDS, type ScheduleReaderId } from "./schedule/types.ts";
 
 export { DEFAULT_WEB_PORT } from "../lib/local-file-url.ts";
 export { DEFAULT_EVENT_LEDGER_ROTATE_ACTIVE_BYTES } from "./events/v3/rotation-config.ts";
@@ -328,12 +328,12 @@ interface HarneryConfig {
     cleanup?: boolean;
   };
   /**
-   * Schedule list settings. `readers` names the readers of other apps'
-   * private stores that may run (`t3-code`, `codex-app`). Project config
-   * only; read via `scheduleConfig()`.
+   * Schedule list settings. `disabledReaders` names readers the operator
+   * switched off (every reader runs by default). Any layer may switch one
+   * off; read via `scheduleConfig()`.
    */
   schedule?: {
-    readers?: unknown;
+    disabledReaders?: unknown;
   };
   [k: string]: unknown;
 }
@@ -1762,37 +1762,51 @@ export function readAutoUpdateConfig(coordRoot: string): AutoUpdateConfig | null
   };
 }
 
+/** Which config layer switched a schedule reader off. */
+export type ScheduleConfigLayer = "user" | "project" | "local";
+
 /** Effective schedule settings (see `scheduleConfig`). */
 export interface ScheduleConfig {
-  /** Opt-in readers the project turned on, deduplicated, in the order written. */
-  readers: ScheduleOptInReader[];
+  /** Readers switched off in any layer, deduplicated, in `SCHEDULE_READER_IDS` order. */
+  disabledReaders: ScheduleReaderId[];
+  /** For each switched-off reader, the layers that switched it off. */
+  disabledIn: Partial<Record<ScheduleReaderId, ScheduleConfigLayer[]>>;
+}
+
+function listedScheduleReaders(cfg: HarneryConfig): ScheduleReaderId[] {
+  const raw = cfg.schedule;
+  const listed =
+    isPlainObject(raw) && Array.isArray(raw.disabledReaders) ? raw.disabledReaders : [];
+  return SCHEDULE_READER_IDS.filter((id) => listed.includes(id));
 }
 
 /**
- * Schedule settings from `.harnery/config.jsonc`:
+ * Schedule settings. Every reader runs by default, so Harnery finds every
+ * schedule it can. An operator switches a reader off by listing it:
  *
  * ```jsonc
- * "schedule": { "readers": ["t3-code", "codex-app"] }
+ * "schedule": { "disabledReaders": ["t3-code"] }
  * ```
  *
- * Project config only: reading another app's private store is a per-project
- * decision, so neither a user-global nor a machine-local value turns a reader
- * on. Unknown ids and non-strings are dropped; the default is no readers.
+ * The lists from the user-global, project and machine-local files are joined,
+ * not overridden: switching a reader off in any layer keeps it off, and no
+ * layer can turn back on a reader another layer switched off. Unknown ids and
+ * non-strings are dropped. Ruled by Ryan 2026-11-23 (ADR 0277).
  */
 export function scheduleConfig(coordRoot: string): ScheduleConfig {
-  const raw = readProjectConfig(coordRoot).schedule;
-  const listed = isPlainObject(raw) && Array.isArray(raw.readers) ? raw.readers : [];
-  const readers: ScheduleOptInReader[] = [];
-  for (const id of listed) {
-    if (
-      typeof id === "string" &&
-      (SCHEDULE_OPT_IN_READERS as readonly string[]).includes(id) &&
-      !readers.includes(id as ScheduleOptInReader)
-    ) {
-      readers.push(id as ScheduleOptInReader);
+  const layers: Array<[ScheduleConfigLayer, HarneryConfig]> = [
+    ["user", parseConfigFile(userConfigPath())],
+    ["project", readProjectConfig(coordRoot)],
+    ["local", readLocalConfig(coordRoot)],
+  ];
+  const disabledIn: Partial<Record<ScheduleReaderId, ScheduleConfigLayer[]>> = {};
+  for (const [layer, cfg] of layers) {
+    for (const id of listedScheduleReaders(cfg)) {
+      disabledIn[id] = [...(disabledIn[id] ?? []), layer];
     }
   }
-  return { readers };
+  const disabledReaders = SCHEDULE_READER_IDS.filter((id) => disabledIn[id] !== undefined);
+  return { disabledReaders, disabledIn };
 }
 
 /**

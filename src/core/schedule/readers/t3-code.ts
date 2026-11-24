@@ -161,7 +161,6 @@ function toRecord(row: T3Row, machine: string): ScheduleRecord | null {
 
 export const t3CodeScheduleReader: ScheduleReader = {
   id: "t3-code",
-  requiresOptIn: true,
   async read(ctx: ScheduleReadContext): Promise<ScheduleReadResult> {
     const readAt = new Date(ctx.now()).toISOString();
     const answer = (

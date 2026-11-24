@@ -1,0 +1,49 @@
+---
+title: "0277: Schedule readers run by default"
+description: "ADR: Every schedule reader runs by default so `harn schedule list` finds every schedule it can. The operator switches a reader off with `schedule.disabledReaders` in any config file, and the lists from all layers are joined."
+---
+
+**Status:** accepted (2026-11-23) · **Scope:** product tier (`core/schedule`, `core/config`) · **Supersedes:** the opt-in rule in [ADR 0271](/decisions/0271-one-list-of-schedules/) point 3
+
+## Context
+
+[ADR 0271](/decisions/0271-one-list-of-schedules/) gave `harn schedule list`
+one reader per source and kept the two readers of another app's private store
+(`t3-code` and `codex-app`) off until the project's own config listed them.
+In practice nobody turned them on. The list then showed two `disabled` rows,
+and the schedules people had made in T3 Code and the Codex app were missing
+from the one place meant to show every schedule. The operator who asked for
+the list wants it complete without setup.
+
+## Decision
+
+1. **Every reader runs by default.** `t3-code`, `codex-app`, `os-timer` and
+   `harnery` all run unless the operator switches one off.
+2. **The operator switches a reader off.** `schedule.disabledReaders` lists
+   readers that must not run. It is read from the user-global, project and
+   machine-local config files, and the three lists are joined: a reader
+   switched off in any layer stays off, and no layer can turn it back on.
+   Switching a reader off only narrows what is read, so any layer may do it.
+3. **The coverage row names the file.** A switched-off reader reports
+   `disabled` with the config file that switched it off, so an incomplete list
+   is never mistaken for an empty source.
+4. **No compatibility reader.** The old `schedule.readers` opt-in list is
+   removed, not kept as an alias, following the pre-1.0 cut-over rule.
+
+The privacy limits from ADR 0271 stand: readers copy a store before reading
+it, never write to it, and select schedule fields only. Prompts, inbox text,
+tokens, secrets and crontab command text are never read.
+
+## Alternatives
+
+- **Keep the project opt-in.** Rejected: the list's purpose is to show every
+  schedule, and an opt-in nobody sets hides the sources people use most.
+- **Let the project turn readers on and the machine turn them off.** Rejected
+  as needless: with readers on by default, the only setting left is "off", and
+  joining the lists gives every layer that power.
+
+## Consequences
+
+- Machines with T3 Code or the Codex app installed now list their schedules
+  with no setup.
+- A malformed `disabledReaders` value switches nothing off.

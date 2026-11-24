@@ -197,9 +197,8 @@ function writeToml(id: string, body: string): void {
 }
 
 describe("codexAppScheduleReader", () => {
-  test("is the opt-in codex-app reader", () => {
+  test("is the codex-app reader", () => {
     expect(codexAppScheduleReader.id).toBe("codex-app");
-    expect(codexAppScheduleReader.requiresOptIn).toBe(true);
   });
 
   test("the SQL names only schedule columns", () => {

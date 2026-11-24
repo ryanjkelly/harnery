@@ -172,9 +172,8 @@ const KNOWN_ROWS: Row[] = [
 ];
 
 describe("t3CodeScheduleReader", () => {
-  test("is the opt-in t3-code reader", () => {
+  test("is the t3-code reader", () => {
     expect(t3CodeScheduleReader.id).toBe("t3-code");
-    expect(t3CodeScheduleReader.requiresOptIn).toBe(true);
   });
 
   test("the SQL names only schedule columns", () => {

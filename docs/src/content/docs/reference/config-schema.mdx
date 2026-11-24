@@ -82,7 +82,7 @@ Use `.harnery/config.local.jsonc` when one machine needs a different value from 
 | `presence`     | object  | see below        | Cross-machine presence transports |
 | `decision`     | object  | see below        | Consent to share docket entries across machines |
 | `feed`         | object  | see below        | Consent to share agent messages and journal entries across machines |
-| `schedule`     | object  | see below        | Opt-in readers of other apps' schedule stores (`schedule.readers`) |
+| `schedule`     | object  | see below        | Schedule readers the operator switched off (`schedule.disabledReaders`) |
 | `files`        | object  | see below        | Dashboard startup and web file-viewer path policy |
 | `web`          | object  | see below        | Standalone Next.js dashboard |
 | `computer`     | object  | see below        | Opt-in desktop control and its approval mode (`computer.mode`) |
@@ -676,13 +676,14 @@ presence to be enabled.
 
 ## `schedule`
 
-| Field     | Type     | Default | Description |
-| --------- | -------- | ------- | ----------- |
-| `readers` | string[] | `[]`    | Readers of another app's private schedule store that `harn schedule list` may run: `t3-code`, `codex-app` |
+| Field             | Type     | Default | Description |
+| ----------------- | -------- | ------- | ----------- |
+| `disabledReaders` | string[] | `[]`    | Readers `harn schedule list` must not run: `t3-code`, `codex-app`, `os-timer`, `harnery` |
 
-`readers` reads only the project file. Neither a user-global nor a
-machine-local file may turn a reader on, because reading another app's
-storage is a decision for the project. Unknown names are ignored. See
+Every reader runs unless a config file lists it here. Unlike most fields, the
+lists from the user-global, project and machine-local files are joined rather
+than overridden, so no layer can turn back on a reader another layer switched
+off. Unknown names are ignored. See
 [`harn schedule`](/cli/schedule/#sources-and-coverage).
 
 ## How each section is resolved

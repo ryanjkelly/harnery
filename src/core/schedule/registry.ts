@@ -1,7 +1,6 @@
 /**
  * The schedule reader registry (ADR 0271): every built-in reader, the
- * project-only opt-in check for readers of another app's private store, and
- * the one function that merges every source and captured observation into a
+ * operator's switch-off check (ADR 0277), and the one function that merges every source and captured observation into a
  * single list with a coverage row per source.
  */
 
@@ -9,7 +8,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveMachineLabel } from "../../lib/machine.ts";
-import { scheduleConfig } from "../config.ts";
+import { type ScheduleConfigLayer, scheduleConfig } from "../config.ts";
 import {
   capturedScheduleRecords,
   readScheduleObservations,
@@ -23,7 +22,6 @@ import { osTimersScheduleReader } from "./readers/os-timers.ts";
 import { t3CodeScheduleReader } from "./readers/t3-code.ts";
 import {
   applyScheduleObservation,
-  SCHEDULE_OPT_IN_READERS,
   SCHEDULE_SOURCES,
   type ScheduleCommandRunner,
   type ScheduleReadContext,
@@ -49,20 +47,26 @@ export function scheduleReaderFor(source: ScheduleSource): ScheduleReader | unde
   return SCHEDULE_READERS.find((reader) => reader.id === source);
 }
 
-/** Whether a reader needs the project's opt-in before it may run. */
-export function scheduleReaderRequiresOptIn(reader: ScheduleReader): boolean {
-  return reader.requiresOptIn || (SCHEDULE_OPT_IN_READERS as readonly string[]).includes(reader.id);
+/**
+ * Why a reader is switched off, or null when it may run. Every reader runs by
+ * default; an operator switches one off with `schedule.disabledReaders` in
+ * the user-global, project or machine-local config file.
+ */
+export function scheduleReaderDisabledReason(
+  reader: ScheduleReader,
+  coordRoot: string,
+): string | null {
+  const layers = scheduleConfig(coordRoot).disabledIn[reader.id];
+  if (!layers?.length) return null;
+  const files = layers.map((layer) => LAYER_FILES[layer]).join(" and ");
+  return `Switched off by the operator (schedule.disabledReaders in ${files}).`;
 }
 
-/**
- * Whether the reader may run in this project. An opt-in reader runs only when
- * the project's own `.harnery/config.jsonc` lists it under `schedule.readers`
- * (`scheduleConfig` reads that file alone, never a user-global or local one).
- */
-export function isScheduleReaderEnabled(reader: ScheduleReader, coordRoot: string): boolean {
-  if (!scheduleReaderRequiresOptIn(reader)) return true;
-  return (scheduleConfig(coordRoot).readers as readonly string[]).includes(reader.id);
-}
+const LAYER_FILES: Record<ScheduleConfigLayer, string> = {
+  user: "~/.config/harnery/config.jsonc",
+  project: ".harnery/config.jsonc",
+  local: ".harnery/config.local.jsonc",
+};
 
 export interface ReadAllSchedulesOptions {
   coordRoot: string;
@@ -104,16 +108,16 @@ function firstLine(text: string): string {
 async function runReader(
   reader: ScheduleReader,
   ctx: ScheduleReadContext,
-  enabled: boolean,
+  disabledReason: string | null,
 ): Promise<ScheduleReadResult> {
   const readAt = () => new Date(ctx.now()).toISOString();
-  if (!enabled) {
+  if (disabledReason !== null) {
     return {
       coverage: {
         source: reader.id,
         account: ctx.machine,
         state: "disabled",
-        detail: `This project has not turned on the ${reader.id} reader (schedule.readers in .harnery/config.jsonc).`,
+        detail: disabledReason,
         read_at: readAt(),
       },
       records: [],
@@ -192,10 +196,10 @@ export async function readAllSchedules(opts: ReadAllSchedulesOptions): Promise<S
           ...(opts.storePaths ? { storePaths: opts.storePaths } : {}),
         };
         try {
-          return runReader(reader, ctx, isScheduleReaderEnabled(reader, coordRoot));
+          return runReader(reader, ctx, scheduleReaderDisabledReason(reader, coordRoot));
         } catch (error) {
-          // isScheduleReaderEnabled or the context setup failed before the reader ran.
-          return runReader({ ...reader, read: () => Promise.reject(error) }, ctx, true);
+          // The switch-off check or the context setup failed before the reader ran.
+          return runReader({ ...reader, read: () => Promise.reject(error) }, ctx, null);
         }
       }),
     );

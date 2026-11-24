@@ -36,43 +36,57 @@ function makeRoot(files: { project?: string; local?: string; user?: string }): s
   return root;
 }
 
-const BOTH = JSON.stringify({ schedule: { readers: ["t3-code", "codex-app"] } });
+const BOTH = JSON.stringify({ schedule: { disabledReaders: ["t3-code", "codex-app"] } });
 
 describe("scheduleConfig", () => {
-  test("defaults to no readers", () => {
-    expect(scheduleConfig(makeRoot({})).readers).toEqual([]);
-    expect(scheduleConfig(makeRoot({ project: "{}" })).readers).toEqual([]);
+  test("defaults to no reader switched off", () => {
+    expect(scheduleConfig(makeRoot({})).disabledReaders).toEqual([]);
+    expect(scheduleConfig(makeRoot({ project: "{}" })).disabledReaders).toEqual([]);
   });
 
-  test("the project file turns readers on", () => {
-    const root = makeRoot({ project: `// comment\n${BOTH}` });
-    expect(scheduleConfig(root).readers).toEqual(["t3-code", "codex-app"]);
+  test("the project file switches readers off", () => {
+    const cfg = scheduleConfig(makeRoot({ project: `// comment\n${BOTH}` }));
+    expect(cfg.disabledReaders).toEqual(["t3-code", "codex-app"]);
+    expect(cfg.disabledIn).toEqual({ "t3-code": ["project"], "codex-app": ["project"] });
   });
 
-  test("a user-global value never turns a reader on", () => {
-    expect(scheduleConfig(makeRoot({ user: BOTH })).readers).toEqual([]);
+  test("a user-global value also switches a reader off", () => {
+    expect(scheduleConfig(makeRoot({ user: BOTH })).disabledIn["t3-code"]).toEqual(["user"]);
   });
 
-  test("a machine-local value never turns a reader on", () => {
-    expect(scheduleConfig(makeRoot({ local: BOTH })).readers).toEqual([]);
+  test("a machine-local value also switches a reader off", () => {
+    expect(scheduleConfig(makeRoot({ local: BOTH })).disabledIn["codex-app"]).toEqual(["local"]);
   });
 
-  test("drops unknown ids, non-strings, duplicates and non-opt-in sources", () => {
+  test("layers are joined, so no layer turns back on what another switched off", () => {
+    const cfg = scheduleConfig(
+      makeRoot({
+        user: JSON.stringify({ schedule: { disabledReaders: ["os-timer"] } }),
+        project: JSON.stringify({ schedule: { disabledReaders: [] } }),
+        local: JSON.stringify({ schedule: { disabledReaders: ["harnery", "os-timer"] } }),
+      }),
+    );
+    expect(cfg.disabledReaders).toEqual(["os-timer", "harnery"]);
+    expect(cfg.disabledIn).toEqual({ "os-timer": ["user", "local"], harnery: ["local"] });
+  });
+
+  test("drops unknown ids, non-strings, duplicates and captured", () => {
     const root = makeRoot({
       project: JSON.stringify({
-        schedule: { readers: ["codex-app", "os-timer", 3, "nope", "codex-app", "t3-code"] },
+        schedule: { disabledReaders: ["codex-app", "captured", 3, "nope", "codex-app", "t3-code"] },
       }),
     });
-    expect(scheduleConfig(root).readers).toEqual(["codex-app", "t3-code"]);
+    expect(scheduleConfig(root).disabledReaders).toEqual(["t3-code", "codex-app"]);
   });
 
-  test("a malformed section reads as no readers", () => {
+  test("a malformed section switches nothing off", () => {
     expect(
-      scheduleConfig(makeRoot({ project: JSON.stringify({ schedule: { readers: "t3-code" } }) }))
-        .readers,
+      scheduleConfig(
+        makeRoot({ project: JSON.stringify({ schedule: { disabledReaders: "t3-code" } }) }),
+      ).disabledReaders,
     ).toEqual([]);
-    expect(scheduleConfig(makeRoot({ project: JSON.stringify({ schedule: [] }) })).readers).toEqual(
-      [],
-    );
+    expect(
+      scheduleConfig(makeRoot({ project: JSON.stringify({ schedule: [] }) })).disabledReaders,
+    ).toEqual([]);
   });
 });

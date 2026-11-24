@@ -50,24 +50,25 @@ exits 1.
 
 Every record comes from one source.
 
-| Source | What it reads | Needs the project's opt-in |
-| --- | --- | --- |
-| `t3-code` | T3 Code's scheduled tasks, from its private SQLite store | yes |
-| `codex-app` | The Codex app's automations, from its private SQLite store, with its per-automation TOML files as a fallback. Under WSL it also looks in the Windows user's Codex folder. | yes |
-| `os-timer` | This user's systemd timers and crontab | no |
-| `captured` | Schedules an agent created or deleted through a tool call that Harnery's hook saw | no |
-| `harnery` | Jobs in `.harnery/schedules.jsonc` | no |
+| Source | What it reads |
+| --- | --- |
+| `t3-code` | T3 Code's scheduled tasks, from its private SQLite store |
+| `codex-app` | The Codex app's automations, from its private SQLite store, with its per-automation TOML files as a fallback. Under WSL it also looks in the Windows user's Codex folder. |
+| `os-timer` | This user's systemd timers and crontab |
+| `captured` | Schedules an agent created or deleted through a tool call that Harnery's hook saw |
+| `harnery` | Jobs in `.harnery/schedules.jsonc` |
 
-The two private-store readers run only when the project's own
-`.harnery/config.jsonc` lists them:
+Every reader runs by default. The operator switches one off by listing it in
+`schedule.disabledReaders` in any config file:
 
 ```jsonc
-// .harnery/config.jsonc
-{ "schedule": { "readers": ["t3-code", "codex-app"] } }
+// .harnery/config.jsonc, .harnery/config.local.jsonc or ~/.config/harnery/config.jsonc
+{ "schedule": { "disabledReaders": ["t3-code"] } }
 ```
 
-Only the project file counts. A user-global or machine-local config file never
-turns a reader on. Unknown names are ignored.
+The lists from all three files are joined, so a reader switched off in any
+one of them stays off. Unknown names are ignored. `captured` has no reader and
+cannot be switched off.
 
 Every output, text or JSON, prints one coverage row per source, even when the
 source returned no records, so an empty section is never mistaken for "no
@@ -79,7 +80,7 @@ schedules".
 | `stale` | The reader fell back to a copy that may lag behind the live store, such as the Codex app's TOML files when its database cannot be copied. |
 | `unreadable` | The store exists but could not be read: no access, a failed copy, or a reader error. The detail column says which. |
 | `unsupported` | The platform or the store's layout is one the reader does not know, so it did not guess. |
-| `disabled` | A private-store reader this project has not turned on. |
+| `disabled` | A reader the operator switched off. The detail column names the config file. |
 
 Readers select named schedule fields only. Prompts, inbox text, webhook
 tokens, secrets and crontab command text are never read out of another app's

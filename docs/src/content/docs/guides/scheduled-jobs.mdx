@@ -29,23 +29,23 @@ Below the records is a coverage table with one row per source. A row that is
 not `current` means that source was not fully read, so its section of the
 list may be incomplete.
 
-T3 Code and the Codex app keep their schedules in private storage, and their
-two rows start as `disabled`. To read them, turn them on in the project's own
-config file:
+Every reader runs by default, so the list holds every schedule Harnery can
+find, including T3 Code's scheduled tasks and the Codex app's automations. To
+stop reading a source, switch its reader off in any config file:
 
 ```jsonc
-// .harnery/config.jsonc
-{ "schedule": { "readers": ["t3-code", "codex-app"] } }
+// .harnery/config.jsonc, .harnery/config.local.jsonc or ~/.config/harnery/config.jsonc
+{ "schedule": { "disabledReaders": ["codex-app"] } }
 ```
+
+That source's coverage row then reads `disabled` and names the file that
+switched it off.
 
 :::note[What the list reads]
 The list holds schedule fields only: id, title, trigger, where it runs,
 whether it is enabled, and the next and last run. Prompts, inbox text and
 secrets are never read from another app's store, and crontab command text is
-never shown. The two private-store readers stay off until the project turns
-them on. Only the project's `.harnery/config.jsonc` can do that; a user-global
-or machine-local setting cannot. Harnery never changes a schedule that
-belongs to another app.
+never shown. Harnery never changes a schedule that belongs to another app.
 :::
 
 ## 2. Add a job

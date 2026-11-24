@@ -3,11 +3,12 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scheduleObservedPath } from "./paths.ts";
-import { readAllSchedules, SCHEDULE_READERS } from "./registry.ts";
+import { readAllSchedules, SCHEDULE_READERS, scheduleReaderDisabledReason } from "./registry.ts";
 import {
   SCHEDULE_SOURCES,
   type ScheduleObservation,
   type ScheduleReader,
+  type ScheduleReaderId,
   type ScheduleRecord,
   type ScheduleSource,
 } from "./types.ts";
@@ -45,13 +46,12 @@ function record(source: ScheduleSource, id: string, title = id): ScheduleRecord 
 }
 
 function fake(
-  id: ScheduleSource,
+  id: ScheduleReaderId,
   records: ScheduleRecord[],
-  opts: { optIn?: boolean; calls?: ScheduleSource[] } = {},
+  opts: { calls?: ScheduleSource[] } = {},
 ): ScheduleReader {
   return {
     id,
-    requiresOptIn: opts.optIn ?? false,
     async read(ctx) {
       opts.calls?.push(id);
       return {
@@ -67,10 +67,9 @@ function fake(
   };
 }
 
-function throwing(id: ScheduleSource, optIn = false): ScheduleReader {
+function throwing(id: ScheduleReaderId): ScheduleReader {
   return {
     id,
-    requiresOptIn: optIn,
     async read() {
       throw new Error("store exploded\nsecond line");
     },
@@ -133,48 +132,65 @@ describe("readAllSchedules", () => {
     expect(list.records.map((r) => r.id)).toEqual(["a"]);
   });
 
-  test("an opt-in reader the project has not turned on is disabled and never called", async () => {
+  test("every reader runs when no config switches one off", async () => {
     const calls: ScheduleSource[] = [];
     const list = await read([
-      fake("t3-code", [record("t3-code", "t3-1")], { optIn: true, calls }),
-      throwing("codex-app", true),
+      fake("t3-code", [record("t3-code", "t3-1")], { calls }),
+      fake("codex-app", [], { calls }),
     ]);
-    expect(calls).toEqual([]);
-    expect(list.coverage.find((c) => c.source === "t3-code")?.state).toBe("disabled");
+    expect(calls).toEqual(["t3-code", "codex-app"]);
+    expect(list.coverage.find((c) => c.source === "t3-code")?.state).toBe("current");
+    expect(list.coverage.find((c) => c.source === "codex-app")?.state).toBe("current");
+    expect(list.records.map((r) => r.id)).toEqual(["t3-1"]);
+  });
+
+  test("a reader the project switched off is disabled, named, and never called", async () => {
+    projectConfig({ schedule: { disabledReaders: ["t3-code", "codex-app"] } });
+    const calls: ScheduleSource[] = [];
+    const list = await read([
+      fake("t3-code", [record("t3-code", "t3-1")], { calls }),
+      throwing("codex-app"),
+      fake("os-timer", [], { calls }),
+    ]);
+    expect(calls).toEqual(["os-timer"]);
+    const t3 = list.coverage.find((c) => c.source === "t3-code");
+    expect(t3?.state).toBe("disabled");
+    expect(t3?.detail).toBe(
+      "Switched off by the operator (schedule.disabledReaders in .harnery/config.jsonc).",
+    );
     expect(list.coverage.find((c) => c.source === "codex-app")?.state).toBe("disabled");
     expect(list.records).toEqual([]);
   });
 
-  test("the project config turns an opt-in reader on", async () => {
-    projectConfig({ schedule: { readers: ["t3-code", "codex-app"] } });
-    const calls: ScheduleSource[] = [];
-    const list = await read([
-      fake("t3-code", [record("t3-code", "t3-1")], { optIn: true, calls }),
-      throwing("codex-app", true),
-    ]);
-    expect(calls).toEqual(["t3-code"]);
-    expect(list.coverage.find((c) => c.source === "t3-code")?.state).toBe("current");
-    expect(list.coverage.find((c) => c.source === "codex-app")?.state).toBe("unreadable");
-    expect(list.records.map((r) => r.id)).toEqual(["t3-1"]);
-  });
-
-  test("a user-global or machine-local setting never turns an opt-in reader on", async () => {
+  test("a user-global or machine-local setting also switches a reader off", async () => {
     const xdg = join(base, "xdg", "harnery");
     mkdirSync(xdg, { recursive: true });
-    const on = JSON.stringify({ schedule: { readers: ["t3-code", "codex-app"] } });
-    writeFileSync(join(xdg, "config.jsonc"), on);
-    writeFileSync(join(base, ".harnery", "config.local.jsonc"), on);
+    writeFileSync(
+      join(xdg, "config.jsonc"),
+      JSON.stringify({ schedule: { disabledReaders: ["t3-code"] } }),
+    );
+    writeFileSync(
+      join(base, ".harnery", "config.local.jsonc"),
+      JSON.stringify({ schedule: { disabledReaders: ["t3-code", "codex-app"] } }),
+    );
     const calls: ScheduleSource[] = [];
-    const list = await read([fake("t3-code", [], { optIn: true, calls })]);
+    const list = await read([fake("t3-code", [], { calls }), fake("codex-app", [], { calls })]);
     expect(calls).toEqual([]);
-    expect(list.coverage.find((c) => c.source === "t3-code")?.state).toBe("disabled");
+    expect(list.coverage.find((c) => c.source === "t3-code")?.detail).toBe(
+      "Switched off by the operator (schedule.disabledReaders in ~/.config/harnery/config.jsonc and .harnery/config.local.jsonc).",
+    );
+    expect(list.coverage.find((c) => c.source === "codex-app")?.state).toBe("disabled");
   });
 
-  test("the built-in opt-in readers stay off without the project setting", async () => {
-    const optIn = SCHEDULE_READERS.filter((r) => r.id === "t3-code" || r.id === "codex-app");
-    const list = await read(optIn);
-    expect(list.coverage.find((c) => c.source === "t3-code")?.state).toBe("disabled");
-    expect(list.coverage.find((c) => c.source === "codex-app")?.state).toBe("disabled");
+  test("the built-in readers all run by default", () => {
+    expect(SCHEDULE_READERS.map((r) => r.id)).toEqual([
+      "t3-code",
+      "codex-app",
+      "os-timer",
+      "harnery",
+    ]);
+    for (const reader of SCHEDULE_READERS)
+      expect(scheduleReaderDisabledReason(reader, base)).toBeNull();
   });
 
   test("records merge on source, account and id", async () => {
@@ -196,7 +212,6 @@ describe("readAllSchedules", () => {
   });
 
   test("observations attach created_by and add captured records", async () => {
-    projectConfig({ schedule: { readers: ["t3-code"] } });
     observe([
       observation({}),
       observation({
@@ -217,7 +232,7 @@ describe("readAllSchedules", () => {
     ]);
     const list = await read(
       [
-        fake("t3-code", [record("t3-code", "t3-1"), record("t3-code", "t3-2")], { optIn: true }),
+        fake("t3-code", [record("t3-code", "t3-1"), record("t3-code", "t3-2")]),
         fake("harnery", [record("harnery", "h-1")]),
       ],
       { live: new Set(["inst-live"]) },

@@ -522,7 +522,6 @@ async function readOsTimers(ctx: ScheduleReadContext): Promise<ScheduleReadResul
 
 export const osTimersScheduleReader: ScheduleReader = {
   id: SOURCE,
-  requiresOptIn: false,
   async read(ctx) {
     try {
       return await readOsTimers(ctx);

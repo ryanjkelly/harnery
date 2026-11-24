@@ -160,9 +160,8 @@ function happyResponses(): Responses {
 }
 
 describe("osTimersScheduleReader: systemd", () => {
-  test("is the os-timer reader and needs no opt-in", () => {
+  test("is the os-timer reader", () => {
     expect(osTimersScheduleReader.id).toBe("os-timer");
-    expect(osTimersScheduleReader.requiresOptIn).toBe(false);
   });
 
   test("reads the JSON list and batches the show call", async () => {

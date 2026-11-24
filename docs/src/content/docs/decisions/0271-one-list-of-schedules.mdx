@@ -40,11 +40,11 @@ a session at all; an agent's tool call is the only moment Harnery sees them.
    `unsupported`. A reader first checks that the storage layout is one it
    knows. If it is not, the reader reports `unsupported` instead of guessing
    at columns or fields. The registry adds a fifth state, `disabled`, for a
-   reader the project has not turned on; that reader is not called.
-3. **Private stores are opt-in, read-only, schedule fields only.** A reader
-   of another app's private store runs only when the project's own
-   `.harnery/config.jsonc` turns it on. A user-global setting never turns one
-   on. Readers never write to another app's storage. They select named
+   reader the operator switched off; that reader is not called.
+3. **Private stores are read-only, schedule fields only.** Readers of
+   another app's private store first ran only when the project turned them
+   on; [ADR 0277](/decisions/0277-schedule-readers-on-by-default/) made every
+   reader run by default, with the operator switching one off. Readers never write to another app's storage. They select named
    schedule columns and nothing else: prompts, inbox text, webhook tokens,
    secrets and crontab command text stay where they are. The operating-system
    reader and hook capture need no setting.

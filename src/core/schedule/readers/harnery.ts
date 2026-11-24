@@ -126,7 +126,6 @@ function jobRecord(ctx: ScheduleReadContext, job: ScheduleJob): ScheduleRecord {
 
 export const harneryScheduleReader: ScheduleReader = {
   id: "harnery",
-  requiresOptIn: false,
   async read(ctx: ScheduleReadContext): Promise<ScheduleReadResult> {
     const readAt = new Date(ctx.now()).toISOString();
     const answer = (

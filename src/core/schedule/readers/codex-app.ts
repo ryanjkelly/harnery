@@ -335,7 +335,6 @@ function plural(n: number, one: string, many: string): string {
 
 export const codexAppScheduleReader: ScheduleReader = {
   id: "codex-app",
-  requiresOptIn: true,
   async read(ctx: ScheduleReadContext): Promise<ScheduleReadResult> {
     const readAt = new Date(ctx.now()).toISOString();
     const answer = (
