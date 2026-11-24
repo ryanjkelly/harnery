@@ -45,8 +45,9 @@ variants for icons that would fade on a light background.
 Two routes under `/api/file/icons/` serve it, so path-scoped tunnels that
 already allow `/api/file` keep working:
 
-- `map` returns a compact, lower-cased copy of the manifest (about 5 KB
-  compressed), built once per server process.
+- `map` returns a compact, lower-cased copy of the manifest (about 120 KB,
+  22 KB compressed), built once per server process and fetched once per page
+  load.
 - `svg/<id>` returns one icon. Its URL carries the pack version, so browsers
   cache icons permanently and a listing costs one request per distinct icon.
   Ids must be plain slugs, so the route never reads outside the icon folder.
