@@ -114,6 +114,19 @@ describe("runScheduleGather", () => {
       ...SCHEDULE_BASE_ENV_NAMES,
       "GATHER_TEST_LISTED",
       "HARNERY_SCHEDULE_CHILD",
+      // On Windows the child process fills these session values in itself
+      // from the logged-on user, even from an environment that omits them.
+      ...(process.platform === "win32"
+        ? [
+            "HOMEDRIVE",
+            "HOMEPATH",
+            "LOGONSERVER",
+            "SYSTEMDRIVE",
+            "USERDOMAIN",
+            "USERNAME",
+            "WINDIR",
+          ]
+        : []),
     ]);
     // A runtime may add a few of its own (for example Bun's underscore); none from the parent.
     for (const name of Object.keys(seen.env)) {

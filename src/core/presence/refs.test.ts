@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Command } from "commander";
@@ -370,7 +370,8 @@ describe("machine ref retirement", () => {
     await program.parseAsync(["node", "harn", "presence", "refs", "prune", "--yes", "--json"]);
     expect(data).toMatchObject({ preview: false, deleted: ["refs/harnery/presence/old"] });
     expect(remoteRefs()).toEqual([]);
-    expect(readFileSync(join(reader, ".git", "config"), "utf8")).toContain(origin);
+    // Git escapes backslashes in the config file, so read the value through Git.
+    expect(git(reader, ["config", "--get", "remote.origin.url"])).toBe(origin);
   });
 
   test("the terminal preview names exact refs and mail loss, then prints deleted refs", async () => {

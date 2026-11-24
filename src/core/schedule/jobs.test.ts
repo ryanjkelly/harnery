@@ -42,6 +42,10 @@ const job = (over: Partial<ScheduleJob> = {}): ScheduleJob => ({
   ...over,
 });
 
+// Windows finds a bare name on PATH only with a PATHEXT extension. The lookup
+// returns the extension as the default PATHEXT spells it, so match that case.
+const TOOL = process.platform === "win32" ? "tool.CMD" : "tool";
+
 function makeExecutable(dir: string, name: string): string {
   mkdirSync(dir, { recursive: true });
   const path = join(dir, name);
@@ -99,7 +103,7 @@ describe("writeScheduleJobFile", () => {
 describe("resolveScheduleJob", () => {
   test("PATH name, relative path and absolute path", () => {
     const bin = join(root, "bin");
-    const onPath = makeExecutable(bin, "tool");
+    const onPath = makeExecutable(bin, TOOL);
     const local = makeExecutable(join(root, "scripts"), "check.sh");
     const absolute = makeExecutable(join(root, "abs"), "run");
     const j = job({
@@ -116,9 +120,9 @@ describe("resolveScheduleJob", () => {
     expect(typeof r.zone).toBe("string");
   });
   test("follows symlinks to the real path", () => {
-    const real = makeExecutable(join(root, "real"), "tool");
+    const real = makeExecutable(join(root, "real"), TOOL);
     mkdirSync(join(root, "links"));
-    symlinkSync(real, join(root, "links", "tool"));
+    symlinkSync(real, join(root, "links", TOOL));
     const r = resolveScheduleJob(job({ gather: [{ name: "a", argv: ["tool"] }] }), {
       coordRoot: root,
       env: { PATH: join(root, "links") },

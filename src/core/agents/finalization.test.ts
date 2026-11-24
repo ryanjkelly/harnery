@@ -426,6 +426,22 @@ describe("checkGitFinalization", () => {
   });
 
   test("expands home paths before classifying writes and validating Git roots", () => {
+    // Put the home folder beside the fixture: on a Windows runner the temporary
+    // folder can sit on another drive, where no `~/` path can reach it.
+    const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+    process.env.HOME = temp;
+    process.env.USERPROFILE = temp;
+    try {
+      expandsHomePaths();
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
+  function expandsHomePaths(): void {
     const coord = join(temp, "coord");
     const output = join(temp, "output");
     initRepo(coord);
@@ -451,7 +467,7 @@ describe("checkGitFinalization", () => {
       allow: true,
       descriptor: { disposition: "git", root: output },
     });
-  });
+  }
 
   test.skipIf(process.platform === "win32")(
     "expands uid paths for write and finalization checks",

@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { removeDir } from "../helpers/remove-dir.ts";
 
 const root = resolve(import.meta.dir, "../..");
@@ -37,12 +38,17 @@ cp.spawnSync = (command, args, options) => {
 syncBuiltinESMExports();
 `,
   );
-  const result = spawnSync("node", ["--import", preload, "scripts/test.mjs", ...args], {
-    cwd: root,
-    encoding: "utf8",
-    windowsHide: true,
-    maxBuffer: 4 * 1024 * 1024,
-  });
+  // Node takes a URL for --import; a bare Windows path reads as an unknown "c:" scheme.
+  const result = spawnSync(
+    "node",
+    ["--import", pathToFileURL(preload).href, "scripts/test.mjs", ...args],
+    {
+      cwd: root,
+      encoding: "utf8",
+      windowsHide: true,
+      maxBuffer: 4 * 1024 * 1024,
+    },
+  );
   if (result.error) throw result.error;
   const children = result.stdout
     .split("\n")

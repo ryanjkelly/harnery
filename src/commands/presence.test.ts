@@ -30,7 +30,8 @@ describe("mobile/office presence commands", () => {
   afterEach(() => removeDir(home));
 
   function run(...args: string[]) {
-    const env: NodeJS.ProcessEnv = { ...process.env, HOME: home };
+    // Windows takes the home folder from USERPROFILE, not HOME.
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, USERPROFILE: home };
     for (const key of Object.keys(env)) {
       if (key.startsWith("HARNERY_")) delete env[key];
     }
