@@ -1,5 +1,0 @@
----
-"harnery": minor
----
-
-`devtools` now reports every Claude Code, Codex and Cursor account signed in on the machine, not one per tool. It finds stores under `CLAUDE_CONFIG_DIR`, `~/.claude*`, `CODEX_HOME`, `~/.codex*`, the Cursor CLI and IDE, CLI Proxy API auth files and, under WSL, the Windows-side homes, and groups copies of the same account. Each account's usage comes from the first source that answers: its stored token, `codex app-server`, a CLI Proxy API server (configured with `HARNERY_CLIPROXY_URL` and `HARNERY_CLIPROXY_KEY`, `~/.config/harnery/cliproxy.json`, or a desktop app's saved setting), then the last local snapshot. The report shape changes: each tool gains `accounts[]` with `source`, `stores[]`, `stale` and per-account quota, and the tool-level fields describe the first signed-in account. Cursor accepts the IDE's opaque token and prefers the CLI token through `api2.cursor.sh`. Codex now reads live usage from its usage endpoint. `devtools doctor` probes each source once per tool. Harnery never refreshes a token.
