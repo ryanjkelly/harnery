@@ -63,6 +63,12 @@ export interface RequestWithRetriesOptions {
    * caller's error class. Default: a plain Error with the message.
    */
   networkError?: (message: string, url: string, retries: number) => Error;
+  /**
+   * How fetch handles redirects. Default: fetch's own default (follow). Use
+   * "manual" to get the 3xx response back instead of following it, e.g. when
+   * the request carries credentials that must stay on one origin.
+   */
+  redirect?: "follow" | "error" | "manual";
 }
 
 /**
@@ -98,6 +104,7 @@ export async function requestWithRetries(
 
     const headers: Record<string, string> = { ...(opts.headers ?? {}) };
     const init: RequestInit = { method, headers, signal: controller.signal };
+    if (opts.redirect !== undefined) init.redirect = opts.redirect;
     if (opts.body !== undefined && opts.body !== null) {
       const passthrough =
         typeof opts.body === "string" ||

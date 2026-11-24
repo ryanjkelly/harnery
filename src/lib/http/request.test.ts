@@ -96,6 +96,33 @@ describe("requestWithRetries", () => {
     expect(captured["Content-Type"]).toBeUndefined();
   });
 
+  test("passes the redirect option into fetch's init only when set", async () => {
+    const inits: RequestInit[] = [];
+    globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+      inits.push(init ?? {});
+      return new Response("ok", { status: 200 });
+    }) as typeof fetch;
+    await requestWithRetries("https://api.example.com/x", { redirect: "manual" });
+    expect(inits[0]!.redirect).toBe("manual");
+    await requestWithRetries("https://api.example.com/x");
+    expect("redirect" in inits[1]!).toBe(false);
+  });
+
+  test("a 302 with redirect manual is returned once, not retried", async () => {
+    const calls = mockFetch([
+      () =>
+        new Response(null, { status: 302, headers: { location: "https://other.example/y" } }),
+    ]);
+    const r = await requestWithRetries("https://api.example.com/x", {
+      redirect: "manual",
+      delayMs: instantDelay,
+    });
+    expect(r.ok).toBe(false);
+    expect(r.status).toBe(302);
+    expect(r.headers.get("location")).toBe("https://other.example/y");
+    expect(calls()).toBe(1);
+  });
+
   for (const status of [200, 503]) {
     test(`keeps the attempt timeout active while reading a ${status} body`, async () => {
       const signals: AbortSignal[] = [];
