@@ -1,4 +1,6 @@
+import type * as React from "react";
 import type { ReactNode } from "react";
+import { BrandLogo } from "@/components/BrandLogo";
 import { CursorKeyControl } from "@/components/CursorKeyControl";
 import { FormattedDateTime } from "@/components/FormattedDateTime";
 import { HelperAgentsBlock } from "@/components/HelperAgentsBlock";
@@ -125,20 +127,50 @@ export default async function DevtoolsPage() {
 // usage board: one row per account, showing what is LEFT so it reads at a glance
 // ---------------------------------------------------------------------------
 
+/** Board columns: 0 = short window (5-hour), 1 = weekly / monthly, 2-3 = other limits. */
+type Slot = 0 | 1 | 2 | 3;
+
 interface Meter {
   label: string;
   /** Percent of the allowance still available, 0-100, or null when unknown. */
   left: number | null;
   resetsAt: string | null;
+  /** Full length of the window, for pace. Null when unknown. */
+  durationMs: number | null;
+  slot: Slot;
 }
 
-/** Remaining-capacity colour: red at 10% or less, amber at 30% or less, else green. */
-function leftTone(left: number | null): Tone {
-  if (left == null) return "neutral";
-  if (left <= 10) return "danger";
-  if (left <= 30) return "warn";
-  return "done";
+type PaceState = "under" | "on" | "over";
+
+interface Pace {
+  /** Percent that would be left right now at an even burn across the window. */
+  expectedLeft: number;
+  state: PaceState;
+  /** At the current burn rate, ms until the limit runs out, when that is before the reset. */
+  runOutMs: number | null;
 }
+
+const HOUR = 3_600_000;
+const DAY = 24 * HOUR;
+/** Points either side of an even burn that still count as "on pace". */
+const PACE_TOLERANCE = 5;
+
+/**
+ * Hue for a remaining percentage, sliding from red (0% left) through orange
+ * and yellow to green (100% left), so a bar's colour shows how close it is to
+ * running out rather than jumping at fixed thresholds.
+ */
+function leftHue(left: number | null): number | null {
+  return left == null ? null : 25 + 1.25 * Math.max(0, Math.min(100, left));
+}
+
+/** Inline style that feeds a hue to the `--h` custom property the classes below read. */
+function hueStyle(left: number | null): React.CSSProperties | undefined {
+  const h = leftHue(left);
+  return h == null ? undefined : ({ "--h": h } as React.CSSProperties);
+}
+const HUE_TEXT = "text-[oklch(0.52_0.15_var(--h))] dark:text-[oklch(0.8_0.14_var(--h))]";
+const HUE_BG = "bg-[oklch(0.72_0.17_var(--h))]";
 
 function windowName(window: string): string {
   if (window === "5h") return "5-hour";
@@ -146,29 +178,118 @@ function windowName(window: string): string {
   return w.charAt(0).toUpperCase() + w.slice(1);
 }
 
+/** Window length from its label: "5h", "45m", "3d", "weekly…" (7 days). */
+function windowDuration(window: string): number | null {
+  const m = /^(\d+)\s*(m|h|d)$/.exec(window.trim());
+  if (m) return Number(m[1]) * (m[2] === "m" ? 60_000 : m[2] === "h" ? HOUR : DAY);
+  if (/^weekly/i.test(window)) return 7 * DAY;
+  if (/^monthly/i.test(window)) return 30 * DAY;
+  return null;
+}
+
 function toLeft(usedPercent: number | null): number | null {
   if (usedPercent == null) return null;
   return 100 - Math.max(0, Math.min(100, Math.round(usedPercent)));
 }
 
-/** Every limit an account reports, as remaining percentages. */
+/** Every limit an account reports, as remaining percentages placed in board columns. */
 function accountMeters(a: AccountUsage): Meter[] {
-  const out: Meter[] = (a.quota ?? []).map((q) => ({
-    label: windowName(q.window),
-    left: toLeft(q.usedPercent),
-    resetsAt: q.resetsAt,
-  }));
+  const out: Meter[] = [];
+  let extra: Slot = 2;
+  const nextExtra = (): Slot => {
+    const s = extra;
+    if (extra < 3) extra = 3;
+    return s;
+  };
+  for (const q of a.quota ?? []) {
+    const durationMs = windowDuration(q.window);
+    const slot: Slot =
+      durationMs != null && durationMs < DAY ? 0 : /^weekly$/i.test(q.window) ? 1 : nextExtra();
+    out.push({
+      label: windowName(q.window),
+      left: toLeft(q.usedPercent),
+      resetsAt: q.resetsAt,
+      durationMs,
+      slot,
+    });
+  }
   if (a.usage) {
-    const reset = a.usage.cycleEnd;
-    if (a.usage.totalPercentUsed != null)
-      out.push({ label: "Monthly", left: toLeft(a.usage.totalPercentUsed), resetsAt: reset });
-    if (a.usage.apiPercentUsed != null)
-      out.push({ label: "API models", left: toLeft(a.usage.apiPercentUsed), resetsAt: reset });
-    if (a.usage.firstPartyPercentUsed != null)
-      out.push({ label: "Auto", left: toLeft(a.usage.firstPartyPercentUsed), resetsAt: reset });
+    const u = a.usage;
+    const reset = u.cycleEnd;
+    const span =
+      u.cycleStart && u.cycleEnd ? Date.parse(u.cycleEnd) - Date.parse(u.cycleStart) : NaN;
+    const durationMs = Number.isFinite(span) && span > 0 ? span : 30 * DAY;
+    if (u.totalPercentUsed != null)
+      out.push({
+        label: "Monthly",
+        left: toLeft(u.totalPercentUsed),
+        resetsAt: reset,
+        durationMs,
+        slot: 1,
+      });
+    if (u.apiPercentUsed != null)
+      out.push({
+        label: "API models",
+        left: toLeft(u.apiPercentUsed),
+        resetsAt: reset,
+        durationMs,
+        slot: nextExtra(),
+      });
+    if (u.firstPartyPercentUsed != null)
+      out.push({
+        label: "Auto",
+        left: toLeft(u.firstPartyPercentUsed),
+        resetsAt: reset,
+        durationMs,
+        slot: nextExtra(),
+      });
   }
   return out;
 }
+
+/**
+ * Pace: how what is left compares with an even burn across the window. Null
+ * when the window length or reset is unknown, or in the first 3% of a window,
+ * where one burst of work would read as wildly over pace.
+ */
+function paceOf(m: Meter, now: number): Pace | null {
+  if (m.left == null || !m.resetsAt || !m.durationMs) return null;
+  const remainingMs = Date.parse(m.resetsAt) - now;
+  if (!Number.isFinite(remainingMs) || remainingMs <= 0 || remainingMs > m.durationMs) return null;
+  const elapsed = 1 - remainingMs / m.durationMs;
+  if (elapsed < 0.03) return null;
+  const expectedLeft = 100 * (1 - elapsed);
+  const diff = m.left - expectedLeft;
+  const state: PaceState = diff > PACE_TOLERANCE ? "under" : diff < -PACE_TOLERANCE ? "over" : "on";
+  const used = 100 - m.left;
+  const rate = used / (elapsed * m.durationMs);
+  const runOut = rate > 0 ? m.left / rate : null;
+  return { expectedLeft, state, runOutMs: runOut != null && runOut < remainingMs ? runOut : null };
+}
+
+const PACE_LABEL: Record<PaceState, { text: string; icon: string; tone: Tone; hint: string }> = {
+  under: {
+    text: "under pace",
+    icon: "▼",
+    tone: "done",
+    hint: "Using less than an even share of this window so far.",
+  },
+  on: {
+    text: "on pace",
+    icon: "●",
+    tone: "neutral",
+    hint: "Using about an even share of this window.",
+  },
+  over: {
+    text: "over pace",
+    icon: "▲",
+    tone: "warn",
+    hint: "Using more than an even share of this window so far.",
+  },
+};
+
+const BOARD_GRID =
+  "md:grid-cols-[minmax(14rem,19rem)_7.5rem_repeat(4,minmax(0,1fr))] md:items-center";
 
 function UsageBoard({ tools, now }: { tools: ToolStatus[]; now: number }) {
   const rows = tools.flatMap((t) => t.accounts.map((a) => ({ tool: t.tool, account: a })));
@@ -176,9 +297,21 @@ function UsageBoard({ tools, now }: { tools: ToolStatus[]; now: number }) {
   return (
     <Section
       title="Usage left"
-      hint="What each account has left. The big number is its tightest limit right now."
+      hint="What each account has left. The big number is its tightest limit right now. The thin mark on each bar is where an even pace would be."
     >
       <div className="overflow-hidden rounded-lg border border-border bg-card">
+        <div
+          className={cn(
+            "hidden gap-x-5 border-b border-l-4 border-border border-l-transparent bg-muted/40 px-4 py-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground md:grid",
+            BOARD_GRID,
+          )}
+        >
+          <div>Account</div>
+          <div>Tightest</div>
+          <div>5-hour</div>
+          <div>Weekly · monthly</div>
+          <div className="col-span-2">Other limits</div>
+        </div>
         {rows.map(({ tool, account }) => (
           <UsageRow key={`${tool}:${account.id}`} tool={tool} account={account} now={now} />
         ))}
@@ -201,58 +334,93 @@ function UsageRow({
   const tightest = known.length
     ? known.reduce((min, m) => ((m.left ?? 101) < (min.left ?? 101) ? m : min))
     : null;
-  const tone: Tone = !a.loggedIn && !known.length ? "danger" : leftTone(tightest?.left ?? null);
+  const tightPace = tightest ? paceOf(tightest, now) : null;
   const source = a.source ? SOURCE_LABELS[a.source] : null;
+  const bySlot = new Map(meters.map((m) => [m.slot, m] as const));
+  const signedOut = !a.loggedIn && !known.length;
   return (
     <div
       className={cn(
-        "grid gap-x-5 gap-y-3 border-b border-l-4 border-border px-4 py-3 last:border-b-0 md:grid-cols-[minmax(12rem,17rem)_8.5rem_1fr] md:items-center",
-        TONE[tone].accentBorder,
+        "grid grid-cols-2 gap-x-5 gap-y-3 border-b border-l-4 border-border px-4 py-3 last:border-b-0",
+        BOARD_GRID,
+        signedOut ? TONE.danger.accentBorder : tightest ? "" : TONE.neutral.accentBorder,
       )}
+      style={
+        tightest ? { borderLeftColor: `oklch(0.72 0.17 ${leftHue(tightest.left)})` } : undefined
+      }
     >
-      <div className="min-w-0">
-        <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-          {TOOL_LABELS[tool]}
-          {a.plan ? ` · ${titleize(a.plan)}` : ""}
-        </div>
-        <div className="truncate font-medium">{a.email ?? a.id.replace(/^[^:]+:/, "")}</div>
-        {a.stale || (source && a.source !== "direct") ? (
-          <div className="mt-1">
-            <Badge tone={a.stale ? "warn" : "accent"} title={source?.hint}>
-              {a.stale ? `${source?.label ?? "snapshot"} · stale` : `via ${source?.label}`}
-            </Badge>
+      <div className="col-span-2 flex min-w-0 items-center gap-3 md:col-span-1">
+        <BrandLogo brand={tool} className="size-6 shrink-0" />
+        <div className="min-w-0">
+          <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            {TOOL_LABELS[tool]}
+            {a.plan ? ` · ${titleize(a.plan)}` : ""}
           </div>
-        ) : null}
+          <div className="truncate font-medium">{a.email ?? a.id.replace(/^[^:]+:/, "")}</div>
+          {a.stale || (source && a.source !== "direct") ? (
+            <div className="mt-1">
+              <Badge tone={a.stale ? "warn" : "accent"} title={source?.hint}>
+                {a.stale ? `${source?.label ?? "snapshot"} · stale` : `via ${source?.label}`}
+              </Badge>
+            </div>
+          ) : null}
+        </div>
       </div>
 
-      <div>
+      <div className="col-span-2 md:col-span-1">
         {tightest ? (
-          <>
-            <div className={cn("text-3xl font-semibold leading-none tabular-nums", TONE[tone].text)}>
+          <div style={hueStyle(tightest.left)}>
+            <div className={cn("text-3xl font-semibold leading-none tabular-nums", HUE_TEXT)}>
               {tightest.left}%
             </div>
             <div className="mt-1 text-xs text-muted-foreground">
               left · {tightest.label.toLowerCase()}
             </div>
-          </>
+            {tightPace ? <PaceTag pace={tightPace} className="mt-0.5" stacked /> : null}
+          </div>
         ) : (
-          <div className={cn("text-sm font-medium", TONE[tone].text)}>
-            {a.loggedIn ? "no usage data" : "signed out"}
+          <div className={cn("text-sm font-medium", TONE[signedOut ? "danger" : "neutral"].text)}>
+            {signedOut ? "signed out" : "no usage data"}
           </div>
         )}
       </div>
 
-      <div className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3">
-        {meters.map((m) => (
-          <LeftMeter key={m.label} meter={m} now={now} />
-        ))}
-      </div>
+      {([0, 1, 2, 3] as const).map((slot) => {
+        const m = bySlot.get(slot);
+        return m ? (
+          <LeftMeter key={slot} meter={m} now={now} />
+        ) : (
+          <div key={slot} className="hidden md:block" aria-hidden />
+        );
+      })}
+    </div>
+  );
+}
+
+function PaceTag({
+  pace,
+  className,
+  stacked,
+}: {
+  pace: Pace;
+  className?: string;
+  stacked?: boolean;
+}) {
+  const p = PACE_LABEL[pace.state];
+  return (
+    <div className={cn("text-[11px] font-medium", TONE[p.tone].text, className)}>
+      {p.icon} {p.text}
+      {pace.runOutMs != null ? (
+        <span className={cn(TONE.danger.text, stacked && "block")}>
+          {stacked ? "" : " · "}out in ~{humanizeDuration(pace.runOutMs)}
+        </span>
+      ) : null}
     </div>
   );
 }
 
 function LeftMeter({ meter: m, now }: { meter: Meter; now: number }) {
-  const tone = leftTone(m.left);
+  const pace = paceOf(m, now);
   return (
     <Tooltip
       side="top"
@@ -261,6 +429,20 @@ function LeftMeter({ meter: m, now }: { meter: Meter; now: number }) {
           <div>
             {m.left != null ? `${m.left}% of the ${m.label.toLowerCase()} limit left` : "unknown"}
           </div>
+          {pace ? (
+            <>
+              <div className="opacity-80">
+                An even pace would leave {Math.round(pace.expectedLeft)}% now (the thin mark).
+              </div>
+              <div className="opacity-80">{PACE_LABEL[pace.state].hint}</div>
+              {pace.runOutMs != null ? (
+                <div className="opacity-80">
+                  At this rate it runs out in about {humanizeDuration(pace.runOutMs)}, before it
+                  resets.
+                </div>
+              ) : null}
+            </>
+          ) : null}
           {m.resetsAt ? (
             <div className="opacity-80">
               resets <FormattedDateTime iso={m.resetsAt} />
@@ -270,24 +452,35 @@ function LeftMeter({ meter: m, now }: { meter: Meter; now: number }) {
       }
       triggerClassName="block w-full"
     >
-      <div className="w-full cursor-help">
+      <div className="w-full cursor-help" style={hueStyle(m.left)}>
         <div className="flex items-baseline justify-between gap-2 text-xs">
           <span className="text-muted-foreground">{m.label}</span>
-          <span className={cn("font-semibold tabular-nums", TONE[tone].text)}>
+          <span className={cn("font-semibold tabular-nums", m.left != null ? HUE_TEXT : "")}>
             {m.left != null ? `${m.left}%` : "?"}
           </span>
         </div>
-        <div className="mt-1 h-2 w-full overflow-hidden rounded-full bg-muted">
+        <div className="relative mt-1.5 h-2 w-full rounded-full bg-muted">
           <div
-            className={cn("h-full rounded-full", TONE[tone].dot)}
+            className={cn("h-full rounded-full", m.left != null ? HUE_BG : TONE.neutral.dot)}
             style={{ width: `${m.left ?? 0}%` }}
           />
+          {pace ? (
+            <div
+              className="absolute -top-1 h-4 w-0.5 -translate-x-1/2 rounded-full bg-foreground/80"
+              style={{ left: `${pace.expectedLeft}%` }}
+              aria-hidden
+            />
+          ) : null}
         </div>
-        {m.resetsAt ? (
-          <div className="mt-1 text-[11px] text-muted-foreground">
-            {resetLabel(m.resetsAt, now)}
-          </div>
-        ) : null}
+        <div className="mt-1 flex flex-wrap items-baseline gap-x-1.5 text-[11px] text-muted-foreground">
+          {pace ? <PaceTag pace={pace} /> : null}
+          {m.resetsAt ? (
+            <span>
+              {pace ? "· " : ""}
+              {resetLabel(m.resetsAt, now)}
+            </span>
+          ) : null}
+        </div>
       </div>
     </Tooltip>
   );
@@ -539,7 +732,10 @@ function CardHeader({ tool }: { tool: ToolStatus }) {
   return (
     <div className="flex items-center justify-between">
       <Tooltip content={`Read from ${SOURCES[tool.tool].dir}`}>
-        <h2 className="cursor-help font-medium">{TOOL_LABELS[tool.tool]}</h2>
+        <h2 className="flex cursor-help items-center gap-2 font-medium">
+          <BrandLogo brand={tool.tool} />
+          {TOOL_LABELS[tool.tool]}
+        </h2>
       </Tooltip>
       <LoginBadge tool={tool} />
     </div>
@@ -609,15 +805,16 @@ function QuotaBar({
   // Shows what is LEFT (bar = remaining), matching the usage board above.
   const remaining = toLeft(pct);
   const clamped = remaining != null ? 100 - remaining : null;
-  const tone = leftTone(remaining);
-  const barColor = TONE[tone].dot;
+  const barColor = remaining != null ? HUE_BG : TONE.neutral.dot;
   return (
     <Tooltip
       side="top"
       content={
         <div className="space-y-0.5">
           <div>
-            {remaining != null ? `${remaining}% of the ${windowName(window)} limit left (${clamped}% used)` : "usage unknown"}
+            {remaining != null
+              ? `${remaining}% of the ${windowName(window)} limit left (${clamped}% used)`
+              : "usage unknown"}
           </div>
           {resetsAt ? (
             <div className="opacity-80">
@@ -629,10 +826,10 @@ function QuotaBar({
       }
       triggerClassName="block w-full"
     >
-      <div className="w-full cursor-help">
+      <div className="w-full cursor-help" style={hueStyle(remaining)}>
         <div className="flex items-baseline justify-between gap-2 text-xs">
           <span className="text-muted-foreground">{windowName(window)}</span>
-          <span className={cn("font-medium tabular-nums", TONE[tone].text)}>
+          <span className={cn("font-medium tabular-nums", remaining != null ? HUE_TEXT : "")}>
             {remaining != null ? `${remaining}% left` : "unknown"}
           </span>
         </div>
