@@ -1,6 +1,7 @@
 import {
   Clapperboard,
   FolderTree,
+  Gauge,
   HardDrive,
   Image,
   LayoutDashboard,
@@ -173,6 +174,23 @@ export const APP_ROUTES: readonly AppRoute[] = [
       "deny",
       "trust",
       "settings",
+    ],
+  },
+  {
+    href: "/usage",
+    label: "Usage",
+    group: "misc",
+    icon: Gauge,
+    keywords: [
+      "usage",
+      "limits",
+      "quota",
+      "pace",
+      "resets",
+      "credits",
+      "claude code",
+      "codex",
+      "cursor",
     ],
   },
   {
