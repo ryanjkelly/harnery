@@ -374,7 +374,7 @@ function UsageRow({
               {tightest.left}%
             </div>
             <div className="mt-1 text-xs text-muted-foreground">
-              left · {tightest.label.toLowerCase()}
+              left · {tightest.label.replace(/\s*\(.*\)/, "").toLowerCase()}
             </div>
             {tightPace ? <PaceTag pace={tightPace} className="mt-0.5" stacked /> : null}
           </div>
