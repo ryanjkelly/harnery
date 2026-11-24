@@ -152,10 +152,10 @@ export function scheduleTimerUnitDir(
   env: Readonly<Record<string, string | undefined>> = process.env,
   home: string = homedir(),
 ): string {
-  // systemd runs only on Linux, so an XDG path is POSIX on every host that reads it.
+  // systemd runs only on Linux, so the unit folder is a POSIX path on every host.
   const xdg = env.XDG_CONFIG_HOME?.trim();
-  if (xdg?.startsWith("/")) return posix.join(xdg, "systemd", "user");
-  return join(home, ".config", "systemd", "user");
+  const base = xdg?.startsWith("/") ? xdg : posix.join(home, ".config");
+  return posix.join(base, "systemd", "user");
 }
 
 export function scheduleTimerUnits(opts: ScheduleTimerOptions): ScheduleTimerUnits {

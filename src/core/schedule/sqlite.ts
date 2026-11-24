@@ -200,11 +200,19 @@ export function openScheduleSqliteCopy(
   }
 
   let handle: EngineHandle;
+  let opened: EngineHandle | undefined;
   try {
-    handle = open(copyPath);
+    opened = open(copyPath);
     // Touch the schema so a file that is not a database fails here, not later.
-    handle.all("SELECT name FROM sqlite_master LIMIT 1", []);
+    opened.all("SELECT name FROM sqlite_master LIMIT 1", []);
+    handle = opened;
   } catch (err) {
+    // Close before deleting: Windows refuses to delete a file that is still open.
+    try {
+      opened?.close();
+    } catch {
+      // The copy is deleted next either way.
+    }
     removeQuietly(copyDir);
     return {
       ok: false,
