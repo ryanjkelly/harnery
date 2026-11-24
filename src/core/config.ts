@@ -393,10 +393,36 @@ export function localConfigPath(root: string): string {
   return join(root, ".harnery", "config.local.jsonc");
 }
 
-/** Cache signature, or null when the file can't be stat'd (missing). */
+/**
+ * How recently a file may have changed before its stat signature is distrusted.
+ * Two writes inside one filesystem timestamp tick (often under a millisecond
+ * apart on Windows) can leave the same mtime, ctime and size, so a cache keyed
+ * on them would keep the first content. Git treats such "racily clean" entries
+ * the same way. Two seconds also covers filesystems with coarse timestamps.
+ */
+const RACY_SIGNATURE_MS = 2_000;
+let racySignatures = 0;
+
+/** Stat signature, or null when the file can't be stat'd (missing). */
 function statSignature(p: string): string | null {
   try {
     const stat = statSync(p);
+    return `${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Like `statSignature`, but a file changed within `RACY_SIGNATURE_MS` gets a
+ * signature no cache entry can match, so its content is read again.
+ */
+function cacheSignature(p: string): string | null {
+  try {
+    const stat = statSync(p);
+    if (Math.abs(Date.now() - stat.mtimeMs) < RACY_SIGNATURE_MS) {
+      return `racy:${++racySignatures}`;
+    }
     return `${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}`;
   } catch {
     return null;
@@ -409,7 +435,7 @@ const configFileCache = new Map<string, { signature: string | null; cfg: Harnery
 
 /** Parse one JSONC config file, cached by stat signature; missing/unparseable → `{}`. */
 function parseConfigFile(p: string): HarneryConfig {
-  const signature = statSignature(p);
+  const signature = cacheSignature(p);
   const cached = configFileCache.get(p);
   if (cached && cached.signature === signature) return cached.cfg;
   let cfg: HarneryConfig = {};
@@ -557,9 +583,9 @@ function readConfig(root: string): HarneryConfig {
   const projPath = join(root, ".harnery", "config.jsonc");
   const userPath = userConfigPath();
   const localPath = localConfigPath(root);
-  const projSignature = statSignature(projPath);
-  const userSignature = statSignature(userPath);
-  const localSignature = statSignature(localPath);
+  const projSignature = cacheSignature(projPath);
+  const userSignature = cacheSignature(userPath);
+  const localSignature = cacheSignature(localPath);
   if (
     cache &&
     cache.root === root &&
