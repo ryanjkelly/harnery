@@ -227,18 +227,18 @@ function accountMeters(a: AccountUsage): Meter[] {
         durationMs,
         slot: 1,
       });
-    if (u.apiPercentUsed != null)
+    if (u.firstPartyPercentUsed != null)
       out.push({
-        label: "API models",
-        left: toLeft(u.apiPercentUsed),
+        label: "Auto (Cursor models)",
+        left: toLeft(u.firstPartyPercentUsed),
         resetsAt: reset,
         durationMs,
         slot: nextExtra(),
       });
-    if (u.firstPartyPercentUsed != null)
+    if (u.apiPercentUsed != null)
       out.push({
-        label: "Auto",
-        left: toLeft(u.firstPartyPercentUsed),
+        label: "API (other models)",
+        left: toLeft(u.apiPercentUsed),
         resetsAt: reset,
         durationMs,
         slot: nextExtra(),
@@ -860,8 +860,8 @@ function CursorUsageBlock({ usage, now }: { usage: CursorUsage; now: number }) {
     included != null ? `Included allowance: ${fmtUsd(included)} this cycle.` : undefined;
   const bars: Array<{ window: string; pct: number | null; hint?: string }> = [
     { window: "Total", pct: usage.totalPercentUsed, hint: includedHint },
-    { window: "API", pct: usage.apiPercentUsed, hint: includedHint },
-    { window: "First-party", pct: usage.firstPartyPercentUsed },
+    { window: "Auto (Cursor models)", pct: usage.firstPartyPercentUsed },
+    { window: "API (other models)", pct: usage.apiPercentUsed, hint: includedHint },
   ].filter((b) => b.pct != null);
 
   return (
