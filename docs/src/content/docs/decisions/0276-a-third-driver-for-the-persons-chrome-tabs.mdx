@@ -1,0 +1,136 @@
+---
+title: "0276: A third driver for the person's Chrome tabs"
+description: "ADR: `computer` gains a pinned Playwright driver that works in background tabs of the person's running Chrome through the Playwright Extension. Each agent gets its own session and tab group, calls leave the desktop lease free except a session's first, the driver applies the browser guard's rules itself, and finishing closes the agent's tabs."
+---
+
+**Status:** accepted (2026-11-23) · **Scope:** product tier (`commands/computer`, `lib/computer`, the opt-in skill)
+
+## Context
+
+[Decision 0249](/decisions/0249-attach-to-the-persons-running-browser/) lets
+agents attach to the person's running browser through the desktop driver's
+DevTools route, and decisions
+[0250](/decisions/0250-keep-agents-in-their-own-browser-window/) and
+[0270](/decisions/0270-disconnect-the-driver-when-browser-work-ends/) keep
+that work in the agent's own window and disconnect it afterwards. That route
+still opens the browser's debugging port for the whole browser, brings the
+browser forward on each attach, ends an idle session after five minutes, and
+holds the desktop lease while an agent works in a page. Decision 0249 listed
+a browser extension as an alternative and set it aside as a new product to
+build and maintain.
+
+The Playwright Extension is an existing, maintained extension that connects
+the Playwright MCP server to the person's running Chrome. A trial on a
+Windows desktop with Chrome, driven from WSL, showed:
+
+- The server must run on the desktop's side. Run inside WSL, it opened the
+  extension's connect page in the person's Chrome but the extension never
+  reached the server, and the attempt left extra tabs behind. Run with
+  Windows Node, it connected within a second.
+- One server in its HTTP mode gives each MCP session its own extension
+  connection and tab group, and a session id stays valid across separate
+  client processes. Two sessions each saw only their own tab.
+- With the extension's token and `--background`, a page reported itself
+  hidden and unfocused, and no window took focus.
+- Chrome showed "Playwright Extension started debugging this browser" in
+  every window while a tab was attached, and the notice cleared when the
+  last attached tab closed.
+- Closing a session's tabs through the tool removed its tab group. Ending a
+  session without closing its tabs left a gray group that Chrome saved to its
+  saved tab groups, which needs a right-click to delete.
+- The extension keeps its token in its own origin's local storage, where the
+  profile's LevelDB files hold it in plain bytes.
+- Chrome refuses an extension's navigation to a `data:` page.
+- Typing, a refused click after typing, a refused password field and a
+  refused page-changing script all behaved as designed on a public practice
+  login page through `computer call`.
+
+## Alternatives considered
+
+- **A vendor's own browser extension.** Each is driven only by its vendor's
+  app, has no published protocol for other clients, and its terms keep other
+  clients off it. It could serve a whole delegated task at most, without
+  Harnery's per-call guard.
+- **Build Harnery's own extension.** It would act per tab like this one, and
+  could add a site allowlist, but it is still the new product decision 0249
+  declined. Every route that sends real clicks uses the browser's debugger,
+  so it would show the same notice unless installed by enterprise policy.
+- **Run the server inside WSL with the Windows browser as its executable.**
+  The trial above failed to connect and left tabs behind.
+- **One stdio server per call.** Each new connection opens a new tab, so an
+  agent could never keep its page between calls.
+- **Keep the desktop lease for every call.** The work is in background tabs
+  the extension isolates per agent; holding the lease would block other
+  agents' desktop work for the lease's idle period after every page action.
+
+## Decision
+
+- **A third pinned driver, `playwright`.** It pins `@playwright/mcp` 0.0.86
+  and its lockfile. `install` writes both into the shared tools folder and
+  runs `npm ci --ignore-scripts`, which refuses any package whose sha512
+  differs. It needs Node 20 or later on the desktop's side; on WSL that is
+  Windows Node, found through `where node`.
+- **One daemon, one session per agent.** `up` or the first `call` starts the
+  server in extension mode on a random loopback port with `--background`,
+  the token read from the most recently used Chrome profile that has the
+  extension, and an output folder in the tools folder. A small client script,
+  written into the install folder and run with the same Node, makes each
+  call. The agent's name keys its MCP session, which the extension turns
+  into a tab group named after it; a session the server forgot is reopened
+  once.
+- **The lease only for the front.** A driver can declare `usesDesktop:
+  false`. Its calls take no lease, except a call that may come to the front:
+  a session's first call opens the connect page, so it waits for a quiet
+  keyboard and mouse, holds the lease, and releases it on return when it took
+  a free desktop.
+- **The driver guards itself.** A new `checkCall` hook runs before anything
+  is sent and exits 4 on a refusal. The Playwright driver refuses typing into
+  a field whose type, autocomplete, name, id or label marks a password,
+  one-time code or card (it reads the field first through a read-only
+  evaluate); a click or drag after typing until a `browser_snapshot`;
+  `browser_run_code_unsafe`; and an evaluate function that sets values,
+  clicks, submits or dispatches events.
+- **Every call needs browser attach.** The driver reports every call as an
+  attach to the person's browser, so decision 0249's two gates apply
+  unchanged.
+- **Finishing closes the agent's tabs.** A new `endAgentWork` hook runs from
+  `done`, `lease release` and `browser close`. The Playwright driver closes
+  the agent's tabs from the last, which removes its group, ends its session
+  and forgets it.
+- **The skill prefers it.** For work in the person's signed-in browser the
+  skill names this driver first and keeps decision 0250's window route as the
+  fallback when the Playwright driver is not set up.
+
+## Result / Gotchas
+
+- Chrome shows the extension's debugging notice while any agent's tab is
+  attached. Policy installation, which would hide it, is not part of this
+  decision.
+- An agent that ends without `done` leaves its tab group open; when the
+  person or a later cleanup closes those tabs, Chrome may keep the group in
+  its saved tab groups.
+- The token is read from LevelDB files. If Chrome compacts it into a
+  compressed table, the read fails and `doctor` says no token was found;
+  clicking the extension's icon writes it again.
+- The guard is cooperative and heuristic, like decision 0250's: a client
+  that talks to the server directly skips it, an unlabelled field can pass
+  the probe, and `browser_press_key` into a focused password field is not
+  checked.
+- The extension refuses `data:` pages, and the person's other tabs are out
+  of reach unless they drag one into the agent's group.
+- macOS and Linux paths (Chrome's profile folder, a detached Node start) are
+  implemented and unit tested but were not tried live.
+
+## Verification
+
+- 19 driver tests: token reading, result parsing, per-agent sessions, the
+  reopened session, each guard rule, the closing order of tabs, and the
+  first-call foreground rule.
+- Six command tests: no lease for a background call, a fresh lease released
+  after a foreground call, waiting for a held desktop, a refusal sending
+  nothing, browser attach off refusing the driver, and cleanup from `done`,
+  `lease release` and `browser close`.
+- Live on Windows from WSL: install, doctor, navigate in 4 seconds including
+  the server start and about 1.2 seconds a call after, each guard rule on a
+  practice page, the lease free after the first call, and `done` closing the
+  agent's tab group with the notice gone.

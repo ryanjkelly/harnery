@@ -1,6 +1,6 @@
 ---
 title: harn computer
-description: Opt-in desktop control through two pinned desktop drivers, Cua Driver and agent-desktop. Install them, run any daemon, and call their tools while one desktop lease keeps two agents from driving the same desktop at once.
+description: Opt-in desktop control through two pinned desktop drivers, Cua Driver and agent-desktop, plus a third that works in the person's running Chrome through the Playwright Extension. Install them, run any daemon, and call their tools while one desktop lease keeps two agents from driving the same desktop at once.
 sidebar:
   order: 48
 ---
@@ -50,8 +50,11 @@ and [decision record 0231](/decisions/0231-two-desktop-drivers-on-every-desktop/
 |---|---|---|---|
 | `cua` | Cua Driver 0.49.9 | Tool calls with element tokens; accessibility, keyboard and pixel routes; window screenshots; an isolated browser through CDP | Yes |
 | `agent-desktop` | agent-desktop 1.3.1 | Accessibility-tree snapshots with refs scoped to each snapshot; headless semantic actions by default | No; on macOS it starts its own command host, which `status` reports and `down` stops |
+| `playwright` | `@playwright/mcp` 0.0.86 with the Playwright Extension | Background tabs of the person's running Chrome, one tab group per agent; accessibility snapshots with refs | Yes: the Playwright MCP server, run with the desktop's own Node |
 
-Both drive the same desktop under the same lease. `call`, `tools` and
+`cua` and `agent-desktop` drive the same desktop under the same lease;
+`playwright` takes the lease only for a call that may come to the front (see
+[the Playwright driver](#the-playwright-driver)). `call`, `tools` and
 `describe` use one driver: `--driver <id>`, else the project's
 `computer.driver`, else `cua`. `install`, `up`, `down` and `doctor` act on
 every driver unless `--driver` names one.
@@ -437,6 +440,54 @@ actions in a row are at least one quiet period apart. Set
 `foreground_quiet_seconds` to `0` on a machine nobody else types on.
 `status` shows the setting on its `quiet:` line. See
 [decision record 0248](/decisions/0248-hold-foreground-actions-until-the-person-is-quiet/).
+
+## The Playwright driver
+
+The `playwright` driver works in the person's running Chrome through the
+[Playwright Extension](https://chromewebstore.google.com/detail/playwright-extension/mmlmfjhmonkocbjadbfplnigmagldckm)
+instead of the desktop. It needs Node 20 or later on the desktop's side (on
+WSL, Windows Node), the extension in one of the person's Chrome profiles, and
+browser attach on, since every call works in the person's browser.
+
+```bash
+harn computer install --driver playwright --yes
+harn computer doctor --driver playwright
+harn computer call --driver playwright browser_navigate '{"url":"https://example.com"}'
+harn computer call --driver playwright browser_snapshot
+harn computer call --driver playwright browser_click '{"target":"e12","element":"Sign up link"}'
+harn computer done
+```
+
+- **Install.** `install` writes a pinned `package.json` and lockfile into the
+  shared tools folder and runs `npm ci --ignore-scripts`, so npm refuses any
+  package whose sha512 differs from the pin. The plan shows the lockfile's
+  sha256 and names the extension when Chrome does not have it.
+- **Token.** The extension creates a connection token in its own storage.
+  Harnery reads it from the most recently used Chrome profile that has the
+  extension, so a connection needs no approval click. The token stays in the
+  server's environment.
+- **Server.** `up`, or the first `call`, starts the Playwright MCP server in
+  extension mode on a random loopback port, with `--background`. Harnery
+  records the port and process in `tools/playwright-mcp/daemon.json`.
+- **Sessions.** Each agent gets its own MCP session, kept between calls by its
+  agent name. The extension puts that agent's tabs in a tab group named
+  "Playwright · <agent>" and refuses it every other tab. A session the server
+  forgot is reopened once, automatically.
+- **Lease.** A session's first call opens the extension's connect page, which
+  Chrome may show in front, so that call waits for a quiet keyboard and mouse
+  and holds the desktop lease for itself; it gives the lease back as soon as
+  it returns. Every later call leaves the desktop to other agents.
+- **Guard.** The driver refuses, with exit 4 and nothing sent: typing into a
+  password, one-time code or card field (it reads the field's type and names
+  first); a click or drag after typing, until a `browser_snapshot`;
+  `browser_run_code_unsafe`; and a `browser_evaluate` function that sets
+  values, clicks, submits or dispatches events.
+- **Cleanup.** `done`, `lease release` and `browser close` close the agent's
+  tabs, which removes its tab group, and end its session. Chrome shows
+  "started debugging this browser" while any agent's tab is attached.
+
+Decision record:
+[0276](/decisions/0276-a-third-driver-for-the-persons-chrome-tabs/).
 
 ## computer browser open / close
 

@@ -2597,3 +2597,97 @@ describe("computer status displays and window", () => {
     });
   });
 });
+
+describe("computer with a background-tab driver (ADR 0276)", () => {
+  /** A driver that works only in its own background tabs, like the Playwright driver. */
+  function tabDriver(): FakeDriver & { ended: string[] } {
+    const driver = fakeDriver({ id: "tabs" }) as FakeDriver & { ended: string[] };
+    (driver as { usesDesktop?: boolean }).usesDesktop = false;
+    driver.attachesPersonBrowser = () => true;
+    driver.takesForeground = (_tool, args) => args.first === true;
+    driver.ended = [];
+    driver.checkCall = (_host, tool) =>
+      tool === "browser_run_code_unsafe"
+        ? { code: "browser_script_not_checked", message: "not checked", hint: "use single steps" }
+        : undefined;
+    driver.endAgentWork = (_host, session) => {
+      driver.ended.push(session);
+      return [`Closed 1 tab for ${session}.`];
+    };
+    return driver;
+  }
+
+  const attachOn = () => cfg("on", { browser_attach: true });
+  const quiet = { personIdleMs: () => 60_000, sleep: async () => {}, now: () => NOW };
+
+  test("a background call takes no desktop lease", async () => {
+    const driver = tabDriver();
+    const leaseApi = fakeLease();
+    const cap = await run(["call", "browser_snapshot", "{}"], {
+      driver,
+      lease: leaseApi,
+      config: attachOn,
+    });
+    expect(cap.exitCode()).toBe(0);
+    expect(driver.calls).toHaveLength(1);
+    expect(leaseApi.acquired).toHaveLength(0);
+  });
+
+  test("a call that may come to the front takes a free desktop and gives it back", async () => {
+    const driver = tabDriver();
+    const leaseApi = fakeLease();
+    let released = 0;
+    leaseApi.release = () => {
+      released++;
+      return true;
+    };
+    const cap = await run(["call", "browser_navigate", '{"first":true}'], {
+      driver,
+      lease: leaseApi,
+      config: attachOn,
+      ...quiet,
+    });
+    expect(cap.exitCode()).toBe(0);
+    expect(leaseApi.acquired).toHaveLength(1);
+    expect(released).toBe(1);
+  });
+
+  test("a foreground call waits for a desktop another agent holds", async () => {
+    const driver = tabDriver();
+    const cap = await run(["call", "browser_navigate", '{"first":true}', "--wait", "0"], {
+      driver,
+      lease: fakeLease(lease()),
+      config: attachOn,
+      ...quiet,
+    });
+    expect(cap.exitCode()).toBe(EXIT_LEASE_HELD);
+    expect(driver.calls).toHaveLength(0);
+  });
+
+  test("the driver's refusal exits 4 and sends nothing", async () => {
+    const driver = tabDriver();
+    const cap = await run(["call", "browser_run_code_unsafe", '{"code":"x"}'], {
+      driver,
+      config: attachOn,
+    });
+    expect(cap.exitCode()).toBe(4);
+    expect(driver.calls).toHaveLength(0);
+    expect(cap.errors[0]?.code).toBe("browser_script_not_checked");
+  });
+
+  test("browser attach off refuses every call of the driver", async () => {
+    const driver = tabDriver();
+    const cap = await run(["call", "browser_snapshot", "{}"], { driver, config: () => cfg("on") });
+    expect(cap.exitCode()).toBe(4);
+    expect(driver.calls).toHaveLength(0);
+  });
+
+  test("done, lease release and browser close end the agent's work in the driver", async () => {
+    for (const argv of [["done"], ["lease", "release"], ["browser", "close"]]) {
+      const driver = tabDriver();
+      const cap = await run(argv, { driver, config: attachOn });
+      expect(driver.ended).toEqual(["agent-Me"]);
+      expect(cap.text.join("\n")).toContain("Closed 1 tab for agent-Me.");
+    }
+  });
+});

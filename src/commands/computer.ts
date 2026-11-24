@@ -1291,6 +1291,16 @@ export function createComputerCommand(
             );
           }
           if (!("session" in args)) args.session = owner.label;
+          // A driver that guards its own calls (ADR 0276) refuses before
+          // anything is sent, like the browser guard below.
+          const refusal = driver.checkCall?.(host, tool, args);
+          if (refusal)
+            throw new ComputerError(
+              refusal.code,
+              refusal.message,
+              EXIT_APPROVAL_REQUIRED,
+              refusal.hint,
+            );
 
           // The browser guard (ADR 0250) keeps an agent inside browser windows
           // it opened for itself and away from password fields. It decides
@@ -1333,19 +1343,28 @@ export function createComputerCommand(
           // has been quiet; the lease covers that wait as well.
           const quiet = foregroundQuiet(config);
           const foreground = quiet.quietMs > 0 && (driver.takesForeground?.(tool, args) ?? false);
-          const acquired = await deps.lease.acquire(
-            owner,
-            leaseOptions(
-              deps,
-              host,
-              Math.round(waitSeconds * 1000),
-              callLeaseIdleMs(deps, driver, tool, args) + (foreground ? quiet.maxWaitMs : 0),
-            ),
-          );
-          if (!acquired.ok) throw heldError(deps, acquired.holder);
-          // A new stretch of computer use: read the displays now, since the
-          // person may have plugged one in or moved one since (ADR 0251).
-          if (acquired.fresh) refreshDisplays(deps, host);
+          // A driver that works only in its own background tabs leaves the
+          // desktop to other agents; it takes the lease only for a call that
+          // may come to the front (ADR 0276).
+          const needsLease = driver.usesDesktop !== false || foreground;
+          // Set when this call took a free desktop only for a moment in front.
+          let releaseAfter = false;
+          if (needsLease) {
+            const acquired = await deps.lease.acquire(
+              owner,
+              leaseOptions(
+                deps,
+                host,
+                Math.round(waitSeconds * 1000),
+                callLeaseIdleMs(deps, driver, tool, args) + (foreground ? quiet.maxWaitMs : 0),
+              ),
+            );
+            if (!acquired.ok) throw heldError(deps, acquired.holder);
+            // A new stretch of computer use: read the displays now, since the
+            // person may have plugged one in or moved one since (ADR 0251).
+            if (acquired.fresh) refreshDisplays(deps, host);
+            releaseAfter = driver.usesDesktop === false && acquired.fresh;
+          }
 
           if (driver.hasDaemon)
             await ensureDaemon(driver, host, {
@@ -1366,7 +1385,8 @@ export function createComputerCommand(
             }
             if (launched) await placeLaunchedWindows(deps, host, launched.pid);
           }
-          await deps.lease.acquire(owner, leaseOptions(deps, host));
+          if (releaseAfter) deps.lease.release(owner, leaseOptions(deps, host));
+          else if (needsLease) await deps.lease.acquire(owner, leaseOptions(deps, host));
           observeBrowserCalls(deps, guard, owner, driver, tool, calls, result, personWindow);
           let stdout = driver.translateResultPaths(host, result.stdout);
           if (!opts.keepScreenshot) stdout = redactInlineScreenshots(stdout);
@@ -1552,15 +1572,18 @@ export function createComputerCommand(
           left_open: [],
         };
         const disconnected = disconnectIdleBrowser(deps, host);
+        const tabs = endDriverWork(deps, host, owner);
         if (opts.json) {
           deps.emit.data({
             ...cleanup,
             disconnected: disconnected?.startsWith("Disconnected") ?? false,
+            ...(tabs.length > 0 ? { ended: tabs } : {}),
           });
           return;
         }
         const lines = describeCleanup(cleanup);
         if (disconnected) lines.push(disconnected);
+        lines.push(...tabs);
         emitLine(
           deps.emit,
           lines.length > 0 ? lines.join("\n") : "No browser work of yours to close.",
@@ -1630,6 +1653,7 @@ export function createComputerCommand(
         const browser = describeCleanup(closeBrowserWork(deps, host, owner));
         const disconnected = disconnectIdleBrowser(deps, host);
         if (disconnected) browser.push(disconnected);
+        browser.push(...endDriverWork(deps, host, owner));
         const released = deps.lease.release(owner, leaseOptions(deps, host));
         if (released) {
           emitLine(
@@ -1761,6 +1785,7 @@ export function createComputerCommand(
         const browser = describeCleanup(closeBrowserWork(deps, host, owner));
         const disconnected = disconnectIdleBrowser(deps, host);
         if (disconnected) browser.push(disconnected);
+        browser.push(...endDriverWork(deps, host, owner));
         const released = deps.lease.release(owner, leaseOptions(deps, host));
         emitLine(
           deps.emit,
@@ -2524,6 +2549,26 @@ function closeBrowserWork(
   } catch {
     return null;
   }
+}
+
+/**
+ * End the caller's work in every installed driver that keeps per-agent work
+ * of its own (ADR 0276: the Playwright driver closes the agent's tabs and
+ * ends its session). Best effort: never throws. Returns the lines to report.
+ */
+function endDriverWork(deps: ComputerDeps, host: HostInfo, owner: LeaseOwner): string[] {
+  const lines: string[] = [];
+  if (host.kind === "unsupported" || !host.desktopStateDir) return lines;
+  for (const driver of deps.drivers) {
+    if (!driver.endAgentWork) continue;
+    try {
+      if (!driver.installedExecutable(host)) continue;
+      lines.push(...driver.endAgentWork(host, owner.label));
+    } catch {
+      // best effort
+    }
+  }
+  return lines;
 }
 
 function describeWindow(w: WindowRef): string {

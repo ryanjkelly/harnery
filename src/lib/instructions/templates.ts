@@ -294,7 +294,8 @@ durably queues the end for its current turn.`;
 }
 
 function computerBody(b: string): string {
-  return `\`${b} computer\` drives this machine's desktop through two pinned desktop drivers.
+  return `\`${b} computer\` drives this machine's desktop through two pinned desktop drivers,
+and works in the person's running Chrome through a third, the Playwright driver.
 It is one of several ways to work with pages and programs, and the person's
 attention is the scarce resource: invisible work beats a window they did not
 need, and a result in the chat beats a window somewhere else.
@@ -385,17 +386,21 @@ ${b} computer status
 
 It shows the approval mode, the host, each pinned driver and whether it is
 installed, any daemon, and who holds the desktop. When a driver is missing,
-run \`${b} computer install --yes\` (both) or add \`--driver <id>\`.
+run \`${b} computer install --yes\` (all three) or add \`--driver <id>\`. The
+Playwright driver also needs Node 20 or later and the Playwright Extension in
+the person's Chrome; \`${b} computer doctor --driver playwright\` names what is
+missing.
 \`${b} computer doctor\` reports each driver's own health checks, including
 missing OS permissions. \`${b} computer displays\` lists the displays; a
 program you launch has its window moved to the corner that
 \`${b} computer window\` shows, out of the person's way.
 
-## Two drivers
+## Three drivers
 
-Both drive the same desktop under the same lease. \`--driver <id>\` picks one
-for \`call\`, \`tools\` and \`describe\`; without it you get the project's default
-(\`status\` marks it).
+The first two drive the same desktop under the same lease; the third works in
+background tabs of the person's Chrome and leaves the desktop to other agents.
+\`--driver <id>\` picks one for \`call\`, \`tools\` and \`describe\`; without it you
+get the project's default (\`status\` marks it).
 
 - **\`agent-desktop\`**: reads an app's accessibility tree as a snapshot and
   acts on refs from that snapshot. Compact, headless by default, and a stale
@@ -405,6 +410,11 @@ for \`call\`, \`tools\` and \`describe\`; without it you get the project's defau
   window screenshots, and an isolated browser through CDP. Use it for a
   browser task, when you need to see pixels, or when agent-desktop refuses an
   action or cannot see the control.
+- **\`playwright\`**: the person's running Chrome through the Playwright
+  Extension. Each agent gets its own tab group, named after it, in the
+  background, and cannot reach the person's other tabs. Use it first for
+  work in the person's signed-in browser when \`status\` shows \`browser: on\`
+  (below).
 
 Refs and tokens belong to the driver that produced them; never pass one
 driver's ref to the other.
@@ -509,9 +519,9 @@ lists them.
   route attaches nothing, so sites see the person's own browser. Open a new
   tab rather than taking over theirs, and if a page needs a sign-in, the person
   signs in there unless they let agents do it (below). When
-  \`${b} computer status\` shows \`browser: on\`, work in your own window of
-  their browser through cua's browser tools instead (below); never attach any
-  other way.
+  \`${b} computer status\` shows \`browser: on\`, work in your own tabs of their
+  browser through the Playwright driver, or cua's browser tools when it is
+  not set up (below); never attach any other way.
 - Never type a password, username, or one-time code into a sign-in page
   yourself.
 - An approval to use the desktop is not approval to communicate. Never click
@@ -530,6 +540,27 @@ Off by default. When \`${b} computer status\` shows \`browser: on\`, the
 person lets agents attach to their running browser and act inside its tabs
 without moving their mouse (\`${b} computer browser-attach\`). \`call\`
 refuses an attach otherwise; do not ask them to turn it on to save a step.
+
+**The Playwright driver comes first** when \`doctor --driver playwright\`
+passes. Every step is one call: \`${b} computer call --driver playwright <tool> '<json>'\`.
+
+1. \`browser_navigate\` with \`{"url": "..."}\` opens your own tab, in a tab
+   group named after you, and loads the page. Your first call may bring the
+   browser forward for a moment, so it waits for a quiet keyboard and mouse.
+   Later calls stay in the background and leave the desktop free.
+2. \`browser_snapshot\` reads the page as an accessibility tree with refs
+   such as \`e12\`. Act on a ref with \`browser_click\`, \`browser_type\` or
+   \`browser_fill_form\` (\`{"target": "e12", "element": "what it is", ...}\`).
+   After typing, snapshot again before you click; \`call\` refuses the click
+   until you do. Use \`browser_evaluate\` only to read; a function that sets
+   values, clicks or submits is refused, and so is \`browser_run_code_unsafe\`.
+3. Never type into a password, code or card field; \`call\` checks the field
+   first and refuses (exit 4). Tell the person, or use the sign-in route below.
+4. \`${b} computer done\` closes your tabs, which removes your tab group, and
+   ends your session. Chrome shows "started debugging this browser" while any
+   agent's tab is open; it clears when the last one closes.
+
+**The cua route** is the fallback when the Playwright driver is not set up:
 
 1. Run \`${b} computer browser open <url>\`. It waits for a quiet keyboard
    and mouse, opens a new window for you in their default browser,
@@ -631,7 +662,7 @@ export const SKILLS: SkillTemplate[] = [
       buildOwnedSkill({
         name: "harn-computer",
         description:
-          "Choose how to work with web pages and desktop programs, and drive a native desktop app or a real browser through the project's two pinned desktop drivers (agent-desktop snapshots and refs; cua tools, screenshots and isolated browser). Covers the routing (invisible work first, results in the chat, the desktop only when a window is unavoidable), the three separate approvals, the setup check, which driver to pick, each driver's read / act / read back loop, safety rules, and the shared desktop lease.",
+          "Choose how to work with web pages and desktop programs, and drive a native desktop app or a real browser through the project's three pinned drivers (agent-desktop snapshots and refs; cua tools, screenshots and isolated browser; playwright tabs of the person's running Chrome through the Playwright Extension). Covers the routing (invisible work first, results in the chat, the desktop only when a window is unavoidable), the three separate approvals, the setup check, which driver to pick, each driver's read / act / read back loop, safety rules, and the shared desktop lease.",
         binName,
         body: computerBody(binName),
       }),

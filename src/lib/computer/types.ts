@@ -193,6 +193,13 @@ export interface BackgroundProcess {
   kind: string;
 }
 
+/** A driver's refusal of one call; `call` exits 4 with it and sends nothing (ADR 0276). */
+export interface CallRefusal {
+  code: string;
+  message: string;
+  hint?: string;
+}
+
 export interface DriverCallResult {
   /** Process exit code of the driver invocation. */
   exitCode: number;
@@ -243,6 +250,24 @@ export interface DesktopDriver {
   attachesPersonBrowser?(tool: string, args: Record<string, unknown>): boolean;
   /** True when the driver can attach to the person's running browser at all. */
   readonly supportsBrowserAttach?: boolean;
+  /**
+   * False when the driver never touches the shared desktop: it works in
+   * background tabs it owns, so a call takes the desktop lease only when it
+   * may take the foreground (ADR 0276). Absent means it uses the desktop.
+   */
+  readonly usesDesktop?: boolean;
+  /**
+   * Refuse one call before anything is sent: the driver's own guard for the
+   * rules the browser guard applies to the desktop drivers (ADR 0276).
+   * Undefined lets the call through.
+   */
+  checkCall?(host: HostInfo, tool: string, args: Record<string, unknown>): CallRefusal | undefined;
+  /**
+   * End one agent's work in this driver (close the tabs it opened, end its
+   * session) when it finishes, releases the desktop or closes its browser
+   * work. Returns plain lines to report; empty when it had none. Never throws.
+   */
+  endAgentWork?(host: HostInfo, session: string): string[];
   /**
    * The browser calls inside one driver call (itself, or its nested steps),
    * for the browser guard. Empty when the call touches no browser.
