@@ -176,7 +176,8 @@ const CLOSE_HEADLESS_LINES = [
  * expiry) when it exits normally unless that preference is set, and many
  * sign-ins keep the signed-in state only in such cookies. With it set, the
  * person can simply close the window and the sign-in survives for the
- * harvest, and the next sign-in window reopens where they left off.
+ * harvest. The saved tabs are deleted before each sign-in window opens
+ * (`clearSessionTabsScript`), so the window does not reopen them.
  *
  * The preference is protected against edits to the profile's files, so the
  * script sets it the way the settings page does: it opens the profile
