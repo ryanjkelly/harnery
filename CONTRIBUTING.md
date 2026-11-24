@@ -63,6 +63,8 @@ Walk through the prompts to declare the bump type (patch/minor/major) and a one-
 
 The release PR is opened by the Actions bot, so branch-protection checks never run on it and it sits as `BLOCKED`. Admin-merge it (`gh pr merge <n> --squash --admin`) once CI is green on the `main` commit beneath it: the PR only touches version + changelog metadata, and the code it ships already passed CI on that commit.
 
+Two Release workflow results look worse than they are. The run triggered by the push to `main` can refuse with "successful CI was not available" when it checks before CI on that commit has finished; rerun it once CI is green. The run on the release PR's merge commit can end `cancelled` while it waits for the new version to appear on npm, after the publish itself succeeded; check `npm view harnery version` and the tag before treating it as a failed release. Both happened for 0.57.0.
+
 The [CI workflow](.github/workflows/ci.yml) runs on pushes and pull requests to
 both `next` and `main`, so integration commits receive lint, typechecking, core
 tests, and published-package checks before a release. Run the complete local
