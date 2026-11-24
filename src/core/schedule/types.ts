@@ -10,9 +10,9 @@
 
 /** Where a schedule record came from. */
 export type ScheduleSource =
-  /** T3 Code's own scheduled tasks (private store; opt-in reader). */
+  /** T3 Code's own scheduled tasks (private store, read-only). */
   | "t3-code"
-  /** The Codex app's automations (private store; opt-in reader). */
+  /** The Codex app's automations (private store, read-only). */
   | "codex-app"
   /** The machine's own timers: systemd user timers and the user's crontab. */
   | "os-timer"
@@ -137,7 +137,7 @@ export interface ScheduleRecord {
  *   a copy failed).
  * - `unsupported`: the platform or the store's layout is one the reader does
  *   not know; it did not guess.
- * - `disabled`: an opt-in reader the project has not turned on.
+ * - `disabled`: a reader the operator switched off (`schedule.disabledReaders`).
  */
 export type ScheduleCoverageState = "current" | "stale" | "unreadable" | "unsupported" | "disabled";
 
