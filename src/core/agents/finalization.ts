@@ -19,6 +19,12 @@ import { type AgentFinalizationDisposition, agentsFinalizationRoots } from "../c
 import { readFinalizationScopeV3 } from "../events/v3/finalization-view.ts";
 import { liveInstanceIdV3, resolveLiveEventLedgerRouteV3 } from "../events/v3/live-routing.ts";
 import { nativeSessionIdentity } from "./canonical-emit.ts";
+import {
+  agentLabel,
+  commitActivityFor,
+  formatElapsed,
+  type GitCommitActivityView,
+} from "./git-activity.ts";
 import { readFinalizationPathIndex } from "./state/finalization-path-index.ts";
 import type { Heartbeat } from "./state/heartbeat-reader.ts";
 
@@ -69,6 +75,23 @@ export interface GitFinalizationResult {
   repos_checked: string[];
   /** This machine's path index file that could not be read (ADR 0267). */
   unreadable_path_index?: string;
+  /**
+   * Peer commits still running in a repository named by a freshness finding:
+   * their pre-commit checks hold the lock a sync would need. Set only by
+   * annotatePeerCommits.
+   */
+  peer_commits_in_flight?: PeerCommitInFlight[];
+}
+
+export interface PeerCommitInFlight {
+  /** Repository label, as in behind_repos and the submodule lists. */
+  repo: string;
+  /** `agent-<Name>`, or the short instance id when no name is recorded. */
+  agent: string;
+  instance_id: string;
+  started_at: string;
+  /** Build-slot labels the same session holds now. */
+  slots: string[];
 }
 
 export type UnsupportedFinalizationReason =
@@ -971,6 +994,86 @@ export function unreadablePathIndexLines(file: string, bin: string): string[] {
   ];
 }
 
+/**
+ * Add the peer commits still running in the repositories a freshness finding
+ * names. Best-effort: a failed read leaves the result unchanged.
+ */
+export function annotatePeerCommits(
+  coordRoot: string,
+  result: GitFinalizationResult,
+  selfInstanceId: string | undefined,
+  deps: { activity?: (coordRoot: string) => GitCommitActivityView[]; now?: Date } = {},
+): GitFinalizationResult {
+  const labels = [
+    ...result.behind_repos,
+    ...result.stale_submodules,
+    ...result.diverged_submodules,
+  ];
+  if (result.ok || labels.length === 0) return result;
+  try {
+    const root = physicalPath(resolve(coordRoot)) ?? resolve(coordRoot);
+    const byPath = new Map(labels.map((label) => [resolve(root, label), label] as const));
+    const live = (deps.activity ?? ((r) => commitActivityFor(r)))(coordRoot);
+    const peers: PeerCommitInFlight[] = [];
+    for (const record of live) {
+      if (record.instance_id === selfInstanceId) continue;
+      const repoPath = physicalPath(resolve(record.repo)) ?? resolve(record.repo);
+      const label = byPath.get(repoPath);
+      if (!label) continue;
+      peers.push({
+        repo: label,
+        agent: agentLabel(record),
+        instance_id: record.instance_id,
+        started_at: record.started_at,
+        slots: record.slots,
+      });
+    }
+    return peers.length > 0 ? { ...result, peer_commits_in_flight: peers } : result;
+  } catch {
+    return result;
+  }
+}
+
+/**
+ * True when the only findings are freshness findings and every repository
+ * they name has a peer commit in progress. A sync cannot land until those
+ * commits finish, so refusing again would only repeat itself.
+ */
+export function freshnessBlockedOnlyByPeerCommits(result: GitFinalizationResult): boolean {
+  const peers = result.peer_commits_in_flight ?? [];
+  if (result.ok || peers.length === 0) return false;
+  const owned =
+    !result.claim_history_complete ||
+    result.dirty_paths.length > 0 ||
+    result.unpushed_repos.length > 0 ||
+    result.unsupported_paths.length > 0 ||
+    result.unverifiable_paths.length > 0 ||
+    result.unverifiable_repos.length > 0;
+  if (owned) return false;
+  const affected = new Set([
+    ...result.behind_repos,
+    ...result.stale_submodules,
+    ...result.diverged_submodules,
+  ]);
+  if (affected.size === 0) return false;
+  const covered = new Set(peers.map((peer) => peer.repo));
+  // The parent falls behind when a peer pushes; a peer committing in any
+  // listed submodule is what keeps the parent's sync from landing too.
+  return [...affected].every((repo) => covered.has(repo) || (repo === "." && covered.size > 0));
+}
+
+function joinAgents(peers: readonly PeerCommitInFlight[]): string {
+  const names = [...new Set(peers.map((peer) => peer.agent))];
+  if (names.length <= 1) return names[0] ?? "a peer";
+  return `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+}
+
+/** `web: agent-Name has been committing for 4 min; running <slot>` */
+export function describePeerCommit(commit: PeerCommitInFlight, now: Date = new Date()): string {
+  const slots = commit.slots.length > 0 ? `; running ${commit.slots.join(", ")}` : "";
+  return `${commit.repo}: ${commit.agent} has been committing for ${formatElapsed(commit.started_at, now)}${slots}`;
+}
+
 export function formatGitFinalizationFailure(
   result: GitFinalizationResult,
   bin: string,
@@ -993,8 +1096,11 @@ export function formatGitFinalizationFailure(
     result.diverged_submodules.length > 0;
   // Lead with one plain sentence: what happened and the exact next command.
   const syncStep = syncCommand ? `run \`${syncCommand}\`, then` : "sync the checkout, then";
-  const lead =
-    !ownedFindings && freshnessFindings
+  const peerCommits = result.peer_commits_in_flight ?? [];
+  const peerOnly = freshnessBlockedOnlyByPeerCommits(result);
+  const lead = peerOnly
+    ? `This checkout is behind while ${joinAgents(peerCommits)} ${peerCommits.length === 1 ? "finishes a commit" : "finish commits"}, and nothing of yours is unfinished: when ${peerCommits.length === 1 ? "it lands" : "they land"}, ${syncStep} rerun \`${statusCommand}\`.`
+    : !ownedFindings && freshnessFindings
       ? `This checkout is behind changes another session pushed, and nothing of yours is unfinished: ${syncStep} rerun \`${statusCommand}\`.`
       : `This session has work that is not committed and pushed: finish it, then rerun \`${statusCommand}\`.`;
   const lines = [
@@ -1041,6 +1147,12 @@ export function formatGitFinalizationFailure(
     lines.push(
       "Submodule checkouts diverged from their parent gitlinks:",
       ...result.diverged_submodules.map((path) => `  - ${path}`),
+    );
+  }
+  if (peerCommits.length > 0) {
+    lines.push(
+      "Commits in progress in those repositories:",
+      ...peerCommits.map((commit) => `  - ${describePeerCommit(commit)}`),
     );
   }
   if (result.unsupported_paths.length > 0) {

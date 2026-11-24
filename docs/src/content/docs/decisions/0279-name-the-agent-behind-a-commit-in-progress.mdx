@@ -1,0 +1,85 @@
+---
+title: "0279: Name the agent behind a commit in progress"
+description: "ADR: The pre-commit hook records which session is committing until post-commit clears it, build-slot holds record their session, and end-of-turn checks name those peers. A checkout that is stale only because peers' commits are still running no longer refuses the closing status."
+---
+
+**Status:** accepted (2026-11-24) · **Scope:** product tier (`core/agents` git hooks, finalization, `agents status --end-turn`, `agents git-activity`) and toolkit tier (`lib/admission` holder fields)
+
+## Context
+
+Several agents share one checkout. A commit can hold a repository's index
+lock for many minutes while its pre-commit checks run, and long checks also
+hold a machine-wide build slot. A peer that needs the same repository then
+waits, and every message it could show said "another Git process". Git
+records no owner for its lock, admission holders recorded only a pid and a
+label, and commits are authored by the human's Git identity. An agent could
+only guess who it was waiting on from task text and file claims.
+
+The closing `agents status --end-turn`, which the Stop hook also runs when a
+turn ends without it, refuses while the checkout is behind its upstream or a
+submodule has diverged from its gitlink. That is right when a sync can fix
+it. When the divergence comes from a peer's commit that is still running
+its checks, no sync can land until that commit finishes. The refusal then
+repeats on every attempt, and the agent can do nothing about it.
+
+## Alternatives considered
+
+- **A trailer naming the agent on every commit.** Rejected. It writes agent
+  identity into shared history that operators read, and it answers "who
+  wrote this old commit", not "who is holding the lock now". A rebase also
+  copies the trailer onto a commit someone else rewrote.
+- **Git notes.** Rejected: they need their own sync and are lost on rebase
+  unless configured.
+- **Finding the lock's owner through process ancestry.** Rejected as the
+  primary route: `index.lock` carries no pid, and scanning processes for the
+  one that holds it is fragile. The pre-commit hook already knows the
+  committing session during the whole window the lock is held.
+- **A per-commit attribution record keyed by SHA.** Deferred until a need to
+  identify finished commits recurs. Rebases rewrite SHAs, so it needs a
+  rewrite map to stay correct.
+
+## Decision
+
+1. **The pre-commit hook records the commit in progress.** `agent-coord
+   git-hook pre-commit` resolves the committing session the same way commit
+   verdicts do (environment, then the pid-map walk). It writes
+   `.harnery/git-activity/<git pid>.json` with the instance, display name,
+   working tree, the `git` process id and its start token, and the start
+   time. It records nothing when no session resolves. A blocked verdict and
+   `post-commit` remove the record. A commit that fails later leaves it, and
+   readers drop any record whose `git` process has exited or whose pid now
+   names a different process. Every write and read is best-effort; the hook
+   still never blocks a commit on its own errors.
+2. **Build-slot holds carry their session.** `acquireAdmission` accepts an
+   `owner`, and the entry records `instance_id` and `agent`. The toolkit
+   module still resolves nothing itself: `admission run` and detached jobs
+   pass the caller's identity, resolved at launch. `admission status` and
+   the queue's wait messages print `label (agent-Name, pid N)`.
+3. **`agents git-activity` lists commits in progress** with the agent, the
+   repository, the elapsed time and the build slots that session holds now
+   (`--repo` to filter, `--json`). Host sync scripts use it to name who holds
+   a lock.
+4. **Finalization names peers.** When a finalization result has freshness
+   findings, `annotatePeerCommits` adds every live peer commit in a listed
+   repository. Refusals print them by name.
+5. **The closing status no longer refuses on peers alone.** When the only
+   findings are freshness findings and every affected repository has a live
+   peer commit, `agents status --end-turn` issues the box and warns, naming
+   each peer, its repository, elapsed time and checks, and the sync to run
+   after they land. Any finding about the session's own work (dirty or
+   unpushed paths, unverifiable state, incomplete claim history) still
+   refuses. `agents lifecycle done` keeps the strict rule and only gains the
+   names.
+
+## Consequences
+
+- A blocked agent can say which agent it waits on and for how long, and can
+  ping that agent instead of retrying.
+- A turn whose own work is finished ends even while peers commit. The
+  checkout can still be behind afterwards; the warning says so and names the
+  command that catches it up.
+- The exemption depends on a record the committing session wrote. Commits by
+  a human, or by a process no session owns, record nothing, so freshness
+  findings in their repositories still refuse.
+- Records live in the host's `.harnery/`. Commits made on another machine
+  are not visible here.

@@ -126,7 +126,7 @@ Lists recent jobs, newest first, with id, state, resource, exit code, heartbeat 
 harn admission status
 ```
 
-Lists each resource present in the admission state directory with its current slot holders and FIFO waiters: label, PID, and since when each has been holding or waiting. Dead entries are pruned as a side effect of being listed. Detached jobs still in flight are listed underneath. `--resource <name>` narrows to one resource; `--json` emits a machine-readable snapshot.
+Lists each resource present in the admission state directory with its current slot holders and FIFO waiters: label, the agent session that queued it when one is known (`agent-Name`), PID, and since when each has been holding or waiting. Dead entries are pruned as a side effect of being listed. Detached jobs still in flight are listed underneath. `--resource <name>` narrows to one resource; `--json` emits a machine-readable snapshot.
 
 ## admission history
 

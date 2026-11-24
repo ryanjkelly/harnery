@@ -10,6 +10,7 @@ import {
   acquireAdmission,
   admissionBaseDir,
   admissionStatus,
+  describeAdmissionHolder,
   listAdmissionResources,
   waitForMemoryPressure,
 } from "./admission.ts";
@@ -190,6 +191,31 @@ describe("acquireAdmission", () => {
     const handle = await acquireAdmission(config(dir), { label: "twice" });
     handle.release();
     expect(() => handle.release()).not.toThrow();
+  });
+});
+
+describe("holder identity", () => {
+  test("records the queueing agent and names it in status listings", async () => {
+    const dir = fixture();
+    const handle = await acquireAdmission(config(dir), {
+      label: "pre-commit tests",
+      owner: { instance_id: "inst-a", agent: "Bonnie" },
+    });
+    const [holder] = admissionStatus(config(dir)).holders;
+    expect(holder).toMatchObject({ instance_id: "inst-a", agent: "Bonnie" });
+    expect(describeAdmissionHolder(holder!)).toBe(
+      `pre-commit tests (agent-Bonnie, pid ${process.pid})`,
+    );
+    handle.release();
+  });
+
+  test("a holder without an owner keeps the plain listing", async () => {
+    const dir = fixture();
+    const handle = await acquireAdmission(config(dir), { label: "build" });
+    const [holder] = admissionStatus(config(dir)).holders;
+    expect(holder?.instance_id).toBeUndefined();
+    expect(describeAdmissionHolder(holder!)).toBe(`build (pid ${process.pid})`);
+    handle.release();
   });
 });
 

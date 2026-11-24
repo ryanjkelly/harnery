@@ -15,7 +15,9 @@ import { closeSync, openSync } from "node:fs";
 import { join } from "node:path";
 import { type Command, Option } from "commander";
 import type { EmitContext } from "../commander.ts";
+import { type AgentIdentity, resolveAgentIdentity } from "../core/agents/git-activity.ts";
 import { readAdmissionConfig, resolveBinName } from "../core/config.ts";
+import { findCoordRoot } from "../core/hooks/resolve/coord-root.ts";
 import {
   type AdmissionEntry,
   type AdmissionStatus,
@@ -23,6 +25,7 @@ import {
   acquireAdmission,
   admissionBaseDir,
   admissionStatus,
+  describeAdmissionHolder,
   listAdmissionResources,
   waitForMemoryPressure,
 } from "../lib/admission.ts";
@@ -207,7 +210,7 @@ function parseBoundedInt(
 
 function describeEntry(entry: AdmissionEntry): string {
   const since = entry.acquired_at ?? entry.created_at;
-  return `${entry.label || "(no label)"} (pid ${entry.pid}) since ${since}`;
+  return `${describeAdmissionHolder(entry)} since ${since}`;
 }
 
 function logResourceStatus(emit: EmitContext, status: AdmissionStatus): void {
@@ -217,6 +220,16 @@ function logResourceStatus(emit: EmitContext, status: AdmissionStatus): void {
   );
   for (const holder of status.holders) emit.log(`  holding: ${describeEntry(holder)}`, "info");
   for (const waiter of status.waiters) emit.log(`  waiting: ${describeEntry(waiter)}`, "info");
+}
+
+/** The agent session running this command, when coordination can tell. */
+function callerIdentity(): AgentIdentity | undefined {
+  try {
+    const root = findCoordRoot();
+    return (root ? resolveAgentIdentity(root) : null) ?? undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function describeError(err: unknown): string {
@@ -430,6 +443,7 @@ export function registerAdmissionCommand(program: Command, emit: EmitContext): v
       }
 
       const dir = admissionBaseDir();
+      const owner = callerIdentity();
       let lastWaitMessage = "";
       let handle: Awaited<ReturnType<typeof acquireAdmission>>;
       try {
@@ -437,10 +451,12 @@ export function registerAdmissionCommand(program: Command, emit: EmitContext): v
           { dir, resource: opts.resource, capacity },
           {
             label,
+            ...(owner ? { owner } : {}),
             timeoutMs: timeoutMinutes * 60_000,
             ...(pressureWaitMs > 0 ? { pressureWaitMs } : {}),
             onWait: (info) => {
-              const holders = info.holders.map((holder) => holder.label).join(", ") || "none";
+              const holders =
+                info.holders.map((holder) => describeAdmissionHolder(holder)).join(", ") || "none";
               const message =
                 `queued for a ${opts.resource} slot: position ${info.position}, ` +
                 `capacity ${capacity}, holder(s): ${holders}`;
@@ -724,6 +740,8 @@ function launchDetachedJob(emit: EmitContext, options: LaunchOptions): void {
       created_at: nowIso(),
       ...(options.deferOnPressure ? { defer_on_pressure: options.deferOnPressure } : {}),
     };
+    const owner = callerIdentity();
+    if (owner) document.owner = owner;
     writeJobDocument(jobDir, document);
     logFd = openSync(join(jobDir, DURABLE_JOB_LOG_FILENAME), "a");
   } catch (err: unknown) {
@@ -868,6 +886,7 @@ export async function superviseJob(emit: EmitContext, opts: AdmissionSuperviseOp
       },
       {
         label: document.label,
+        ...(document.owner ? { owner: document.owner } : {}),
         timeoutMs: timeoutMinutes * 60_000,
         ...(pressureWaitMs > 0 ? { pressureWaitMs } : {}),
         onWait: () => {

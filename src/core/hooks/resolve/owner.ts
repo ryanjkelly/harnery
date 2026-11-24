@@ -119,7 +119,7 @@ export function resolveOwner(opts: {
   return null;
 }
 
-function readPpid(pid: number): number | null {
+export function readPpid(pid: number): number | null {
   // Linux/WSL fast path: /proc/<pid>/status carries `PPid:`.
   try {
     const status = readFileSync(`/proc/${pid}/status`, "utf8");

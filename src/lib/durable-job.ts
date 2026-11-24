@@ -64,6 +64,8 @@ export interface DurableJobDocument {
   /** Directory the wrapped command runs in. */
   cwd: string;
   created_at: string;
+  /** Agent session that launched the job, resolved at launch time. */
+  owner?: { instance_id: string; agent?: string };
   /**
    * Wait while Linux memory pressure is above this before queueing, as the
    * foreground run does. The client resolves it from the resource's project config at launch.
@@ -205,6 +207,17 @@ export function readJobDocument(jobDir: string): DurableJobDocument | null {
     cwd: typeof parsed.cwd === "string" ? parsed.cwd : "",
     created_at: typeof parsed.created_at === "string" ? parsed.created_at : "",
     ...readDeferOnPressure(parsed.defer_on_pressure),
+    ...readOwner(parsed.owner),
+  };
+}
+
+function readOwner(value: unknown): Pick<DurableJobDocument, "owner"> {
+  if (!isRecord(value) || typeof value.instance_id !== "string") return {};
+  return {
+    owner: {
+      instance_id: value.instance_id,
+      ...(typeof value.agent === "string" ? { agent: value.agent } : {}),
+    },
   };
 }
 

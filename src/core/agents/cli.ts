@@ -917,8 +917,9 @@ async function handleEmitEvent(root: string, rest: string[]): Promise<number> {
  * canonicalization, gitlink probe, verdict, claim pruning), so a harnery
  * upgrade upgrades hook behavior with no change to the host's hook file.
  *
- * Events: pre-commit (E-guard verdict; exit 1 blocks the commit),
- * post-commit (prune committed paths' claims), post-checkout <old> <new>
+ * Events: pre-commit (record the commit in progress for its session, then
+ * the E-guard verdict; exit 1 blocks the commit), post-commit (clear that
+ * record and prune committed paths' claims), post-checkout <old> <new>
  * (release claims on paths the ref move rewrote).
  *
  * Fail-open by design: an internal error never blocks a commit (parity with
@@ -939,6 +940,10 @@ async function handleGitHook(fallbackRoot: string, rest: string[]): Promise<numb
     if (event === "pre-commit") {
       const { staged, gitlinks } = gh.collectStaged(cwd);
       if (staged.length === 0) return 0;
+      // Name this session as the committer while the rest of the pre-commit
+      // checks hold the index lock, so a blocked peer can say who it waits on.
+      const activity = await import("./git-activity.ts");
+      const commitRecord = activity.recordCommitStart(root, cwd);
       const { evaluateCommit } = await import("./rules/commit-conflict.ts");
       const result = evaluateCommit(root, {
         staged_paths: staged,
@@ -967,6 +972,7 @@ async function handleGitHook(fallbackRoot: string, rest: string[]): Promise<numb
         process.stdout.write("\n");
       }
       if (!result.allow) {
+        if (commitRecord) activity.clearCommitActivity(root, commitRecord.git_pid);
         const handoffs = result.handoff_commands ?? [];
         process.stdout.write(
           "  Wait for them to finish, split the commit, or set\n" +
@@ -983,6 +989,10 @@ async function handleGitHook(fallbackRoot: string, rest: string[]): Promise<numb
     }
 
     if (event === "post-commit" || event === "post-checkout") {
+      if (event === "post-commit") {
+        const { clearCommitActivity } = await import("./git-activity.ts");
+        clearCommitActivity(root);
+      }
       const paths =
         event === "post-commit"
           ? gh.collectCommitted(cwd)

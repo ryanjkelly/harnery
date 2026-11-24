@@ -33,12 +33,16 @@ import {
   formatEndTurnSyncSummary,
 } from "../core/agents/end-turn-sync.ts";
 import {
+  annotatePeerCommits,
   checkGitFinalization,
+  describePeerCommit,
   formatGitFinalizationFailure,
+  freshnessBlockedOnlyByPeerCommits,
   type GitFinalizationResult,
   readSessionFinalizationScope,
   readSessionWriteClaims,
 } from "../core/agents/finalization.ts";
+import { commitActivityFor, describeCommitActivity } from "../core/agents/git-activity.ts";
 import {
   describeDirtyPathPeers,
   findLivePeerByName,
@@ -350,6 +354,22 @@ export function registerAgentsCommand(
     .option("--json", "JSON output (alias for --format json)")
     .action((opts: { json?: boolean }) => {
       runWhoami(opts);
+    });
+
+  cmd
+    .command("git-activity")
+    .description(
+      "List commits in progress on this machine: which agent is committing in which repository, for how long, and which build slots its checks hold",
+    )
+    .option(
+      "--repo <path>",
+      "Only commits in this repository's working tree (repeatable)",
+      collectRepo,
+      [],
+    )
+    .option("--json", "JSON output")
+    .action((opts: { repo: string[]; json?: boolean }) => {
+      runGitActivity(opts);
     });
 
   cmd
@@ -867,7 +887,7 @@ function runEndSession(opts: {
     return failCommand(
       "git_not_finalized",
       formatGitFinalizationFailure(
-        finalized,
+        annotatePeerCommits(root, finalized, state.instance_id),
         resolveBinName(root),
         "status",
         agentsGitSyncCommand(root),
@@ -1181,6 +1201,28 @@ function runIdentityAssume(
     }
     process.exit(1);
   }
+}
+
+function collectRepo(value: string, previous: string[]): string[] {
+  return [...previous, value];
+}
+
+function runGitActivity(opts: { repo: string[]; json?: boolean }): void {
+  const root = monorepoRoot();
+  if (!root) {
+    emit.error({ code: "not_in_repo", message: "no coordination root found from this directory" });
+    process.exit(1);
+  }
+  const views = commitActivityFor(root, opts.repo.length > 0 ? { repos: opts.repo } : {});
+  if (opts.json) {
+    process.stdout.write(`${JSON.stringify({ commits: views }, null, 2)}\n`);
+    return;
+  }
+  if (views.length === 0) {
+    process.stdout.write("No commits in progress.\n");
+    return;
+  }
+  for (const view of views) process.stdout.write(`${describeCommitActivity(view, { root })}\n`);
 }
 
 function runWhoami(opts: { json?: boolean }): void {
@@ -2482,7 +2524,7 @@ function runLifecycle(
         code: "git_not_finalized",
         message: [
           formatGitFinalizationFailure(
-            finalization,
+            annotatePeerCommits(root, finalization, myOwner),
             resolveBinName(root),
             "status",
             agentsGitSyncCommand(root),
@@ -2728,6 +2770,21 @@ function runStatus(opts: {
         endTurnSync = synced.sync;
         finalization = synced.result;
       }
+    }
+    if (!finalization.ok) finalization = annotatePeerCommits(root, finalization, myOwner);
+    if (finalization && freshnessBlockedOnlyByPeerCommits(finalization)) {
+      // A sync cannot land until the peers' commits finish, so refusing
+      // would only repeat. Issue the box and name who the checkout waits on.
+      const peers = finalization.peer_commits_in_flight ?? [];
+      emit.log(
+        [
+          "Checkout freshness is waiting on peer commits; nothing of yours is unfinished:",
+          ...peers.map((commit) => `  - ${describePeerCommit(commit)}`),
+          `Run \`${agentsGitSyncCommand(root) ?? "a sync"}\` after they land.`,
+        ].join("\n"),
+        "warn",
+      );
+      finalization = { ...finalization, ok: true };
     }
     if (!finalization.ok) {
       const failure = formatGitFinalizationFailure(

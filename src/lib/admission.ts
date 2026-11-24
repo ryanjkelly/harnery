@@ -78,6 +78,10 @@ export interface AdmissionEntry {
   capacity?: number;
   /** Set on holders that had to wait: the holder labels they first waited behind. */
   waited_behind?: string[];
+  /** Coordination instance of the agent session that queued, when the caller knows it. */
+  instance_id?: string;
+  /** Display name of that session, when the caller knows it. */
+  agent?: string;
   /**
    * Start time of the queueing process, recorded only where /proc is absent
    * (macOS). There a dead holder's pid can be reused by an unrelated process,
@@ -101,6 +105,12 @@ export interface AdmissionAcquireOptions {
   onWait?: (info: AdmissionWaitInfo) => void;
   /** Time the caller already spent deferring for memory pressure, for the history. */
   pressureWaitMs?: number;
+  /**
+   * The agent session queueing, resolved by the caller (this module has no
+   * view of coordination state). Recorded on the ticket so status listings
+   * can name who holds a slot.
+   */
+  owner?: { instance_id: string; agent?: string };
 }
 
 export interface AdmissionHandle {
@@ -118,7 +128,7 @@ export interface AdmissionHandle {
 export class AdmissionTimeoutError extends Error {
   readonly holders: AdmissionEntry[];
   constructor(resource: string, timeoutMs: number, holders: AdmissionEntry[]) {
-    const labels = holders.map((holder) => `${holder.label} (pid ${holder.pid})`).join(", ");
+    const labels = holders.map((holder) => describeAdmissionHolder(holder)).join(", ");
     const seconds =
       timeoutMs < 10_000 ? (timeoutMs / 1000).toFixed(1) : String(Math.round(timeoutMs / 1000));
     super(
@@ -128,6 +138,12 @@ export class AdmissionTimeoutError extends Error {
     this.name = "AdmissionTimeoutError";
     this.holders = holders;
   }
+}
+
+/** `label (agent-Name, pid N)`, naming the agent when the ticket records one. */
+export function describeAdmissionHolder(holder: AdmissionEntry): string {
+  const who = holder.agent ? `agent-${holder.agent}, ` : "";
+  return `${holder.label || "(no label)"} (${who}pid ${holder.pid})`;
 }
 
 const DEFAULT_POLL_MS = 500;
@@ -197,6 +213,8 @@ function listLive(
             ...(typeof record.cwd === "string" ? { cwd: record.cwd } : {}),
             ...(typeof record.capacity === "number" ? { capacity: record.capacity } : {}),
             ...(typeof record.start === "string" ? { start: record.start } : {}),
+            ...(typeof record.instance_id === "string" ? { instance_id: record.instance_id } : {}),
+            ...(typeof record.agent === "string" ? { agent: record.agent } : {}),
             ...(Array.isArray(record.waited_behind)
               ? {
                   waited_behind: record.waited_behind.filter(
@@ -310,6 +328,8 @@ export async function acquireAdmission(
     created_at: new Date().toISOString(),
     cwd: process.cwd(),
     capacity: config.capacity,
+    ...(options.owner ? { instance_id: options.owner.instance_id } : {}),
+    ...(options.owner?.agent ? { agent: options.owner.agent } : {}),
   };
   const start = holderStartToken(process.pid);
   if (start) myEntry.start = start;

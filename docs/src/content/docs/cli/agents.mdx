@@ -44,6 +44,7 @@ harn agents trace <name>        # reconstruct one agent's lifecycle from the eve
 harn agents watch               # stream peer state changes in real time
 harn agents ping <name> <msg>   # message an agent by name, live or not
 harn agents wait <name>         # block until a peer releases its files (or exits)
+harn agents git-activity        # commits in progress: who, where, how long, which checks
 harn agents release-claim <path> # drop a file claim from your own heartbeat (escape hatch)
 harn agents release-claim --all  # drop every claim your session still holds
 harn agents handoff <path>... --to <name> # offer claimed, dirty paths to a live peer
@@ -693,6 +694,40 @@ the status command execute anything. The sync command must be safe to run
 while other sessions edit the same checkout. Set
 `HARNERY_AGENTS_GIT_SYNC_ON_END_TURN=0` to switch the behavior off for one
 process. The default is `false`.
+
+### When a peer's commit is still running
+
+A commit can hold its repository's lock for minutes while its pre-commit
+checks run. The pre-commit hook records which session is committing, and
+`post-commit` clears the record; a commit that fails is forgotten as soon as
+its `git` process exits. `harn agents git-activity` lists the commits in
+progress on this machine:
+
+```
+$ harn agents git-activity
+web: agent-Bonnie has been committing for 4 min; running pre-commit tests
+```
+
+Add `--repo <path>` (repeatable) to filter by working tree and `--json` for
+scripts. A sync script can call it to say who holds a lock instead of
+"another Git process".
+
+The guarded status uses the same records. When the only findings are
+freshness findings (the checkout is behind, or a submodule trails or has
+diverged from its gitlink) and every affected repository has a peer's commit
+in progress, a sync could not land yet, so the status issues the box and
+warns instead of refusing:
+
+```
+[warn] Checkout freshness is waiting on peer commits; nothing of yours is unfinished:
+  - web: agent-Bonnie has been committing for 4 min; running pre-commit tests
+Run `<sync command>` after they land.
+```
+
+Any finding about the session's own work still refuses, and so does a
+freshness finding in a repository with no recorded commit in progress.
+`harn agents lifecycle done` keeps the strict check and names the peers in its
+refusal. See [ADR 0279](/decisions/0279-name-the-agent-behind-a-commit-in-progress/).
 
 ### Which turns the Stop hook checks
 
