@@ -330,7 +330,10 @@ coming.
    stop and tell them; never retry it automatically.
 5. The desktop (\`${b} computer\`) only for a desktop program with no file or
    API route, a site that refuses the headless browser even when signed in,
-   or work the person will continue in a state no link can hand them.
+   or work the person will continue in a state no link can hand them. When
+   the person asks for work in their own signed-in browser and
+   \`${b} computer status\` shows \`browser: on\`, go straight to "Working in the
+   person's browser tabs" below.
 6. Your agent app's own browser, last: a browser pane built into the app,
    or the app's connection that drives the person's Chrome. In the Codex app
    that means its browser and computer-use tools (tabs in the connected
@@ -423,8 +426,8 @@ driver's ref to the other.
 
 The mode in \`status\` says how much the person must approve: \`off\`,
 \`ask-each-task\`, \`ask-once-per-session\`, or \`on\`. The project sets the default
-and each person may choose their own. In an ask mode, \`call\` refuses (exit 4)
-until you hold an approval:
+and each person may choose their own. In \`on\` you need no grant. In an ask
+mode, \`call\` refuses (exit 4) until you hold an approval:
 
 \`\`\`bash
 ${b} computer grant --purpose "<what you will do, in plain words>"
@@ -543,21 +546,30 @@ refuses an attach otherwise; do not ask them to turn it on to save a step.
 
 **The Playwright driver comes first** when \`doctor --driver playwright\`
 passes. Every step is one call: \`${b} computer call --driver playwright <tool> '<json>'\`.
+Look up a tool's arguments with \`${b} computer describe --driver playwright <tool>\`.
 
 1. \`browser_navigate\` with \`{"url": "..."}\` opens your own tab, in a tab
-   group named after you, and loads the page. Your first call may bring the
+   group named after you, and loads the page. Later navigations reuse that
+   tab; \`browser_tabs\` with \`{"action": "new"}\` opens another. Your first call may bring the
    browser forward for a moment, so it waits for a quiet keyboard and mouse.
    Later calls stay in the background and leave the desktop free.
 2. \`browser_snapshot\` reads the page as an accessibility tree with refs
-   such as \`e12\`. Act on a ref with \`browser_click\`, \`browser_type\` or
+   such as \`e12\`. A page still showing a loading state needs
+   \`browser_wait_for\` (\`{"text": "..."}\` or \`{"time": 2}\`) and a fresh snapshot. Act on a ref with \`browser_click\`, \`browser_type\` or
    \`browser_fill_form\` (\`{"target": "e12", "element": "what it is", ...}\`).
    After typing, snapshot again before you click; \`call\` refuses the click
-   until you do. Use \`browser_evaluate\` only to read; a function that sets
+   until you do. The snapshot also lists elements the page hides at the
+   tab's width, and a click on one times out after 5 seconds. Your tab can
+   be narrow (about 800 pixels); \`browser_resize\` with \`{"width": 1400,
+   "height": 900}\` widens your tab's page without moving the person's
+   window. Use \`browser_evaluate\` only to read; a function that sets
    values, clicks or submits is refused, and so is \`browser_run_code_unsafe\`.
 3. Never type into a password, code or card field; \`call\` checks the field
    first and refuses (exit 4). Tell the person, or use the sign-in route below.
 4. \`${b} computer done\` closes your tabs, which removes your tab group, and
-   ends your session. Chrome shows "started debugging this browser" while any
+   ends your session. Subagents share their parent's name, so they share its
+   tab group, and one subagent's \`done\` closes the whole group: let one
+   agent of a group do the browser work at a time. Chrome shows "started debugging this browser" while any
    agent's tab is open; it clears when the last one closes.
 
 **The cua route** is the fallback when the Playwright driver is not set up:
