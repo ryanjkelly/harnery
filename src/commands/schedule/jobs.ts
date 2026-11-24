@@ -194,6 +194,7 @@ function jobSummary(job: ScheduleJob): Record<string, unknown> {
   return {
     id: job.id,
     title: job.title,
+    ...(job.description ? { description: job.description } : {}),
     host: job.host,
     trigger: job.trigger,
     enabled: isScheduleJobEnabled(job),
@@ -223,6 +224,7 @@ function jobSummary(job: ScheduleJob): Record<string, unknown> {
 
 interface AddOptions {
   title?: string;
+  description?: string;
   once?: string;
   every?: string;
   cron?: string;
@@ -320,6 +322,7 @@ function parseNumber(raw: string | undefined, flag: string): number | undefined 
 
 const JOB_FIELD_OPTIONS: (keyof AddOptions)[] = [
   "title",
+  "description",
   "once",
   "every",
   "cron",
@@ -409,6 +412,7 @@ function jobFromOptions(ctx: Ctx, id: string, opts: AddOptions): unknown {
   return {
     id,
     title: opts.title ?? id,
+    ...(opts.description ? { description: opts.description } : {}),
     host: opts.host ?? machineOf(ctx),
     trigger,
     timeout_minutes:
@@ -1019,6 +1023,10 @@ export function registerScheduleJobsCommands(
       "Add a job to the tracked job file (.harnery/schedules.jsonc); it runs only after `enroll`",
     )
     .option("--title <text>", "a human title (default: the id)")
+    .option(
+      "--description <text>",
+      "what the job does, in a sentence or two, for the schedule list",
+    )
     .option("--once <iso>", "trigger: run once at this ISO instant (with Z or an offset)")
     .option(
       "--every <minutes>",

@@ -107,6 +107,12 @@ export interface ScheduleRecord {
   id: string;
   /** The source's name for the schedule; never a prompt. */
   title: string;
+  /**
+   * What the schedule does, in the source's own words (a systemd unit's
+   * Description=, a Harnery job's description). Absent when the source does
+   * not say. Never a prompt or command text.
+   */
+  description?: string;
   trigger: ScheduleTrigger;
   runs_on: ScheduleRunsOn;
   /** As the source reports it; null when the source does not say. */
@@ -495,6 +501,7 @@ export function validateScheduleRecord(value: unknown): ScheduleValidation<Sched
       "account",
       "id",
       "title",
+      "description",
       "trigger",
       "runs_on",
       "enabled",
@@ -508,6 +515,7 @@ export function validateScheduleRecord(value: unknown): ScheduleValidation<Sched
   c.string(r.account, "record.account");
   c.string(r.id, "record.id");
   if (typeof r.title !== "string") c.fail("record.title", "must be a string");
+  c.string(r.description, "record.description", { optional: true });
   checkTrigger(c, r.trigger, "record.trigger");
   const runsOn = c.object(r.runs_on, "record.runs_on");
   if (runsOn) {

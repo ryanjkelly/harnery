@@ -27,6 +27,7 @@ const SHOW_BATCH = 40;
 
 const SHOW_PROPERTIES = [
   "Id",
+  "Description",
   "TimersCalendar",
   "TimersMonotonic",
   "UnitFileState",
@@ -354,6 +355,19 @@ async function listTimers(
   };
 }
 
+/**
+ * A unit's Description=, or undefined when it has none. systemd falls back to
+ * the unit's own name when Description= is unset, which says nothing new.
+ */
+export function unitDescription(
+  props: UnitProps | undefined,
+  unit: string | null | undefined,
+): string | undefined {
+  const text = first(props, "Description")?.trim();
+  if (!text || text === unit) return undefined;
+  return text;
+}
+
 async function readSystemd(ctx: ScheduleReadContext): Promise<ToolOutcome> {
   const listed = await listTimers(ctx);
   if (listed.kind !== "rows") return listed;
@@ -372,11 +386,13 @@ async function readSystemd(ctx: ScheduleReadContext): Promise<ToolOutcome> {
   const records: ScheduleRecord[] = listed.rows.map((row) => {
     const timer = props.get(row.unit);
     const service = row.activates ? props.get(row.activates) : undefined;
+    const description = unitDescription(service, row.activates) ?? unitDescription(timer, row.unit);
     return {
       source: SOURCE,
       account: ctx.machine,
       id: `systemd-user:${row.unit}`,
       title: row.unit,
+      ...(description ? { description } : {}),
       trigger: timerTrigger(timer),
       runs_on: { host: ctx.machine },
       enabled: timerEnabled(timer),

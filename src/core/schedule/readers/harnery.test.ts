@@ -131,6 +131,13 @@ describe("harneryScheduleReader", () => {
     expect(JSON.stringify(result)).not.toContain("SECRET-PROMPT-TEXT");
   });
 
+  test("a job's description is carried onto its record", async () => {
+    writeJobs([job({ description: "Checks the nightly backups." })]);
+    const result = await harneryScheduleReader.read(ctx());
+    expect(validateScheduleReadResult(result).ok).toBe(true);
+    expect(result.records[0]?.description).toBe("Checks the nightly backups.");
+  });
+
   test("an unenrolled job is listed as not enabled with no next run", async () => {
     writeJobs([job()]);
     const result = await harneryScheduleReader.read(ctx());

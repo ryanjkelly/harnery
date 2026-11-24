@@ -115,6 +115,7 @@ function jobRecord(ctx: ScheduleReadContext, job: ScheduleJob): ScheduleRecord {
     account: ctx.machine,
     id: job.id,
     title: job.title,
+    ...(job.description ? { description: job.description } : {}),
     trigger: harneryScheduleTrigger(job.trigger, resolved.zone),
     runs_on: { host: job.host },
     enabled,

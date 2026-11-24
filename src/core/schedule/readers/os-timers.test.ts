@@ -107,6 +107,7 @@ const SHOW_UNITS = [
 const SHOW_OUTPUT = [
   [
     "Id=example-sync.timer",
+    "Description=Run example-sync every 5 minutes",
     "TimersMonotonic={ OnUnitActiveUSec=5min ; next_elapse=1w 4d 4h 49min 32.480440s }",
     "TimersMonotonic={ OnStartupUSec=1min 30s ; next_elapse=1min 52.808229s }",
     "UnitFileState=enabled",
@@ -115,6 +116,7 @@ const SHOW_OUTPUT = [
   ].join("\n"),
   [
     "Id=example-sync.service",
+    "Description=Sync the example folder to the backup drive",
     "UnitFileState=static",
     "ActiveState=inactive",
     "Result=success",
@@ -122,6 +124,7 @@ const SHOW_OUTPUT = [
   ].join("\n"),
   [
     "Id=example-report.timer",
+    "Description=Build the morning report",
     "TimersCalendar={ OnCalendar=*-*-* 06:00:00 ; next_elapse=Mon 2026-11-23 06:00:00 UTC }",
     "UnitFileState=enabled",
     "ActiveState=active",
@@ -129,6 +132,7 @@ const SHOW_OUTPUT = [
   ].join("\n"),
   [
     "Id=example-report.service",
+    "Description=example-report.service",
     "UnitFileState=static",
     "ActiveState=inactive",
     "Result=success",
@@ -180,6 +184,7 @@ describe("osTimersScheduleReader: systemd", () => {
       account: MACHINE,
       id: "systemd-user:example-sync.timer",
       title: "example-sync.timer",
+      description: "Sync the example folder to the backup drive",
       trigger: {
         kind: "interval",
         everyMs: 300_000,
@@ -202,6 +207,8 @@ describe("osTimersScheduleReader: systemd", () => {
       raw: "OnCalendar=*-*-* 06:00:00",
     });
     expect(report?.last_run).toBeNull();
+    // The service's Description= is only its name, so the timer's is used.
+    expect(report?.description).toBe("Build the morning report");
     expect(report?.next_run_at).toBe("2026-11-23T06:00:00.000Z");
   });
 
@@ -209,6 +216,7 @@ describe("osTimersScheduleReader: systemd", () => {
     const result = await read(happyResponses());
     const backup = result.records.find((r) => r.id === "systemd-user:example-backup.timer");
     expect(backup?.enabled).toBe(false);
+    expect(backup && "description" in backup).toBe(false);
     expect(backup?.next_run_at).toBeNull();
     expect(backup?.last_run).toEqual({ at: "2026-11-21T03:00:00.000Z", status: "failed" });
     expect(JSON.stringify(result)).not.toContain("SHOULD-NOT-LEAK");

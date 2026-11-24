@@ -21,6 +21,7 @@
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { isWslKernel, isWslRuntime } from "../../../lib/op/detect.ts";
 import { openScheduleSqliteCopy } from "../sqlite.ts";
 import {
   isScheduleIsoInstant,
@@ -84,12 +85,6 @@ function hasStore(home: string): boolean {
   return existsSync(join(home, "sqlite", "codex.db")) || isDir(join(home, "automations"));
 }
 
-function isWsl(ctx: Pick<ScheduleReadContext, "env" | "platform">): boolean {
-  return (
-    ctx.platform === "linux" && (Boolean(ctx.env.WSL_DISTRO_NAME) || Boolean(ctx.env.WSL_INTEROP))
-  );
-}
-
 /**
  * Codex home folders found on the Windows side under `usersDir`, in name
  * order, skipping the shared profiles.
@@ -119,6 +114,7 @@ export function codexAppWindowsHomes(usersDir: string): string[] {
 export function codexAppHome(
   ctx: Pick<ScheduleReadContext, "env" | "homeDir" | "platform" | "storePaths">,
   windowsUsersDir: string = WSL_WINDOWS_USERS_DIR,
+  wslKernel: () => boolean = isWslKernel,
 ): string | null {
   const override = ctx.storePaths?.["codex-app"];
   if (override !== undefined) {
@@ -128,7 +124,11 @@ export function codexAppHome(
   if (fromEnv !== undefined && fromEnv.length > 0) return fromEnv;
   const local = join(ctx.homeDir, ".codex");
   if (hasStore(local)) return local;
-  if (isWsl(ctx)) return codexAppWindowsHomes(windowsUsersDir)[0] ?? null;
+  // A process started by systemd, such as the dashboard service, has no WSL_*
+  // variables, so the kernel release decides as well.
+  if (isWslRuntime(ctx.env, ctx.platform, wslKernel)) {
+    return codexAppWindowsHomes(windowsUsersDir)[0] ?? null;
+  }
   return null;
 }
 

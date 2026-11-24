@@ -326,7 +326,8 @@ describe("codexAppScheduleReader", () => {
   });
 
   test("a missing store is unsupported, not an empty current list", async () => {
-    const result = await codexAppScheduleReader.read(ctx());
+    // Not Linux, so a WSL test machine's real Windows-side store is never found.
+    const result = await codexAppScheduleReader.read(ctx({ platform: "darwin" }));
     expect(result.records).toEqual([]);
     expect(result.coverage.state).toBe("unsupported");
     expect(result.coverage.detail).toContain("not found");
@@ -423,9 +424,10 @@ describe("codexAppScheduleReader", () => {
 describe("codexAppHome", () => {
   test("prefers the override, then CODEX_HOME, then the home folder", () => {
     const local = join(home, ".codex");
-    expect(codexAppHome(ctx(), join(root, "none"))).toBeNull();
+    const notWsl = () => false;
+    expect(codexAppHome(ctx(), join(root, "none"), notWsl)).toBeNull();
     mkdirSync(join(local, "automations"), { recursive: true });
-    expect(codexAppHome(ctx(), join(root, "none"))).toBe(local);
+    expect(codexAppHome(ctx(), join(root, "none"), notWsl)).toBe(local);
     expect(codexAppHome(ctx({ env: { CODEX_HOME: "/x/codex" } }))).toBe("/x/codex");
     expect(codexAppHome(ctx({ storePaths: { "codex-app": "/y/home" } }))).toBe("/y/home");
     expect(codexAppHome(ctx({ storePaths: { "codex-app": "/z/home/sqlite/codex.db" } }))).toBe(
@@ -442,11 +444,13 @@ describe("codexAppHome", () => {
     expect(codexAppHome(ctx({ env: { WSL_DISTRO_NAME: "distro" } }), users)).toBe(
       join(users, "someone", ".codex"),
     );
+    // A WSL kernel without WSL_* variables (a systemd service) still searches it.
+    expect(codexAppHome(ctx(), users, () => true)).toBe(join(users, "someone", ".codex"));
     // Not WSL: the Windows side is never searched.
-    expect(codexAppHome(ctx(), users)).toBeNull();
-    expect(codexAppHome(ctx({ platform: "darwin", env: { WSL_DISTRO_NAME: "d" } }), users)).toBe(
-      null,
-    );
+    expect(codexAppHome(ctx(), users, () => false)).toBeNull();
+    expect(
+      codexAppHome(ctx({ platform: "darwin", env: { WSL_DISTRO_NAME: "d" } }), users, () => true),
+    ).toBe(null);
   });
 });
 

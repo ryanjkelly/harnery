@@ -98,6 +98,8 @@ export interface ScheduleJob {
   /** Kebab-case, 1 to 64 characters, unique in the file. */
   id: string;
   title: string;
+  /** One or two plain sentences on what the job does and why, for people reading the list. */
+  description?: string;
   /** The machine label (`resolveMachineLabel()`) that may run the job. */
   host: string;
   trigger: ScheduleJobTrigger;
@@ -328,6 +330,7 @@ function checkAgent(c: ScheduleFieldChecker, value: unknown, path: string): void
 const JOB_KEYS = [
   "id",
   "title",
+  "description",
   "host",
   "trigger",
   "timeout_minutes",
@@ -344,6 +347,7 @@ function checkJob(c: ScheduleFieldChecker, value: unknown, path: string): void {
   c.onlyKeys(j, JOB_KEYS, path);
   if (!isScheduleKebabId(j.id)) c.fail(`${path}.id`, "must be kebab-case, 1 to 64 characters");
   c.string(j.title, `${path}.title`);
+  c.string(j.description, `${path}.description`, { optional: true });
   c.string(j.host, `${path}.host`);
   checkJobTrigger(c, j.trigger, `${path}.trigger`);
   c.integer(j.timeout_minutes, `${path}.timeout_minutes`, 1, SCHEDULE_TIMEOUT_MINUTES_MAX);
@@ -418,7 +422,7 @@ export interface ScheduleJobResolution {
   zone: string;
 }
 
-/** The canonical execution fields of a job. Title, owner, enabled and comments are excluded. */
+/** The canonical execution fields of a job. Title, description, owner, enabled and comments are excluded. */
 export interface ScheduleJobExecutionFields {
   gather: {
     name: string;
