@@ -6,6 +6,7 @@ import { backupSetupCheck, doctorReport } from "../../src/commands/doctor.ts";
 import { inspectBackupSetup } from "../../src/core/backup/setup.ts";
 import { backupConfig } from "../../src/core/config.ts";
 import { removeDir } from "../helpers/remove-dir.ts";
+import { restoreProcessEnv } from "../helpers/restore-env.ts";
 
 let root: string;
 let savedEnv: NodeJS.ProcessEnv;
@@ -23,7 +24,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  process.env = savedEnv;
+  restoreProcessEnv(savedEnv);
   removeDir(root);
 });
 

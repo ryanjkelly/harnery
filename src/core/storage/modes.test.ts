@@ -3,6 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, statSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { removeDir } from "../../../tests/helpers/remove-dir.ts";
+import { restoreProcessEnv } from "../../../tests/helpers/restore-env.ts";
 import { writePrivateJsonAtomic } from "./atomic-json.ts";
 import {
   resetStorageSharing,
@@ -29,7 +30,7 @@ beforeEach(() => {
 afterEach(() => {
   process.chdir(cwd);
   process.umask(umask);
-  process.env = { ...env };
+  restoreProcessEnv(env);
   resetStorageSharing();
   removeDir(dir);
 });

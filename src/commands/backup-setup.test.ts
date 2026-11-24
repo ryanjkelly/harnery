@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Command } from "commander";
 import { removeDir } from "../../tests/helpers/remove-dir.ts";
+import { restoreProcessEnv } from "../../tests/helpers/restore-env.ts";
 import type { EmitContext } from "../commander.ts";
 import { inspectBackupSetup } from "../core/backup/setup.ts";
 import { backupConfig } from "../core/config.ts";
@@ -34,7 +35,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  process.env = savedEnv;
+  restoreProcessEnv(savedEnv);
   removeDir(root);
 });
 
