@@ -471,7 +471,7 @@ harn computer done
   records the port and process in `tools/playwright-mcp/daemon.json`.
 - **Sessions.** Each agent gets its own MCP session, kept between calls by its
   agent name. The extension puts that agent's tabs in a tab group named
-  "Playwright · <agent>" and refuses it every other tab. A session the server
+  `Playwright · <agent>` and refuses it every other tab. A session the server
   forgot is reopened once, automatically.
 - **Lease.** A session's first call opens the extension's connect page, which
   Chrome may show in front, so that call waits for a quiet keyboard and mouse
