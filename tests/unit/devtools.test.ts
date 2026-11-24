@@ -676,7 +676,7 @@ describe("enrichFromApi — cursor usage (session token)", () => {
     }) as unknown as typeof fetch;
 
     const report = readDevtools({ home, now: NOW, only: ["cursor"] });
-    await enrichFromApi(report, { cursorKey: null, home });
+    await enrichFromApi(report, { cursorKey: null, home, history: false });
     const cu = byTool(report.tools, "cursor");
     expect(sentAuth).toBe(true);
     // The request mirrors Cursor's Electron client, embedding the LIVE version.
@@ -757,7 +757,7 @@ describe("enrichFromApi — claude-code usage (oauth token)", () => {
     let userAgent: string | undefined;
     let xApp: string | undefined;
     globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
-      if (String(url).endsWith("/api/oauth/usage")) {
+      if (String(url).includes("/api/oauth/usage")) {
         const h = (init?.headers ?? {}) as Record<string, string>;
         auth = h.Authorization;
         userAgent = h["User-Agent"];
@@ -792,7 +792,7 @@ describe("enrichFromApi — claude-code usage (oauth token)", () => {
     }) as unknown as typeof fetch;
 
     const report = readDevtools({ home, now: NOW, only: ["claude-code"] });
-    await enrichFromApi(report, { home });
+    await enrichFromApi(report, { home, history: false });
     const cc = byTool(report.tools, "claude-code");
     expect(auth).toBe(`Bearer ${token}`);
     // Client-identity headers mirror Claude Code's own, with the LIVE version

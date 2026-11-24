@@ -15,6 +15,8 @@ import {
   type AccountUsage,
   type CursorUsage,
   type DevtoolsReport,
+  type RecentRate,
+  type ResetGrant,
   readDevtoolsReport,
   type ToolStatus,
   type UsageSource,
@@ -138,18 +140,25 @@ interface Meter {
   /** Full length of the window, for pace. Null when unknown. */
   durationMs: number | null;
   slot: Slot;
+  /** Recent burn rate and trend points from the usage history, when recorded. */
+  recent?: RecentRate;
 }
 
 type PaceState = "under" | "on" | "over";
 
 interface Pace {
-  /** Percent that would be left right now at an even burn across the window. */
-  expectedLeft: number;
+  /** Percent that would be left right now at an even burn across the window, when its length is known. */
+  expectedLeft: number | null;
   state: PaceState;
   /** At the current burn rate, ms until the limit runs out, when that is before the reset. */
   runOutMs: number | null;
+  /** `recent`: the rate over the history lookback; `average`: the average since the window opened. */
+  basis: "recent" | "average";
+  /** The lookback behind a recent rate. */
+  lookbackMs: number | null;
 }
 
+const MINUTE = 60_000;
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 /** Points either side of an even burn that still count as "on pace". */
@@ -211,6 +220,7 @@ function accountMeters(a: AccountUsage): Meter[] {
       resetsAt: q.resetsAt,
       durationMs,
       slot,
+      recent: q.recent,
     });
   }
   if (a.usage) {
@@ -226,6 +236,7 @@ function accountMeters(a: AccountUsage): Meter[] {
         resetsAt: reset,
         durationMs,
         slot: 1,
+        recent: u.recent?.total,
       });
     if (u.firstPartyPercentUsed != null)
       out.push({
@@ -234,6 +245,7 @@ function accountMeters(a: AccountUsage): Meter[] {
         resetsAt: reset,
         durationMs,
         slot: nextExtra(),
+        recent: u.recent?.auto,
       });
     if (u.apiPercentUsed != null)
       out.push({
@@ -242,29 +254,130 @@ function accountMeters(a: AccountUsage): Meter[] {
         resetsAt: reset,
         durationMs,
         slot: nextExtra(),
+        recent: u.recent?.api,
       });
   }
   return out;
 }
 
+/** Percent an even burn would leave now, or null when the window length is unknown. */
+function evenLeft(m: Meter, remainingMs: number): number | null {
+  if (!m.durationMs || remainingMs > m.durationMs) return null;
+  return 100 * (remainingMs / m.durationMs);
+}
+
 /**
- * Pace: how what is left compares with an even burn across the window. Null
- * when the window length or reset is unknown, or in the first 3% of a window,
- * where one burst of work would read as wildly over pace.
+ * Pace. With a recent rate from the usage history, compare it with the rate
+ * that would last exactly until the reset (within 10% counts as on pace).
+ * Without one, compare what is left with an even burn across the window; that
+ * average is null when the window length or reset is unknown, or in the first
+ * 3% of a window, where one burst of work would read as wildly over pace.
  */
 function paceOf(m: Meter, now: number): Pace | null {
-  if (m.left == null || !m.resetsAt || !m.durationMs) return null;
+  if (m.left == null || !m.resetsAt) return null;
   const remainingMs = Date.parse(m.resetsAt) - now;
-  if (!Number.isFinite(remainingMs) || remainingMs <= 0 || remainingMs > m.durationMs) return null;
+  if (!Number.isFinite(remainingMs) || remainingMs <= 0) return null;
+  const expectedLeft = evenLeft(m, remainingMs);
+  const recentRate = m.recent?.ratePerHour;
+  if (recentRate != null && m.recent) {
+    const sustainable = m.left / (remainingMs / HOUR);
+    const state: PaceState =
+      recentRate <= 0 || recentRate < sustainable * 0.9
+        ? "under"
+        : recentRate > sustainable * 1.1
+          ? "over"
+          : "on";
+    const runOut = recentRate > 0 && m.left > 0 ? (m.left / recentRate) * HOUR : null;
+    return {
+      expectedLeft,
+      state,
+      runOutMs: runOut != null && runOut < remainingMs ? runOut : null,
+      basis: "recent",
+      lookbackMs: m.recent.lookbackMs,
+    };
+  }
+  if (expectedLeft == null || !m.durationMs) return null;
   const elapsed = 1 - remainingMs / m.durationMs;
   if (elapsed < 0.03) return null;
-  const expectedLeft = 100 * (1 - elapsed);
   const diff = m.left - expectedLeft;
   const state: PaceState = diff > PACE_TOLERANCE ? "under" : diff < -PACE_TOLERANCE ? "over" : "on";
   const used = 100 - m.left;
   const rate = used / (elapsed * m.durationMs);
-  const runOut = rate > 0 ? m.left / rate : null;
-  return { expectedLeft, state, runOutMs: runOut != null && runOut < remainingMs ? runOut : null };
+  const runOut = rate > 0 && m.left > 0 ? m.left / rate : null;
+  return {
+    expectedLeft,
+    state,
+    runOutMs: runOut != null && runOut < remainingMs ? runOut : null,
+    basis: "average",
+    lookbackMs: null,
+  };
+}
+
+/** "Based on your last 24 hours" / "Based on the average since this window started". */
+function paceBasis(p: Pace): string {
+  if (p.basis === "average" || p.lookbackMs == null) {
+    return "Based on the average since this window started.";
+  }
+  const ms = p.lookbackMs;
+  const span =
+    ms < 2 * HOUR
+      ? `${Math.round(ms / MINUTE)} minutes`
+      : ms < 2 * DAY
+        ? `${Math.round(ms / HOUR)} hours`
+        : `${Math.round(ms / DAY)} days`;
+  return `Based on your last ${span}.`;
+}
+
+/** The limit that decides how much room an account has, for the "use next" pick. */
+function limitingMeter(meters: Meter[]): Meter | null {
+  const known = meters.filter((m) => m.left != null);
+  if (!known.length) return null;
+  const isShort = (m: Meter) => m.durationMs != null && m.durationMs < DAY;
+  const min = (ms: Meter[]) => ms.reduce((a, b) => ((b.left ?? 101) < (a.left ?? 101) ? b : a));
+  const shortLow = known.filter((m) => isShort(m) && (m.left ?? 101) <= 10);
+  if (shortLow.length) return min(shortLow);
+  const long = known.filter((m) => !isShort(m));
+  return min(long.length ? long : known);
+}
+
+interface UseNextPick {
+  left: number;
+  /** "weekly", "monthly", "5-hour", … for the hint. */
+  kind: string;
+}
+
+/**
+ * Per tool with two or more signed-in accounts reporting usage, the account
+ * with the most room: the lowest left across its day-or-longer limits, unless
+ * a short limit is down to 10% or less. A tie goes to the later run-out.
+ */
+function pickNextAccounts(tools: ToolStatus[], now: number): Map<string, UseNextPick> {
+  const picks = new Map<string, UseNextPick>();
+  for (const t of tools) {
+    const scored = t.accounts
+      .filter((a) => a.loggedIn)
+      .map((a) => ({ a, m: limitingMeter(accountMeters(a)) }))
+      .filter((x): x is { a: AccountUsage; m: Meter } => x.m != null);
+    if (scored.length < 2) continue;
+    const runOut = (m: Meter) => paceOf(m, now)?.runOutMs ?? Number.POSITIVE_INFINITY;
+    const best = scored.reduce((a, b) => {
+      const la = a.m.left ?? 0;
+      const lb = b.m.left ?? 0;
+      if (lb !== la) return lb > la ? b : a;
+      return runOut(b.m) > runOut(a.m) ? b : a;
+    });
+    const left = best.m.left ?? 0;
+    if (left <= 0) continue;
+    const d = best.m.durationMs;
+    const kind =
+      d === 7 * DAY
+        ? "weekly"
+        : d != null && d >= 28 * DAY
+          ? "monthly"
+          : best.m.label.replace(/\s*\(.*\)/, "").toLowerCase();
+    picks.set(`${t.tool}:${best.a.id}`, { left, kind });
+  }
+  return picks;
 }
 
 const PACE_LABEL: Record<PaceState, { text: string; icon: string; tone: Tone; hint: string }> = {
@@ -294,6 +407,7 @@ const BOARD_GRID =
 function UsageBoard({ tools, now }: { tools: ToolStatus[]; now: number }) {
   const rows = tools.flatMap((t) => t.accounts.map((a) => ({ tool: t.tool, account: a })));
   if (!rows.length) return null;
+  const picks = pickNextAccounts(tools, now);
   return (
     <Section
       title="Usage left"
@@ -313,7 +427,13 @@ function UsageBoard({ tools, now }: { tools: ToolStatus[]; now: number }) {
           <div className="col-span-2">Other limits</div>
         </div>
         {rows.map(({ tool, account }) => (
-          <UsageRow key={`${tool}:${account.id}`} tool={tool} account={account} now={now} />
+          <UsageRow
+            key={`${tool}:${account.id}`}
+            tool={tool}
+            account={account}
+            now={now}
+            pick={picks.get(`${tool}:${account.id}`) ?? null}
+          />
         ))}
       </div>
     </Section>
@@ -324,10 +444,12 @@ function UsageRow({
   tool,
   account: a,
   now,
+  pick,
 }: {
   tool: ToolStatus["tool"];
   account: AccountUsage;
   now: number;
+  pick: UseNextPick | null;
 }) {
   const meters = accountMeters(a);
   const known = meters.filter((m) => m.left != null);
@@ -352,11 +474,22 @@ function UsageRow({
       <div className="col-span-2 flex min-w-0 items-center gap-3 md:col-span-1">
         <BrandLogo brand={tool} className="size-6 shrink-0" />
         <div className="min-w-0">
-          <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-            {TOOL_LABELS[tool]}
-            {a.plan ? ` · ${titleize(a.plan)}` : ""}
+          <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            <span className="truncate">
+              {TOOL_LABELS[tool]}
+              {a.plan ? ` · ${titleize(a.plan)}` : ""}
+            </span>
+            {pick ? (
+              <Badge
+                tone="act"
+                title={`Most room of your ${TOOL_LABELS[tool]} accounts: ${pick.left}% left on its tightest ${pick.kind} limit.`}
+              >
+                use next
+              </Badge>
+            ) : null}
           </div>
           <div className="truncate font-medium">{a.email ?? a.id.replace(/^[^:]+:/, "")}</div>
+          <AccountChips tool={tool} account={a} />
           {a.stale || (source && a.source !== "direct") ? (
             <div className="mt-1">
               <Badge tone={a.stale ? "warn" : "accent"} title={source?.hint}>
@@ -376,7 +509,11 @@ function UsageRow({
             <div className="mt-1 text-xs text-muted-foreground">
               left · {tightest.label.replace(/\s*\(.*\)/, "").toLowerCase()}
             </div>
-            {tightPace ? <PaceTag pace={tightPace} className="mt-0.5" stacked /> : null}
+            {tightPace ? (
+              <Tooltip content={paceBasis(tightPace)} side="top" triggerClassName="flex">
+                <PaceTag pace={tightPace} className="mt-0.5 cursor-help" stacked />
+              </Tooltip>
+            ) : null}
           </div>
         ) : (
           <div className={cn("text-sm font-medium", TONE[signedOut ? "danger" : "neutral"].text)}>
@@ -410,6 +547,9 @@ function PaceTag({
   return (
     <div className={cn("text-[11px] font-medium", TONE[p.tone].text, className)}>
       {p.icon} {p.text}
+      {pace.basis === "recent" ? (
+        <span className="font-normal text-muted-foreground"> (recent)</span>
+      ) : null}
       {pace.runOutMs != null ? (
         <span className={cn(TONE.danger.text, stacked && "block")}>
           {stacked ? "" : " · "}out in ~{humanizeDuration(pace.runOutMs)}
@@ -431,10 +571,13 @@ function LeftMeter({ meter: m, now }: { meter: Meter; now: number }) {
           </div>
           {pace ? (
             <>
-              <div className="opacity-80">
-                An even pace would leave {Math.round(pace.expectedLeft)}% now (the thin mark).
-              </div>
+              {pace.expectedLeft != null ? (
+                <div className="opacity-80">
+                  An even pace would leave {Math.round(pace.expectedLeft)}% now (the thin mark).
+                </div>
+              ) : null}
               <div className="opacity-80">{PACE_LABEL[pace.state].hint}</div>
+              <div className="opacity-80">{paceBasis(pace)}</div>
               {pace.runOutMs != null ? (
                 <div className="opacity-80">
                   At this rate it runs out in about {humanizeDuration(pace.runOutMs)}, before it
@@ -453,10 +596,13 @@ function LeftMeter({ meter: m, now }: { meter: Meter; now: number }) {
       triggerClassName="block w-full"
     >
       <div className="w-full cursor-help" style={hueStyle(m.left)}>
-        <div className="flex items-baseline justify-between gap-2 text-xs">
-          <span className="text-muted-foreground">{m.label}</span>
-          <span className={cn("font-semibold tabular-nums", m.left != null ? HUE_TEXT : "")}>
-            {m.left != null ? `${m.left}%` : "?"}
+        <div className="flex items-center justify-between gap-2 text-xs">
+          <span className="min-w-0 truncate text-muted-foreground">{m.label}</span>
+          <span className="flex shrink-0 items-center gap-1.5">
+            {m.recent ? <Sparkline points={m.recent.points} /> : null}
+            <span className={cn("font-semibold tabular-nums", m.left != null ? HUE_TEXT : "")}>
+              {m.left != null ? `${m.left}%` : "?"}
+            </span>
           </span>
         </div>
         <div className="relative mt-1.5 h-2 w-full rounded-full bg-muted">
@@ -464,7 +610,7 @@ function LeftMeter({ meter: m, now }: { meter: Meter; now: number }) {
             className={cn("h-full rounded-full", m.left != null ? HUE_BG : TONE.neutral.dot)}
             style={{ width: `${m.left ?? 0}%` }}
           />
-          {pace ? (
+          {pace?.expectedLeft != null ? (
             <div
               className="absolute -top-1 h-4 w-0.5 -translate-x-1/2 rounded-full bg-foreground/80"
               style={{ left: `${pace.expectedLeft}%` }}
@@ -483,6 +629,151 @@ function LeftMeter({ meter: m, now }: { meter: Meter; now: number }) {
         </div>
       </div>
     </Tooltip>
+  );
+}
+
+/** Remaining-percent trend over the recent lookback: a tiny line, no fill. Needs 3+ points. */
+function Sparkline({ points }: { points: Array<[number, number]> }) {
+  if (points.length < 3) return null;
+  const W = 56;
+  const H = 14;
+  const P = 1.5;
+  const t0 = points[0]?.[0] ?? 0;
+  const span = (points[points.length - 1]?.[0] ?? t0) - t0 || 1;
+  const vals = points.map(([, used]) => 100 - used);
+  let lo = Math.min(...vals);
+  let hi = Math.max(...vals);
+  // A floor on the vertical range, so a one-point wobble stays a near-flat line.
+  if (hi - lo < 4) {
+    const mid = (hi + lo) / 2;
+    lo = mid - 2;
+    hi = mid + 2;
+  }
+  const d = points
+    .map(([t, used]) => {
+      const x = P + ((t - t0) / span) * (W - 2 * P);
+      const y = P + (1 - (100 - used - lo) / (hi - lo)) * (H - 2 * P);
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(" ");
+  return (
+    <svg
+      width={W}
+      height={H}
+      viewBox={`0 0 ${W} ${H}`}
+      className="shrink-0 text-muted-foreground"
+      aria-hidden="true"
+    >
+      <polyline
+        points={d}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={1.25}
+        strokeLinejoin="round"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+const CHIP =
+  "inline-flex cursor-help items-center gap-1 whitespace-nowrap rounded-full border px-1.5 py-px text-[11px] font-medium";
+
+/** What a reset kind does, for its hover hint. */
+const RESET_KIND_HINT: Record<ResetGrant["kind"], string> = {
+  full: "Clears the 5-hour and weekly limits.",
+  fable: "Refills the 5-hour limit and gives back what Fable used on the weekly limit.",
+};
+
+/** Available resets grouped by kind, soonest expiry first within each. */
+function groupResets(resets: ResetGrant[]) {
+  const kinds: ResetGrant["kind"][] = ["full", "fable"];
+  return kinds
+    .map((kind) => {
+      const grants = resets
+        .filter((g) => g.kind === kind && g.left > 0)
+        .sort((a, b) => (a.expiresAt ?? "9").localeCompare(b.expiresAt ?? "9"));
+      const expiries = new Set(grants.map((g) => g.expiresAt?.slice(0, 10) ?? null));
+      return {
+        kind,
+        grants,
+        count: grants.reduce((n, g) => n + g.left, 0),
+        soonest: grants[0]?.expiresAt ?? null,
+        severalDates: expiries.size > 1,
+      };
+    })
+    .filter((g) => g.count > 0);
+}
+
+/** Resets, credits and extra-usage spend under the account's email on the board. */
+function AccountChips({ tool, account: a }: { tool: ToolStatus["tool"]; account: AccountUsage }) {
+  const groups = groupResets(a.resets ?? []);
+  const credits =
+    a.credits?.hasCredits && (a.credits.unlimited || (a.credits.balance ?? 0) > 0)
+      ? a.credits
+      : null;
+  const spend = tool === "claude-code" && a.spend?.limitCents != null ? a.spend : null;
+  if (!groups.length && !credits && !spend) return null;
+  return (
+    <div className="mt-1 flex flex-wrap gap-1">
+      {groups.map((g) => (
+        <Tooltip
+          key={g.kind}
+          side="top"
+          content={
+            <div className="space-y-0.5">
+              {g.grants.map((r) => (
+                <div key={`${r.label}:${r.expiresAt ?? ""}`}>
+                  {r.left > 1 ? `${r.left}× ` : ""}
+                  {r.label}
+                  {r.expiresAt ? (
+                    <span className="opacity-80">
+                      {" · expires "}
+                      <FormattedDateTime iso={r.expiresAt} />
+                    </span>
+                  ) : null}
+                  {r.usableNow === false ? (
+                    <span className="opacity-80">
+                      {` · not usable yet${r.unavailableReason ? ` (${r.unavailableReason.replace(/_/g, " ")})` : ""}`}
+                    </span>
+                  ) : null}
+                </div>
+              ))}
+              <div className="opacity-80">{RESET_KIND_HINT[g.kind]}</div>
+            </div>
+          }
+        >
+          <span className={cn(CHIP, TONE.accent.pill)}>
+            {`↻ ${g.count} ${g.kind === "fable" ? "Fable" : "full"} reset${g.count === 1 ? "" : "s"}`}
+            {g.soonest ? (
+              <>
+                {g.severalDates ? " · next exp " : " · exp "}
+                <FormattedDateTime iso={g.soonest} template="MMM D" />
+              </>
+            ) : null}
+          </span>
+        </Tooltip>
+      ))}
+      {credits ? (
+        <Tooltip side="top" content="Codex credits available beyond the plan's windows.">
+          <span className={cn(CHIP, TONE.neutral.pill)}>
+            {credits.unlimited
+              ? "unlimited credits"
+              : `${fmtCompact(credits.balance ?? 0)} credits`}
+          </span>
+        </Tooltip>
+      ) : null}
+      {spend ? (
+        <Tooltip
+          side="top"
+          content="Extra usage spent this cycle, against your cap. Billed only after the plan's limits run out."
+        >
+          <span className={cn(CHIP, TONE.neutral.pill)}>
+            {`extra ${fmtUsd(spend.usedCents ?? 0)} / ${fmtUsd(spend.limitCents ?? 0)}`}
+          </span>
+        </Tooltip>
+      ) : null}
+    </div>
   );
 }
 
@@ -676,6 +967,33 @@ function AccountBlock({
           />
         ) : null}
       </dl>
+
+      {a.resets?.length ? (
+        <div className="mt-3 text-sm">
+          <div className="text-muted-foreground">Resets</div>
+          <ul className="mt-1 space-y-1 text-xs">
+            {a.resets.map((g) => (
+              <li
+                key={`${g.kind}:${g.label}:${g.expiresAt ?? ""}`}
+                className="flex items-baseline justify-between gap-3"
+              >
+                <Tooltip content={RESET_KIND_HINT[g.kind]} side="top">
+                  <span className="cursor-help truncate">{g.label}</span>
+                </Tooltip>
+                <span className="shrink-0 tabular-nums text-muted-foreground">
+                  {`${g.left} left`}
+                  {g.expiresAt ? (
+                    <>
+                      {" · exp "}
+                      <FormattedDateTime iso={g.expiresAt} kind="date" />
+                    </>
+                  ) : null}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
 
       {a.quota?.length ? (
         <div className="mt-3 space-y-3">

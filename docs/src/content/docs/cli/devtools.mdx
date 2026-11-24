@@ -64,6 +64,26 @@ that answers. The account's `source` field names it.
 Every source that failed before the one that answered leaves a note on the
 account, such as `direct (claude-dir …): token expired, skipped`.
 
+### Resets and recent usage
+
+Each account also lists `resets[]`, the limit resets it can still apply: a
+`kind` (`full` clears the 5-hour and weekly windows; `fable` refills the 5-hour
+window and gives back that model's weekly use), the vendor's `label`, `left`,
+`total` and `expiresAt`. `null` means unknown and `[]` means none. Claude reads
+them in the same usage call (`oauth/usage?cedar_ember=1`). Codex reads
+`wham/rate-limit-reset-credits` after a successful usage read, through the same
+route; if that fails, the usage response's count stands in without dates.
+
+Live reads also append to a local history,
+`~/.cache/harnery/devtools/history.jsonl` (a new line per limit only when its
+value changed or ten minutes passed; pruned after 35 days). Each quota window,
+and each of Cursor's percentages (`usage.recent.total|api|auto`), then carries
+`recent`: up to 24 `[time, used]` points from the current window over a
+lookback (90 minutes for 5-hour, a day for weekly, three days for monthly) and
+`ratePerHour`, or null until the points span a fifth of the lookback. The Tools
+page uses it for pace and the trend line, and marks the account with the most
+room left as "use next".
+
 ### Configuring CLI Proxy
 
 The management API needs the server address and its management key. They are
@@ -183,7 +203,7 @@ Each `ToolStatus` carries `installed`, `loggedIn`, `sessions`, `lastActivity`,
 signed-in account. Each account carries `id`, `email`, `org`, `plan`,
 `rateLimitTier`, `loggedIn`, `authExpiresAt`, `stores[]` (`kind`, `path`,
 `loggedIn`, `authExpiresAt`), `source`, `sourceDetail`, `stale`, `asOf`,
-`quota[]`, `usage`, `spend`, `credits` and `notes[]`.
+`quota[]`, `usage`, `spend`, `credits`, `resets[]` and `notes[]`.
 
 ## Helper agents
 

@@ -297,6 +297,10 @@ function renderAccount(a: AccountUsage): string[] {
       `       credits      ${a.credits.unlimited ? "unlimited" : a.credits.balance.toLocaleString()}`,
     );
   }
+  for (const g of a.resets ?? []) {
+    const exp = g.expiresAt ? ` · expires ${fmtDate(g.expiresAt)}` : "";
+    out.push(`       reset        ${g.left}× ${g.label}${exp}`);
+  }
   for (const n of a.notes) out.push(`       · ${n}`);
   return out;
 }
@@ -304,7 +308,9 @@ function renderAccount(a: AccountUsage): string[] {
 function fmtQuota(q: QuotaWindow): string {
   const pct = q.usedPercent != null ? `${q.usedPercent}% used` : "usage unknown";
   const reset = q.resetsAt ? `resets ${fmtDate(q.resetsAt)}` : "";
-  return `quota (${q.window})   ${pct}${reset ? ` · ${reset}` : ""}`;
+  const rate = q.recent?.ratePerHour;
+  const recent = rate != null ? ` · ${rate > 0 ? "+" : ""}${rate}%/h recently` : "";
+  return `quota (${q.window})   ${pct}${reset ? ` · ${reset}` : ""}${recent}`;
 }
 
 function fmtBool(v: boolean | null): string {

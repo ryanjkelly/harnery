@@ -37,8 +37,16 @@ import {
   tokenUsable,
   withSqlite,
 } from "./devtools-accounts.ts";
+import {
+  type RecentRate,
+  recentFor,
+  recordSamples,
+  type UsageSample,
+  windowDurationMs,
+} from "./devtools-history.ts";
 
 export type { DevtoolName, StoreKind } from "./devtools-accounts.ts";
+export type { RecentRate } from "./devtools-history.ts";
 
 /**
  * `devtools`: read the state of the AI coding agents harnery supports —
@@ -62,6 +70,8 @@ export interface QuotaWindow {
   usedPercent: number | null;
   /** ISO timestamp when the window resets, or null if unknown. */
   resetsAt: string | null;
+  /** Recent burn rate from the local usage history, when any history exists. */
+  recent?: RecentRate;
 }
 
 export interface ApiEnrichment {
@@ -92,6 +102,8 @@ export interface CursorUsage {
   firstPartyPercentUsed: number | null;
   /** Included usage allowance in cents (e.g. 7000 = $70). */
   includedLimitCents: number | null;
+  /** Recent burn rate per percentage, from the local usage history. */
+  recent?: Partial<Record<"total" | "api" | "auto", RecentRate>>;
 }
 
 /**
@@ -112,6 +124,27 @@ export interface CodexCredits {
   hasCredits: boolean | null;
   unlimited: boolean | null;
   balance: number | null;
+}
+
+/**
+ * One kind of limit reset the account can still apply. `full` clears the
+ * account's 5-hour and weekly windows; `fable` refills the 5-hour window and
+ * gives back on the weekly limit what that model used.
+ */
+export interface ResetGrant {
+  kind: "full" | "fable";
+  /** The vendor's own label for the grant. */
+  label: string;
+  /** Resets still available from this grant. */
+  left: number;
+  /** Resets the grant gave in total. */
+  total: number;
+  /** ISO time the grant expires, else null (unknown). */
+  expiresAt: string | null;
+  /** The vendor says it can be applied right now, or null when not reported. */
+  usableNow: boolean | null;
+  /** Why it cannot be applied now, when the vendor says. */
+  unavailableReason: string | null;
 }
 
 /** Which source produced an account's usage figures (ADR 0273 §3). */
@@ -152,6 +185,8 @@ export interface AccountUsage {
   usage: CursorUsage | null;
   spend: SpendStatus | null;
   credits: CodexCredits | null;
+  /** Limit resets still available: null when unknown, [] when none. */
+  resets: ResetGrant[] | null;
   /** Caveats and per-source failures for this account. */
   notes: string[];
 }
@@ -355,6 +390,7 @@ interface UsageData {
   usage?: CursorUsage | null;
   plan?: string | null;
   credits?: CodexCredits | null;
+  resets?: ResetGrant[] | null;
   notes?: string[];
 }
 
@@ -420,6 +456,8 @@ interface CacheRead<T> {
   data: T | null;
   /** Fresh within the TTL or just fetched. */
   live: boolean;
+  /** This call reached the source (not served from the cache). */
+  fetched: boolean;
   /** When `data` was fetched (ms epoch), else null. */
   at: number | null;
   /** Why no live data, when not live. */
@@ -467,11 +505,12 @@ async function cachedUsage<T>(
   const stale = (reason: string): CacheRead<T> => ({
     data: entry?.data ?? null,
     live: false,
+    fetched: false,
     at: entry?.data != null ? entry.at : null,
     reason,
   });
   if (entry?.data != null && ttlMs > 0 && now - entry.at < ttlMs) {
-    return { data: entry.data, live: true, at: entry.at, reason: null };
+    return { data: entry.data, live: true, fetched: false, at: entry.at, reason: null };
   }
   if (entry?.cooldownUntil != null && now < entry.cooldownUntil) {
     return stale(`rate-limited; retry in ${Math.ceil((entry.cooldownUntil - now) / 1000)}s`);
@@ -489,7 +528,7 @@ async function cachedUsage<T>(
 
   if (outcome.kind === "ok") {
     if (ttlMs > 0) write({ at: now, data: outcome.data });
-    return { data: outcome.data, live: true, at: now, reason: null };
+    return { data: outcome.data, live: true, fetched: true, at: now, reason: null };
   }
   if (outcome.kind === "cooldown") {
     write({
@@ -520,7 +559,8 @@ const CLAUDE_LIMIT_LABELS: Record<string, string> = {
   weekly_scoped: "weekly",
 };
 
-const CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
+/** The usage call, asking for the account's reset grants in the same response. */
+const CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage?cedar_ember=1";
 
 /** Headers the `/usage` command sends (token substituted by the caller or the proxy). */
 function claudeUsageHeaders(bearer: string, version: string): Record<string, string> {
@@ -553,6 +593,7 @@ function parseClaudeUsage(json: unknown): UsageData | null {
       limit?: { amount_minor?: number; exponent?: number };
       enabled?: boolean;
     };
+    cedar_ember?: { grants?: unknown } | null;
   } | null;
   if (!raw || typeof raw !== "object") return null;
   if (!Array.isArray(raw.limits) && raw.five_hour == null && raw.seven_day == null) return null;
@@ -606,7 +647,29 @@ function parseClaudeUsage(json: unknown): UsageData | null {
       limitCents: minorToCents(sp.limit),
     };
   }
-  return { quota, spend };
+  const out: UsageData = { quota, spend };
+  if ("cedar_ember" in raw) out.resets = parseClaudeGrants(raw.cedar_ember);
+  return out;
+}
+
+/** Map the usage response's reset grants to the ones still available (null section → none). */
+function parseClaudeGrants(section: { grants?: unknown } | null | undefined): ResetGrant[] {
+  if (!section || !Array.isArray(section.grants)) return [];
+  const out: ResetGrant[] = [];
+  for (const g of section.grants as Array<Record<string, unknown>>) {
+    const left = numOr(g?.resets_left) ?? 0;
+    if (left <= 0) continue;
+    out.push({
+      kind: g.gives_back_weekly === true ? "fable" : "full",
+      label: strOr(g.label) ?? "Limit reset",
+      left,
+      total: numOr(g.resets_total) ?? left,
+      expiresAt: isoOrNull(strOr(g.ends_at) ?? undefined),
+      usableNow: typeof g.usable_now === "boolean" ? g.usable_now : null,
+      unavailableReason: strOr(g.unavailable_reason),
+    });
+  }
+  return out;
 }
 
 /** Convert an {amount_minor, exponent} money value to cents (exponent 2 = already cents). */
@@ -629,6 +692,8 @@ function isoOrNull(s: string | undefined): string | null {
 // ---------------------------------------------------------------------------
 
 const CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
+/** The account's free rate-limit reset credits (same auth as the usage call). */
+const CODEX_RESETS_URL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";
 
 function codexUsageHeaders(bearer: string, accountId: string | null): Record<string, string> {
   const h: Record<string, string> = {
@@ -648,6 +713,7 @@ function parseCodexUsage(json: unknown): UsageData | null {
     rate_limit?: { primary_window?: Win; secondary_window?: Win } | null;
     credits?: { has_credits?: boolean; unlimited?: boolean; balance?: string | number } | null;
     rate_limit_reached_type?: string | null;
+    rate_limit_reset_credits?: { available_count?: number } | null;
   } | null;
   if (!raw || typeof raw !== "object" || !("rate_limit" in raw)) return null;
   const win = (w: Win | undefined): QuotaWindow | null => {
@@ -664,8 +730,18 @@ function parseCodexUsage(json: unknown): UsageData | null {
     (q): q is QuotaWindow => q !== null,
   );
   const reached = strOr(raw.rate_limit_reached_type);
+  // A count only, used when the reset-credit list cannot be read.
+  const count = numOr(raw.rate_limit_reset_credits?.available_count);
   return {
     quota,
+    ...(count != null
+      ? {
+          resets:
+            count > 0
+              ? [{ ...CODEX_FULL_RESET, label: "Full reset", left: count, total: count }]
+              : [],
+        }
+      : {}),
     plan: strOr(raw.plan_type),
     credits: raw.credits
       ? {
@@ -676,6 +752,44 @@ function parseCodexUsage(json: unknown): UsageData | null {
       : null,
     notes: reached ? [`rate limit reached (${reached} window)`] : [],
   };
+}
+
+const CODEX_FULL_RESET: ResetGrant = {
+  kind: "full",
+  label: "Full reset",
+  left: 1,
+  total: 1,
+  expiresAt: null,
+  usableNow: null,
+  unavailableReason: null,
+};
+
+/** Parse the reset-credit list into the available full resets; null on a foreign shape. */
+function parseCodexResets(json: unknown): ResetGrant[] | null {
+  const raw = json as { credits?: unknown } | null;
+  if (!raw || typeof raw !== "object" || !Array.isArray(raw.credits)) return null;
+  return (raw.credits as Array<Record<string, unknown>>)
+    .filter((c) => c?.status === "available" && c.reset_type === "codex_rate_limits")
+    .map((c) => ({
+      ...CODEX_FULL_RESET,
+      label: strOr(c.title) ?? "Full reset",
+      expiresAt: isoOrNull(strOr(c.expires_at) ?? undefined),
+    }));
+}
+
+/**
+ * After a successful usage read, read the reset-credit list with the same
+ * request route. Its failure never fails the usage read: the usage response's
+ * count (no dates) stands in.
+ */
+async function withCodexResets(
+  usage: FetchOutcome<UsageData>,
+  fetchResets: () => Promise<FetchOutcome<unknown>>,
+): Promise<FetchOutcome<UsageData>> {
+  if (usage.kind !== "ok") return usage;
+  const r = await parsed(fetchResets(), parseCodexResets);
+  if (r.kind === "ok") usage.data.resets = r.data;
+  return usage;
 }
 
 /** Parse the `account/rateLimits/read` result of `codex app-server`. */
@@ -890,6 +1004,8 @@ export interface EnrichOpts {
   codexAppServer?: ((codexHome: string) => Promise<AppServerOutcome>) | null;
   /** CLI Proxy settings; undefined resolves them (env, file, app settings), null skips. */
   cliproxy?: CliproxyConfig[] | null;
+  /** Record live reads to the usage history and attach recent rates. Default true. */
+  history?: boolean;
 }
 
 interface ChainContext {
@@ -965,15 +1081,22 @@ export async function enrichFromApi(
     },
   };
 
+  const live = new Set<AccountUsage>();
   const jobs: Promise<void>[] = [];
   for (const t of report.tools) {
     if (!t.installed) continue;
     for (const acct of t.accounts) {
       const g = groups.get(acct.id);
-      if (g) jobs.push(resolveAccountUsage(t.tool, acct, g, ctx));
+      if (g)
+        jobs.push(
+          resolveAccountUsage(t.tool, acct, g, ctx).then((fetched) => {
+            if (fetched) live.add(acct);
+          }),
+        );
     }
   }
   await Promise.all(jobs);
+  if (opts.history !== false) applyHistory(report, live, home);
 
   for (const t of report.tools) {
     if (!t.installed) continue;
@@ -1015,19 +1138,101 @@ export async function enrichFromApi(
   return report;
 }
 
+/** The history keys and current values of an account's limits. */
+function limitReadings(a: AccountUsage): Array<{
+  window: string;
+  used: number | null;
+  resetsAt: string | null;
+  durationMs: number | null;
+}> {
+  const out: Array<{
+    window: string;
+    used: number | null;
+    resetsAt: string | null;
+    durationMs: number | null;
+  }> = [];
+  for (const q of a.quota ?? [])
+    out.push({
+      window: q.window,
+      used: q.usedPercent,
+      resetsAt: q.resetsAt,
+      durationMs: windowDurationMs(q.window),
+    });
+  const u = a.usage;
+  if (u) {
+    const span =
+      u.cycleStart && u.cycleEnd ? Date.parse(u.cycleEnd) - Date.parse(u.cycleStart) : NaN;
+    const durationMs = Number.isFinite(span) && span > 0 ? span : null;
+    const pcts: Array<[string, number | null]> = [
+      ["cursor:total", u.totalPercentUsed],
+      ["cursor:api", u.apiPercentUsed],
+      ["cursor:auto", u.firstPartyPercentUsed],
+    ];
+    for (const [window, used] of pcts) out.push({ window, used, resetsAt: u.cycleEnd, durationMs });
+  }
+  return out;
+}
+
+/**
+ * Record each live account's readings to the usage history, then attach the
+ * recent burn rate to every account's limits (stale accounts included: the
+ * history is still theirs).
+ */
+function applyHistory(report: DevtoolsReport, live: Set<AccountUsage>, home: string): void {
+  const now = Date.now();
+  const candidates: UsageSample[] = [];
+  for (const acct of live) {
+    const t = acct.asOf ? Date.parse(acct.asOf) : now;
+    for (const r of limitReadings(acct)) {
+      if (r.used == null) continue;
+      candidates.push({
+        t,
+        account: acct.id,
+        window: r.window,
+        used: r.used,
+        resetsAt: r.resetsAt,
+      });
+    }
+  }
+  const samples = recordSamples(home, candidates, now);
+  if (!samples.length) return;
+  for (const t of report.tools) {
+    for (const acct of t.accounts) {
+      const recentOf = (window: string, resetsAt: string | null, durationMs: number | null) =>
+        recentFor(samples, { account: acct.id, window }, { resetsAt, durationMs, now });
+      for (const q of acct.quota ?? []) {
+        const r = recentOf(q.window, q.resetsAt, windowDurationMs(q.window));
+        if (r) q.recent = r;
+      }
+      const u = acct.usage;
+      if (u) {
+        const readings = limitReadings({ ...acct, quota: null });
+        const recent: NonNullable<CursorUsage["recent"]> = {};
+        for (const r of readings) {
+          const rr = recentOf(r.window, r.resetsAt, r.durationMs);
+          if (rr) recent[r.window.slice("cursor:".length) as "total" | "api" | "auto"] = rr;
+        }
+        if (Object.keys(recent).length) u.recent = recent;
+      }
+    }
+  }
+}
+
 /** True when a path sits on the Windows side of a WSL machine. */
 function onWindowsMount(p: string): boolean {
   return /^\/mnt\/[a-z]\//.test(p);
 }
 
+/** Resolve one account's usage; true when a source was actually reached (a live read). */
 async function resolveAccountUsage(
   tool: DevtoolName,
   acct: AccountUsage,
   group: AccountGroup,
   ctx: ChainContext,
-): Promise<void> {
+): Promise<boolean> {
   const now = Date.now();
   const attempts: string[] = [];
+  let fetchedLive = false;
   let fallback: { data: UsageData; source: UsageSource; detail: string; at: number } | null = null;
 
   const tryOne = async (
@@ -1039,6 +1244,7 @@ async function resolveAccountUsage(
     const r = await cachedUsage(ctx.home, cacheName, ctx.ttl, fetcher);
     if (r.live && r.data) {
       applyUsage(acct, r.data, source, detail, r.at ?? now, false);
+      fetchedLive = r.fetched;
       return true;
     }
     if (r.data && r.at != null && (!fallback || r.at > fallback.at)) {
@@ -1047,8 +1253,9 @@ async function resolveAccountUsage(
     attempts.push(`${source} (${detail}): ${r.reason ?? "no data"}`);
     return false;
   };
-  const done = () => {
+  const done = (): boolean => {
     if (attempts.length) acct.notes.push(...attempts);
+    return fetchedLive;
   };
 
   // 1. Direct, with each stored token that has not expired.
@@ -1075,15 +1282,14 @@ async function resolveAccountUsage(
         ),
       );
     } else if (tool === "codex") {
-      ok = await tryOne("direct", label, `codex-usage-${fp}`, () =>
-        parsed(
-          httpJson(
-            ctx.fetchImpl,
-            CODEX_USAGE_URL,
-            { headers: codexUsageHeaders(token, group.identity.accountId) },
-            ctx.timeoutMs,
+      const init = { headers: codexUsageHeaders(token, group.identity.accountId) };
+      ok = await tryOne("direct", label, `codex-usage-${fp}`, async () =>
+        withCodexResets(
+          await parsed(
+            httpJson(ctx.fetchImpl, CODEX_USAGE_URL, init, ctx.timeoutMs),
+            parseCodexUsage,
           ),
-          parseCodexUsage,
+          () => httpJson(ctx.fetchImpl, CODEX_RESETS_URL, init, ctx.timeoutMs),
         ),
       );
     } else {
@@ -1174,15 +1380,18 @@ async function resolveAccountUsage(
               url: CODEX_USAGE_URL,
               header: codexUsageHeaders("$TOKEN$", entry.accountId ?? group.identity.accountId),
             };
+      const call = (r: typeof req) =>
+        viaCliproxy(listing, cfg, entry.authIndex, r, ctx.fetchImpl, ctx.timeoutMs);
       const ok = await tryOne(
         "cliproxy",
         listing.baseUrl,
         `cliproxy-${tool}-${entry.authIndex}`,
-        () =>
-          parsed(
-            viaCliproxy(listing, cfg, entry.authIndex, req, ctx.fetchImpl, ctx.timeoutMs),
-            tool === "claude-code" ? parseClaudeUsage : parseCodexUsage,
-          ),
+        async () => {
+          if (tool === "claude-code") return parsed(call(req), parseClaudeUsage);
+          return withCodexResets(await parsed(call(req), parseCodexUsage), () =>
+            call({ ...req, url: CODEX_RESETS_URL }),
+          );
+        },
       );
       if (ok) return done();
     }
@@ -1199,7 +1408,7 @@ async function resolveAccountUsage(
   if (fb && (snapAt == null || fb.at > snapAt)) {
     applyUsage(acct, fb.data, fb.source, fb.detail, fb.at, true);
   }
-  done();
+  return done();
 }
 
 function storeLabel(s: StoreCandidate): string {
@@ -1218,6 +1427,7 @@ function applyUsage(
   if (data.usage !== undefined) acct.usage = data.usage;
   if (data.spend !== undefined) acct.spend = data.spend;
   if (data.credits !== undefined) acct.credits = data.credits;
+  if (data.resets !== undefined) acct.resets = data.resets;
   if (data.plan) acct.plan = data.plan; // live plan wins over the stored one
   // Replace snapshot-derived throttle notes with the live source's.
   acct.notes = acct.notes.filter((n) => !n.startsWith("rate limit reached"));
@@ -1338,6 +1548,20 @@ export async function probeEndpoints(opts: ProbeOpts = {}): Promise<ProbeResult[
             )
           : noCred(tool, "direct", CODEX_USAGE_URL, null, "no unexpired Codex token found"),
       );
+      if (usable?.accessToken) {
+        out.push(
+          await probeOne(
+            tool,
+            "direct",
+            CODEX_RESETS_URL,
+            { headers: codexUsageHeaders(usable.accessToken, usable.identity.accountId) },
+            null,
+            timeoutMs,
+            fetchImpl,
+            (j) => parseCodexResets(j) != null,
+          ),
+        );
+      }
     } else {
       out.push(
         usable?.accessToken
@@ -1582,6 +1806,7 @@ function buildAccounts(status: ToolStatus, groups: AccountGroup[]): void {
       usage: null,
       spend: null,
       credits: null,
+      resets: null,
       notes,
     });
   }

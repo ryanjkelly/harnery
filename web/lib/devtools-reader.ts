@@ -11,10 +11,21 @@ import { spawn } from "node:child_process";
 import { coordRoot } from "./coord-reader";
 import { harnChildEnv, harnCommand } from "./harn-command";
 
+/** Recent burn rate of one limit, from the CLI's local usage history. */
+export interface RecentRate {
+  /** Percentage points used per hour recently, or null with too little history. */
+  ratePerHour: number | null;
+  lookbackMs: number;
+  sinceMs: number;
+  /** Up to 24 `[t, used]` points in the current window, oldest first. */
+  points: Array<[number, number]>;
+}
+
 export interface QuotaWindow {
   window: string;
   usedPercent: number | null;
   resetsAt: string | null;
+  recent?: RecentRate;
 }
 
 export interface ApiEnrichment {
@@ -31,6 +42,7 @@ export interface CursorUsage {
   apiPercentUsed: number | null;
   firstPartyPercentUsed: number | null;
   includedLimitCents: number | null;
+  recent?: Partial<Record<"total" | "api" | "auto", RecentRate>>;
 }
 
 export interface SpendStatus {
@@ -43,6 +55,18 @@ export interface CodexCredits {
   hasCredits: boolean | null;
   unlimited: boolean | null;
   balance: number | null;
+}
+
+/** A limit reset the account can still apply. */
+export interface ResetGrant {
+  /** `full` clears the 5-hour and weekly windows; `fable` refills the 5-hour window and gives back that model's weekly use. */
+  kind: "full" | "fable";
+  label: string;
+  left: number;
+  total: number;
+  expiresAt: string | null;
+  usableNow: boolean | null;
+  unavailableReason: string | null;
 }
 
 export type UsageSource = "direct" | "codex-app-server" | "cliproxy" | "snapshot";
@@ -78,6 +102,8 @@ export interface AccountUsage {
   usage: CursorUsage | null;
   spend: SpendStatus | null;
   credits: CodexCredits | null;
+  /** null when unknown, [] when none. */
+  resets: ResetGrant[] | null;
   notes: string[];
 }
 

@@ -142,3 +142,37 @@ management key only to the configured CLI Proxy server.
   better first choice.
 - CLI Proxy stores its management key hashed in `config.yaml`; the key itself
   must come from Harnery's setting or from another app that saved it.
+
+## Amendment 2026-11-23: resets, history and recent pace
+
+**Resets.** Each account gains `resets`: the limit resets it can still apply,
+each with a kind, the vendor's label, how many are left, and when the grant
+expires. `null` means unknown and `[]` means none. Claude Code's usage call
+asks for the account's reset grants in the same response, so it is still one
+call per account; grants with none left are dropped. Codex reads its reset
+credits from a second endpoint with the same authentication, only after the
+usage read succeeds, through whichever route answered (direct or CLI Proxy).
+Both answers share the usage cache entry, so the five-minute TTL and the 429
+cooldown cover them. A failed reset read never fails the usage read: the usage
+response's count stands in, without dates.
+
+**History.** Live reads append a sample (account, limit, percent used, reset
+time) to `~/.cache/harnery/devtools/history.jsonl`. A cache hit, a cooldown or
+a snapshot records nothing, and a limit gets a new line only when its value
+changed or ten minutes passed. Samples older than 35 days are pruned when the
+file is rewritten, about once a day or past 2 MB. The log is local and holds
+no token.
+
+**Recent pace.** Each limit gets `recent`: the samples in its current window
+over a lookback (90 minutes for a 5-hour window, a day for a weekly one, three
+days for a monthly or billing-cycle one, otherwise a quarter of the window),
+thinned to 24 points, and a rate in percentage points per hour once the points
+span a fifth of the lookback. A drop inside one window (a reset was applied)
+starts the series again. The dashboard judges pace from that rate against the
+rate that would last until the reset, and falls back to the average since the
+window opened when there is too little history. It also marks, per tool with
+two or more signed-in accounts, the account with the most room left.
+
+Rejected: a separate history service or database (a JSON-lines file beside the
+existing cache is enough for one machine), and recording cached reads (they
+would repeat old figures under new times and flatten the rate).

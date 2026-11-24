@@ -265,6 +265,9 @@ describe("source chain", () => {
       }
       if (c.url.endsWith("/v0/management/auth-files")) return { status: 200, body: listing };
       if (c.url.endsWith("/v0/management/api-call")) {
+        // The reset-credit list rides the same route after the usage read.
+        if (JSON.parse(c.body ?? "{}").url?.endsWith("/rate-limit-reset-credits"))
+          return { status: 200, body: { status_code: 200, body: JSON.stringify({ credits: [] }) } };
         order.push("cliproxy");
         return { status: 200, body: { status_code: 200, body: JSON.stringify(CODEX_OK) } };
       }
