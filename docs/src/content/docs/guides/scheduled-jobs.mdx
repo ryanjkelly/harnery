@@ -42,10 +42,22 @@ That source's coverage row then reads `disabled` and names the file that
 switched it off.
 
 :::note[What the list reads]
-The list holds schedule fields only: id, title, trigger, where it runs,
-whether it is enabled, and the next and last run. Prompts, inbox text and
-secrets are never read from another app's store, and crontab command text is
-never shown. Harnery never changes a schedule that belongs to another app.
+For another app's schedules, the list holds schedule fields only: id, title,
+trigger, where it runs, whether it is enabled, and the next and last run.
+Prompts, inbox text and secrets are never read from another app's store, and
+crontab command text is never shown. Harnery never changes a schedule that
+belongs to another app.
+
+Harnery's own jobs show everything needed to understand them, because they
+come from this project's committed job file: each gather command's arguments,
+the names (not values) of the environment variables it passes through, and the
+judge agent's adapter, model, effort and full prompt, or a plain statement
+that the job starts no agent. They also show the enrollment state on this
+machine, the owner, the timeout, the daily launch limit, and the newest run's
+result, duration, exit codes and report path. `harn schedule show <id>` prints
+the same, and the dashboard's Schedules page puts a one-line summary on each
+card with the full detail under **Details**
+([ADR 0280](/decisions/0280-harnery-jobs-show-what-they-run/)).
 :::
 
 ## 2. Add a job

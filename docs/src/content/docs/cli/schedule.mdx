@@ -94,6 +94,20 @@ text), where it runs, whether it is enabled, the next run time, the last run
 saw it happen, the agent session that created it. A crontab entry has no
 recorded outcome, so its last run is `unknown`.
 
+A `harnery` record also carries `job`, read from the project's own committed
+job file and this checkout's enrollment and run records
+([ADR 0280](/decisions/0280-harnery-jobs-show-what-they-run/)):
+
+| Field | Meaning |
+| --- | --- |
+| `commands` | Each gather command in run order: `name`, `argv` exactly as written, `env` (variable names only, never values) and `finding_exit_codes`. Empty for an agent-only job. |
+| `agent` | The judge's `adapter`, `model`, `effort` (null when left to the adapter) and full `prompt`; null when the job runs commands only. |
+| `enrollment` | `state` from the enrollment check (`enrolled`, `not-enrolled`, `changed`, `wrong-machine` or `wrong-checkout`), its `detail`, and `enrolled_at`. Only `enrolled` runs. |
+| `owner`, `timeout_minutes`, `max_launches_per_day`, `zone` | As the job file and project config set them. |
+| `latest_run` | The newest run: `result`, `kind`, start and finish times, `duration_ms`, each command's exit code and state, the agent's outcome, and `report_path` relative to the checkout (null when no report was written). Never the gather output or report text. |
+
+No other source sets `job`.
+
 ## `list`
 
 ```bash
@@ -122,13 +136,16 @@ harn schedule show <id | source:id> [--json]
 ```
 
 Prints one record in full, with the coverage of its source. For a `harnery`
-job it also prints the enrollment state on this machine and the path of the
-newest report. When the same id exists in two sources, name one with the
-`source:` prefix.
+job it also prints what the job runs (a one-line summary, then each command's
+arguments and the agent with its full prompt, or "none" for a commands-only
+job), the enrollment state on this machine in plain words, the owner, timeout,
+daily launch limit and time zone, and the newest run's result, duration, exit
+codes and report path. When the same id exists in two sources, name one with
+the `source:` prefix.
 
 | Option | Meaning |
 | --- | --- |
-| `--json` | Print `{ record, coverage }`, plus `harnery` with the enrollment state and latest report for a Harnery job. |
+| `--json` | Print `{ record, coverage }`. A Harnery job's detail is in `record.job`. |
 
 Exit codes: `0` when one record matches; `1` when none matches (the hint names
 any source that could not be read) or when more than one does.
@@ -569,7 +586,7 @@ run folder. Each ends as:
 | `adapter` | yes | The adapter id. The adapter must be able to run read-only; today that is `codex`. |
 | `model` | no | The model to ask for. |
 | `effort` | no | The reasoning effort to ask for. |
-| `prompt` | yes | What the agent should judge. No subcommand prints it; `enroll` shows its length and first line. |
+| `prompt` | yes | What the agent should judge. `schedule show` and the dashboard print it in full; `enroll` shows its length and first line. |
 
 The agent runs in the checkout, with a read-only filesystem and no network.
 Its prompt is the job's prompt, then fixed text from Harnery, then the gather

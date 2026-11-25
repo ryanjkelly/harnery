@@ -8,12 +8,17 @@ import { Tooltip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/cn";
 import {
   cleanTitle,
+  describeScheduleAgent,
+  describeScheduleEnrollment,
+  describeScheduleJobWork,
   fileViewerHref,
+  formatScheduleArgv,
   formatRunDuration,
   formatTrigger,
   LAST_RUN_LABELS,
   RUN_RESULT_LABELS,
   RUN_RESULT_TONES,
+  type ScheduleHarneryJob,
   type ScheduleHistory,
   type ScheduleRecord,
   type ScheduleState,
@@ -100,6 +105,8 @@ export function ScheduleCard({
         {record.description ? (
           <p className="mt-1 text-sm leading-snug text-muted-foreground">{record.description}</p>
         ) : null}
+
+        {record.job ? <JobSummary record={record} job={record.job} /> : null}
 
         <Timing record={record} inactive={inactive} />
 
@@ -269,10 +276,19 @@ function Details({ record, label }: { record: ScheduleRecord; label: string }) {
         {record.runs_on.project ? <Row term="Project">{mono(record.runs_on.project)}</Row> : null}
         {record.runs_on.thread ? <Row term="Thread">{mono(record.runs_on.thread)}</Row> : null}
         <Row term="Trigger">
+          <span className="block">
+            {t.text}
+            {t.at ? (
+              <>
+                {" on "}
+                <FormattedDateTime iso={t.at} />
+              </>
+            ) : null}
+          </span>
           {t.raw ? (
-            mono(t.raw)
+            <span className="block font-mono break-all text-muted-foreground">{t.raw}</span>
           ) : (
-            <span className="text-muted-foreground">Not given by the source</span>
+            <span className="block text-muted-foreground">No raw trigger text from the source</span>
           )}
         </Row>
         {record.created_by ? (
@@ -284,8 +300,154 @@ function Details({ record, label }: { record: ScheduleRecord; label: string }) {
             )}
           </Row>
         ) : null}
+        {record.job ? <JobRows record={record} job={record.job} /> : null}
       </dl>
+      {record.job ? <WhatItRuns job={record.job} /> : null}
     </details>
+  );
+}
+
+/** One line on what a Harnery job runs, and a warning when it will not run here. */
+function JobSummary({ record, job }: { record: ScheduleRecord; job: ScheduleHarneryJob }) {
+  const runsHere = record.runs_on.host === record.account && job.enrollment.state === "enrolled";
+  return (
+    <div className="mt-1 space-y-0.5 text-xs">
+      <p className="break-words">{describeScheduleJobWork(job)}</p>
+      {runsHere ? null : (
+        <p className={TONE.warn.text}>{describeScheduleEnrollment(record, job)}</p>
+      )}
+    </div>
+  );
+}
+
+/** Details rows for a Harnery job: enrollment, owner, limits and the newest run. */
+function JobRows({ record, job }: { record: ScheduleRecord; job: ScheduleHarneryJob }) {
+  const run = job.latest_run;
+  return (
+    <>
+      <Row term="Enrollment">
+        <span className="block">{describeScheduleEnrollment(record, job)}</span>
+        {job.enrollment.detail || job.enrollment.enrolled_at ? (
+          <span className="block text-muted-foreground">
+            {job.enrollment.detail ?? null}
+            {job.enrollment.detail && job.enrollment.enrolled_at ? " · " : null}
+            {job.enrollment.enrolled_at ? (
+              <>
+                {"enrolled "}
+                <FormattedDateTime iso={job.enrollment.enrolled_at} />
+              </>
+            ) : null}
+          </span>
+        ) : null}
+      </Row>
+      <Row term="Owner">
+        {job.owner ? (
+          <AgentChip name={job.owner} />
+        ) : (
+          <span className="text-muted-foreground">
+            None; nobody is pinged when a run needs attention
+          </span>
+        )}
+      </Row>
+      <Row term="Timeout">{`${job.timeout_minutes} min per run`}</Row>
+      <Row term="Daily launch limit">{`${job.max_launches_per_day} per day`}</Row>
+      <Row term="Time zone">{job.zone}</Row>
+      <Row term="Last run">
+        {run ? (
+          <>
+            <span className={cn("block", TONE[RUN_RESULT_TONES[run.result]].text)}>
+              {`${RUN_RESULT_LABELS[run.result]} · ${run.kind} run · ${formatRunDuration(run.duration_ms) || "0s"}`}
+            </span>
+            <span className="block text-muted-foreground">
+              {"Started "}
+              <FormattedDateTime iso={run.started_at} />
+              {" · finished "}
+              <FormattedDateTime iso={run.finished_at} />
+            </span>
+            {run.commands.length > 0 ? (
+              <span className="block font-mono break-all text-muted-foreground">
+                {run.commands
+                  .map((c) => `${c.name}: exit ${c.exit_code ?? "none"} (${c.state})`)
+                  .join(" · ")}
+              </span>
+            ) : null}
+            {run.agent ? (
+              <span className="block text-muted-foreground">
+                {`${run.agent.adapter} agent ${run.agent.ok ? "finished" : "failed"}, status ${run.agent.status_line}`}
+              </span>
+            ) : null}
+            {run.report_path ? (
+              <a
+                href={fileViewerHref(run.report_path)}
+                className="block font-mono break-all underline underline-offset-2 hover:text-foreground"
+              >
+                {run.report_path}
+              </a>
+            ) : (
+              <span className="block text-muted-foreground">No report written</span>
+            )}
+          </>
+        ) : (
+          <span className="text-muted-foreground">Has not run on this checkout</span>
+        )}
+      </Row>
+    </>
+  );
+}
+
+/** The commands a Harnery job runs, in order, and the agent that judges them. */
+function WhatItRuns({ job }: { job: ScheduleHarneryJob }) {
+  return (
+    <section className="mt-2.5 border-t pt-2 text-xs">
+      <h4 className="font-medium">What it runs</h4>
+      {job.commands.length > 0 ? (
+        <ol className="mt-1 space-y-1.5">
+          {job.commands.map((cmd, i) => (
+            <li key={cmd.name} className="min-w-0">
+              <span className="text-muted-foreground">{`${i + 1}. ${cmd.name}`}</span>
+              <code className="mt-0.5 block rounded bg-muted px-2 py-1 font-mono break-all">
+                {formatScheduleArgv(cmd.argv)}
+              </code>
+              {cmd.env.length > 0 || cmd.finding_exit_codes.length > 0 ? (
+                <span className="mt-0.5 block text-muted-foreground">
+                  {[
+                    cmd.env.length > 0 ? `Passes ${cmd.env.join(", ")} (names only)` : null,
+                    cmd.finding_exit_codes.length > 0
+                      ? `Exit ${cmd.finding_exit_codes.join(", ")} means it found something`
+                      : null,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+                </span>
+              ) : null}
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <p className="mt-1 text-muted-foreground">No commands; the agent starts directly.</p>
+      )}
+      {job.agent ? (
+        <div className="mt-2">
+          <p>{`Then a ${describeScheduleAgent(job.agent)} reads the output and judges it.`}</p>
+          <details className="group/prompt mt-1">
+            <summary className="inline-flex cursor-pointer list-none items-center gap-0.5 rounded text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+              <ChevronRight
+                aria-hidden
+                className="size-3.5 transition-transform group-open/prompt:rotate-90"
+              />
+              Agent prompt
+            </summary>
+            <pre className="mt-1 max-h-96 overflow-auto whitespace-pre-wrap break-words rounded bg-muted px-2 py-1.5 font-mono">
+              {job.agent.prompt}
+            </pre>
+          </details>
+        </div>
+      ) : (
+        <p className="mt-2 text-muted-foreground">
+          No AI agent: it runs these commands only and spends no model tokens.
+        </p>
+      )}
+    </section>
   );
 }
 

@@ -89,15 +89,96 @@ export interface ScheduleCreatedBy {
   observed_at: string;
 }
 
+/** One gather command of a Harnery job, exactly as the job file writes it. */
+export interface ScheduleHarneryCommand {
+  name: string;
+  /** The argument list from the job file, unchanged. */
+  argv: string[];
+  /** Names of the environment variables passed through; never their values. */
+  env: string[];
+  /** Exit codes that mean "ran and found something"; empty when none are listed. */
+  finding_exit_codes: number[];
+}
+
+/** The read-only judge agent of a Harnery job. */
+export interface ScheduleHarneryAgent {
+  adapter: string;
+  /** Null when the job file leaves the model to the adapter's default. */
+  model: string | null;
+  /** Null when the job file leaves the effort to the adapter's default. */
+  effort: string | null;
+  /** The full prompt from the job file. */
+  prompt: string;
+}
+
+/**
+ * The state `checkScheduleEnrollment` reports for this machine and checkout.
+ * Only `enrolled` runs; `changed` means the job's execution fields changed
+ * after enrollment and it stays stopped until enrolled again.
+ */
+export type ScheduleHarneryEnrollmentState =
+  | "enrolled"
+  | "not-enrolled"
+  | "changed"
+  | "wrong-machine"
+  | "wrong-checkout";
+
+export interface ScheduleHarneryEnrollment {
+  state: ScheduleHarneryEnrollmentState;
+  /** The check's one-line reason; null when enrolled. */
+  detail: string | null;
+  /** ISO instant of the stored enrollment, when one exists. */
+  enrolled_at: string | null;
+}
+
+/** The newest run of a Harnery job on this checkout. */
+export interface ScheduleHarneryRun {
+  run_id: string;
+  kind: "scheduled" | "catch-up" | "manual";
+  result: "ok" | "attention" | "failed";
+  started_at: string;
+  finished_at: string;
+  duration_ms: number;
+  /** Each gather command's outcome, in run order. */
+  commands: { name: string; state: "ok" | "finding" | "error"; exit_code: number | null }[];
+  /** Null for a run with no agent. */
+  agent: { adapter: string; ok: boolean; status_line: "ok" | "attention" | "missing" } | null;
+  /** The run's report file, relative to the checkout root; null when none was written. */
+  report_path: string | null;
+}
+
+/**
+ * What a Harnery job runs and how it stands here. Only the Harnery reader
+ * sets it, from the project's own committed job file and this checkout's
+ * enrollment and run records. It never carries environment values, gather
+ * output or report text.
+ */
+export interface ScheduleHarneryJob {
+  /** Gather commands in run order; empty for an agent-only job. */
+  commands: ScheduleHarneryCommand[];
+  /** Null when the job runs commands only and starts no agent. */
+  agent: ScheduleHarneryAgent | null;
+  enrollment: ScheduleHarneryEnrollment;
+  /** The agent pinged when a run needs attention; null when none is named. */
+  owner: string | null;
+  timeout_minutes: number;
+  max_launches_per_day: number;
+  /** The time zone cron triggers are read in. */
+  zone: string;
+  latest_run: ScheduleHarneryRun | null;
+}
+
 /**
  * One schedule from one source.
  *
  * Records join on `source`, `account` and `id` (see `scheduleRecordKey`).
  *
- * A record carries schedule fields only. It must never carry a prompt, inbox
- * or report text, a secret, a webhook token, or command text (a crontab line's
- * command, a unit's ExecStart). Readers select named columns and fields so
- * that text never leaves its store.
+ * A record carries schedule fields only. It must never carry inbox or report
+ * text, a secret, a webhook token, or another app's prompt or command text (a
+ * crontab line's command, a unit's ExecStart, an app automation's prompt).
+ * Readers select named columns and fields so that text never leaves its
+ * store. The one exception is `job`: a Harnery job's commands and agent
+ * prompt come from the project's own committed job file (ADR 0280).
  */
 export interface ScheduleRecord {
   source: ScheduleSource;
@@ -110,7 +191,8 @@ export interface ScheduleRecord {
   /**
    * What the schedule does, in the source's own words (a systemd unit's
    * Description=, a Harnery job's description). Absent when the source does
-   * not say. Never a prompt or command text.
+   * not say. Never a prompt or command text; a Harnery job's commands and
+   * prompt are in `job` instead.
    */
   description?: string;
   trigger: ScheduleTrigger;
@@ -123,6 +205,8 @@ export interface ScheduleRecord {
   last_run: ScheduleLastRun | null;
   /** Null unless a captured observation names the creating session. */
   created_by: ScheduleCreatedBy | null;
+  /** Set only on `source: "harnery"` records: what the job runs and how it stands here. */
+  job?: ScheduleHarneryJob;
 }
 
 /**
@@ -508,6 +592,7 @@ export function validateScheduleRecord(value: unknown): ScheduleValidation<Sched
       "next_run_at",
       "last_run",
       "created_by",
+      "job",
     ],
     "record",
   );
@@ -535,7 +620,135 @@ export function validateScheduleRecord(value: unknown): ScheduleValidation<Sched
     }
   }
   checkCreatedBy(c, r.created_by, "record.created_by");
+  if (r.job !== undefined) {
+    if (r.source !== "harnery") c.fail("record.job", "is set only on harnery records");
+    else checkHarneryJob(c, r.job, "record.job");
+  }
   return c.result(value);
+}
+
+const ENROLLMENT_STATES: readonly ScheduleHarneryEnrollmentState[] = [
+  "enrolled",
+  "not-enrolled",
+  "changed",
+  "wrong-machine",
+  "wrong-checkout",
+];
+
+function checkStringList(c: ScheduleFieldChecker, value: unknown, path: string): void {
+  if (!Array.isArray(value)) {
+    c.fail(path, "must be a list");
+    return;
+  }
+  value.forEach((v, i) => {
+    if (typeof v !== "string") c.fail(`${path}[${i}]`, "must be a string");
+  });
+}
+
+function checkHarneryJob(c: ScheduleFieldChecker, value: unknown, path: string): void {
+  const j = c.object(value, path);
+  if (!j) return;
+  c.onlyKeys(
+    j,
+    [
+      "commands",
+      "agent",
+      "enrollment",
+      "owner",
+      "timeout_minutes",
+      "max_launches_per_day",
+      "zone",
+      "latest_run",
+    ],
+    path,
+  );
+  if (!Array.isArray(j.commands)) c.fail(`${path}.commands`, "must be a list");
+  else
+    j.commands.forEach((cmd, i) => {
+      const p = `${path}.commands[${i}]`;
+      const o = c.object(cmd, p);
+      if (!o) return;
+      c.onlyKeys(o, ["name", "argv", "env", "finding_exit_codes"], p);
+      c.string(o.name, `${p}.name`);
+      checkStringList(c, o.argv, `${p}.argv`);
+      checkStringList(c, o.env, `${p}.env`);
+      if (!Array.isArray(o.finding_exit_codes)) c.fail(`${p}.finding_exit_codes`, "must be a list");
+      else
+        o.finding_exit_codes.forEach((code, k) => {
+          c.integer(code, `${p}.finding_exit_codes[${k}]`, 1, 255);
+        });
+    });
+  if (j.agent !== null) {
+    const a = c.object(j.agent, `${path}.agent`);
+    if (a) {
+      c.onlyKeys(a, ["adapter", "model", "effort", "prompt"], `${path}.agent`);
+      c.string(a.adapter, `${path}.agent.adapter`);
+      c.nullableString(a.model, `${path}.agent.model`);
+      c.nullableString(a.effort, `${path}.agent.effort`);
+      if (typeof a.prompt !== "string") c.fail(`${path}.agent.prompt`, "must be a string");
+    }
+  }
+  const e = c.object(j.enrollment, `${path}.enrollment`);
+  if (e) {
+    c.onlyKeys(e, ["state", "detail", "enrolled_at"], `${path}.enrollment`);
+    c.oneOf(e.state, ENROLLMENT_STATES, `${path}.enrollment.state`);
+    c.nullableString(e.detail, `${path}.enrollment.detail`);
+    c.instant(e.enrolled_at, `${path}.enrollment.enrolled_at`, { nullable: true });
+  }
+  c.nullableString(j.owner, `${path}.owner`);
+  c.integer(j.timeout_minutes, `${path}.timeout_minutes`, 1, Number.MAX_SAFE_INTEGER);
+  c.integer(j.max_launches_per_day, `${path}.max_launches_per_day`, 1, Number.MAX_SAFE_INTEGER);
+  c.string(j.zone, `${path}.zone`);
+  if (j.latest_run !== null) checkHarneryRun(c, j.latest_run, `${path}.latest_run`);
+}
+
+function checkHarneryRun(c: ScheduleFieldChecker, value: unknown, path: string): void {
+  const r = c.object(value, path);
+  if (!r) return;
+  c.onlyKeys(
+    r,
+    [
+      "run_id",
+      "kind",
+      "result",
+      "started_at",
+      "finished_at",
+      "duration_ms",
+      "commands",
+      "agent",
+      "report_path",
+    ],
+    path,
+  );
+  c.string(r.run_id, `${path}.run_id`);
+  c.oneOf(r.kind, ["scheduled", "catch-up", "manual"] as const, `${path}.kind`);
+  c.oneOf(r.result, ["ok", "attention", "failed"] as const, `${path}.result`);
+  c.instant(r.started_at, `${path}.started_at`);
+  c.instant(r.finished_at, `${path}.finished_at`);
+  c.integer(r.duration_ms, `${path}.duration_ms`, 0, Number.MAX_SAFE_INTEGER);
+  if (!Array.isArray(r.commands)) c.fail(`${path}.commands`, "must be a list");
+  else
+    r.commands.forEach((cmd, i) => {
+      const p = `${path}.commands[${i}]`;
+      const o = c.object(cmd, p);
+      if (!o) return;
+      c.onlyKeys(o, ["name", "state", "exit_code"], p);
+      c.string(o.name, `${p}.name`);
+      c.oneOf(o.state, ["ok", "finding", "error"] as const, `${p}.state`);
+      c.integer(o.exit_code, `${p}.exit_code`, Number.MIN_SAFE_INTEGER, Number.MAX_SAFE_INTEGER, {
+        nullable: true,
+      });
+    });
+  if (r.agent !== null) {
+    const a = c.object(r.agent, `${path}.agent`);
+    if (a) {
+      c.onlyKeys(a, ["adapter", "ok", "status_line"], `${path}.agent`);
+      c.string(a.adapter, `${path}.agent.adapter`);
+      c.boolean(a.ok, `${path}.agent.ok`);
+      c.oneOf(a.status_line, ["ok", "attention", "missing"] as const, `${path}.agent.status_line`);
+    }
+  }
+  c.nullableString(r.report_path, `${path}.report_path`);
 }
 
 /** Whether `value` is a valid `ScheduleRecord`. */

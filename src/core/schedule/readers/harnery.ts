@@ -1,11 +1,19 @@
 /**
  * Reader for Harnery's own scheduler: one record per job in the tracked job
  * file (`.harnery/schedules.jsonc`). It reads the job file, this checkout's
- * enrollments and the run records under `.harnery/private/schedule/`. It
- * never puts a job's prompt or gather arguments in a record.
+ * enrollments and the run records under `.harnery/private/schedule/`.
+ *
+ * Each record's `job` says what the job runs: every gather command's argv as
+ * written, the names (never values) of the environment variables it passes
+ * through, and the judge agent's adapter, model, effort and full prompt. The
+ * job file is the project's own committed, reviewed file, so showing it
+ * reveals nothing the checkout does not already hold (ADR 0280). The record
+ * never carries environment values, gather output or report text; for the
+ * newest run it gives exit codes and the report's path only.
  */
 
-import { join } from "node:path";
+import { existsSync } from "node:fs";
+import { join, relative, sep } from "node:path";
 import { checkScheduleEnrollment, type ScheduleEnrollmentCheck } from "../enrollment.ts";
 import {
   isScheduleJobEnabled,
@@ -20,6 +28,9 @@ import { listScheduleRuns } from "../report.ts";
 import { scheduleNextDueTime } from "../triggers.ts";
 import type {
   ScheduleCoverageState,
+  ScheduleHarneryEnrollment,
+  ScheduleHarneryJob,
+  ScheduleHarneryRun,
   ScheduleReadContext,
   ScheduleReader,
   ScheduleReadResult,
@@ -60,31 +71,35 @@ export function harneryRunReportPath(coordRoot: string, run: ScheduleRunRecord):
   );
 }
 
-/** What `schedule show` adds for a Harnery job: its enrollment here and its newest run. */
-export interface HarneryJobStatus {
-  enrollment: ScheduleEnrollmentCheck;
-  latestRun: ScheduleRunRecord | null;
-  /** Absolute path of the newest run's report, or null when the job has not run. */
-  latestReportPath: string | null;
+/** The record form of an enrollment check. */
+export function harneryEnrollment(check: ScheduleEnrollmentCheck): ScheduleHarneryEnrollment {
+  return {
+    state: check.state,
+    detail: check.state === "enrolled" ? null : check.detail,
+    enrolled_at: check.enrollment?.enrolled_at ?? null,
+  };
 }
 
-/** The enrollment check and newest run of one job on this machine and checkout. */
-export function harneryJobStatus(
-  ctx: Pick<ScheduleReadContext, "coordRoot" | "env" | "machine">,
-  job: ScheduleJob,
-): HarneryJobStatus {
-  const resolved = resolveScheduleJob(job, { coordRoot: ctx.coordRoot, env: ctx.env });
-  const enrollment = checkScheduleEnrollment({
-    coordRoot: ctx.coordRoot,
-    job,
-    resolved,
-    machine: ctx.machine,
-  });
-  const latestRun = listScheduleRuns(ctx.coordRoot, job.id)[0] ?? null;
+/** The record form of a run: outcomes and the report's path, never its text. */
+export function harneryRun(coordRoot: string, run: ScheduleRunRecord): ScheduleHarneryRun {
+  const reportPath = harneryRunReportPath(coordRoot, run);
+  const started = Date.parse(run.started_at);
+  const finished = Date.parse(run.finished_at);
   return {
-    enrollment,
-    latestRun,
-    latestReportPath: latestRun ? harneryRunReportPath(ctx.coordRoot, latestRun) : null,
+    run_id: run.run_id,
+    kind: run.kind,
+    result: run.result,
+    started_at: run.started_at,
+    finished_at: run.finished_at,
+    duration_ms: Number.isFinite(started) && finished >= started ? finished - started : 0,
+    commands: run.gather.map((g) => ({ name: g.name, state: g.state, exit_code: g.exit_code })),
+    agent: run.agent
+      ? { adapter: run.agent.adapter, ok: run.agent.ok, status_line: run.agent.status_line }
+      : null,
+    report_path:
+      run.report_file && existsSync(reportPath)
+        ? relative(coordRoot, reportPath).split(sep).join("/")
+        : null,
   };
 }
 
@@ -110,6 +125,28 @@ function jobRecord(ctx: ScheduleReadContext, job: ScheduleJob): ScheduleRecord {
     nextRunAt = next === null ? null : new Date(next).toISOString();
   }
   const latest = listScheduleRuns(ctx.coordRoot, job.id)[0];
+  const detail: ScheduleHarneryJob = {
+    commands: (job.gather ?? []).map((g) => ({
+      name: g.name,
+      argv: [...g.argv],
+      env: [...(g.env ?? [])],
+      finding_exit_codes: [...(g.finding_exit_codes ?? [])],
+    })),
+    agent: job.agent
+      ? {
+          adapter: job.agent.adapter,
+          model: job.agent.model ?? null,
+          effort: job.agent.effort ?? null,
+          prompt: job.agent.prompt,
+        }
+      : null,
+    enrollment: harneryEnrollment(check),
+    owner: job.owner ?? null,
+    timeout_minutes: job.timeout_minutes,
+    max_launches_per_day: job.max_launches_per_day,
+    zone: resolved.zone,
+    latest_run: latest ? harneryRun(ctx.coordRoot, latest) : null,
+  };
   return {
     source: "harnery",
     account: ctx.machine,
@@ -122,6 +159,7 @@ function jobRecord(ctx: ScheduleReadContext, job: ScheduleJob): ScheduleRecord {
     next_run_at: nextRunAt,
     last_run: latest ? { at: latest.finished_at, status: harneryRunStatus(latest.result) } : null,
     created_by: null,
+    job: detail,
   };
 }
 

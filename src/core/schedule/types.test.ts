@@ -82,6 +82,37 @@ describe("validateScheduleRecord", () => {
     expect(isScheduleRecord({ ...record(), command: "rm -rf" })).toBe(false);
   });
 
+  test("accepts a job part only on a harnery record and checks its fields", () => {
+    const job = {
+      commands: [{ name: "probe", argv: ["/bin/true"], env: ["TOKEN"], finding_exit_codes: [3] }],
+      agent: null,
+      enrollment: { state: "not-enrolled", detail: "not enrolled", enrolled_at: null },
+      owner: null,
+      timeout_minutes: 10,
+      max_launches_per_day: 2,
+      zone: "UTC",
+      latest_run: null,
+    } as const;
+    expect(
+      validateScheduleRecord(record({ source: "harnery", job: structuredClone(job) as never })).ok,
+    ).toBe(true);
+    const wrongSource = validateScheduleRecord(record({ job: structuredClone(job) as never }));
+    expect(wrongSource.ok).toBe(false);
+    if (!wrongSource.ok)
+      expect(wrongSource.errors).toContain("record.job: is set only on harnery records");
+    const bad = validateScheduleRecord(
+      record({
+        source: "harnery",
+        job: {
+          ...structuredClone(job),
+          enrollment: { state: "maybe", detail: null, enrolled_at: null },
+        } as never,
+      }),
+    );
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) expect(bad.errors.join("\n")).toContain("record.job.enrollment.state");
+  });
+
   test("names each bad field", () => {
     const v = validateScheduleRecord({
       ...record(),

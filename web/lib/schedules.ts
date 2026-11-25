@@ -26,6 +26,17 @@ export type {
   ScheduleTrigger,
 } from "../../src/core/schedule/types";
 export type { ScheduleRunResult };
+export type {
+  ScheduleHarneryAgent,
+  ScheduleHarneryCommand,
+  ScheduleHarneryJob,
+} from "../../src/core/schedule/types";
+export {
+  describeScheduleAgent,
+  describeScheduleEnrollment,
+  describeScheduleJobWork,
+  formatScheduleArgv,
+} from "../../src/core/schedule/describe-job";
 
 export interface ScheduleList {
   records: ScheduleRecord[];

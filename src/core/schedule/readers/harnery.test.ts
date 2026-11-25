@@ -2,14 +2,14 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { enrollScheduleJob } from "../enrollment.ts";
 import type { ScheduleJob, ScheduleRunRecord } from "../job-types.ts";
 import { resolveScheduleJob } from "../jobs.ts";
 import { scheduleJobFilePath, scheduleRunDir, scheduleRunStamp } from "../paths.ts";
 import { writeScheduleRunReport } from "../report.ts";
 import { type ScheduleReadContext, validateScheduleReadResult } from "../types.ts";
-import { harneryJobStatus, harneryScheduleReader, harneryScheduleTrigger } from "./harnery.ts";
+import { harneryScheduleReader, harneryScheduleTrigger } from "./harnery.ts";
 
 const MACHINE = "box";
 const NOW = Date.parse("2026-11-22T12:00:00.000Z");
@@ -26,10 +26,10 @@ afterEach(() => {
   rmSync(base, { recursive: true, force: true });
 });
 
-function ctx(): ScheduleReadContext {
+function ctx(env: Record<string, string> = {}): ScheduleReadContext {
   return {
     coordRoot: base,
-    env: {},
+    env,
     homeDir: join(base, "home"),
     platform: "linux",
     machine: MACHINE,
@@ -67,7 +67,12 @@ function enroll(j: ScheduleJob, at = "2026-11-20T00:00:00.000Z"): void {
   expect(result.ok).toBe(true);
 }
 
-function writeRun(jobId: string, startedAt: string, result: ScheduleRunRecord["result"]): void {
+function writeRun(
+  jobId: string,
+  startedAt: string,
+  result: ScheduleRunRecord["result"],
+  gather: ScheduleRunRecord["gather"] = [],
+): void {
   const record: ScheduleRunRecord = {
     schema_version: 1,
     run_id: `run-${startedAt}`,
@@ -77,7 +82,7 @@ function writeRun(jobId: string, startedAt: string, result: ScheduleRunRecord["r
     started_at: startedAt,
     finished_at: new Date(Date.parse(startedAt) + 60_000).toISOString(),
     result,
-    gather: [],
+    gather,
     agent: { adapter: "codex", ok: true, status_line: "ok" },
     report_file: "report.md",
   };
@@ -85,7 +90,7 @@ function writeRun(jobId: string, startedAt: string, result: ScheduleRunRecord["r
     runDir: scheduleRunDir(base, jobId, scheduleRunStamp(startedAt)),
     record,
     title: "Nightly check",
-    agentText: PROMPT,
+    agentText: "SECRET-REPORT-TEXT the agent wrote this",
   });
 }
 
@@ -128,7 +133,7 @@ describe("harneryScheduleReader", () => {
     expect(record?.trigger.raw).toBe(JSON.stringify(j.trigger));
     expect(record?.next_run_at).toBe("2026-11-23T03:00:00.000Z");
     expect(record?.last_run).toEqual({ at: "2026-11-22T03:01:00.000Z", status: "attention" });
-    expect(JSON.stringify(result)).not.toContain("SECRET-PROMPT-TEXT");
+    expect(JSON.stringify(result)).not.toContain("SECRET-REPORT-TEXT");
   });
 
   test("a job's description is carried onto its record", async () => {
@@ -160,29 +165,129 @@ describe("harneryScheduleReader", () => {
     expect(result.records[0]?.next_run_at).toBeNull();
   });
 
-  test("gather arguments never reach a record", async () => {
+  test("an agent job carries its adapter, model, effort and full prompt", async () => {
+    writeJobs([
+      job({ agent: { adapter: "codex", model: "m-1", effort: "medium", prompt: PROMPT } }),
+    ]);
+    const result = await harneryScheduleReader.read(ctx());
+    expect(validateScheduleReadResult(result).ok).toBe(true);
+    const detail = result.records[0]?.job;
+    expect(detail?.commands).toEqual([]);
+    expect(detail?.agent).toEqual({
+      adapter: "codex",
+      model: "m-1",
+      effort: "medium",
+      prompt: PROMPT,
+    });
+    expect(detail).toMatchObject({
+      owner: null,
+      timeout_minutes: 10,
+      max_launches_per_day: 2,
+      zone: "UTC",
+      latest_run: null,
+    });
+  });
+
+  test("a commands-only job lists each argv as written and has no agent", async () => {
     writeJobs([
       job({
-        gather: [{ name: "probe", argv: ["/bin/sh", "SECRET-GATHER-ARG"] }],
+        owner: "agent-ops",
+        gather: [
+          { name: "probe", argv: ["/bin/echo", "hi there", "--flag"], finding_exit_codes: [3] },
+          { name: "second", argv: ["/bin/true"] },
+        ],
         agent: undefined,
       }),
     ]);
     const result = await harneryScheduleReader.read(ctx());
-    expect(result.records).toHaveLength(1);
-    expect(JSON.stringify(result)).not.toContain("SECRET-GATHER-ARG");
+    expect(validateScheduleReadResult(result).ok).toBe(true);
+    const detail = result.records[0]?.job;
+    expect(result.coverage.detail).toBeUndefined();
+    expect(detail?.agent).toBeNull();
+    expect(detail?.owner).toBe("agent-ops");
+    expect(detail?.commands).toEqual([
+      {
+        name: "probe",
+        argv: ["/bin/echo", "hi there", "--flag"],
+        env: [],
+        finding_exit_codes: [3],
+      },
+      { name: "second", argv: ["/bin/true"], env: [], finding_exit_codes: [] },
+    ]);
   });
 
-  test("job status names the enrollment and the newest report", () => {
+  test("environment variable names are listed and their values never are", async () => {
+    writeJobs([
+      job({
+        gather: [{ name: "probe", argv: ["/bin/true"], env: ["PROBE_TOKEN"] }],
+        agent: undefined,
+      }),
+    ]);
+    const result = await harneryScheduleReader.read(ctx({ PROBE_TOKEN: "SECRET-ENV-VALUE" }));
+    expect(result.records[0]?.job?.commands[0]?.env).toEqual(["PROBE_TOKEN"]);
+    expect(JSON.stringify(result)).not.toContain("SECRET-ENV-VALUE");
+  });
+
+  test("enrollment states come from the enrollment check", async () => {
     const j = job();
     writeJobs([j]);
+    let result = await harneryScheduleReader.read(ctx());
+    expect(result.records[0]?.job?.enrollment).toEqual({
+      state: "not-enrolled",
+      detail: 'job "nightly-check" is not enrolled in this checkout',
+      enrolled_at: null,
+    });
+
     enroll(j);
-    writeRun(j.id, "2026-11-22T03:00:00.000Z", "ok");
-    const status = harneryJobStatus(ctx(), j);
-    expect(status.enrollment.state).toBe("enrolled");
-    expect(status.latestRun?.result).toBe("ok");
-    expect(status.latestReportPath).toBe(
-      join(scheduleRunDir(base, j.id, scheduleRunStamp("2026-11-22T03:00:00.000Z")), "report.md"),
-    );
+    result = await harneryScheduleReader.read(ctx());
+    expect(result.records[0]?.job?.enrollment).toEqual({
+      state: "enrolled",
+      detail: null,
+      enrolled_at: "2026-11-20T00:00:00.000Z",
+    });
+
+    writeJobs([{ ...j, timeout_minutes: 20 }]);
+    result = await harneryScheduleReader.read(ctx());
+    expect(result.records[0]?.job?.enrollment.state).toBe("changed");
+    expect(result.records[0]?.job?.enrollment.enrolled_at).toBe("2026-11-20T00:00:00.000Z");
+
+    writeJobs([{ ...j, host: "other-box" }]);
+    result = await harneryScheduleReader.read(ctx());
+    expect(result.records[0]?.job?.enrollment.state).toBe("wrong-machine");
+    expect(validateScheduleReadResult(result).ok).toBe(true);
+  });
+
+  test("the newest run gives its result, duration, exit codes and report path", async () => {
+    const j = job();
+    writeJobs([j]);
+    writeRun(j.id, "2026-11-21T03:00:00.000Z", "ok");
+    writeRun(j.id, "2026-11-22T03:00:00.000Z", "attention", [
+      {
+        name: "probe",
+        state: "finding",
+        exit_code: 3,
+        duration_ms: 50,
+        truncated: false,
+        output_file: "gather/probe.txt",
+      },
+    ]);
+    const result = await harneryScheduleReader.read(ctx());
+    expect(validateScheduleReadResult(result).ok).toBe(true);
+    expect(result.records[0]?.job?.latest_run).toEqual({
+      run_id: "run-2026-11-22T03:00:00.000Z",
+      kind: "scheduled",
+      result: "attention",
+      started_at: "2026-11-22T03:00:00.000Z",
+      finished_at: "2026-11-22T03:01:00.000Z",
+      duration_ms: 60_000,
+      commands: [{ name: "probe", state: "finding", exit_code: 3 }],
+      agent: { adapter: "codex", ok: true, status_line: "ok" },
+      report_path: relative(
+        base,
+        join(scheduleRunDir(base, j.id, scheduleRunStamp("2026-11-22T03:00:00.000Z")), "report.md"),
+      ),
+    });
+    expect(JSON.stringify(result)).not.toContain("SECRET-REPORT-TEXT");
   });
 });
 

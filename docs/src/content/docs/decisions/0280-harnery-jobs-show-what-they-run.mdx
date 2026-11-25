@@ -1,0 +1,66 @@
+---
+title: "0280: Harnery jobs show what they run"
+description: "ADR: A Harnery job's schedule record carries its gather commands, environment variable names, judge agent and full prompt, enrollment state and newest run, so `harn schedule show` and the dashboard explain the job completely. Other apps' prompts and command text stay unread."
+---
+
+**Status:** accepted (2026-11-24) · **Scope:** product tier (`core/schedule`), dashboard Schedules page · **Amends:** the record rule in [ADR 0271](/decisions/0271-one-list-of-schedules/) point 3 for `harnery` records only
+
+## Context
+
+[ADR 0271](/decisions/0271-one-list-of-schedules/) kept every schedule record
+to schedule fields: no prompt and no command text. The rule protects other
+apps' private stores, and the Harnery reader followed it too. A Harnery job's
+card then said when the job runs and how it last went, but not what it does:
+whether it runs a script, starts an agent, which model, or with what prompt.
+To find out, an operator had to open `.harnery/schedules.jsonc`. The operator
+asked to understand a job completely from the Schedules page.
+
+A Harnery job differs from another app's schedule. Its definition is the
+project's own job file, which the project commits and reviews like code. The
+checkout already holds every word of it, so showing it on the project's own
+dashboard and CLI reveals nothing new.
+
+## Decision
+
+1. **A `harnery` record carries `job`.** It lists each gather command in order
+   (name, argv exactly as written, environment variable names, finding exit
+   codes) and the judge agent (adapter, model, effort and full prompt), or
+   null for a job with no agent.
+2. **It says whether the job runs here.** `job.enrollment` gives the state
+   `checkScheduleEnrollment` returns (`enrolled`, `not-enrolled`, `changed`,
+   `wrong-machine`, `wrong-checkout`) with its reason and enrollment time. No
+   new states are invented.
+3. **It carries the limits and the newest run.** Owner, timeout, daily launch
+   limit and time zone come from the job file and config. The newest run gives
+   its result, kind, times, duration, each command's exit code and state, the
+   agent's outcome, and the report's path.
+4. **Values and contents stay out.** A record never carries environment
+   variable values, gather output or report text. The validator rejects `job`
+   on any record whose source is not `harnery`.
+5. **Both surfaces explain it in plain words.** `harn schedule show` prints a
+   one-line summary, the commands and the prompt; the dashboard card shows the
+   summary near the top and the full detail under Details, with the prompt in
+   a collapsible block. A job with no agent reads as "commands only, no model
+   tokens".
+6. **The `harnery` sidecar on `show --json` is removed.** Its enrollment state
+   and report path now live in `record.job`, following the pre-1.0 cut-over
+   rule.
+
+## Alternatives
+
+- **Link to the job file instead.** Rejected: a link shows the whole file, not
+  the one job, and gives no enrollment state or run outcome.
+- **Show only a summary and keep argv and prompt out.** Rejected: the operator
+  asked to understand a job completely, and the summary cannot say what a
+  script receives or what the agent is told.
+- **Lift the rule for every source.** Rejected: other apps' prompts and
+  command text live in stores Harnery does not own. ADR 0271 point 3 and
+  [ADR 0277](/decisions/0277-schedule-readers-on-by-default/) keep them
+  unread, and that stands.
+
+## Consequences
+
+- `harn schedule list --json` now includes each Harnery job's prompt. Anyone
+  who can read that output can read the checkout's job file already.
+- A job whose host is another machine still shows its commands and prompt, and
+  its card says it does not run on this machine.

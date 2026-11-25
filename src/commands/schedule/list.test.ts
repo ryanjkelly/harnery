@@ -134,7 +134,10 @@ describe("schedule list", () => {
     expect(payload.records.find((r) => r.source === "os-timer")?.next_run_at).toBe(
       "2026-11-22T13:00:00.000Z",
     );
-    expect(JSON.stringify(out)).not.toContain("SECRET-PROMPT-TEXT");
+    // The Harnery job's own committed prompt is shown (ADR 0280); other sources carry no `job`.
+    const harneryRecord = payload.records.find((r) => r.source === "harnery");
+    expect(harneryRecord?.job?.agent?.prompt).toBe(PROMPT);
+    expect(payload.records.find((r) => r.source === "os-timer")?.job).toBeUndefined();
   });
 
   test("--source filters records but coverage still shows every source", async () => {
@@ -174,19 +177,19 @@ describe("schedule show", () => {
     const payload = out.data[0] as {
       record: ScheduleRecord;
       coverage: { source: string; state: string };
-      harnery: { enrollment: { state: string }; latest_report: string | null };
     };
     expect(payload.record.id).toBe("nightly-check");
     expect(payload.coverage).toMatchObject({ source: "harnery", state: "current" });
-    expect(payload.harnery.enrollment.state).toBe("not-enrolled");
-    expect(payload.harnery.latest_report).toBeNull();
-    expect(JSON.stringify(out)).not.toContain("SECRET-PROMPT-TEXT");
+    expect(payload.record.job?.enrollment.state).toBe("not-enrolled");
+    expect(payload.record.job?.latest_run).toBeNull();
 
     const text = harness([harneryScheduleReader]);
     await text.run("show", "nightly-check");
     const shown = text.out.text.join("");
-    expect(shown).toContain("enrollment:  not-enrolled");
-    expect(shown).not.toContain("SECRET-PROMPT-TEXT");
+    expect(shown).toContain("Not enrolled; it will not run here until enrolled [not-enrolled]");
+    expect(shown).toContain("agent:       codex agent (default model, default effort)");
+    expect(shown).toContain(`  ${PROMPT}`);
+    expect(shown).toContain("newest run:  -");
   });
 
   test("an id in two sources is ambiguous until named with source:id", async () => {

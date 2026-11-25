@@ -8,8 +8,13 @@ import type { Command } from "commander";
 import { defaultEmit, type EmitContext } from "../../commander.ts";
 import { resolveCoordRoot } from "../../core/agents/coord-client.ts";
 import { resolveBinName, resolveTimeZone } from "../../core/config.ts";
-import { findScheduleJob, loadScheduleJobFile } from "../../core/schedule/jobs.ts";
-import { harneryJobStatus } from "../../core/schedule/readers/harnery.ts";
+import {
+  describeScheduleAgent,
+  describeScheduleEnrollment,
+  describeScheduleJobWork,
+  formatScheduleArgv,
+  formatScheduleDuration,
+} from "../../core/schedule/describe-job.ts";
 import {
   type ReadAllSchedulesOptions,
   readAllSchedules,
@@ -17,13 +22,13 @@ import {
 } from "../../core/schedule/registry.ts";
 import {
   SCHEDULE_SOURCES,
+  type ScheduleHarneryJob,
   type ScheduleRecord,
   type ScheduleSource,
   type ScheduleSourceCoverage,
   type ScheduleTrigger,
 } from "../../core/schedule/types.ts";
 import { table } from "../../lib/format.ts";
-import { resolveMachineLabel } from "../../lib/machine.ts";
 
 /** Test seams: everything `readAllSchedules` takes, plus the coordination root. */
 export type ScheduleListDeps = Partial<ReadAllSchedulesOptions>;
@@ -84,6 +89,52 @@ function formatCreatedBy(record: ScheduleRecord): string {
   const by = record.created_by;
   if (!by) return "-";
   return by.agent_name ?? by.instance_id;
+}
+
+/** The `schedule show` lines for a Harnery job: what it runs, enrollment, limits, newest run. */
+function harneryJobLines(record: ScheduleRecord, job: ScheduleHarneryJob, zone: string): string[] {
+  const lines = [`runs:        ${describeScheduleJobWork(job)}`];
+  job.commands.forEach((cmd, i) => {
+    const extra = [
+      cmd.env.length > 0 ? `env names ${cmd.env.join(", ")}` : null,
+      cmd.finding_exit_codes.length > 0
+        ? `finding exit codes ${cmd.finding_exit_codes.join(", ")}`
+        : null,
+    ].filter(Boolean);
+    lines.push(
+      `  ${i + 1}. ${cmd.name}: ${formatScheduleArgv(cmd.argv)}${extra.length > 0 ? ` (${extra.join("; ")})` : ""}`,
+    );
+  });
+  if (job.agent) {
+    lines.push(`agent:       ${describeScheduleAgent(job.agent)}`, "prompt:");
+    for (const line of job.agent.prompt.split("\n")) lines.push(`  ${line}`);
+  } else {
+    lines.push("agent:       none (commands only, no model tokens)");
+  }
+  const e = job.enrollment;
+  lines.push(
+    `enrollment:  ${describeScheduleEnrollment(record, job)} [${e.state}${e.enrolled_at ? `, enrolled ${formatWhen(e.enrolled_at, zone)}` : ""}]`,
+    `owner:       ${job.owner ?? "-"}`,
+    `timeout:     ${job.timeout_minutes} min`,
+    `daily limit: ${job.max_launches_per_day} launches`,
+    `time zone:   ${job.zone}`,
+  );
+  const run = job.latest_run;
+  if (run) {
+    const codes = run.commands.map((c) => `${c.name}=${c.exit_code ?? "none"}`).join(", ");
+    lines.push(
+      `newest run:  ${run.result}, ${run.kind}, started ${formatWhen(run.started_at, zone)}, took ${formatScheduleDuration(run.duration_ms)}`,
+    );
+    if (codes) lines.push(`exit codes:  ${codes}`);
+    if (run.agent)
+      lines.push(
+        `run agent:   ${run.agent.adapter} ${run.agent.ok ? "ok" : "failed"}, status ${run.agent.status_line}`,
+      );
+    lines.push(`last report: ${run.report_path ?? "-"}`);
+  } else {
+    lines.push("newest run:  -");
+  }
+  return lines;
 }
 
 function coverageText(coverage: readonly ScheduleSourceCoverage[]): string {
@@ -219,36 +270,9 @@ export function registerScheduleListCommands(
       }
       const record = matches[0] as ScheduleRecord;
       const coverage = list.coverage.find((c) => c.source === record.source) ?? null;
-      let harnery: {
-        enrollment: { state: string; detail?: string; enrolled_at?: string };
-        latest_report: string | null;
-      } | null = null;
-      if (record.source === "harnery") {
-        const loaded = loadScheduleJobFile(coordRoot);
-        const job = loaded.ok ? findScheduleJob(loaded.file, record.id) : null;
-        if (job) {
-          const status = harneryJobStatus(
-            {
-              coordRoot,
-              env: deps.env ?? process.env,
-              machine: deps.machine ?? resolveMachineLabel(),
-            },
-            job,
-          );
-          const e = status.enrollment;
-          harnery = {
-            enrollment: {
-              state: e.state,
-              ...("detail" in e ? { detail: e.detail } : {}),
-              ...(e.enrollment ? { enrolled_at: e.enrollment.enrolled_at } : {}),
-            },
-            latest_report: status.latestReportPath,
-          };
-        }
-      }
       if (opts.json) {
         emit.config({ format: "json" });
-        emit.data({ record, coverage, ...(harnery ? { harnery } : {}) });
+        emit.data({ record, coverage });
         return;
       }
       const zone = resolveTimeZone(coordRoot);
@@ -266,12 +290,7 @@ export function registerScheduleListCommands(
         `last run:    ${formatLastRun(record, zone)}`,
         `created by:  ${by ? `${by.agent_name ?? by.instance_id}${by.task ? ` (${by.task})` : ""}, seen ${formatWhen(by.observed_at, zone)}` : "-"}`,
       ];
-      if (harnery) {
-        lines.push(
-          `enrollment:  ${harnery.enrollment.state}${harnery.enrollment.detail ? ` (${harnery.enrollment.detail})` : ""}`,
-          `last report: ${harnery.latest_report ?? "-"}`,
-        );
-      }
+      if (record.job) lines.push(...harneryJobLines(record, record.job, zone));
       if (coverage) {
         lines.push(
           `coverage:    ${coverage.state}${coverage.detail ? ` (${coverage.detail})` : ""}`,
