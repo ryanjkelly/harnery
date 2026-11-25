@@ -84,8 +84,6 @@ describe("validateScheduleRecord", () => {
 
   test("accepts a job part only on a harnery record and checks its fields", () => {
     const job = {
-      commands: [{ name: "probe", argv: ["/bin/true"], env: ["TOKEN"], finding_exit_codes: [3] }],
-      agent: null,
       enrollment: { state: "not-enrolled", detail: "not enrolled", enrolled_at: null },
       owner: null,
       timeout_minutes: 10,
@@ -111,6 +109,35 @@ describe("validateScheduleRecord", () => {
     );
     expect(bad.ok).toBe(false);
     if (!bad.ok) expect(bad.errors.join("\n")).toContain("record.job.enrollment.state");
+  });
+
+  test("accepts a work part on any source and checks its fields", () => {
+    const work = {
+      commands: [
+        { name: "probe", argv: ["/bin/true"], line: null, env: ["TOKEN"], finding_exit_codes: [3] },
+        { name: null, argv: null, line: "./run.sh --quiet", env: [], finding_exit_codes: [] },
+      ],
+      agent: { adapter: "codex", model: null, effort: "high", prompt: "Check the logs." },
+      redacted: false,
+    };
+    expect(validateScheduleRecord(record({ work: structuredClone(work) })).ok).toBe(true);
+    const both = validateScheduleRecord(
+      record({
+        work: {
+          ...structuredClone(work),
+          commands: [{ name: null, argv: ["a"], line: "a", env: [], finding_exit_codes: [] }],
+        },
+      }),
+    );
+    expect(both.ok).toBe(false);
+    if (!both.ok)
+      expect(both.errors).toContain(
+        "record.work.commands[0]: must set exactly one of argv and line",
+      );
+    const extra = validateScheduleRecord(
+      record({ work: { ...structuredClone(work), environment: { A: "1" } } as never }),
+    );
+    expect(extra.ok).toBe(false);
   });
 
   test("names each bad field", () => {

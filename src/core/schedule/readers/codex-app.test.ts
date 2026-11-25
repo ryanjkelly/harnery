@@ -9,8 +9,8 @@ import {
   validateScheduleRecord,
 } from "../types.ts";
 import {
-  CODEX_APP_AUTOMATIONS_SQL,
   CODEX_APP_RUNS_SQL,
+  codexAppAutomationsSql,
   codexAppEnabled,
   codexAppHome,
   codexAppInstant,
@@ -69,9 +69,6 @@ const RUN_COLUMNS = [
 ];
 
 const NEVER_SELECTED = [
-  "prompt",
-  "cwds",
-  "model",
   "account_id",
   "user_id",
   "installation_id",
@@ -143,13 +140,14 @@ function automation(overrides: Row): Row {
   return {
     id: "automation-x",
     name: "An automation",
-    prompt: "SECRET-PROMPT text",
+    prompt: "Review open issues.\nUse ghp_SECRETPROMPTTOKEN1234567890abcd when needed.",
     status: "ACTIVE",
     next_run_at: null,
     last_run_at: null,
-    cwds: '["SECRET-CWD"]',
+    cwds: "[]",
     rrule: "FREQ=HOURLY;INTERVAL=24;BYMINUTE=0",
-    model: "SECRET-MODEL",
+    model: "model-x",
+    reasoning_effort: "high",
     created_at: 1763000000000,
     updated_at: 1763000000000,
     project_id: null,
@@ -201,8 +199,10 @@ describe("codexAppScheduleReader", () => {
     expect(codexAppScheduleReader.id).toBe("codex-app");
   });
 
-  test("the SQL names only schedule columns", () => {
-    for (const sql of [CODEX_APP_AUTOMATIONS_SQL, CODEX_APP_RUNS_SQL]) {
+  test("the SQL names only schedule, prompt and model columns", () => {
+    expect(codexAppAutomationsSql()).toContain("prompt");
+    expect(codexAppAutomationsSql()).toContain("reasoning_effort");
+    for (const sql of [codexAppAutomationsSql(), CODEX_APP_RUNS_SQL]) {
       const words = new Set(sql.toLowerCase().match(/[a-z_]+/g));
       for (const column of NEVER_SELECTED) expect(words.has(column)).toBe(false);
       expect(sql).not.toContain("*");
@@ -268,6 +268,16 @@ describe("codexAppScheduleReader", () => {
         next_run_at: "2026-11-23T09:00:00.000Z",
         last_run: { at: "2026-11-22T08:00:00.000Z", status: "succeeded" },
         created_by: null,
+        work: {
+          commands: [],
+          agent: {
+            adapter: "codex",
+            model: "model-x",
+            effort: "high",
+            prompt: "Review open issues.\nUse ‹redacted› when needed.",
+          },
+          redacted: true,
+        },
       },
       {
         source: "codex-app",
@@ -284,6 +294,16 @@ describe("codexAppScheduleReader", () => {
         next_run_at: null,
         last_run: { at: "2026-11-21T08:00:00.000Z", status: "unknown" },
         created_by: null,
+        work: {
+          commands: [],
+          agent: {
+            adapter: "codex",
+            model: "model-x",
+            effort: "high",
+            prompt: "Review open issues.\nUse ‹redacted› when needed.",
+          },
+          redacted: true,
+        },
       },
     ]);
     expect(readdirSync(join(root, "tmp"))).toEqual([]);
@@ -356,7 +376,7 @@ describe("codexAppScheduleReader", () => {
     );
     writeToml(
       "paused-watch",
-      'id = "paused-watch"\nname = "Paused"\nprompt = "SECRET-ONE-LINE"\nstatus = "PAUSED"\nrrule = "FREQ=MINUTELY;INTERVAL=30"\n',
+      'id = "paused-watch"\nname = "Paused"\nprompt = "Watch the queue.\\nToken: xoxb-1234567890-SECRETSLACK"\nmodel = "model-y"\nstatus = "PAUSED"\nrrule = "FREQ=MINUTELY;INTERVAL=30"\n',
     );
     const result = await codexAppScheduleReader.read(ctx());
     expect(validateScheduleReadResult(result).ok).toBe(true);
@@ -391,8 +411,41 @@ describe("codexAppScheduleReader", () => {
         next_run_at: null,
         last_run: null,
         created_by: null,
+        work: {
+          commands: [],
+          agent: {
+            adapter: "codex",
+            model: "model-y",
+            effort: null,
+            prompt: "Watch the queue.\nToken: ‹redacted›",
+          },
+          redacted: true,
+        },
       },
     ]);
+  });
+
+  test("an older table without model columns still reads the prompt", async () => {
+    const columns = AUTOMATION_COLUMNS.filter(
+      (c) => c !== "model" && c !== "reasoning_effort" && c !== "cwds",
+    );
+    writeStore(storePath(), [automation({ id: "a", prompt: "Say hi." })], [], {
+      automationColumns: columns,
+    });
+    const result = await codexAppScheduleReader.read(ctx());
+    expect(result.coverage.state).toBe("current");
+    expect(result.records[0]?.work?.agent).toEqual({
+      adapter: "codex",
+      model: null,
+      effort: null,
+      prompt: "Say hi.",
+    });
+  });
+
+  test("an automation's first folder is its project when project_id is empty", async () => {
+    writeStore(storePath(), [automation({ id: "a", cwds: '["/work/repo"]' })], []);
+    const result = await codexAppScheduleReader.read(ctx());
+    expect(result.records[0]?.runs_on.project).toBe("/work/repo");
   });
 
   test("a database that is not a database also falls back", async () => {
@@ -483,11 +536,12 @@ describe("field mapping", () => {
           "'''",
           'id = "real"',
           'prompt = """one line SECRET"""',
-          'model = "SECRET-MODEL"',
+          'model = "m-1"',
+          'other = "SECRET-OTHER"',
           "[table]",
           'name = "SECRET-NESTED"',
         ].join("\r\n"),
       ),
-    ).toEqual({ id: "real" });
+    ).toEqual({ id: "real", model: "m-1" });
   });
 });

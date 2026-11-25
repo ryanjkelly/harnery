@@ -10,6 +10,7 @@ import {
   CRONTAB_LIST_ARGV,
   osTimersScheduleReader,
   parseCrontab,
+  parseExecStart,
   parseSystemdTimespan,
   parseTimerListText,
   SYSTEMD_LIST_JSON_ARGV,
@@ -121,6 +122,11 @@ const SHOW_OUTPUT = [
     "ActiveState=inactive",
     "Result=success",
     "ExecMainStatus=0",
+    "ExecStart={ path=/bin/bash ; argv[]=/bin/bash /opt/example/sync.sh --quiet ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }",
+    "ExecStart={ path=/usr/bin/touch ; argv[]=/usr/bin/touch /tmp/example-synced ; ignore_errors=yes ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }",
+    "ExecStartPre={ path=/usr/bin/pre ; argv[]=/usr/bin/pre PRE-SHOULD-NOT-LEAK ; ignore_errors=no }",
+    "Environment=EXAMPLE_TOKEN=ENV-SHOULD-NOT-LEAK",
+    "EnvironmentFiles=/opt/example/secrets.env (ignore_errors=no)",
   ].join("\n"),
   [
     "Id=example-report.timer",
@@ -151,7 +157,7 @@ const SHOW_OUTPUT = [
     "ActiveState=failed",
     "Result=exit-code",
     "ExecMainStatus=2",
-    "ExecStart={ path=/usr/bin/example ; argv[]=/usr/bin/example --token=SHOULD-NOT-LEAK }",
+    "ExecStart={ path=/usr/bin/example ; argv[]=/usr/bin/example --token=SHOULD-NOT-LEAK ; ignore_errors=no ; start_time=[n/a] }",
   ].join("\n"),
 ].join("\n\n");
 
@@ -195,7 +201,37 @@ describe("osTimersScheduleReader: systemd", () => {
       next_run_at: "2026-11-22T12:05:00.000Z",
       last_run: { at: "2026-11-22T12:00:00.000Z", status: "succeeded" },
       created_by: null,
+      work: {
+        commands: [
+          {
+            name: "ExecStart",
+            argv: null,
+            line: "/bin/bash /opt/example/sync.sh --quiet",
+            env: [],
+            finding_exit_codes: [],
+          },
+          {
+            name: "ExecStart",
+            argv: null,
+            line: "/usr/bin/touch /tmp/example-synced",
+            env: [],
+            finding_exit_codes: [],
+          },
+        ],
+        agent: null,
+        redacted: false,
+      },
     });
+    const json = JSON.stringify(result);
+    for (const leak of ["ENV-SHOULD-NOT-LEAK", "secrets.env", "PRE-SHOULD-NOT-LEAK"]) {
+      expect(json).not.toContain(leak);
+    }
+  });
+
+  test("a service with no ExecStart reported has no work", async () => {
+    const result = await read(happyResponses());
+    const report = result.records.find((r) => r.id === "systemd-user:example-report.timer");
+    expect(report && "work" in report).toBe(false);
   });
 
   test("a calendar timer that never ran has no last run", async () => {
@@ -219,14 +255,30 @@ describe("osTimersScheduleReader: systemd", () => {
     expect(backup && "description" in backup).toBe(false);
     expect(backup?.next_run_at).toBeNull();
     expect(backup?.last_run).toEqual({ at: "2026-11-21T03:00:00.000Z", status: "failed" });
+    expect(backup?.work?.commands[0]?.line).toBe("/usr/bin/example --token=‹redacted›");
+    expect(backup?.work?.redacted).toBe(true);
     expect(JSON.stringify(result)).not.toContain("SHOULD-NOT-LEAK");
-    expect(JSON.stringify(result)).not.toContain("ExecStart");
   });
 
-  test("never asks systemctl for ExecStart", async () => {
+  test("asks systemctl for ExecStart and never for the environment", async () => {
     const calls: string[][] = [];
     await read(happyResponses(), calls);
-    for (const c of calls) expect(c.join(" ")).not.toContain("ExecStart");
+    const show = calls.filter((c) => c[2] === "show").map((c) => c.join(" "));
+    expect(show.some((c) => c.includes("ExecStart"))).toBe(true);
+    for (const c of show) {
+      expect(c).not.toContain("Environment");
+      expect(c).not.toContain("ExecStartPre");
+    }
+  });
+
+  test("parseExecStart keeps each argv line in order", () => {
+    expect(
+      parseExecStart([
+        "{ path=/bin/a ; argv[]=/bin/a x ; ignore_errors=no ; start_time=[n/a] }",
+        "{ path=/bin/b ; argv[]=/bin/b y ; flags= ; start_time=[n/a] }",
+        "",
+      ]),
+    ).toEqual(["/bin/a x", "/bin/b y"]);
   });
 
   test("falls back to the text table when --output=json is refused", async () => {
@@ -357,14 +409,15 @@ describe("osTimersScheduleReader: crontab", () => {
       expect(r.account).toBe(MACHINE);
       expect(r.runs_on).toEqual({ host: MACHINE });
     }
-    const json = JSON.stringify(result);
-    for (const leak of [
-      "SECRET123",
-      "ghp_SECRETTOKEN",
-      "/usr/local/bin",
+    expect(result.records.map((r) => r.work?.commands[0]?.line)).toEqual([
+      "/usr/local/bin/example --api-key=‹redacted› >/dev/null 2>&1",
+      "/usr/local/bin/example-daily TOKEN=‹redacted›",
       "example-weekday",
       "example-boot",
-    ]) {
+    ]);
+    expect(result.records.map((r) => r.work?.redacted)).toEqual([true, true, false, false]);
+    const json = JSON.stringify(result);
+    for (const leak of ["SECRET123", "ghp_SECRETTOKEN", "someone"]) {
       expect(json).not.toContain(leak);
     }
   });

@@ -1,0 +1,93 @@
+---
+title: "0281: Every schedule shows what it runs"
+description: "ADR: Every schedule record can carry `work`: the commands an OS timer or crontab line runs and the prompt, model and effort of a T3 Code task or Codex app automation, after one shared secret redactor. Supersedes the never-read-prompts-or-commands part of ADR 0271 point 3 and ADR 0277."
+---
+
+**Status:** accepted (2026-11-24) · **Scope:** product tier (`core/schedule`, the secret redactor), `harn schedule show`, dashboard Schedules page · **Supersedes:** the part of [ADR 0271](/decisions/0271-one-list-of-schedules/) point 3 and [ADR 0277](/decisions/0277-schedule-readers-on-by-default/) that keeps prompts and command text unread · **Generalizes:** [ADR 0280](/decisions/0280-harnery-jobs-show-what-they-run/)
+
+## Context
+
+[ADR 0280](/decisions/0280-harnery-jobs-show-what-they-run/) let a Harnery
+job's card say what the job runs. Every other card still said only when a
+schedule fires: a systemd timer named `example-heal.timer`, a crontab entry
+numbered 3, or a T3 Code task with a title. To learn what any of them does,
+the operator had to open a terminal, run `systemctl cat` or `crontab -l`, or
+open the app that owns the task. The operator asked for every schedule to
+show its command or prompt, with anything that looks like a password or key
+blanked out, after being told that the dashboard can also be reached through
+a shared tunnel link, so prompts become visible to anyone who holds that
+link. The operator accepted that risk.
+
+## Decision
+
+1. **Every record may carry `work`.** It holds the commands in run order
+   (each as an argv, or as one line of text when the source stores it that
+   way, with environment variable names but never values), the agent it
+   starts (adapter, model, effort, prompt) or null, and `redacted`, true when
+   anything was masked. A record without `work` means the reader could not
+   tell. The Harnery job's commands and agent move from `job` into `work`;
+   `job` keeps enrollment, owner, limits and the newest run. No alias is kept.
+2. **What each reader now reads.**
+   - OS timers: each systemd user timer's triggered unit is asked for
+     `ExecStart` (every line, in order) through `systemctl --user show`; the
+     record keeps the `argv[]` text, not systemd's `{ path=… ; argv[]=… }`
+     wrapper. No other `Exec*=` property is kept, and `Environment=` and
+     `EnvironmentFile=` are never asked for, so `env` stays empty. Each
+     crontab line keeps its command text after the schedule fields.
+   - T3 Code: the task's `prompt` and, when the column exists,
+     `model_selection_json` (provider instance, model, effort option). The
+     webhook token and secret, run error and other columns stay unread.
+   - Codex app: the automation's `prompt` and, when the columns exist,
+     `model`, `reasoning_effort` and `cwds` (the first folder is the project
+     when `project_id` is empty). The TOML fallback reads single-line
+     `prompt`, `model` and `reasoning_effort` keys. Inbox titles, summaries
+     and archived messages stay unread.
+   - The layout checks stand: a missing required column (now including
+     `prompt`) is `unsupported`; optional columns are selected only when the
+     table has them, never guessed.
+3. **One redactor, before the record.** Every command and prompt passes
+   through one shared redactor (`buildScheduleWork`, using
+   `redactSecretArgv` and `redactSecretText`) inside the reader, so the
+   unmasked text never reaches JSON output, the dashboard, logs or
+   session-start notices. It replaces with `‹redacted›`: secret-flag values
+   (`--password`, `--token`, `--api-key`, …), `NAME=value` and `"name":
+   "value"` pairs whose name contains PASS, SECRET, TOKEN, KEY, AUTH,
+   CREDENTIAL, COOKIE, PRIVATE or SESSION, URL credentials and secret query
+   parameters, Authorization and Bearer values, known token shapes (OpenAI
+   and Anthropic keys, GitHub, Slack, AWS and Google tokens, JWTs, PEM
+   private keys), and any other run of 32 or more base64- or hex-like
+   characters that mixes letters and digits.
+4. **What the redactor deliberately keeps.** File paths (judged one segment
+   at a time), UUIDs, 40-character lowercase hex (a git commit SHA), digests
+   written as `sha256:…`, variable references (`$TOKEN`), and long word-like
+   identifiers. Other unprefixed hex of 32 or more characters is masked, so a
+   bare 64-character digest shows as `‹redacted›`: a key and a digest look
+   the same, and masking a digest costs less than showing a key.
+5. **Both surfaces say the same thing.** The card shows a one-line summary
+   ("Runs: local-dev-heal.sh", "Starts a codex agent (gpt-5, high): <first
+   line of the prompt>") and, under Details, a "What it runs" section with
+   commands in monospace, the prompt in a collapsible block, and a note when
+   something was redacted. `harn schedule show` prints the same lines.
+
+## Alternatives
+
+- **Keep other apps' text unread (ADR 0271 as written).** Rejected by the
+  operator: the list could not say what most schedules do.
+- **Show text unmasked.** Rejected: the dashboard can be reached through a
+  shared tunnel link, and command lines and prompts sometimes hold keys.
+- **Mask only known token shapes.** Rejected: many keys have no fixed prefix;
+  the long-run rule catches those at the cost of masking some digests.
+- **Read the unit file with `systemctl cat`.** Rejected: it returns
+  `Environment=` values along with the commands, and the reader must never
+  read those.
+
+## Consequences
+
+- `harn schedule list --json` and the Schedules page now show other apps'
+  prompts and machine timers' commands, after masking. Anyone with the
+  dashboard's tunnel link can read them. Masking is best effort, not a
+  guarantee.
+- A schedule whose prompt is a multi-line string in a Codex TOML fallback, or
+  whose service systemd did not report, has no `work`; `show` says the source
+  does not say.
+- ADR 0271 point 3 and ADR 0277 carry a pointer to this decision.

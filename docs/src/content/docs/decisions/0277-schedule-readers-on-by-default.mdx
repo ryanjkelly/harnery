@@ -33,6 +33,9 @@ the list wants it complete without setup.
 The privacy limits from ADR 0271 stand: readers copy a store before reading
 it, never write to it, and select schedule fields only. Prompts, inbox text,
 tokens, secrets and crontab command text are never read.
+[ADR 0281](/decisions/0281-every-schedule-shows-what-it-runs/) later lifted
+this for prompts and command text, which are now read and shown after a
+secret redactor; inbox text, tokens and secrets stay unread.
 
 ## Alternatives
 

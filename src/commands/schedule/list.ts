@@ -11,10 +11,10 @@ import { resolveBinName, resolveTimeZone } from "../../core/config.ts";
 import {
   describeScheduleAgent,
   describeScheduleEnrollment,
-  describeScheduleJobWork,
-  formatScheduleArgv,
+  describeScheduleWork,
+  formatScheduleCommand,
   formatScheduleDuration,
-} from "../../core/schedule/describe-job.ts";
+} from "../../core/schedule/describe-work.ts";
 import {
   type ReadAllSchedulesOptions,
   readAllSchedules,
@@ -27,6 +27,7 @@ import {
   type ScheduleSource,
   type ScheduleSourceCoverage,
   type ScheduleTrigger,
+  type ScheduleWork,
 } from "../../core/schedule/types.ts";
 import { table } from "../../lib/format.ts";
 
@@ -91,26 +92,35 @@ function formatCreatedBy(record: ScheduleRecord): string {
   return by.agent_name ?? by.instance_id;
 }
 
-/** The `schedule show` lines for a Harnery job: what it runs, enrollment, limits, newest run. */
-function harneryJobLines(record: ScheduleRecord, job: ScheduleHarneryJob, zone: string): string[] {
-  const lines = [`runs:        ${describeScheduleJobWork(job)}`];
-  job.commands.forEach((cmd, i) => {
+/** The `schedule show` lines for what a schedule runs: commands, then the agent and prompt. */
+function workLines(work: ScheduleWork): string[] {
+  const lines = [`runs:        ${describeScheduleWork(work)}`];
+  work.commands.forEach((cmd, i) => {
     const extra = [
       cmd.env.length > 0 ? `env names ${cmd.env.join(", ")}` : null,
       cmd.finding_exit_codes.length > 0
         ? `finding exit codes ${cmd.finding_exit_codes.join(", ")}`
         : null,
     ].filter(Boolean);
+    const label = cmd.name ? `${cmd.name}: ` : "";
     lines.push(
-      `  ${i + 1}. ${cmd.name}: ${formatScheduleArgv(cmd.argv)}${extra.length > 0 ? ` (${extra.join("; ")})` : ""}`,
+      `  ${i + 1}. ${label}${formatScheduleCommand(cmd)}${extra.length > 0 ? ` (${extra.join("; ")})` : ""}`,
     );
   });
-  if (job.agent) {
-    lines.push(`agent:       ${describeScheduleAgent(job.agent)}`, "prompt:");
-    for (const line of job.agent.prompt.split("\n")) lines.push(`  ${line}`);
+  if (work.agent) {
+    lines.push(`agent:       ${describeScheduleAgent(work.agent)}`, "prompt:");
+    for (const line of work.agent.prompt.split("\n")) lines.push(`  ${line}`);
   } else {
     lines.push("agent:       none (commands only, no model tokens)");
   }
+  if (work.redacted)
+    lines.push("redacted:    yes; values that look like secrets are shown as ‹redacted›");
+  return lines;
+}
+
+/** The `schedule show` lines for a Harnery job: enrollment, limits, newest run. */
+function harneryJobLines(record: ScheduleRecord, job: ScheduleHarneryJob, zone: string): string[] {
+  const lines: string[] = [];
   const e = job.enrollment;
   lines.push(
     `enrollment:  ${describeScheduleEnrollment(record, job)} [${e.state}${e.enrolled_at ? `, enrolled ${formatWhen(e.enrolled_at, zone)}` : ""}]`,
@@ -290,6 +300,8 @@ export function registerScheduleListCommands(
         `last run:    ${formatLastRun(record, zone)}`,
         `created by:  ${by ? `${by.agent_name ?? by.instance_id}${by.task ? ` (${by.task})` : ""}, seen ${formatWhen(by.observed_at, zone)}` : "-"}`,
       ];
+      if (record.work) lines.push(...workLines(record.work));
+      else lines.push("runs:        - (the source does not say)");
       if (record.job) lines.push(...harneryJobLines(record, record.job, zone));
       if (coverage) {
         lines.push(

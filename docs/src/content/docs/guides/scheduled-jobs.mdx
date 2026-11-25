@@ -42,11 +42,17 @@ That source's coverage row then reads `disabled` and names the file that
 switched it off.
 
 :::note[What the list reads]
-For another app's schedules, the list holds schedule fields only: id, title,
-trigger, where it runs, whether it is enabled, and the next and last run.
-Prompts, inbox text and secrets are never read from another app's store, and
-crontab command text is never shown. Harnery never changes a schedule that
-belongs to another app.
+Every schedule shows what it runs as well as when: the command lines of a
+systemd timer's service (its `ExecStart=` lines) and of each crontab entry,
+and the prompt, model and effort of a T3 Code task or Codex app automation.
+Anything that looks like a password, key or token is replaced with
+`‹redacted›` before it is stored or shown, and the card says when that
+happened. Inbox text, webhook tokens and secrets are never read from another
+app's store, and environment variable values are never read
+([ADR 0281](/decisions/0281-every-schedule-shows-what-it-runs/)). Masking is
+best effort: the dashboard can be reached through a shared tunnel link, so
+treat prompts there as visible to anyone with the link. Harnery never changes
+a schedule that belongs to another app.
 
 Harnery's own jobs show everything needed to understand them, because they
 come from this project's committed job file: each gather command's arguments,

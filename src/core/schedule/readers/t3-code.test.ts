@@ -9,9 +9,10 @@ import {
   validateScheduleRecord,
 } from "../types.ts";
 import {
-  T3_CODE_SCHEDULE_SQL,
+  t3CodeAgent,
   t3CodeLastRun,
   t3CodeScheduleReader,
+  t3CodeScheduleSql,
   t3CodeScheduleTrigger,
   t3CodeStorePath,
 } from "./t3-code.ts";
@@ -45,12 +46,10 @@ const REAL_COLUMNS = [
 ];
 
 const NEVER_SELECTED = [
-  "prompt",
   "webhook_token",
   "webhook_secret",
   "last_run_error",
   "workspace_strategy_json",
-  "model_selection_json",
   "last_run_webhook_delivery_id",
   "created_by",
   "creation_source",
@@ -88,13 +87,14 @@ function baseRow(overrides: Row): Row {
   return {
     task_id: "scheduled-task:x",
     title: "A task",
-    prompt: "SECRET-PROMPT text",
+    prompt: "Check the build.\nCall it with --token SECRET-PROMPT-TOKEN please.",
     enabled: 1,
     schedule_json: '{"type":"interval","everyMs":60000}',
     project_id: "project-1",
     thread_id: "thread-1",
     workspace_strategy_json: '{"mode":"SECRET-WORKSPACE"}',
-    model_selection_json: '{"model":"SECRET-MODEL"}',
+    model_selection_json:
+      '{"instanceId":"agentProvider_1","model":"model-x","options":[{"id":"effort","value":"high"}]}',
     runtime_mode: "full",
     interaction_mode: "default",
     created_by: "SECRET-CREATOR",
@@ -176,8 +176,10 @@ describe("t3CodeScheduleReader", () => {
     expect(t3CodeScheduleReader.id).toBe("t3-code");
   });
 
-  test("the SQL names only schedule columns", () => {
-    const named = T3_CODE_SCHEDULE_SQL.toLowerCase();
+  test("the SQL names only schedule, prompt and model columns", () => {
+    const named = t3CodeScheduleSql().toLowerCase();
+    expect(named).toContain("prompt");
+    expect(named).toContain("model_selection_json");
     for (const column of NEVER_SELECTED) {
       expect(named.includes(column)).toBe(false);
     }
@@ -223,6 +225,16 @@ describe("t3CodeScheduleReader", () => {
       next_run_at: null,
       last_run: { at: "2026-11-08T05:45:00.641Z", status: "succeeded" },
       created_by: null,
+      work: {
+        commands: [],
+        agent: {
+          adapter: "agentProvider_1",
+          model: "model-x",
+          effort: "high",
+          prompt: "Check the build.\nCall it with --token ‹redacted› please.",
+        },
+        redacted: true,
+      },
     });
     expect(byId["scheduled-task:interval"]).toMatchObject({
       trigger: { kind: "interval", everyMs: 3600000, raw: "every 3600000 ms" },
@@ -252,6 +264,53 @@ describe("t3CodeScheduleReader", () => {
     });
     // The copy is gone after the read.
     expect(readdirSync(join(root, "tmp"))).toEqual([]);
+  });
+
+  test("a table without model_selection_json still reads the prompt", async () => {
+    const storePath = join(root, "older", "store.sqlite");
+    writeStore(
+      storePath,
+      REAL_COLUMNS.filter((c) => c !== "model_selection_json"),
+      [baseRow({ prompt: "Summarise the day." })],
+    );
+    const result = await t3CodeScheduleReader.read(ctx({ storePaths: { "t3-code": storePath } }));
+    expect(result.coverage.state).toBe("current");
+    expect(result.records[0]?.work).toEqual({
+      commands: [],
+      agent: { adapter: "t3-code", model: null, effort: null, prompt: "Summarise the day." },
+      redacted: false,
+    });
+  });
+
+  test("a table without a prompt column is an unsupported layout", async () => {
+    const storePath = join(root, "noprompt", "store.sqlite");
+    writeStore(
+      storePath,
+      REAL_COLUMNS.filter((c) => c !== "prompt"),
+      [baseRow({})],
+    );
+    const result = await t3CodeScheduleReader.read(ctx({ storePaths: { "t3-code": storePath } }));
+    expect(result.coverage.state).toBe("unsupported");
+    expect(result.coverage.detail).toContain("prompt");
+    expect(result.records).toEqual([]);
+  });
+
+  test("t3CodeAgent reads the stored selection and ignores unknown shapes", () => {
+    expect(
+      t3CodeAgent("p", '{"instanceId":"i","model":"m","options":[{"id":"effort","value":"low"}]}'),
+    ).toEqual({
+      adapter: "i",
+      model: "m",
+      effort: "low",
+      prompt: "p",
+    });
+    expect(t3CodeAgent("p", "not json")).toEqual({
+      adapter: "t3-code",
+      model: null,
+      effort: null,
+      prompt: "p",
+    });
+    expect(t3CodeAgent("p", "[1,2]").model).toBeNull();
   });
 
   test("honours a store path override", async () => {

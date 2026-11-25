@@ -134,9 +134,9 @@ describe("schedule list", () => {
     expect(payload.records.find((r) => r.source === "os-timer")?.next_run_at).toBe(
       "2026-11-22T13:00:00.000Z",
     );
-    // The Harnery job's own committed prompt is shown (ADR 0280); other sources carry no `job`.
+    // Every source can say what it runs (ADR 0281); only Harnery records carry `job`.
     const harneryRecord = payload.records.find((r) => r.source === "harnery");
-    expect(harneryRecord?.job?.agent?.prompt).toBe(PROMPT);
+    expect(harneryRecord?.work?.agent?.prompt).toBe(PROMPT);
     expect(payload.records.find((r) => r.source === "os-timer")?.job).toBeUndefined();
   });
 
@@ -190,6 +190,39 @@ describe("schedule show", () => {
     expect(shown).toContain("agent:       codex agent (default model, default effort)");
     expect(shown).toContain(`  ${PROMPT}`);
     expect(shown).toContain("newest run:  -");
+  });
+
+  test("shows an OS timer's command and the redaction note", async () => {
+    const timer: ScheduleRecord = {
+      ...osRecord("systemd-user:heal.timer"),
+      work: {
+        commands: [
+          {
+            name: "ExecStart",
+            argv: null,
+            line: "/bin/bash /opt/heal.sh --token=‹redacted›",
+            env: [],
+            finding_exit_codes: [],
+          },
+        ],
+        agent: null,
+        redacted: true,
+      },
+    };
+    const { out, run } = harness([fake("os-timer", [timer])]);
+    await run("show", "systemd-user:heal.timer");
+    const shown = out.text.join("");
+    expect(shown).toContain("runs:        Runs: heal.sh");
+    expect(shown).toContain("  1. ExecStart: /bin/bash /opt/heal.sh --token=‹redacted›");
+    expect(shown).toContain("agent:       none");
+    expect(shown).toContain("redacted:    yes");
+    expect(shown).not.toContain("enrollment:");
+  });
+
+  test("a record with no work says the source does not say", async () => {
+    const { out, run } = harness([fake("os-timer", [osRecord("backup")])]);
+    await run("show", "backup");
+    expect(out.text.join("")).toContain("runs:        - (the source does not say)");
   });
 
   test("an id in two sources is ambiguous until named with source:id", async () => {

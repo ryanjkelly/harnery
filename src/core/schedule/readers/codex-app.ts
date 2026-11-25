@@ -5,14 +5,20 @@
  * private `sqlite/codex.db` store under the Codex home folder, and mirrors
  * each automation to `automations/<id>/automation.toml`. Neither layout is
  * documented, so the reader checks that every table and column it selects
- * exists and reports `unsupported` otherwise. It selects named schedule
- * columns only, from a copy made by the shared SQLite helper, so prompt,
- * inbox and archived message text never leaves the store.
+ * exists and reports `unsupported` otherwise. From a copy made by the
+ * shared SQLite helper it selects the schedule columns, the automation's
+ * `prompt`, and, when the columns exist, `model`, `reasoning_effort` and
+ * `cwds` (the folders it runs in, used as the project when `project_id` is
+ * empty). The prompt becomes the record's `work.agent.prompt` after the
+ * shared secret redactor (ADR 0281). From `automation_runs` it selects only
+ * the automation id, status and time, so inbox titles and summaries and
+ * archived message text never leave the store.
  *
  * When the database cannot be copied or opened, the reader falls back to the
  * TOML files and reports `stale`, since the app treats those files as a copy
- * that can lag. It reads only a few named keys from them and skips every
- * other value, multi-line strings included.
+ * that can lag. It reads only a few named keys from them (the prompt, model
+ * and effort among them) and skips every other value. A prompt written as a
+ * multi-line string is skipped too, so such a record has no `work`.
  *
  * Under WSL the app is a Windows program, so its home folder is on the
  * Windows side (`<drive>/Users/<name>/.codex`); the reader looks there when
@@ -35,6 +41,7 @@ import {
   type ScheduleRunsOn,
   type ScheduleTrigger,
 } from "../types.ts";
+import { buildScheduleWork } from "../work.ts";
 
 /** The tables the reader reads. */
 export const CODEX_APP_AUTOMATIONS_TABLE = "automations";
@@ -50,21 +57,45 @@ export const CODEX_APP_AUTOMATION_COLUMNS = [
   "last_run_at",
   "project_id",
   "target_thread_id",
+  "prompt",
 ] as const;
+
+/** Columns of `automations` selected only when the table has them. */
+export const CODEX_APP_OPTIONAL_COLUMNS = ["model", "reasoning_effort", "cwds"] as const;
 
 /** The only columns the reader selects from `automation_runs`. */
 export const CODEX_APP_RUN_COLUMNS = ["automation_id", "status", "created_at"] as const;
 
-/** The automations statement. */
-export const CODEX_APP_AUTOMATIONS_SQL = `SELECT ${CODEX_APP_AUTOMATION_COLUMNS.join(", ")} FROM ${CODEX_APP_AUTOMATIONS_TABLE} ORDER BY id`;
+/** The automations statement, given which optional columns exist. */
+export function codexAppAutomationsSql(
+  optional: readonly string[] = CODEX_APP_OPTIONAL_COLUMNS,
+): string {
+  const columns = [
+    ...CODEX_APP_AUTOMATION_COLUMNS,
+    ...CODEX_APP_OPTIONAL_COLUMNS.filter((c) => optional.includes(c)),
+  ];
+  return `SELECT ${columns.join(", ")} FROM ${CODEX_APP_AUTOMATIONS_TABLE} ORDER BY id`;
+}
 
 /** The newest run of each automation (ties are settled in code). */
 export const CODEX_APP_RUNS_SQL = `SELECT r.automation_id, r.status, r.created_at FROM ${CODEX_APP_RUNS_TABLE} r WHERE r.created_at = (SELECT MAX(n.created_at) FROM ${CODEX_APP_RUNS_TABLE} n WHERE n.automation_id = r.automation_id) ORDER BY r.automation_id`;
 
 /** The only keys the TOML fallback reads. */
-export const CODEX_APP_TOML_KEYS = ["id", "name", "status", "rrule", "target_thread_id"] as const;
+export const CODEX_APP_TOML_KEYS = [
+  "id",
+  "name",
+  "status",
+  "rrule",
+  "target_thread_id",
+  "prompt",
+  "model",
+  "reasoning_effort",
+] as const;
 
-type AutomationRow = Record<(typeof CODEX_APP_AUTOMATION_COLUMNS)[number], unknown>;
+type AutomationRow = Record<
+  (typeof CODEX_APP_AUTOMATION_COLUMNS)[number] | (typeof CODEX_APP_OPTIONAL_COLUMNS)[number],
+  unknown
+>;
 type RunRow = Record<(typeof CODEX_APP_RUN_COLUMNS)[number], unknown>;
 type TomlFields = Partial<Record<(typeof CODEX_APP_TOML_KEYS)[number], string>>;
 
@@ -208,6 +239,38 @@ function runsOn(machine: string, project: unknown, thread: unknown): ScheduleRun
   return out;
 }
 
+/** The first folder of a stored `cwds` JSON list, when it holds one. */
+export function codexAppFirstCwd(cwds: unknown): string | undefined {
+  if (typeof cwds !== "string") return undefined;
+  try {
+    const parsed: unknown = JSON.parse(cwds);
+    if (Array.isArray(parsed) && typeof parsed[0] === "string" && parsed[0].length > 0) {
+      return parsed[0];
+    }
+  } catch {
+    // Not a list; leave the project unset.
+  }
+  return undefined;
+}
+
+/** The record's `work` for an automation's prompt, or undefined when there is none. */
+export function codexAppWork(
+  prompt: unknown,
+  model: unknown,
+  effort: unknown,
+): ScheduleRecord["work"] {
+  if (typeof prompt !== "string") return undefined;
+  return buildScheduleWork({
+    commands: [],
+    agent: {
+      adapter: "codex",
+      model: nonEmpty(model) ?? null,
+      effort: nonEmpty(effort) ?? null,
+      prompt,
+    },
+  });
+}
+
 function lastRunOf(run: RunRow | undefined, lastRunAt: unknown): ScheduleLastRun | null {
   if (run) return { at: codexAppInstant(run.created_at), status: codexAppRunStatus(run.status) };
   const at = codexAppInstant(lastRunAt);
@@ -221,24 +284,30 @@ function rowToRecord(
 ): ScheduleRecord | null {
   const id = idOf(row.id);
   if (id.length === 0) return null;
+  const work = codexAppWork(row.prompt, row.model, row.reasoning_effort);
   return {
     source: "codex-app",
     account: machine,
     id,
     title: typeof row.name === "string" ? row.name : "",
     trigger: rruleTrigger(row.rrule),
-    runs_on: runsOn(machine, row.project_id, row.target_thread_id),
+    runs_on: runsOn(
+      machine,
+      nonEmpty(row.project_id) ?? codexAppFirstCwd(row.cwds),
+      row.target_thread_id,
+    ),
     enabled: codexAppEnabled(row.status),
     next_run_at: codexAppInstant(row.next_run_at),
     last_run: lastRunOf(run, row.last_run_at),
     created_by: null,
+    ...(work ? { work } : {}),
   };
 }
 
 // ---------------------------------------------------------------------------
 // TOML fallback. A deliberately small reader: top-level `key = value` lines
 // with a single-line basic or literal string value, for the named keys only.
-// Multi-line strings are skipped whole, so prompt text is never kept.
+// Multi-line strings are skipped whole.
 // ---------------------------------------------------------------------------
 
 function unescapeBasic(body: string): string | null {
@@ -312,6 +381,7 @@ function readTomlFallback(home: string, machine: string): TomlRead {
       skipped += 1;
       continue;
     }
+    const work = codexAppWork(fields.prompt, fields.model, fields.reasoning_effort);
     records.push({
       source: "codex-app",
       account: machine,
@@ -323,6 +393,7 @@ function readTomlFallback(home: string, machine: string): TomlRead {
       next_run_at: null,
       last_run: null,
       created_by: null,
+      ...(work ? { work } : {}),
     });
   }
   if (!readAny && skipped > 0) return { ok: false };
@@ -417,7 +488,9 @@ export const codexAppScheduleReader: ScheduleReader = {
         if (key.length > 0 && !newest.has(key)) newest.set(key, run);
       }
       records = [];
-      for (const row of opened.db.all<AutomationRow>(CODEX_APP_AUTOMATIONS_SQL)) {
+      const present = new Set(opened.db.columns(CODEX_APP_AUTOMATIONS_TABLE));
+      const sql = codexAppAutomationsSql(CODEX_APP_OPTIONAL_COLUMNS.filter((c) => present.has(c)));
+      for (const row of opened.db.all<AutomationRow>(sql)) {
         const record = rowToRecord(row, newest.get(idOf(row.id)), ctx.machine);
         if (record) records.push(record);
         else skipped += 1;

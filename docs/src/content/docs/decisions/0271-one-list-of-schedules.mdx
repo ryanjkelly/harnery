@@ -47,7 +47,10 @@ a session at all; an agent's tool call is the only moment Harnery sees them.
    reader run by default, with the operator switching one off. Readers never write to another app's storage. They select named
    schedule columns and nothing else: prompts, inbox text, webhook tokens,
    secrets and crontab command text stay where they are. The operating-system
-   reader and hook capture need no setting.
+   reader and hook capture need no setting. (Superseded in part by
+   [ADR 0281](/decisions/0281-every-schedule-shows-what-it-runs/): prompts
+   and commands are now read and shown after a secret redactor; inbox text,
+   webhook tokens and secrets stay unread.)
 4. **SQLite is read from a copy.** One shared helper copies a database with
    its `-wal` and `-shm` files into a temporary folder and reads the copy, so
    committed rows in the write-ahead log are seen and the owning app is never

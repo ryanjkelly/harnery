@@ -10,10 +10,10 @@ import {
   cleanTitle,
   describeScheduleAgent,
   describeScheduleEnrollment,
-  describeScheduleJobWork,
+  describeScheduleWork,
   fileViewerHref,
-  formatScheduleArgv,
   formatRunDuration,
+  formatScheduleCommand,
   formatTrigger,
   LAST_RUN_LABELS,
   RUN_RESULT_LABELS,
@@ -22,6 +22,7 @@ import {
   type ScheduleHistory,
   type ScheduleRecord,
   type ScheduleState,
+  type ScheduleWork,
   SOURCE_META,
   sourceLabel,
 } from "@/lib/schedules";
@@ -106,7 +107,7 @@ export function ScheduleCard({
           <p className="mt-1 text-sm leading-snug text-muted-foreground">{record.description}</p>
         ) : null}
 
-        {record.job ? <JobSummary record={record} job={record.job} /> : null}
+        {record.work || record.job ? <WorkSummary record={record} /> : null}
 
         <Timing record={record} inactive={inactive} />
 
@@ -302,18 +303,20 @@ function Details({ record, label }: { record: ScheduleRecord; label: string }) {
         ) : null}
         {record.job ? <JobRows record={record} job={record.job} /> : null}
       </dl>
-      {record.job ? <WhatItRuns job={record.job} /> : null}
+      {record.work ? <WhatItRuns work={record.work} judges={record.source === "harnery"} /> : null}
     </details>
   );
 }
 
-/** One line on what a Harnery job runs, and a warning when it will not run here. */
-function JobSummary({ record, job }: { record: ScheduleRecord; job: ScheduleHarneryJob }) {
-  const runsHere = record.runs_on.host === record.account && job.enrollment.state === "enrolled";
+/** One line on what a schedule runs, and a warning when a Harnery job will not run here. */
+function WorkSummary({ record }: { record: ScheduleRecord }) {
+  const job = record.job;
+  const runsHere =
+    !job || (record.runs_on.host === record.account && job.enrollment.state === "enrolled");
   return (
     <div className="mt-1 space-y-0.5 text-xs">
-      <p className="break-words">{describeScheduleJobWork(job)}</p>
-      {runsHere ? null : (
+      {record.work ? <p className="break-words">{describeScheduleWork(record.work)}</p> : null}
+      {runsHere || !job ? null : (
         <p className={TONE.warn.text}>{describeScheduleEnrollment(record, job)}</p>
       )}
     </div>
@@ -395,18 +398,28 @@ function JobRows({ record, job }: { record: ScheduleRecord; job: ScheduleHarnery
   );
 }
 
-/** The commands a Harnery job runs, in order, and the agent that judges them. */
-function WhatItRuns({ job }: { job: ScheduleHarneryJob }) {
+/**
+ * What a schedule runs: its commands in order and the agent it starts with
+ * its prompt. `judges` is true for a Harnery job, whose agent reads the
+ * commands' output.
+ */
+function WhatItRuns({ work, judges }: { work: ScheduleWork; judges: boolean }) {
+  const agentLine = work.agent
+    ? work.commands.length > 0 && judges
+      ? `Then a ${describeScheduleAgent(work.agent)} reads the output and judges it.`
+      : `Starts a ${describeScheduleAgent(work.agent)} with this prompt.`
+    : null;
   return (
     <section className="mt-2.5 border-t pt-2 text-xs">
       <h4 className="font-medium">What it runs</h4>
-      {job.commands.length > 0 ? (
+      {work.commands.length > 0 ? (
         <ol className="mt-1 space-y-1.5">
-          {job.commands.map((cmd, i) => (
-            <li key={cmd.name} className="min-w-0">
-              <span className="text-muted-foreground">{`${i + 1}. ${cmd.name}`}</span>
+          {work.commands.map((cmd, i) => (
+            // biome-ignore lint/suspicious/noArrayIndexKey: commands keep their run order and may share a name
+            <li key={i} className="min-w-0">
+              <span className="text-muted-foreground">{`${i + 1}.${cmd.name ? ` ${cmd.name}` : ""}`}</span>
               <code className="mt-0.5 block rounded bg-muted px-2 py-1 font-mono break-all">
-                {formatScheduleArgv(cmd.argv)}
+                {formatScheduleCommand(cmd)}
               </code>
               {cmd.env.length > 0 || cmd.finding_exit_codes.length > 0 ? (
                 <span className="mt-0.5 block text-muted-foreground">
@@ -423,12 +436,12 @@ function WhatItRuns({ job }: { job: ScheduleHarneryJob }) {
             </li>
           ))}
         </ol>
-      ) : (
-        <p className="mt-1 text-muted-foreground">No commands; the agent starts directly.</p>
+      ) : work.agent ? null : (
+        <p className="mt-1 text-muted-foreground">No commands.</p>
       )}
-      {job.agent ? (
-        <div className="mt-2">
-          <p>{`Then a ${describeScheduleAgent(job.agent)} reads the output and judges it.`}</p>
+      {work.agent && agentLine ? (
+        <div className={work.commands.length > 0 ? "mt-2" : "mt-1"}>
+          <p>{agentLine}</p>
           <details className="group/prompt mt-1">
             <summary className="inline-flex cursor-pointer list-none items-center gap-0.5 rounded text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
               <ChevronRight
@@ -438,15 +451,20 @@ function WhatItRuns({ job }: { job: ScheduleHarneryJob }) {
               Agent prompt
             </summary>
             <pre className="mt-1 max-h-96 overflow-auto whitespace-pre-wrap break-words rounded bg-muted px-2 py-1.5 font-mono">
-              {job.agent.prompt}
+              {work.agent.prompt}
             </pre>
           </details>
         </div>
-      ) : (
+      ) : work.commands.length > 0 ? (
         <p className="mt-2 text-muted-foreground">
           No AI agent: it runs these commands only and spends no model tokens.
         </p>
-      )}
+      ) : null}
+      {work.redacted ? (
+        <p className="mt-2 text-muted-foreground">
+          {"Values that look like passwords, keys or tokens are hidden as ‹redacted›."}
+        </p>
+      ) : null}
     </section>
   );
 }

@@ -89,26 +89,53 @@ export interface ScheduleCreatedBy {
   observed_at: string;
 }
 
-/** One gather command of a Harnery job, exactly as the job file writes it. */
-export interface ScheduleHarneryCommand {
-  name: string;
-  /** The argument list from the job file, unchanged. */
-  argv: string[];
-  /** Names of the environment variables passed through; never their values. */
+/**
+ * One command a schedule runs. Exactly one of `argv` and `line` is set.
+ * Its text has been through the shared secret redactor (`redactSecretArgv` /
+ * `redactSecretText`) before it entered the record.
+ */
+export interface ScheduleCommand {
+  /** The source's name for the command (a Harnery gather name, "ExecStart"); null when it has none. */
+  name: string | null;
+  /** The command as an argument list, when the source stores one; otherwise null. */
+  argv: string[] | null;
+  /**
+   * The command as one line of text, when the source stores it that way (a
+   * crontab command, a systemd ExecStart's argv as systemd prints it);
+   * otherwise null.
+   */
+  line: string | null;
+  /** Names of environment variables passed through; never their values. */
   env: string[];
-  /** Exit codes that mean "ran and found something"; empty when none are listed. */
+  /** Exit codes that mean "ran and found something"; empty when the source has none. */
   finding_exit_codes: number[];
 }
 
-/** The read-only judge agent of a Harnery job. */
-export interface ScheduleHarneryAgent {
+/** The AI agent a schedule starts. */
+export interface ScheduleAgent {
+  /** The adapter or provider that runs it ("codex", a T3 Code provider instance). */
   adapter: string;
-  /** Null when the job file leaves the model to the adapter's default. */
+  /** Null when the source leaves the model to a default. */
   model: string | null;
-  /** Null when the job file leaves the effort to the adapter's default. */
+  /** Null when the source leaves the effort to a default. */
   effort: string | null;
-  /** The full prompt from the job file. */
+  /** The prompt, after the secret redactor. */
   prompt: string;
+}
+
+/**
+ * What a schedule runs: its commands, the agent it starts, or both (ADR
+ * 0281). Readers fill it from the source's own store and pass every command
+ * and prompt through the shared secret redactor first, so no surface ever
+ * sees the unmasked text.
+ */
+export interface ScheduleWork {
+  /** Commands in run order; empty when the schedule only starts an agent. */
+  commands: ScheduleCommand[];
+  /** Null when the schedule starts no agent. */
+  agent: ScheduleAgent | null;
+  /** True when the redactor masked something in the commands or the prompt. */
+  redacted: boolean;
 }
 
 /**
@@ -148,16 +175,12 @@ export interface ScheduleHarneryRun {
 }
 
 /**
- * What a Harnery job runs and how it stands here. Only the Harnery reader
- * sets it, from the project's own committed job file and this checkout's
- * enrollment and run records. It never carries environment values, gather
- * output or report text.
+ * How a Harnery job stands here. Only the Harnery reader sets it, from this
+ * checkout's enrollment and run records and the job file's limits. What the
+ * job runs is in the record's `work`. It never carries environment values,
+ * gather output or report text.
  */
 export interface ScheduleHarneryJob {
-  /** Gather commands in run order; empty for an agent-only job. */
-  commands: ScheduleHarneryCommand[];
-  /** Null when the job runs commands only and starts no agent. */
-  agent: ScheduleHarneryAgent | null;
   enrollment: ScheduleHarneryEnrollment;
   /** The agent pinged when a run needs attention; null when none is named. */
   owner: string | null;
@@ -173,12 +196,12 @@ export interface ScheduleHarneryJob {
  *
  * Records join on `source`, `account` and `id` (see `scheduleRecordKey`).
  *
- * A record carries schedule fields only. It must never carry inbox or report
- * text, a secret, a webhook token, or another app's prompt or command text (a
- * crontab line's command, a unit's ExecStart, an app automation's prompt).
- * Readers select named columns and fields so that text never leaves its
- * store. The one exception is `job`: a Harnery job's commands and agent
- * prompt come from the project's own committed job file (ADR 0280).
+ * A record carries schedule fields and, in `work`, what the schedule runs:
+ * its commands and its agent's prompt, after the shared secret redactor
+ * (ADR 0281). It must never carry inbox or report text, environment
+ * values, a webhook token or secret, or unmasked command or prompt text.
+ * Readers select named columns and fields so that other text never leaves
+ * its store.
  */
 export interface ScheduleRecord {
   source: ScheduleSource;
@@ -191,8 +214,7 @@ export interface ScheduleRecord {
   /**
    * What the schedule does, in the source's own words (a systemd unit's
    * Description=, a Harnery job's description). Absent when the source does
-   * not say. Never a prompt or command text; a Harnery job's commands and
-   * prompt are in `job` instead.
+   * not say. Never a prompt or command text; those are in `work`.
    */
   description?: string;
   trigger: ScheduleTrigger;
@@ -205,7 +227,9 @@ export interface ScheduleRecord {
   last_run: ScheduleLastRun | null;
   /** Null unless a captured observation names the creating session. */
   created_by: ScheduleCreatedBy | null;
-  /** Set only on `source: "harnery"` records: what the job runs and how it stands here. */
+  /** What the schedule runs; absent when the reader could not tell. */
+  work?: ScheduleWork;
+  /** Set only on `source: "harnery"` records: how the job stands here. */
   job?: ScheduleHarneryJob;
 }
 
@@ -592,6 +616,7 @@ export function validateScheduleRecord(value: unknown): ScheduleValidation<Sched
       "next_run_at",
       "last_run",
       "created_by",
+      "work",
       "job",
     ],
     "record",
@@ -620,6 +645,7 @@ export function validateScheduleRecord(value: unknown): ScheduleValidation<Sched
     }
   }
   checkCreatedBy(c, r.created_by, "record.created_by");
+  if (r.work !== undefined) checkWork(c, r.work, "record.work");
   if (r.job !== undefined) {
     if (r.source !== "harnery") c.fail("record.job", "is set only on harnery records");
     else checkHarneryJob(c, r.job, "record.job");
@@ -645,32 +671,23 @@ function checkStringList(c: ScheduleFieldChecker, value: unknown, path: string):
   });
 }
 
-function checkHarneryJob(c: ScheduleFieldChecker, value: unknown, path: string): void {
-  const j = c.object(value, path);
-  if (!j) return;
-  c.onlyKeys(
-    j,
-    [
-      "commands",
-      "agent",
-      "enrollment",
-      "owner",
-      "timeout_minutes",
-      "max_launches_per_day",
-      "zone",
-      "latest_run",
-    ],
-    path,
-  );
-  if (!Array.isArray(j.commands)) c.fail(`${path}.commands`, "must be a list");
+function checkWork(c: ScheduleFieldChecker, value: unknown, path: string): void {
+  const w = c.object(value, path);
+  if (!w) return;
+  c.onlyKeys(w, ["commands", "agent", "redacted"], path);
+  c.boolean(w.redacted, `${path}.redacted`);
+  if (!Array.isArray(w.commands)) c.fail(`${path}.commands`, "must be a list");
   else
-    j.commands.forEach((cmd, i) => {
+    w.commands.forEach((cmd, i) => {
       const p = `${path}.commands[${i}]`;
       const o = c.object(cmd, p);
       if (!o) return;
-      c.onlyKeys(o, ["name", "argv", "env", "finding_exit_codes"], p);
-      c.string(o.name, `${p}.name`);
-      checkStringList(c, o.argv, `${p}.argv`);
+      c.onlyKeys(o, ["name", "argv", "line", "env", "finding_exit_codes"], p);
+      c.nullableString(o.name, `${p}.name`);
+      if (o.argv !== null) checkStringList(c, o.argv, `${p}.argv`);
+      if (o.line !== null && typeof o.line !== "string") c.fail(`${p}.line`, "must be a string");
+      if ((o.argv === null) === (o.line === null))
+        c.fail(p, "must set exactly one of argv and line");
       checkStringList(c, o.env, `${p}.env`);
       if (!Array.isArray(o.finding_exit_codes)) c.fail(`${p}.finding_exit_codes`, "must be a list");
       else
@@ -678,8 +695,8 @@ function checkHarneryJob(c: ScheduleFieldChecker, value: unknown, path: string):
           c.integer(code, `${p}.finding_exit_codes[${k}]`, 1, 255);
         });
     });
-  if (j.agent !== null) {
-    const a = c.object(j.agent, `${path}.agent`);
+  if (w.agent !== null) {
+    const a = c.object(w.agent, `${path}.agent`);
     if (a) {
       c.onlyKeys(a, ["adapter", "model", "effort", "prompt"], `${path}.agent`);
       c.string(a.adapter, `${path}.agent.adapter`);
@@ -688,6 +705,16 @@ function checkHarneryJob(c: ScheduleFieldChecker, value: unknown, path: string):
       if (typeof a.prompt !== "string") c.fail(`${path}.agent.prompt`, "must be a string");
     }
   }
+}
+
+function checkHarneryJob(c: ScheduleFieldChecker, value: unknown, path: string): void {
+  const j = c.object(value, path);
+  if (!j) return;
+  c.onlyKeys(
+    j,
+    ["enrollment", "owner", "timeout_minutes", "max_launches_per_day", "zone", "latest_run"],
+    path,
+  );
   const e = c.object(j.enrollment, `${path}.enrollment`);
   if (e) {
     c.onlyKeys(e, ["state", "detail", "enrolled_at"], `${path}.enrollment`);

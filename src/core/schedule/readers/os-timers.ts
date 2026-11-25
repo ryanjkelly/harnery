@@ -3,9 +3,15 @@
  * crontab. Every system call goes through `ctx.runCommand`; the reader never
  * touches `process`, `os` or the filesystem itself.
  *
- * Records carry schedule fields only. The reader never asks systemd for a
- * unit's ExecStart, and a crontab line's command text never leaves this file:
- * only the schedule fields of the line are kept.
+ * Each record's `work` says what the timer or line runs (ADR 0281): for a
+ * systemd timer, every ExecStart= of the unit it triggers, in order, as the
+ * argv systemd prints inside its `{ path=… ; argv[]=… }` wrapper; for a
+ * crontab line, the command text after the schedule fields. Both go through
+ * the shared secret redactor before they enter a record. The reader asks
+ * systemd for no other Exec*= property and never for Environment= or
+ * EnvironmentFile=, so environment values are never read; `env` stays empty.
+ * Crontab variable assignments (`NAME=value` lines) are not kept either,
+ * apart from the time zone.
  */
 
 import type {
@@ -19,6 +25,7 @@ import type {
   ScheduleTrigger,
 } from "../types.ts";
 import { validateScheduleRecord } from "../types.ts";
+import { buildScheduleWork } from "../work.ts";
 
 const SOURCE = "os-timer" as const;
 
@@ -34,6 +41,7 @@ const SHOW_PROPERTIES = [
   "ActiveState",
   "Result",
   "ExecMainStatus",
+  "ExecStart",
 ].join(",");
 
 export const SYSTEMD_LIST_JSON_ARGV = [
@@ -210,8 +218,10 @@ export function parseShowOutput(stdout: string): Map<string, UnitProps> {
       const eq = line.indexOf("=");
       if (eq <= 0) continue;
       const key = line.slice(0, eq);
-      // Never keep command text, even if a systemd version returned it unasked.
-      if (key.startsWith("Exec") && key !== "ExecMainStatus") continue;
+      // Keep ExecStart only; never another command or any environment value,
+      // even if a systemd version returned one unasked.
+      if (key.startsWith("Exec") && key !== "ExecMainStatus" && key !== "ExecStart") continue;
+      if (key.startsWith("Environment") || key.startsWith("PassEnvironment")) continue;
       const list = props.get(key) ?? [];
       list.push(line.slice(eq + 1));
       props.set(key, list);
@@ -220,6 +230,23 @@ export function parseShowOutput(stdout: string): Map<string, UnitProps> {
     if (id) units.set(id, props);
   }
   return units;
+}
+
+/**
+ * The argv text of each command in a unit's ExecStart values, in order.
+ * systemd prints each as `{ path=/bin/x ; argv[]=/bin/x a b ; ignore_errors=no ; … }`;
+ * only the `argv[]` part is kept. systemd joins the arguments with spaces
+ * and does not quote them, so the text is kept as one line, not split.
+ */
+export function parseExecStart(values: readonly string[]): string[] {
+  const lines: string[] = [];
+  for (const value of values) {
+    for (const m of value.matchAll(/argv\[\]=(.*?) ; (?:ignore_errors|flags)=/g)) {
+      const line = (m[1] ?? "").trim();
+      if (line.length > 0) lines.push(line);
+    }
+  }
+  return lines;
 }
 
 function first(props: UnitProps | undefined, key: string): string | undefined {
@@ -387,6 +414,14 @@ async function readSystemd(ctx: ScheduleReadContext): Promise<ToolOutcome> {
     const timer = props.get(row.unit);
     const service = row.activates ? props.get(row.activates) : undefined;
     const description = unitDescription(service, row.activates) ?? unitDescription(timer, row.unit);
+    const exec = parseExecStart(service?.get("ExecStart") ?? []);
+    const work =
+      exec.length > 0
+        ? buildScheduleWork({
+            commands: exec.map((line) => ({ name: "ExecStart", line })),
+            agent: null,
+          })
+        : undefined;
     return {
       source: SOURCE,
       account: ctx.machine,
@@ -399,6 +434,7 @@ async function readSystemd(ctx: ScheduleReadContext): Promise<ToolOutcome> {
       next_run_at: row.next,
       last_run: timerLastRun(row, service),
       created_by: null,
+      ...(work ? { work } : {}),
     };
   });
   return { kind: "ok", records };
@@ -413,8 +449,9 @@ const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/;
 const IANA_ZONE = /^[A-Za-z][A-Za-z0-9_+-]*(?:\/[A-Za-z0-9_+-]+)*$/;
 
 /**
- * Parse crontab text into records. Only the schedule fields of a line are
- * read; the command that follows them is never copied anywhere.
+ * Parse crontab text into records: the schedule fields become the trigger and
+ * the command text after them becomes `work`, after the secret redactor.
+ * Variable assignments are skipped (only CRON_TZ/TZ is read, for the zone).
  */
 export function parseCrontab(text: string, machine: string): ScheduleRecord[] {
   const records: ScheduleRecord[] = [];
@@ -434,14 +471,17 @@ export function parseCrontab(text: string, machine: string): ScheduleRecord[] {
     n += 1;
     const tokens = line.split(/\s+/);
     let trigger: ScheduleTrigger;
+    let command: string | null = null;
     const head = tokens[0] ?? "";
     if (head.startsWith("@")) {
       const macro = /^@[a-z]+$/.test(head) ? head : "@?";
       trigger = { kind: "event", description: `cron macro: ${macro}`, raw: macro };
+      command = commandAfter(line, 1);
     } else {
       const fields = tokens.slice(0, 5);
       if (fields.length === 5 && tokens.length > 5 && fields.every((f) => CRON_FIELD.test(f))) {
         const expr = fields.join(" ");
+        command = commandAfter(line, 5);
         trigger = zone
           ? { kind: "cron", expr, zone, raw: expr }
           : { kind: "cron", expr, raw: expr };
@@ -464,9 +504,19 @@ export function parseCrontab(text: string, machine: string): ScheduleRecord[] {
       next_run_at: null,
       last_run: null,
       created_by: null,
+      ...(command
+        ? { work: buildScheduleWork({ commands: [{ name: null, line: command }], agent: null }) }
+        : {}),
     });
   }
   return records;
+}
+
+/** The text of a crontab line after its first `fields` whitespace-separated fields. */
+function commandAfter(line: string, fields: number): string | null {
+  const m = new RegExp(`^(?:\\S+\\s+){${fields}}(.*)$`).exec(line);
+  const text = m?.[1]?.trim() ?? "";
+  return text.length > 0 ? text : null;
 }
 
 async function readCrontab(ctx: ScheduleReadContext): Promise<ToolOutcome> {

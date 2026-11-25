@@ -3,13 +3,13 @@
  * file (`.harnery/schedules.jsonc`). It reads the job file, this checkout's
  * enrollments and the run records under `.harnery/private/schedule/`.
  *
- * Each record's `job` says what the job runs: every gather command's argv as
+ * Each record's `work` says what the job runs: every gather command's argv as
  * written, the names (never values) of the environment variables it passes
- * through, and the judge agent's adapter, model, effort and full prompt. The
- * job file is the project's own committed, reviewed file, so showing it
- * reveals nothing the checkout does not already hold (ADR 0280). The record
- * never carries environment values, gather output or report text; for the
- * newest run it gives exit codes and the report's path only.
+ * through, and the judge agent's adapter, model, effort and full prompt,
+ * after the shared secret redactor (ADR 0280, ADR 0281). Its `job` part
+ * gives enrollment, owner, limits and the newest run. The record never
+ * carries environment values, gather output or report text; for the newest
+ * run it gives exit codes and the report's path only.
  */
 
 import { existsSync } from "node:fs";
@@ -38,6 +38,7 @@ import type {
   ScheduleRunStatus,
   ScheduleTrigger,
 } from "../types.ts";
+import { buildScheduleWork } from "../work.ts";
 
 /** The record trigger for a job trigger; `raw` is the job file's own trigger object. */
 export function harneryScheduleTrigger(trigger: ScheduleJobTrigger, zone: string): ScheduleTrigger {
@@ -125,12 +126,12 @@ function jobRecord(ctx: ScheduleReadContext, job: ScheduleJob): ScheduleRecord {
     nextRunAt = next === null ? null : new Date(next).toISOString();
   }
   const latest = listScheduleRuns(ctx.coordRoot, job.id)[0];
-  const detail: ScheduleHarneryJob = {
+  const work = buildScheduleWork({
     commands: (job.gather ?? []).map((g) => ({
       name: g.name,
-      argv: [...g.argv],
-      env: [...(g.env ?? [])],
-      finding_exit_codes: [...(g.finding_exit_codes ?? [])],
+      argv: g.argv,
+      env: g.env ?? [],
+      finding_exit_codes: g.finding_exit_codes ?? [],
     })),
     agent: job.agent
       ? {
@@ -140,6 +141,8 @@ function jobRecord(ctx: ScheduleReadContext, job: ScheduleJob): ScheduleRecord {
           prompt: job.agent.prompt,
         }
       : null,
+  });
+  const detail: ScheduleHarneryJob = {
     enrollment: harneryEnrollment(check),
     owner: job.owner ?? null,
     timeout_minutes: job.timeout_minutes,
@@ -159,6 +162,7 @@ function jobRecord(ctx: ScheduleReadContext, job: ScheduleJob): ScheduleRecord {
     next_run_at: nextRunAt,
     last_run: latest ? { at: latest.finished_at, status: harneryRunStatus(latest.result) } : null,
     created_by: null,
+    work,
     job: detail,
   };
 }

@@ -82,9 +82,10 @@ schedules".
 | `unsupported` | The platform or the store's layout is one the reader does not know, so it did not guess. |
 | `disabled` | A reader the operator switched off. The detail column names the config file. |
 
-Readers select named schedule fields only. Prompts, inbox text, webhook
-tokens, secrets and crontab command text are never read out of another app's
-store. SQLite stores are read from a temporary copy of the database and its
+Readers select named columns only. Prompts and command lines are read and
+shown after a secret redactor; inbox text, webhook tokens, secrets and
+environment variable values are never read out of another app's store
+([ADR 0281](/decisions/0281-every-schedule-shows-what-it-runs/)). SQLite stores are read from a temporary copy of the database and its
 `-wal` and `-shm` files, so the owning app is never locked out.
 
 Each record carries its source and account, the source's id and title, the
@@ -94,14 +95,27 @@ text), where it runs, whether it is enabled, the next run time, the last run
 saw it happen, the agent session that created it. A crontab entry has no
 recorded outcome, so its last run is `unknown`.
 
-A `harnery` record also carries `job`, read from the project's own committed
-job file and this checkout's enrollment and run records
+Any record may carry `work`, what the schedule runs, after the secret
+redactor ([ADR 0281](/decisions/0281-every-schedule-shows-what-it-runs/)). It
+is absent when the reader could not tell.
+
+| Field | Meaning |
+| --- | --- |
+| `commands` | Each command in run order: `name` (a Harnery gather name, `ExecStart`, or null), then either `argv` (an argument list) or `line` (one line of text: a crontab command, or a systemd `ExecStart` as systemd prints its arguments), `env` (variable names only, never values) and `finding_exit_codes`. Empty for a schedule that only starts an agent. |
+| `agent` | The agent it starts: `adapter` (a Harnery adapter, `codex` for a Codex app automation, or the T3 Code provider instance), `model` and `effort` (null when left to a default) and `prompt`; null when it starts none. |
+| `redacted` | True when something in the commands or prompt was replaced with `‹redacted›`. |
+
+What each source fills in: an OS timer gives each `ExecStart=` line of the
+service it triggers; a crontab entry gives its command text; a T3 Code task
+and a Codex app automation give the agent and prompt; a Harnery job gives its
+gather commands and its judge.
+
+A `harnery` record also carries `job`, read from this checkout's enrollment
+and run records and the job file's limits
 ([ADR 0280](/decisions/0280-harnery-jobs-show-what-they-run/)):
 
 | Field | Meaning |
 | --- | --- |
-| `commands` | Each gather command in run order: `name`, `argv` exactly as written, `env` (variable names only, never values) and `finding_exit_codes`. Empty for an agent-only job. |
-| `agent` | The judge's `adapter`, `model`, `effort` (null when left to the adapter) and full `prompt`; null when the job runs commands only. |
 | `enrollment` | `state` from the enrollment check (`enrolled`, `not-enrolled`, `changed`, `wrong-machine` or `wrong-checkout`), its `detail`, and `enrolled_at`. Only `enrolled` runs. |
 | `owner`, `timeout_minutes`, `max_launches_per_day`, `zone` | As the job file and project config set them. |
 | `latest_run` | The newest run: `result`, `kind`, start and finish times, `duration_ms`, each command's exit code and state, the agent's outcome, and `report_path` relative to the checkout (null when no report was written). Never the gather output or report text. |
@@ -135,17 +149,17 @@ harn schedule list --source harnery --source os-timer
 harn schedule show <id | source:id> [--json]
 ```
 
-Prints one record in full, with the coverage of its source. For a `harnery`
-job it also prints what the job runs (a one-line summary, then each command's
-arguments and the agent with its full prompt, or "none" for a commands-only
-job), the enrollment state on this machine in plain words, the owner, timeout,
+Prints one record in full, with the coverage of its source, and what it runs:
+a one-line summary, then each command and the agent with its prompt (or
+"none" for commands only), and a `redacted:` line when something was masked.
+For a `harnery` job it also prints the enrollment state on this machine in plain words, the owner, timeout,
 daily launch limit and time zone, and the newest run's result, duration, exit
 codes and report path. When the same id exists in two sources, name one with
 the `source:` prefix.
 
 | Option | Meaning |
 | --- | --- |
-| `--json` | Print `{ record, coverage }`. A Harnery job's detail is in `record.job`. |
+| `--json` | Print `{ record, coverage }`. What it runs is in `record.work`; a Harnery job's enrollment and runs are in `record.job`. |
 
 Exit codes: `0` when one record matches; `1` when none matches (the hint names
 any source that could not be read) or when more than one does.

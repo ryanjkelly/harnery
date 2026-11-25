@@ -172,12 +172,10 @@ describe("harneryScheduleReader", () => {
     const result = await harneryScheduleReader.read(ctx());
     expect(validateScheduleReadResult(result).ok).toBe(true);
     const detail = result.records[0]?.job;
-    expect(detail?.commands).toEqual([]);
-    expect(detail?.agent).toEqual({
-      adapter: "codex",
-      model: "m-1",
-      effort: "medium",
-      prompt: PROMPT,
+    expect(result.records[0]?.work).toEqual({
+      commands: [],
+      agent: { adapter: "codex", model: "m-1", effort: "medium", prompt: PROMPT },
+      redacted: false,
     });
     expect(detail).toMatchObject({
       owner: null,
@@ -202,18 +200,37 @@ describe("harneryScheduleReader", () => {
     const result = await harneryScheduleReader.read(ctx());
     expect(validateScheduleReadResult(result).ok).toBe(true);
     const detail = result.records[0]?.job;
+    const work = result.records[0]?.work;
     expect(result.coverage.detail).toBeUndefined();
-    expect(detail?.agent).toBeNull();
+    expect(work?.agent).toBeNull();
     expect(detail?.owner).toBe("agent-ops");
-    expect(detail?.commands).toEqual([
+    expect(work?.commands).toEqual([
       {
         name: "probe",
         argv: ["/bin/echo", "hi there", "--flag"],
+        line: null,
         env: [],
         finding_exit_codes: [3],
       },
-      { name: "second", argv: ["/bin/true"], env: [], finding_exit_codes: [] },
+      { name: "second", argv: ["/bin/true"], line: null, env: [], finding_exit_codes: [] },
     ]);
+  });
+
+  test("secret-looking arguments and prompt text are masked before the record", async () => {
+    writeJobs([
+      job({
+        gather: [{ name: "probe", argv: ["/bin/tool", "--token", "plain-secret-value"] }],
+        agent: { adapter: "codex", prompt: "Use API_KEY=abc123 when calling." },
+      }),
+    ]);
+    const result = await harneryScheduleReader.read(ctx());
+    expect(validateScheduleReadResult(result).ok).toBe(true);
+    const work = result.records[0]?.work;
+    expect(work?.redacted).toBe(true);
+    expect(work?.commands[0]?.argv).toEqual(["/bin/tool", "--token", "‹redacted›"]);
+    expect(work?.agent?.prompt).toBe("Use API_KEY=‹redacted› when calling.");
+    expect(JSON.stringify(result)).not.toContain("plain-secret-value");
+    expect(JSON.stringify(result)).not.toContain("abc123");
   });
 
   test("environment variable names are listed and their values never are", async () => {
@@ -224,7 +241,7 @@ describe("harneryScheduleReader", () => {
       }),
     ]);
     const result = await harneryScheduleReader.read(ctx({ PROBE_TOKEN: "SECRET-ENV-VALUE" }));
-    expect(result.records[0]?.job?.commands[0]?.env).toEqual(["PROBE_TOKEN"]);
+    expect(result.records[0]?.work?.commands[0]?.env).toEqual(["PROBE_TOKEN"]);
     expect(JSON.stringify(result)).not.toContain("SECRET-ENV-VALUE");
   });
 

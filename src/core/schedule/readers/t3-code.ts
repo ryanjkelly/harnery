@@ -3,10 +3,14 @@
  *
  * T3 Code keeps them in the `scheduled_tasks` table of its private
  * `statev2.sqlite` store. The layout is undocumented, so the reader checks
- * that the table and every column it selects exist and reports `unsupported`
- * otherwise. It selects named schedule columns only, from a copy of the store
- * made by the shared SQLite helper; no other column of the table is ever
- * named in SQL, so task text and webhook credentials never leave the store.
+ * that the table and every column it requires exist and reports
+ * `unsupported` otherwise. From a copy of the store made by the shared SQLite
+ * helper it selects the schedule columns, the task's `prompt`, and, when the
+ * column exists, `model_selection_json` (provider instance, model and effort
+ * options). The prompt becomes the record's `work.agent.prompt` after the
+ * shared secret redactor (ADR 0281). No other column is ever named in SQL,
+ * so webhook tokens and secrets, run errors and run history never leave
+ * the store.
  */
 
 import { join } from "node:path";
@@ -22,6 +26,7 @@ import {
   type ScheduleRunsOn,
   type ScheduleTrigger,
 } from "../types.ts";
+import { buildScheduleWork } from "../work.ts";
 
 /** The table the reader reads. */
 export const T3_CODE_SCHEDULE_TABLE = "scheduled_tasks";
@@ -37,12 +42,25 @@ export const T3_CODE_SCHEDULE_COLUMNS = [
   "next_run_at",
   "last_run_at",
   "last_run_status",
+  "prompt",
 ] as const;
 
-/** The one statement the reader runs against the copy. */
-export const T3_CODE_SCHEDULE_SQL = `SELECT ${T3_CODE_SCHEDULE_COLUMNS.join(", ")} FROM ${T3_CODE_SCHEDULE_TABLE} ORDER BY task_id`;
+/** Columns selected only when the table has them. */
+export const T3_CODE_OPTIONAL_COLUMNS = ["model_selection_json"] as const;
 
-type T3Row = Record<(typeof T3_CODE_SCHEDULE_COLUMNS)[number], unknown>;
+/** The statement the reader runs against the copy, given which optional columns exist. */
+export function t3CodeScheduleSql(optional: readonly string[] = T3_CODE_OPTIONAL_COLUMNS): string {
+  const columns = [
+    ...T3_CODE_SCHEDULE_COLUMNS,
+    ...T3_CODE_OPTIONAL_COLUMNS.filter((c) => optional.includes(c)),
+  ];
+  return `SELECT ${columns.join(", ")} FROM ${T3_CODE_SCHEDULE_TABLE} ORDER BY task_id`;
+}
+
+type T3Row = Record<
+  (typeof T3_CODE_SCHEDULE_COLUMNS)[number] | (typeof T3_CODE_OPTIONAL_COLUMNS)[number],
+  unknown
+>;
 
 /** Where T3 Code keeps its store, unless a test overrides it. */
 export function t3CodeStorePath(ctx: Pick<ScheduleReadContext, "homeDir" | "storePaths">): string {
@@ -122,6 +140,47 @@ export function t3CodeLastRun(status: unknown, at: unknown): ScheduleLastRun | n
   return { at: when, status: "unknown" };
 }
 
+/**
+ * The agent a task starts, from its prompt and stored model selection
+ * (`{"instanceId": "...", "model": "...", "options": [{"id": "effort", "value": "..."}]}`).
+ * Unknown or missing selection fields become null; the adapter falls back to
+ * "t3-code" when no provider instance is stored.
+ */
+export function t3CodeAgent(
+  prompt: string,
+  modelSelectionJson: unknown,
+): { adapter: string; model: string | null; effort: string | null; prompt: string } {
+  let adapter = "t3-code";
+  let model: string | null = null;
+  let effort: string | null = null;
+  if (typeof modelSelectionJson === "string") {
+    try {
+      const parsed: unknown = JSON.parse(modelSelectionJson);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        const m = parsed as Record<string, unknown>;
+        if (typeof m.instanceId === "string" && m.instanceId.length > 0) adapter = m.instanceId;
+        else if (typeof m.provider === "string" && m.provider.length > 0) adapter = m.provider;
+        if (typeof m.model === "string" && m.model.length > 0) model = m.model;
+        if (Array.isArray(m.options)) {
+          for (const o of m.options) {
+            if (o && typeof o === "object") {
+              const opt = o as Record<string, unknown>;
+              if (
+                (opt.id === "effort" || opt.id === "reasoningEffort") &&
+                typeof opt.value === "string"
+              )
+                effort = opt.value;
+            }
+          }
+        }
+      }
+    } catch {
+      // An unreadable selection leaves the defaults.
+    }
+  }
+  return { adapter, model, effort, prompt };
+}
+
 function nonEmpty(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
@@ -156,6 +215,14 @@ function toRecord(row: T3Row, machine: string): ScheduleRecord | null {
     next_run_at: isScheduleIsoInstant(row.next_run_at) ? row.next_run_at : null,
     last_run: t3CodeLastRun(row.last_run_status, row.last_run_at),
     created_by: null,
+    ...(typeof row.prompt === "string"
+      ? {
+          work: buildScheduleWork({
+            commands: [],
+            agent: t3CodeAgent(row.prompt, row.model_selection_json),
+          }),
+        }
+      : {}),
   };
 }
 
@@ -208,7 +275,8 @@ export const t3CodeScheduleReader: ScheduleReader = {
       }
       const records: ScheduleRecord[] = [];
       let skipped = 0;
-      for (const row of opened.db.all<T3Row>(T3_CODE_SCHEDULE_SQL)) {
+      const sql = t3CodeScheduleSql(T3_CODE_OPTIONAL_COLUMNS.filter((c) => present.has(c)));
+      for (const row of opened.db.all<T3Row>(sql)) {
         const record = toRecord(row, ctx.machine);
         if (record) records.push(record);
         else skipped += 1;

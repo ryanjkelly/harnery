@@ -17,26 +17,25 @@ import type {
 } from "../../src/core/schedule/types";
 import { runHarn } from "./run-harn";
 
+export {
+  describeScheduleAgent,
+  describeScheduleEnrollment,
+  describeScheduleWork,
+  formatScheduleCommand,
+} from "../../src/core/schedule/describe-work";
 export type {
+  ScheduleAgent,
+  ScheduleCommand,
   ScheduleCoverageState,
+  ScheduleHarneryJob,
   ScheduleRecord,
   ScheduleRunStatus,
   ScheduleSource,
   ScheduleSourceCoverage,
   ScheduleTrigger,
+  ScheduleWork,
 } from "../../src/core/schedule/types";
 export type { ScheduleRunResult };
-export type {
-  ScheduleHarneryAgent,
-  ScheduleHarneryCommand,
-  ScheduleHarneryJob,
-} from "../../src/core/schedule/types";
-export {
-  describeScheduleAgent,
-  describeScheduleEnrollment,
-  describeScheduleJobWork,
-  formatScheduleArgv,
-} from "../../src/core/schedule/describe-job";
 
 export interface ScheduleList {
   records: ScheduleRecord[];
