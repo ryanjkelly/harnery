@@ -204,7 +204,14 @@ describe("verifyProcessGeneration", () => {
     withEnv({ HARNERY_PID_PROBE: "ps" }, () => {
       const token = processStartToken(process.pid) as string;
       expect(token).toMatch(/^p/);
-      expect(verifyProcessGeneration(process.pid, token)).toBe("same");
+      // Linux procps derives lstart from boot time and uptime, so a second
+      // read can land one second later. Retry a few reads; an exact-start
+      // platform matches on the first.
+      let verdict = verifyProcessGeneration(process.pid, token);
+      for (let attempt = 0; verdict !== "same" && attempt < 3; attempt++) {
+        verdict = verifyProcessGeneration(process.pid, processStartToken(process.pid) as string);
+      }
+      expect(verdict).toBe("same");
       expect(verifyProcessGeneration(process.pid, "pWed Jan  1 00:00:00 2020")).toBe("different");
     });
   });
