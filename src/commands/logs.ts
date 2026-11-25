@@ -67,7 +67,7 @@ export function registerLogsCommand(
     (options: QueryOptions) =>
       run(emit, async () => {
         const result = await queryLogs(
-          logFamilies(catalogFor(context).families),
+          segmentLogFamilies(catalogFor(context).families),
           queryFrom(options),
         );
         if (options.json) {
@@ -81,7 +81,7 @@ export function registerLogsCommand(
     (options: QueryOptions) =>
       run(emit, async () => {
         const result = await queryLogs(
-          logFamilies(catalogFor(context).families),
+          segmentLogFamilies(catalogFor(context).families),
           queryFrom(options),
         );
         for (const record of result.records) emit.text(JSON.stringify(record));
@@ -190,6 +190,18 @@ function logFamilies(
   families: readonly HarneryRegisteredStorageFamily[],
 ): HarneryRegisteredStorageFamily[] {
   return families.filter(isLogFamily);
+}
+/**
+ * Families whose records live in structured log segments. A log-class family
+ * with its own file layout (for example daily private detail files) is read
+ * by its own command, so a segment query must skip it rather than fail.
+ */
+function segmentLogFamilies(
+  families: readonly HarneryRegisteredStorageFamily[],
+): HarneryRegisteredStorageFamily[] {
+  return logFamilies(families).filter(
+    (family) => family.provider.provider_id === HARNERY_STRUCTURED_LOG_PROVIDER_ID,
+  );
 }
 function isLogFamily(family: HarneryRegisteredStorageFamily): boolean {
   return family.storage_class === "operational-log" || family.storage_class === "debug-log";
