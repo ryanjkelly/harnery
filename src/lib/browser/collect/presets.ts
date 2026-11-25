@@ -94,16 +94,18 @@ export const COLLECT_PRESETS: Record<string, CollectPreset> = {
     },
   },
   linkedin: {
-    description: "LinkedIn home and search feeds (signed in).",
-    tested: false,
-    item: "div.feed-shared-update-v2",
-    key: "@data-urn",
+    description: "LinkedIn home feed (signed in).",
+    tested: true,
+    // LinkedIn's 2026 feed uses hashed class names; posts are list items
+    // whose componentkey starts with "update-card-focus" (checked 2026-11-24).
+    item: '[role="listitem"][componentkey^="update-card-focus"]',
+    key: "@componentkey",
     fields: {
-      author: ".update-components-actor__title",
-      time: ".update-components-actor__sub-description",
-      text: ".update-components-text",
+      author: 'a[href*="/in/"], a[href*="/company/"]',
+      authorUrl: 'a[href*="/in/"], a[href*="/company/"]@href',
+      text: '[data-testid="expandable-text-box"]',
     },
-    expand: "button.feed-shared-inline-show-more-text__see-more-less-toggle",
+    expand: '[data-testid="expandable-text-button"]',
   },
   instagram: {
     description: "Instagram home feed posts.",
