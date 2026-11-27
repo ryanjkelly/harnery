@@ -1435,6 +1435,38 @@ describe("agent-hook V3 hard cut", () => {
     expect(readLiveCoordinationRow(root, instanceId)?.session_name_seen_for).toBeUndefined();
   });
 
+  test("Codex SessionEnd records the end, then a detached worker clears the pid map", async () => {
+    const root = candidateRoot("codex");
+    const owner = "codex-session-end-owner";
+    const runHook = (event: string, payload: Record<string, unknown>) =>
+      run(AGENT_HOOK, [event, "--adapter", "codex"], payload, root, {
+        HARNERY_AGENT_COORD_BYPASS_STOP: "1",
+      });
+
+    expect(
+      runHook("session-start", {
+        session_id: owner,
+        thread_id: owner,
+        cwd: root,
+        source: "startup",
+      }).status,
+    ).toBe(0);
+    const instanceId = readLiveCoordinationRows(root)[0]?.instance_id;
+    if (!instanceId) throw new Error("Codex owner was not projected");
+    const row = join(root, ".harnery", "pid-map", "999999");
+    writeFileSync(row, `${instanceId}\tfixture\n`);
+
+    expect(
+      runHook("session-end", { session_id: owner, thread_id: owner, cwd: root, reason: "exit" })
+        .status,
+    ).toBe(0);
+    expect(
+      readLedgerV3(root).events.some(({ event }) => event.event_type === "session.ended"),
+    ).toBeTrue();
+    await waitFor(() => !existsSync(row), 15_000);
+    expect(existsSync(row)).toBeFalse();
+  });
+
   test("Codex preserves ordered display and stays silent when its transcript is unavailable", () => {
     const root = candidateRoot("codex");
     const owner = "codex-session-name-owner";

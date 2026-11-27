@@ -890,6 +890,9 @@ async function main(): Promise<number> {
   if (eventName === SESSION_MAINTENANCE_EVENT) {
     return runSessionMaintenanceWorker(coordRoot, adapter);
   }
+  if (eventName === SESSION_END_TAIL_EVENT) {
+    return runSessionEndTailWorker(coordRoot, adapter, extra);
+  }
   const ledgerRoute = resolveLiveEventLedgerRouteV3(coordRoot);
 
   // Always log a breadcrumb, useful when an event_type maps to null or owner
@@ -1535,16 +1538,73 @@ async function handleSessionStarted(run: HookRun): Promise<void> {
 }
 
 function handleSessionEnded(run: HookRun): void {
-  const { coordRoot, behavior, owner, sessionId } = run;
+  const { coordRoot, adapter, behavior, owner, sessionId } = run;
   clearStopCapExhaustion(coordRoot, sessionId);
+  // The authoritative session.ended event is already recorded. An adapter
+  // that clamps SessionEnd to a few seconds (Codex: 3) kills the hook when
+  // this tail runs long under load, as on 2026-11-26 when eleven Codex
+  // sessions ended within 30 seconds; hand the tail to a detached worker.
+  if (
+    sessionEndTailDetaches(adapter) &&
+    scheduleSessionEndTail(coordRoot, adapter, owner.instance_id)
+  ) {
+    return;
+  }
+  runSessionEndTail(coordRoot, behavior, owner.instance_id);
+}
+
+/** A SessionEnd budget at or below this many seconds moves the post-record tail out of the hook. */
+const SESSION_END_DETACH_BUDGET_SEC = 5;
+const SESSION_END_TAIL_EVENT = "session-end-tail";
+
+function sessionEndTailDetaches(adapter: Adapter): boolean {
+  const timeout = hookTimeoutFor(ADAPTER_SPECS[adapter], "session-end");
+  return timeout !== undefined && timeout <= SESSION_END_DETACH_BUDGET_SEC;
+}
+
+function scheduleSessionEndTail(coordRoot: string, adapter: Adapter, instanceId: string): boolean {
+  const modulePath = process.argv[1];
+  if (!modulePath) return false;
   try {
-    cleanupSessionEnd(coordRoot, owner.instance_id);
+    const child = spawn(
+      process.execPath,
+      [modulePath, SESSION_END_TAIL_EVENT, "--adapter", adapter, "--instance-id", instanceId],
+      {
+        cwd: coordRoot,
+        detached: true,
+        windowsHide: true,
+        stdio: "ignore",
+        env: childEnv(coordRoot),
+      },
+    );
+    child.unref();
+    return true;
+  } catch (err) {
+    logError(coordRoot, err, { phase: "session-end-tail-spawn" });
+    return false;
+  }
+}
+
+function runSessionEndTailWorker(
+  coordRoot: string,
+  adapter: Adapter | null,
+  extra: string[],
+): number {
+  const instanceId = extraArg(extra, "--instance-id");
+  if (!adapter || !instanceId) return 0;
+  runSessionEndTail(coordRoot, adapterBehavior(adapter), instanceId);
+  return 0;
+}
+
+function runSessionEndTail(coordRoot: string, behavior: AdapterBehavior, instanceId: string): void {
+  try {
+    cleanupSessionEnd(coordRoot, instanceId);
   } catch (err) {
     logError(coordRoot, err, { phase: "session-end-cleanup" });
   }
   // Effects: archive the ending agent's journal + force a session-telemetry
   // sync (via HARNERY_CLAUDE_SESSIONS_FORCE=1), each gated by the behavior.
-  if (behavior.journalMaintenance) journalArchive(coordRoot, owner.instance_id);
+  if (behavior.journalMaintenance) journalArchive(coordRoot, instanceId);
   if (behavior.sessionTelemetrySync) runSessionSyncExtension(coordRoot, true);
   // Publish the post-cleanup V3 projection so remote machines see this
   // session disappear without waiting for the stale window.
