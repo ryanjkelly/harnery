@@ -110,6 +110,11 @@ describe("windows chrome sign-in helpers", () => {
     expect(script).toContain("Browser.close");
     expect(script).toContain("throw 'Windows Chrome did not open its DevTools port in time.'");
     expect(script).toContain("Chrome is still running on the sign-in profile");
+    // Chrome saves the restored tabs again on close, so an extra blank page
+    // would join the saved list on every harvest (357 tabs by 2026-11-26).
+    expect(script).not.toContain("'about:blank')");
+    expect(script).toContain("Target.closeTarget");
+    expect(script.indexOf("Target.closeTarget")).toBeLessThan(script.indexOf("Browser.close"));
   });
 
   test("the keep-session script sets the startup preference through the settings page", () => {
@@ -128,7 +133,7 @@ describe("windows chrome sign-in helpers", () => {
     expect(script.indexOf("Chrome is still running on the sign-in profile")).toBeLessThan(
       script.indexOf("Remove-Item"),
     );
-    expect(script).toContain("'Sessions'");
+    expect(script).toContain("'Sessions', 'Sessions_Encrypted'");
     expect(script).toContain("'Current Session', 'Current Tabs', 'Last Session', 'Last Tabs'");
     // Cookies and preferences must survive: they hold the sign-in and the startup preference.
     expect(script).not.toMatch(/Cookies|Preferences|Network/);

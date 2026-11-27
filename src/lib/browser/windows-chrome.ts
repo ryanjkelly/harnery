@@ -141,14 +141,21 @@ const REFUSE_OPEN_PROFILE_LINES = [
  * endpoint, defining `Send`, `Recv`, and `Wait-Reply` for the conversation.
  * It refuses to start while any Chrome is still running on the profile,
  * which would otherwise surface as a confusing startup failure.
+ *
+ * `blankPage: false` starts Chrome without an extra `about:blank` page. A
+ * session that restores the profile's saved tabs must pass it: Chrome saves
+ * the open tabs again when it closes, so an extra page joins the saved list on
+ * every run. Until 2026-11-26 the cookie harvest added one blank tab per
+ * headless browse, and the sign-in profile reached 357 tabs.
  */
-function headlessSessionLines(extraArgs: string[]): string[] {
+function headlessSessionLines(extraArgs: string[], options: { blankPage?: boolean } = {}): string[] {
   const quoted = extraArgs.map((arg) => `'${arg}'`).join(", ");
+  const blankPage = options.blankPage ?? true;
   return [
     ...REFUSE_OPEN_PROFILE_LINES,
     "$portFile = Join-Path $Profile 'DevToolsActivePort'",
     "if (Test-Path $portFile) { Remove-Item $portFile -Force }",
-    `$chromeArgs = @('--headless=new', '--no-first-run', '--no-default-browser-check', ${quoted ? `${quoted}, ` : ""}'--remote-debugging-port=0', "--user-data-dir=\`"$Profile\`"", 'about:blank')`,
+    `$chromeArgs = @('--headless=new', '--no-first-run', '--no-default-browser-check', ${quoted ? `${quoted}, ` : ""}'--remote-debugging-port=0', "--user-data-dir=\`"$Profile\`""${blankPage ? ", 'about:blank'" : ""})`,
     "$proc = Start-Process -FilePath $Chrome -ArgumentList $chromeArgs -PassThru -WindowStyle Hidden",
     "$deadline = (Get-Date).AddSeconds($StartupSeconds)",
     "while (-not (Test-Path $portFile)) { if ((Get-Date) -gt $deadline) { throw 'Windows Chrome did not open its DevTools port in time.' }; if ($proc.HasExited) { throw 'Windows Chrome exited before opening its DevTools port; another Chrome may have opened on the sign-in profile.' }; Start-Sleep -Milliseconds 250 }",
@@ -212,6 +219,10 @@ export function keepSessionScript(): string {
  * preference change) restores the saved tabs, adds its own blank page and
  * saves them all again on close, so without this the list grows by a tab
  * each sign-in until the window opens with hundreds of empty tabs.
+ * Current Chrome keeps a second copy of the saved tabs in
+ * `Sessions_Encrypted` and restores from it when `Sessions` is empty, so both
+ * folders are cleared (found 2026-11-26, when a profile cleared before every
+ * sign-in still reopened 357 tabs).
  * Browser-session cookies live in the cookie database, not with the tabs, and
  * are kept because of the startup preference, not the saved session. The
  * script refuses to run while Chrome is open on the profile and prints
@@ -224,8 +235,7 @@ export function clearSessionTabsScript(): string {
     ...REFUSE_OPEN_PROFILE_LINES,
     "$default = Join-Path $Profile 'Default'",
     "$targets = @()",
-    "$sessions = Join-Path $default 'Sessions'",
-    "if (Test-Path $sessions) { $targets += @(Get-ChildItem -LiteralPath $sessions -File) }",
+    "foreach ($dir in @('Sessions', 'Sessions_Encrypted')) { $sessions = Join-Path $default $dir; if (Test-Path $sessions) { $targets += @(Get-ChildItem -LiteralPath $sessions -File) } }",
     "foreach ($name in @('Current Session', 'Current Tabs', 'Last Session', 'Last Tabs')) { $f = Join-Path $default $name; if (Test-Path -LiteralPath $f) { $targets += @(Get-Item -LiteralPath $f) } }",
     "foreach ($t in $targets) { Remove-Item -LiteralPath $t.FullName -Force }",
     "[Console]::Out.Write('{\"removed\":' + $targets.Count + '}')",
@@ -250,7 +260,7 @@ export function harvestScript(): string {
   return [
     "param([string]$Chrome, [string]$Profile, [string]$Pattern, [string]$Domain = '', [int]$StartupSeconds = 30, [int]$PageSeconds = 5)",
     "$ErrorActionPreference = 'Stop'",
-    ...headlessSessionLines(["--restore-last-session"]),
+    ...headlessSessionLines(["--restore-last-session"], { blankPage: false }),
     "function Test-SiteUrl([string]$u) { if (-not $Domain) { return $false }; try { $h = ([Uri]$u).Host.ToLowerInvariant() } catch { return $false }; return ($h -eq $Domain -or $h.EndsWith('.' + $Domain)) }",
     "Send @{ id = 1; method = 'Storage.getCookies' }",
     "$cookiesReply = Wait-Reply 1",
@@ -258,6 +268,13 @@ export function harvestScript(): string {
     "$n = 1",
     "while ($true) { $n++; Send @{ id = $n; method = 'Target.getTargets' }; $targetsReply = Wait-Reply $n; $sitePages = @((ConvertFrom-Json $targetsReply).result.targetInfos | Where-Object { $_.type -eq 'page' -and (Test-SiteUrl $_.url) }); if ($sitePages.Count -gt 0 -or (Get-Date) -gt $pageDeadline) { break }; Start-Sleep -Milliseconds 250 }",
     "[Console]::Out.Write('{\"cookies\":' + $cookiesReply + ',\"targets\":' + $targetsReply + '}')",
+    // Headless Chrome opens a new-tab page beside the restored tabs, and Browser.close
+    // saves every open tab, so close the empty pages first (keeping one if nothing
+    // else is open) or each harvest adds one.
+    "$allPages = @((ConvertFrom-Json $targetsReply).result.targetInfos | Where-Object { $_.type -eq 'page' })",
+    "$emptyPages = @($allPages | Where-Object { $_.url -match '^(about:blank|chrome://newtab/?|chrome://new-tab-page/?)$' })",
+    "if ($emptyPages.Count -eq $allPages.Count) { $emptyPages = @($emptyPages | Select-Object -Skip 1) }",
+    "foreach ($p in $emptyPages) { $n++; try { Send @{ id = $n; method = 'Target.closeTarget'; params = @{ targetId = $p.targetId } }; [void](Wait-Reply $n) } catch {} }",
     ...CLOSE_HEADLESS_LINES,
   ].join("\r\n");
 }
